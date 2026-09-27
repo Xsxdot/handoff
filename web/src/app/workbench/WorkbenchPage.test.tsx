@@ -3,20 +3,25 @@ import { describe, expect, it, vi } from 'vitest'
 import { WorkbenchPage } from './WorkbenchPage'
 import { DRAG_BASE_MIME, DRAG_DIR_MIME, DRAG_SESSION_MIME, DRAG_TAB_MIME, DRAG_TASK_MIME } from './paneDrop'
 import { useWorkbench, sessionBase, type BaseDir } from './useWorkbench'
+import type { Workbench } from './tabs'
 
 const local: BaseDir = { key: '/local', kind: 'workspace', path: '/local', label: 'local', projectName: 'handoff', machine: '' }
 const remote: BaseDir = { key: '/remote@linux-01', kind: 'workspace', path: '/remote', label: 'remote', projectName: 'aim', machine: 'linux-01' }
+
+const panesOf = (view: ReturnType<typeof render>) =>
+  [...view.container.querySelectorAll('[data-testid="workbench-pane"]')] as HTMLElement[]
 
 function setRect(element: Element, width = 400, height = 400) {
   element.getBoundingClientRect = () => ({ left: 0, top: 0, right: width, bottom: height, width, height, x: 0, y: 0, toJSON: () => ({}) }) as DOMRect
 }
 
-function page(api: ReturnType<typeof useWorkbench>) {
+function page(api: ReturnType<typeof useWorkbench>, singleFocus = false) {
   return <WorkbenchPage
     api={api}
     tree={null}
     tasks={[]}
     onAddProject={vi.fn()}
+    singleFocus={singleFocus}
     renderContent={(content, base) => <div>{content.kind === 'file' ? content.rel : `${content.kind}:${base.projectName}`}</div>}
   />
 }
@@ -518,5 +523,225 @@ describe('WorkbenchPage', () => {
     expect(hook.result.current.wb.groups[0].columns[0].panes[0]).toBeNull()
     expect(warn).toHaveBeenCalledWith('workbench.drop.invalid_mime', expect.objectContaining({ reason: 'session MIME payload is missing or invalid' }))
     warn.mockRestore()
+  })
+})
+
+// —— B369.9 单焦点投影（plan §5 T1）：phone 档两层叠层 + 三件套随焦点翻转。
+// 变异锁「结构分支即红」落在这一节：两窗格必须都在 DOM（①），非焦点格用
+// z-0 pointer-events-none + aria-hidden + inert 压层（②），不得出现
+// hidden / invisible / opacity-0 / display:none 任一实现（③）。——
+describe('B369.9 单焦点投影', () => {
+  // 双列布局：终端落 (0,0)，place zone right 追加第二列并把焦点带到 (1,0)。
+  function renderTwoColumns(singleFocus = true) {
+    const hook = renderHook(() => useWorkbench())
+    act(() => hook.result.current.open({ kind: 'terminal', seq: 1 }, local))
+    const groupId = hook.result.current.wb.activeGroupId
+    act(() => hook.result.current.place({ kind: 'new', base: remote, content: { kind: 'terminal', seq: 2 } }, { groupId, column: 0, row: 0, zone: 'right' }))
+    const view = render(page(hook.result.current, singleFocus))
+    const panes = [...view.container.querySelectorAll('[data-testid="workbench-pane"]')] as HTMLElement[]
+    return { hook, view, groupId, panes }
+  }
+
+  // 双格布局：终端落 (0,0)，place zone bottom 追加第二格并把焦点带到 (0,1)。
+  function renderTwoPanes(singleFocus = true) {
+    const hook = renderHook(() => useWorkbench())
+    act(() => hook.result.current.open({ kind: 'terminal', seq: 1 }, local))
+    const groupId = hook.result.current.wb.activeGroupId
+    act(() => hook.result.current.place({ kind: 'new', base: local, content: { kind: 'terminal', seq: 2 } }, { groupId, column: 0, row: 0, zone: 'bottom' }))
+    const view = render(page(hook.result.current, singleFocus))
+    const panes = [...view.container.querySelectorAll('[data-testid="workbench-pane"]')] as HTMLElement[]
+    return { hook, view, groupId, panes }
+  }
+
+  it('phone 双列：非焦点列/格叠层三件套，焦点列/格 z-10，GroupDivider 不在场', () => {
+    const { view, panes } = renderTwoColumns()
+    expect(panesOf(view)).toHaveLength(2) // 变异锁①：两窗格都在 DOM，谁也不许被卸载
+    expect(view.container.querySelectorAll('[data-testid="workbench-group"]')).toHaveLength(1)
+    // place 后焦点在第二列 (1,0)：panes[0] = col0 非焦点，panes[1] = col1 焦点
+    const [col0Pane, col1Pane] = panes
+    expect(col0Pane.className).toBe('absolute inset-0 flex min-h-0 flex-col bg-background z-0 pointer-events-none')
+    expect(col0Pane.getAttribute('aria-hidden')).toBe('true')
+    expect(col0Pane.hasAttribute('inert')).toBe(true)
+    expect(col1Pane.className).toBe('absolute inset-0 flex min-h-0 flex-col bg-background z-10')
+    expect(col1Pane.getAttribute('aria-hidden')).toBe('false')
+    expect(col1Pane.hasAttribute('inert')).toBe(false)
+    // 列层同构：焦点判据 group.focus[0] === columnIndex
+    const col0 = col0Pane.parentElement as HTMLElement
+    const col1 = col1Pane.parentElement as HTMLElement
+    expect(col0.className).toBe('absolute inset-0 flex min-w-0 min-h-0 flex-col z-0 pointer-events-none')
+    expect(col0.getAttribute('aria-hidden')).toBe('true')
+    expect(col0.hasAttribute('inert')).toBe(true)
+    expect(col1.className).toBe('absolute inset-0 flex min-w-0 min-h-0 flex-col z-10')
+    expect(col1.getAttribute('aria-hidden')).toBe('false')
+    expect(col1.hasAttribute('inert')).toBe(false)
+    // 列容器追加 relative 作叠层锚
+    expect((col0.parentElement as HTMLElement).className).toBe('flex min-h-0 flex-1 overflow-hidden bg-border relative')
+    // GroupDivider 摘除（phone 组内没有并排列可拖）
+    expect(view.queryByRole('separator')).toBeNull()
+  })
+
+  it('phone 双格（同列两层）：非焦点格三件套，焦点格 z-10，焦点列整体可达', () => {
+    const { view, panes } = renderTwoPanes()
+    expect(panesOf(view)).toHaveLength(2)
+    const [topPane, bottomPane] = panes // 焦点在 (0,1)：top 非焦点，bottom 焦点
+    expect(topPane.className).toBe('absolute inset-0 flex min-h-0 flex-col bg-background z-0 pointer-events-none')
+    expect(topPane.getAttribute('aria-hidden')).toBe('true')
+    expect(topPane.hasAttribute('inert')).toBe(true)
+    expect(bottomPane.className).toBe('absolute inset-0 flex min-h-0 flex-col bg-background z-10')
+    expect(bottomPane.getAttribute('aria-hidden')).toBe('false')
+    expect(bottomPane.hasAttribute('inert')).toBe(false)
+    // 同列双格：列是焦点列，列层不加三件套
+    const column = topPane.parentElement as HTMLElement
+    expect(column.className).toBe('absolute inset-0 flex min-w-0 min-h-0 flex-col z-10')
+    expect(column.hasAttribute('inert')).toBe(false)
+    expect(view.queryByRole('separator')).toBeNull()
+  })
+
+  it('变异锁·结构分支即红：非焦点格不得用 hidden/invisible/opacity-0/display:none 实现', () => {
+    const { panes } = renderTwoColumns()
+    const nonFocus = panes[0]
+    // ③ 词边界匹配（按类名 token 精确比对）：display:none / visibility /
+    // opacity-0 任一实现转红；inert 层靠属性闸，不靠捏尺寸
+    const tokens = nonFocus.className.split(/\s+/)
+    expect(tokens).not.toContain('hidden')
+    expect(tokens).not.toContain('invisible')
+    expect(tokens).not.toContain('opacity-0')
+    expect(nonFocus.style.display).toBe('')
+    expect(nonFocus.style.visibility).toBe('')
+  })
+
+  it('act(activate) 切焦点后三件套随焦点翻转（类与属性双侧）', () => {
+    const { hook, view, groupId, panes } = renderTwoPanes()
+    const [topPane, bottomPane] = panes
+    const firstTabId = hook.result.current.wb.groups[0].columns[0].panes[0]!.id
+    act(() => hook.result.current.activate(groupId, firstTabId))
+    view.rerender(page(hook.result.current, true))
+    // 焦点回到 (0,0)：top 变焦点层，bottom 挂三件套
+    expect(topPane.className).toBe('absolute inset-0 flex min-h-0 flex-col bg-background z-10')
+    expect(topPane.getAttribute('aria-hidden')).toBe('false')
+    expect(topPane.hasAttribute('inert')).toBe(false)
+    expect(bottomPane.className).toBe('absolute inset-0 flex min-h-0 flex-col bg-background z-0 pointer-events-none')
+    expect(bottomPane.getAttribute('aria-hidden')).toBe('true')
+    expect(bottomPane.hasAttribute('inert')).toBe(true)
+    // DOM 节点身份不变：跨档/跨焦点只翻类与属性，零重挂
+    const panesAfter = [...view.container.querySelectorAll('[data-testid="workbench-pane"]')]
+    expect(panesAfter[0]).toBe(topPane)
+    expect(panesAfter[1]).toBe(bottomPane)
+  })
+
+  it('空槽焦点格：focus 落 null 格时该格是焦点层（无三件套），非空格全 inert', () => {
+    const hook = renderHook(() => useWorkbench())
+    // restore 同款入口 hydrate 造 [非空, null] 双格、焦点落在 null 格（(0,1)）
+    const layout: Workbench = {
+      activeGroupId: 'g1',
+      groups: [{
+        id: 'g1', name: '', autoName: false,
+        columns: [{ panes: [{ id: 't1', base: local, content: { kind: 'terminal', seq: 1 } }, null] }],
+        sizes: [1],
+        focus: [0, 1],
+      }],
+    }
+    act(() => hook.result.current.hydrate(layout))
+    const view = render(page(hook.result.current, true))
+    const panes = [...view.container.querySelectorAll('[data-testid="workbench-pane"]')] as HTMLElement[]
+    expect(panes).toHaveLength(2)
+    const [filled, empty] = panes
+    // null 格是焦点层：z-10、无三件套，窗格头照常渲染「空窗格」
+    expect(empty.className).toBe('absolute inset-0 flex min-h-0 flex-col bg-background z-10')
+    expect(empty.getAttribute('aria-hidden')).toBe('false')
+    expect(empty.hasAttribute('inert')).toBe(false)
+    expect(within(empty).getByText('空窗格')).toBeInTheDocument()
+    // 非空格全 inert
+    expect(filled.className).toBe('absolute inset-0 flex min-h-0 flex-col bg-background z-0 pointer-events-none')
+    expect(filled.getAttribute('aria-hidden')).toBe('true')
+    expect(filled.hasAttribute('inert')).toBe(true)
+  })
+
+  it('pane-switcher：只在焦点格头渲染，option 按列序行序只含非空格', () => {
+    const { panes } = renderTwoPanes()
+    // 只在焦点格头（非焦点格在 inert 层且渲染条件不含它）
+    // 非焦点格头不渲染（条件不含它，且整体在 inert 层内）
+    expect(panes[0].querySelectorAll('[data-testid="pane-switcher"]')).toHaveLength(0)
+    const all = [...document.querySelectorAll('[data-testid="pane-switcher"]')] as HTMLSelectElement[]
+    expect(all).toHaveLength(1)
+    expect(all[0].getAttribute('aria-label')).toBe('切换窗格')
+    // option = 本组非空格按列序行序枚举（同列双格，无空槽）
+    const options = [...all[0].querySelectorAll('option')]
+    expect(options).toHaveLength(2)
+    expect(options[0]!.textContent).toContain('bash · local')
+  })
+
+  it('pane-switcher：fireEvent.change 选中另一格 → 焦点翻转 + 三件套随焦点翻转', () => {
+    const { hook, view, groupId, panes } = renderTwoPanes()
+    const switcher = document.querySelector('[data-testid="pane-switcher"]') as HTMLSelectElement
+    const options = [...switcher.querySelectorAll('option')]
+    const focusedTabId = hook.result.current.wb.groups[0].columns[0].panes[1]!.id
+    const other = options.find((option) => option.value !== focusedTabId)!
+    fireEvent.change(switcher, { target: { value: other.value } })
+    view.rerender(page(hook.result.current, true))
+    // 焦点落到第一格：类与属性翻转
+    expect(panes[0].className).toBe('absolute inset-0 flex min-h-0 flex-col bg-background z-10')
+    expect(panes[0].hasAttribute('inert')).toBe(false)
+    expect(panes[1].className).toBe('absolute inset-0 flex min-h-0 flex-col bg-background z-0 pointer-events-none')
+    expect(panes[1].hasAttribute('inert')).toBe(true)
+    expect(hook.result.current.wb.activeGroupId).toBe(groupId)
+  })
+
+  it('pane-switcher：空槽不占切换位（option 数 = 非空格数）', () => {
+    const hook = renderHook(() => useWorkbench())
+    // col0 [t1, null] + col1 [t2]：tabCount=2 → switcher 在场；null 槽不是切换目标
+    const layout: Workbench = {
+      activeGroupId: 'g1',
+      groups: [{
+        id: 'g1', name: '', autoName: false,
+        columns: [
+          { panes: [{ id: 't1', base: local, content: { kind: 'terminal', seq: 1 } }, null] },
+          { panes: [{ id: 't2', base: remote, content: { kind: 'terminal', seq: 2 } }] },
+        ],
+        sizes: [1, 1],
+        focus: [0, 0],
+      }],
+    }
+    act(() => hook.result.current.hydrate(layout))
+    const view = render(page(hook.result.current, true))
+    const switcher = view.container.querySelector('[data-testid="pane-switcher"]') as HTMLSelectElement
+    expect(switcher).not.toBeNull()
+    const options = [...switcher.querySelectorAll('option')]
+    expect(options).toHaveLength(2)
+    expect(options.map((option) => option.value)).toEqual(['t1', 't2'])
+  })
+
+  it('pane-switcher：单格组与桌面档都不渲染', () => {
+    const single = renderHook(() => useWorkbench())
+    act(() => single.result.current.open({ kind: 'terminal', seq: 1 }, local))
+    const singleView = render(page(single.result.current, true))
+    expect(singleView.container.querySelector('[data-testid="pane-switcher"]')).toBeNull()
+    const { view } = renderTwoPanes(false)
+    expect(view.container.querySelector('[data-testid="pane-switcher"]')).toBeNull()
+  })
+
+  it('pane-switcher onClick stopPropagation 不触发窗格冗余 activate', () => {
+    const { hook } = renderTwoPanes()
+    const switcher = document.querySelector('[data-testid="pane-switcher"]') as HTMLSelectElement
+    const wbBefore = hook.result.current.wb
+    fireEvent.click(switcher)
+    // activate 若被调用会 cloneWorkbench 换 wb 引用；wb 不变 = 冒泡被拦下
+    expect(hook.result.current.wb).toBe(wbBefore)
+  })
+
+  it('桌面/pad 守卫：不传 singleFocus，列/窗格类串逐字节现状、separator 在场', () => {
+    const { view, panes } = renderTwoColumns(false)
+    // 窗格类串逐字节等于现状（最高纪律：非投影档渲染输出零漂移）
+    for (const pane of panes) {
+      expect(pane.className).toBe('relative flex min-h-0 flex-1 flex-col bg-background')
+      expect(pane.hasAttribute('inert')).toBe(false)
+      expect(pane.getAttribute('aria-hidden')).toBeNull()
+    }
+    const column = panes[0].parentElement as HTMLElement
+    expect(column.className).toBe('flex min-w-0 min-h-0 flex-1 flex-col')
+    expect(column.getAttribute('aria-hidden')).toBeNull()
+    // 列容器不加 relative、双列 separator 在场
+    expect((column.parentElement as HTMLElement).className).toBe('flex min-h-0 flex-1 overflow-hidden bg-border')
+    expect(view.getAllByRole('separator')).toHaveLength(1)
   })
 })

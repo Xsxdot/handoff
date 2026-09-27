@@ -1758,3 +1758,213 @@ describe('B369.8 覆盖层硬闸', () => {
     expect(screen.getByTestId('workbench-underlay').hasAttribute('inert')).toBe(true)
   })
 })
+
+// —— B369.9 单焦点投影（plan §5 T2）：phone 下钻态单焦点窗格 + 可达单键条。
+// 两把 Shell 级变异锁落在这一节：「卸载即红」（pty-host 跨切组恒等——任何
+// 「非焦点=条件渲染卸载」的实现让长度掉 1 或节点换新 → 红）与「跨档同节点」
+// （375→768→1024 只翻类/属性零重挂——结构分支跨档必重挂 → 红，spec §6 风险 3
+// 的执法条款：落红即回 spec 翻案，不得静默带过）。
+describe('B369.9 单焦点投影', () => {
+  // 两个终端 = 两个真实会话：createPtySession 必须每次给不同 id——固定 id 会让
+  // 第二个终端的 onSession 写回被 setTabContent 的 pty:<id> 全局去重撞掉
+  //（关新 tab、激活旧 tab），那不是回归，是 mock 失真。
+  let ptySeq = 0
+  beforeEach(() => {
+    ptySeq = 0
+    vi.mocked(createPtySession).mockImplementation(async () => ({
+      id: `pty-test-${++ptySeq}`, machine: '', base_path: '~', base_kind: 'home', shell: '',
+      created_at: '', cols: 100, rows: 30, attached: 0, pid: 0,
+      foreground: false, incompatible: false, bytes_out: 0,
+    }))
+  })
+
+  // reachable（plan §3.2）：键条/窗格「可达性唯一」的可机械化语义——jsdom 里
+  // keep-alive 实例恒多（这正是 keep-alive 语义），可达（不在任何 inert /
+  // aria-hidden 层内）数 ≤1 才是「单焦点窗格 / 共享单键条」的真义。
+  const reachable = (el: HTMLElement) =>
+    el.closest('[inert]') === null && el.closest('[aria-hidden="true"]') === null
+
+  const setViewport = (width: number) =>
+    Object.defineProperty(window, 'innerWidth', { value: width, configurable: true, writable: true })
+
+  const reachablePanes = () => screen.getAllByTestId('workbench-pane').filter(reachable)
+  const reachableKeybars = () => screen.getAllByTestId('mobile-keybar').filter(reachable)
+  const reachableSwitchers = () => screen.getAllByTestId('pane-switcher').filter(reachable) as HTMLSelectElement[]
+
+  // compact 下钻三步：项目 tab 缺省已在 → 展开项目（+机器行）→ 工作树行终端钮。
+  // 下钻态 mobile-home 让开、返回后树折叠状态重置，所以每次都要重新展开。
+  async function openWorkspaceTerminal(rowText: string) {
+    await expandCompactProject()
+    if (screen.queryByText('integration/b2-b3') === null) fireEvent.click(await screen.findByTestId('machine-row'))
+    const row = (await screen.findAllByTestId('workspace-row')).find((item) => item.textContent?.includes(rowText))!
+    // 终端钮与行按钮是兄弟节点（同在 div.group.relative 下），在父级里找
+    fireEvent.click(within(row.parentElement as HTMLElement).getByRole('button', { name: '在此打开终端' }))
+    await screen.findByTestId('mobile-detail-bar')
+    await screen.findAllByTestId('pty-host')
+  }
+
+  const tabByLabel = (fragment: string) =>
+    screen.getAllByRole('tab').find((tab) => (tab.getAttribute('aria-label') ?? '').includes(fragment))!
+
+  it('375 下钻单焦点：可达窗格恰 1、可达键条恰 1，键栏容器在可达层内且类原样', async () => {
+    setViewport(375)
+    renderShell('/?tab=projects')
+    await openWorkspaceTerminal('主目录')
+    const panes = reachablePanes()
+    expect(panes).toHaveLength(1)
+    const keybars = reachableKeybars()
+    expect(keybars).toHaveLength(1)
+    // 键栏容器在可达窗格内（焦点终端自己的键条），容器类原样——投影不改键栏
+    expect(panes[0].contains(keybars[0])).toBe(true)
+    expect(keybars[0].className).toContain('overflow-x-auto')
+    // 焦点窗格是投影焦点层：z-10 无三件套（全量属性断言在组件级 T1）
+    expect(panes[0].className).toContain('z-10')
+    expect(panes[0].className).not.toContain('pointer-events-none')
+  })
+
+  it('两终端两组：可达窗格/键条仍恰 1（另一终端整组在后台 inert 层），组间切换焦点换组', async () => {
+    setViewport(375)
+    renderShell('/?tab=projects')
+    await openWorkspaceTerminal('主目录')
+    // review 建议修：返回→再进的「返回」分支直接锁死验收原句「返回…不重连」——
+    // 第一个终端的 pty-host 节点跨返回/再开/切组全程身份保留
+    const host1 = screen.getByTestId('pty-host')
+    fireEvent.click(screen.getByTestId('mobile-detail-back'))
+    await screen.findByTestId('mobile-home')
+    await openWorkspaceTerminal('integration/b2-b3')
+    // 两终端 = 两个独立新组（openOrFocus 终端无去重键）+ 初始空组
+    expect(screen.getAllByTestId('pty-host')).toHaveLength(2)
+    expect(reachablePanes()).toHaveLength(1)
+    expect(reachableKeybars()).toHaveLength(1)
+    expect(within(reachablePanes()[0]).getAllByText(/bash · integration\/b2-b3/).length).toBeGreaterThan(0)
+    // TabBar 组间切换：可达数不变，焦点换到另一条终端
+    fireEvent.click(tabByLabel('主目录'))
+    await waitFor(() => expect(within(reachablePanes()[0]).getAllByText(/bash · 主目录/).length).toBeGreaterThan(0))
+    expect(reachablePanes()).toHaveLength(1)
+    expect(reachableKeybars()).toHaveLength(1)
+    expect(screen.getAllByTestId('pty-host')).toContain(host1)
+  })
+
+  it('变异锁·卸载即红：切组往返后 pty-host 恒 2 且两节点身份都保留', async () => {
+    setViewport(375)
+    renderShell('/?tab=projects')
+    await openWorkspaceTerminal('主目录')
+    fireEvent.click(screen.getByTestId('mobile-detail-back'))
+    await screen.findByTestId('mobile-home')
+    await openWorkspaceTerminal('integration/b2-b3')
+    const hosts = screen.getAllByTestId('pty-host')
+    expect(hosts).toHaveLength(2)
+    // DOM 序 = 组序：hosts[0]=主目录组，hosts[1]=b2-b3 组
+    fireEvent.click(tabByLabel('主目录'))
+    await waitFor(() => expect(within(reachablePanes()[0]).getAllByText(/bash · 主目录/).length).toBeGreaterThan(0))
+    expect(screen.getAllByTestId('pty-host')).toHaveLength(2)
+    expect(screen.getAllByTestId('pty-host')[0]).toBe(hosts[0])
+    expect(screen.getAllByTestId('pty-host')[1]).toBe(hosts[1])
+    fireEvent.click(tabByLabel('b2-b3'))
+    await waitFor(() => expect(within(reachablePanes()[0]).getAllByText(/bash · integration\/b2-b3/).length).toBeGreaterThan(0))
+    expect(screen.getAllByTestId('pty-host')).toHaveLength(2)
+    expect(screen.getAllByTestId('pty-host')[0]).toBe(hosts[0])
+    expect(screen.getAllByTestId('pty-host')[1]).toBe(hosts[1])
+  })
+
+  it('变异锁·跨档同节点：375→768→1024 样式闸翻转零重挂，pty-host 节点恒等', async () => {
+    setViewport(375)
+    renderShell('/?tab=projects')
+    await openWorkspaceTerminal('主目录')
+    fireEvent.click(screen.getByTestId('mobile-detail-back'))
+    await screen.findByTestId('mobile-home')
+    await openWorkspaceTerminal('integration/b2-b3')
+    const hosts = screen.getAllByTestId('pty-host')
+    expect(hosts).toHaveLength(2)
+    // 375 → 768（pad）：投影判据按视口档整体摘除（pane 类回现状），pty-host 不重挂
+    setViewport(768)
+    window.dispatchEvent(new Event('resize'))
+    await waitFor(() => expect(screen.getAllByTestId('workbench-pane')[0].className).toContain('relative flex'))
+    expect(screen.getAllByTestId('workbench-pane')[0].className).not.toContain('absolute inset-0')
+    expect(screen.getAllByTestId('pty-host')[0]).toBe(hosts[0])
+    expect(screen.getAllByTestId('pty-host')[1]).toBe(hosts[1])
+    // 768 → 1024（desktop）：移动壳整体让位，pty-host 仍恒等
+    setViewport(1024)
+    window.dispatchEvent(new Event('resize'))
+    await waitFor(() => expect(screen.queryByTestId('mobile-detail-bar')).toBeNull())
+    expect(screen.getAllByTestId('pty-host')[0]).toBe(hosts[0])
+    expect(screen.getAllByTestId('pty-host')[1]).toBe(hosts[1])
+  })
+
+  // 下钻态工作树行不在 DOM（mobile-home 让开），按 WorkbenchPage.test「从远端
+  // 项目拖目录到窗格」先例直接构造行 dragstart 的同款 DRAG_DIR_MIME 载荷，投到
+  // 窗格右半 → 同组第二列 terminal（投影不拆拖放 handler，岔口 4）。
+  async function dropDirOntoPane() {
+    const values = new Map<string, string>()
+    const dataTransfer = {
+      types: [DRAG_DIR_MIME, DRAG_BASE_MIME],
+      setData: (type: string, value: string) => {
+        values.set(type, value)
+        if (!dataTransfer.types.includes(type)) dataTransfer.types.push(type)
+      },
+      getData: (type: string) => values.get(type) ?? '',
+      effectAllowed: '',
+      dropEffect: '',
+    }
+    const dirBase = { key: '/w/b2-b3', kind: 'workspace', path: '/w/b2-b3', label: 'integration/b2-b3', projectName: 'handoff', machine: '' }
+    values.set(DRAG_DIR_MIME, JSON.stringify(dirBase))
+    values.set(DRAG_BASE_MIME, JSON.stringify(dirBase))
+    const pane = reachablePanes()[0]
+    setPaneRect(pane, 800, 600)
+    const event = createEvent.drop(pane, { dataTransfer: dataTransfer as unknown as DataTransfer })
+    Object.defineProperty(event, 'clientX', { value: 720 })
+    Object.defineProperty(event, 'clientY', { value: 300 })
+    fireEvent(pane, event)
+  }
+
+  it('pad 768 反例锚：同组两列并排零投影痕迹——pane 类现状、separator 在场、逐终端键条、无切换入口', async () => {
+    setViewport(768)
+    renderShell('/?tab=projects')
+    await openWorkspaceTerminal('主目录')
+    const host = await screen.findByTestId('pty-host')
+    await dropDirOntoPane()
+    await waitFor(() => expect(screen.getAllByTestId('pty-host')).toHaveLength(2))
+    expect(screen.getAllByTestId('pty-host')[0]).toBe(host)
+    // pad 反例锚：两列并排，投影零痕迹
+    const panes = screen.getAllByTestId('workbench-pane')
+    expect(panes.filter(reachable)).toHaveLength(2)
+    for (const item of panes) {
+      expect(item.className).toContain('relative flex')
+      expect(item.className).not.toContain('absolute inset-0')
+    }
+    expect(screen.getAllByRole('separator')).toHaveLength(1)
+    // 逐终端键条：可达键条数 = 终端数（pad 不收窄成单键条）
+    expect(reachableKeybars()).toHaveLength(2)
+    // pad 不投影也就没有切换入口（T3 后补的断言）
+    expect(screen.queryByTestId('pane-switcher')).toBeNull()
+  })
+
+  it('375 冒烟：同组双列焦点头 pane-switcher 两步切换；TabBar 切到单格组后不在场', async () => {
+    setViewport(375)
+    renderShell('/?tab=projects')
+    await openWorkspaceTerminal('主目录')
+    await dropDirOntoPane()
+    await waitFor(() => expect(screen.getAllByTestId('pty-host')).toHaveLength(2))
+    // 焦点头 switcher 可达恰 1，option = 本组非空格数
+    const switcher = reachableSwitchers()[0]
+    expect(switcher).toBeDefined()
+    const options = within(switcher).getAllByRole('option') as HTMLOptionElement[]
+    expect(options).toHaveLength(2)
+    // 两步切换：change 选中另一格 → 焦点换列（可达窗格节点换成另一格的窗格）
+    const zhuOption = options.find((option) => option.textContent?.includes('主目录'))!
+    const paneBefore = reachablePanes()[0]
+    fireEvent.change(switcher, { target: { value: zhuOption.value } })
+    await waitFor(() => expect(reachablePanes()[0]).not.toBe(paneBefore))
+    // 受控 select 跟随焦点：新焦点头的 switcher 选中主目录终端
+    expect(reachableSwitchers()[0].value).toBe(zhuOption.value)
+    // 再开一终端 = 独立新组（组内单格）→ 切过去后 switcher 不可达（不在场）
+    fireEvent.click(screen.getByTestId('mobile-detail-back'))
+    await screen.findByTestId('mobile-home')
+    await openWorkspaceTerminal('integration/b2-b3')
+    expect(reachableSwitchers()).toHaveLength(0)
+    // TabBar 切回双列组：switcher 又可达恰 1（在焦点头）
+    fireEvent.click(tabByLabel('主目录'))
+    await waitFor(() => expect(reachableSwitchers()).toHaveLength(1))
+    expect(reachableSwitchers()[0].value).toBe(zhuOption.value)
+  })
+})

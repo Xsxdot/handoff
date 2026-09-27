@@ -953,7 +953,9 @@ export function Shell() {
               先例，覆盖层后面的后台内容对读屏与键盘不可达）——都是属性/类式闸，
               覆盖期才挂、掀开即整体摘除，keep-alive 语义不变（不卸载、不捏
               尺寸、WS 不断；TerminalTab :378-380 事件层已兼容 [aria-hidden]/
-              [inert] 祖先；命中随类摘除而回来）。 */}
+              [inert] 祖先；命中随类摘除而回来）。
+              B369.9：singleFocus 只在 phone 档下传（phone 专用投影；pad/desktop
+              不投影，岔口裁决见 b369.9-plan §3.1——compact 含 pad，不能沿用）。 */}
           <div
             data-testid="workbench-underlay"
             className={`h-full min-w-0 overflow-hidden${workbenchCovered ? ' pointer-events-none' : ''}`}
@@ -962,6 +964,7 @@ export function Shell() {
           >
             <WorkbenchPage
               api={wb}
+              singleFocus={viewport === 'phone'}
               onAddProject={() => setWizardOpen(true)}
               tree={treeState.data}
               tasks={tasks}
