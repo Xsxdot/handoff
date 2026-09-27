@@ -1417,4 +1417,34 @@ describe('B369.7 紧凑导航统一', () => {
     expect(screen.getByTestId('mobile-home')).toBeInTheDocument()
     expect(screen.queryByTestId('mobile-detail-bar')).toBeNull()
   })
+
+  it('compact 项目 tab：流程/代码图死按钮不渲染，解释文案逐字在场', async () => {
+    Object.defineProperty(window, 'innerWidth', { value: 375, configurable: true, writable: true })
+    renderShell('/?tab=projects')
+    await screen.findByTestId('project-node-p1')
+    expect(screen.queryByRole('button', { name: '流程' })).toBeNull()
+    expect(screen.queryByRole('button', { name: '代码图' })).toBeNull()
+    expect(screen.getByTestId('mobile-nav-note')).toHaveTextContent('流程与代码图暂未适配移动端，请在桌面宽屏使用。')
+  })
+
+  it('compact 项目行「工作项」钮常驻可点 → /cards?project=<name> 且项目过滤生效', async () => {
+    Object.defineProperty(window, 'innerWidth', { value: 375, configurable: true, writable: true })
+    renderShell('/?tab=projects')
+    const project = await screen.findByTestId('project-node-p1')
+    fireEvent.click(within(project).getByRole('button', { name: '打开 handoff 工作项' }))
+    await waitFor(() => expect(locationRef()).toBe('/cards?project=handoff'))
+    expect(screen.getByTestId('mobile-tab-cards')).toHaveAttribute('aria-selected', 'true')
+    expect(await screen.findByRole('combobox', { name: '项目' })).toHaveValue('handoff')
+  })
+
+  it('桌面视口零漂移：行钮仍 hover-only，流程/代码图钮在场', async () => {
+    renderShell()
+    const project = await screen.findByTestId('project-node-p1')
+    const button = within(project).getByRole('button', { name: '打开 handoff 工作项' })
+    // 右侧簇容器是行钮的直接父 span；断言它仍是 hover-only 可见性策略
+    const cluster = button.closest('span')!
+    expect(cluster.className).toContain('hidden group-hover:flex')
+    expect(screen.getByRole('button', { name: '流程' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '代码图' })).toBeInTheDocument()
+  })
 })

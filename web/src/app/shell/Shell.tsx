@@ -815,14 +815,17 @@ export function Shell() {
       onOpenBoard={() => setOverlay('board')}
       onOpenCards={openCardsSurface}
       onOpenProjectCards={ledgerEnabled ? openProjectCards : undefined}
-      onOpenFlows={() => navigate('/flows')}
+      // B369.7 死入口处置：/flows、/codegraph 整页路由只在桌面注册，紧凑下不注入
+      // 回调（ProjectTree 据此隐藏按钮并渲染解释文案）；桌面分支原样。
+      onOpenFlows={compact ? undefined : () => navigate('/flows')}
       ledgerEnabled={ledgerEnabled}
       cardNeedsCount={cardNeedsCount}
       unlinkedCount={unlinkedTaskIds?.size ?? 0}
       onOpenTickets={() => setOverlay('tickets')}
       onOpenSettings={openSettingsSurface}
-      onOpenCodegraph={() => navigate('/codegraph')}
-      onOpenProjectCodegraph={openProjectCodegraph}
+      onOpenCodegraph={compact ? undefined : () => navigate('/codegraph')}
+      onOpenProjectCodegraph={compact ? undefined : openProjectCodegraph}
+      compact={compact}
       onAddProject={() => setWizardOpen(true)}
       onEdit={(p) => setEditProject(p)}
       onUnregister={onUnregister}
