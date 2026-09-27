@@ -46,9 +46,10 @@ export const SETTINGS_SUB_KEYS = [
 ] as const
 export type SettingsSub = (typeof SETTINGS_SUB_KEYS)[number]
 
-// normalizeSub 白名单外派生为 null（落设置中心）：/?sub=bogus 自愈成中心首屏，
-// 与 tabOfParams 的 bogus→sessions 同一纪律。
-function normalizeSub(raw: string | null): SettingsSub | null {
+// normalizeSettingsSub 白名单外派生为 null（落设置中心）：/?sub=bogus 自愈成中心首屏，
+// 与 tabOfParams 的 bogus→sessions 同一纪律。导出供 SettingsPage 组件边界
+// 归一 props 注入的 sub（组件不感知 router，见 SettingsPage 文件头）。
+export function normalizeSettingsSub(raw: string | null): SettingsSub | null {
   return raw !== null && (SETTINGS_SUB_KEYS as readonly string[]).includes(raw)
     ? (raw as SettingsSub)
     : null
@@ -103,7 +104,7 @@ export function useMobileNav({ compact }: { compact: boolean }): MobileNav {
   const dirKey = compact ? params.get('dir') : desktopDirKey
   const rawFrom = params.get('from')
   const from = compact && isMobileFrom(rawFrom) ? rawFrom : null
-  const sub = compact ? normalizeSub(params.get('sub')) : null
+  const sub = compact ? normalizeSettingsSub(params.get('sub')) : null
 
   // here 是当前完整 URL，所有写动作先比对它再 navigate（幂等写，plan §7.2）：
   // 同址不写，避免往历史里塞无意义的同址条目。
@@ -283,7 +284,7 @@ export function useMobileNav({ compact }: { compact: boolean }): MobileNav {
       p.delete('sub')
       dirty = true
     }
-    if (p.has('sub') && !normalizeSub(p.get('sub'))) {
+    if (p.has('sub') && !normalizeSettingsSub(p.get('sub'))) {
       p.delete('sub')
       dirty = true
     }

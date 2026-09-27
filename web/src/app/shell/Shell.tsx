@@ -19,7 +19,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Navigate, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { ApiError, deleteProject, deletePtySession, fetchLaunchers, fetchPtySessions } from '../../api/client'
-import { fetchCards, fetchDecisions } from '../../api/ledger'
+import { fetchCardDetail, fetchCards, fetchDecisions } from '../../api/ledger'
 import type { ProjectNode, ProjectTreeResp, Task } from '../../api/types'
 import type { CoordinatorAttachInfo } from '../../api/scheduling'
 import { useMachines } from '../data/useMachines'
@@ -54,8 +54,10 @@ import { BoardOverlay } from '../overlay/BoardOverlay'
 import { TicketsOverlay } from '../overlay/TicketsOverlay'
 import { useGlobalTickets } from '../overlay/useGlobalTickets'
 import { SettingsPage } from '../settings/SettingsPage'
+import { useWebPrefs } from '../settings/useWebPrefs'
 import { CodegraphFrame } from '../codegraph/CodegraphFrame'
 import { CardsPage } from '../cards/CardsPage'
+import { isRunningRow } from '../cards/taskRun'
 import { FlowsPage } from '../flows/FlowsPage'
 import { fetchSessions, createSession } from '../../api/rooms'
 import type { SessionSummary } from '../../api/rooms'
@@ -136,6 +138,9 @@ export function Shell() {
   // 收编进一个以 URL 为唯一事实源的 hook——任何导航动作 = 写 URL，任何 UI 呈现 =
   // 读 URL。桌面直通（内部 state、URL 不动），行为契约见 useMobileNav 文件头。
   const nav = useMobileNav({ compact })
+  // Web 客户端偏好（B369.8 §3.4）：compact 会话打开方式（scene 档解析链）与
+  // 底栏角标门控的读取点。桌面不读（两处消费都在 compact 分支内）。
+  const [webPrefs] = useWebPrefs()
   // openMobileDetail 在紧凑视口把内容面切到工作台（写 URL：/?tab=<tab>&detail=1）；
   // 桌面是空操作（工作台本就常驻）。
   // 为什么不做成 effect 监听 openedItems：用户点「返回」后底栏首页要能停住，
@@ -525,11 +530,15 @@ export function Shell() {
 
   // openSession 会话行的唯一入口：开工作台 tab（openOrFocus 全局去重——重复
   // 点击聚焦原 tab）；先回工作台（/cards 等整页盖上时会话 tab 看不见）。
+  // B369.8（§3.2）：compact 读「会话打开方式」偏好——群聊 tab 照常先开（不等待
+  // 解析），scene 档随后尽力解析该会话在跑任务并跳进任务现场；解析不到静默
+  // 回落群聊（最坏情况 = 现状）。桌面不读偏好。
   const openSession = (session: SessionSummary) => {
     backToWorkbench()
     openMobileDetail()
     wb.openOrFocus({ kind: 'session', sessionId: session.id, title: session.title }, sessionBase(session.id))
     console.debug('shell.session.open', { sessionId: session.id, title: session.title })
+    if (compact && webPrefs.sessionOpenMode === 'scene') void resolveSessionScene(session)
   }
 
   // confirmCreateSession 建会话：owner 统一记法（服务端权威校验），失败原文
@@ -631,6 +640,34 @@ export function Shell() {
     console.debug('shell.task.open', {
       project: target?.projectName ?? '', machine: target?.machine ?? '', baseKey: target?.key ?? '', path: target?.path ?? '', taskId,
     })
+  }
+
+  // resolveSessionScene 是会话打开方式「任务现场」档的解析链（B369.8 §3.2，
+  // 零新增端点）：会话挂卡（SessionSummary.cards，会话列表载荷已有）→ 逐卡
+  // fetchCardDetail（既有端点）→ task_states 行 ∩ 任务流取第一个在跑行
+  // （isRunningRow 口径同 CardDrawer，共享 taskRun.ts）→ 命中即
+  // openTaskTui(null, taskId)（compact 下经 enterDetail 收口 URL，返回条语义
+  // 不变）。任何一步失败/无数据静默返回——openSession 已先落群聊态，不弹错
+  // 不空转。sceneSeqRef 记「最近一次 openSession 请求序号」：连续点两个会话时
+  // 迟到的解析结果序号不匹配即丢弃，防旧解析劫持跳转。
+  const sceneSeqRef = useRef(0)
+  const resolveSessionScene = async (session: SessionSummary) => {
+    const seq = ++sceneSeqRef.current
+    for (const card of session.cards ?? []) {
+      try {
+        const detail = await fetchCardDetail(card.card_id)
+        if (seq !== sceneSeqRef.current) return
+        const running = (detail?.task_states ?? []).find((row) => isRunningRow(row, tasks))
+        if (running) {
+          console.debug('shell.session.scene_jump', { sessionId: session.id, card: card.card_id, task: running.TaskID })
+          openTaskTui(null, running.TaskID)
+          return
+        }
+      } catch (cause) {
+        console.debug('shell.session.scene_resolve_failed', { sessionId: session.id, card: card.card_id, cause })
+      }
+    }
+    console.debug('shell.session.scene_noop', { sessionId: session.id })
   }
 
   // 紧凑视口：目录覆盖层里点文件/开终端都切进工作台（下钻态）。
@@ -1071,13 +1108,24 @@ export function Shell() {
                     {projectTree ?? <p className="p-4 text-sm text-muted-foreground">正在读取项目…</p>}
                   </div>
                 )}
-                {nav.tab === 'settings' && <SettingsPage onClose={() => nav.setTab('sessions')} />}
+                {nav.tab === 'settings' && (
+                  // B369.8：compact 两级设置 IA——sub 从 nav（URL）读、写经 nav.setSub
+                  // 收口 URL；组件自身不碰 router（SettingsPage 文件头「组件边界」）。
+                  <SettingsPage
+                    onClose={() => nav.setTab('sessions')}
+                    compact
+                    sub={nav.sub}
+                    onSubChange={nav.setSub}
+                  />
+                )}
               </div>
               <MobileTabBar
                 active={nav.tab}
                 onSelect={nav.setTab}
-                needsCount={ledgerEnabled ? cardNeedsCount : 0}
-                unread={totalUnread(sessions)}
+                // B369.8：badges=false 时 needsCount/unread 双双归 0（设置中心「提醒」
+                // 门控）；只门控底栏，SessionSidebar 行内未读点不受影响。
+                needsCount={webPrefs.badges && ledgerEnabled ? cardNeedsCount : 0}
+                unread={webPrefs.badges ? totalUnread(sessions) : 0}
               />
             </div>
           )}

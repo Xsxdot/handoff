@@ -25,7 +25,9 @@ const SORT_LABELS: { value: ProjectSort; label: string }[] = [
 ]
 
 // GeneralPage 渲染当前浏览器的显示偏好。tree 为 null 表示项目树还没到。
-export function GeneralPage({ tree }: { tree: ProjectTreeResp | null }) {
+// title（B369.8）：标题可换——桌面「常规」分区原样（缺省零变化）；compact 设置
+// 中心以「显示与可访问性」名义复用同一内容面（内容单一来源，只换名义）。
+export function GeneralPage({ tree, title = '常规' }: { tree: ProjectTreeResp | null; title?: string }) {
   const [prefs, update] = useTreePrefs()
   const hidden = new Set(prefs.hiddenProjects)
   const projects = tree?.projects ?? []
@@ -33,7 +35,7 @@ export function GeneralPage({ tree }: { tree: ProjectTreeResp | null }) {
   return (
     <div className="flex flex-col gap-5 p-4">
       <div className="border-b pb-3">
-        <h2 className="text-sm font-semibold">常规</h2>
+        <h2 className="text-sm font-semibold">{title}</h2>
         <p className="mt-1 text-xs text-muted-foreground">
           这些设置只保存在当前浏览器里，不同步到其他设备，也不影响任何一台开发机。
         </p>

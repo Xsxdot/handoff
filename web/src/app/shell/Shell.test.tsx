@@ -1550,3 +1550,97 @@ describe('B369.7 紧凑导航统一', () => {
     expect(locationRef()).toBe('/?tab=projects')
   })
 })
+
+// —— B369.8 设置两级：设置中心四分区 + 二级页 sub 语汇 + 偏好消费（角标门控、
+// 会话打开方式 scene 档）——
+const { __resetWebPrefsForTest } = await import('../settings/useWebPrefs')
+const { savePrefs, DEFAULT_WEB_PREFS } = await import('../settings/webPrefs')
+
+// webPrefs 是模块级单例：任何改写偏好/落盘的用例都必须在用例边界 reset，
+// 否则状态会泄给同文件后续用例（隐性用例顺序耦合）。
+describe('B369.8 设置两级（compact）', () => {
+
+  beforeEach(() => {
+    localStorage.clear()
+    __resetWebPrefsForTest()
+  })
+  afterEach(() => {
+    localStorage.clear()
+    __resetWebPrefsForTest()
+  })
+
+  it('设置中心缺省四分区 + 六入口行；点「执行机」→ sub 落 URL + MachinesPage 在场', async () => {
+    Object.defineProperty(window, 'innerWidth', { value: 375, configurable: true, writable: true })
+    renderShell('/?tab=settings')
+    await screen.findByTestId('pref-session-open-mode')
+    expect(screen.getByTestId('pref-badges')).toBeInTheDocument()
+    expect(screen.getByTestId('settings-about')).toBeInTheDocument()
+    expect(screen.getByText('显示与可访问性')).toBeInTheDocument()
+    for (const key of ['machines', 'pairing', 'discipline', 'automation', 'env', 'update']) {
+      expect(screen.getByTestId(`settings-sub-${key}`)).toBeInTheDocument()
+    }
+    fireEvent.click(screen.getByTestId('settings-sub-machines'))
+    await waitFor(() => expect(locationRef()).toBe('/?tab=settings&sub=machines'))
+    expect(await screen.findByTestId('settings-sub-back')).toBeInTheDocument()
+    expect((await screen.findAllByText('本机')).length).toBeGreaterThan(0)
+  })
+
+  it('深链直达 /?tab=settings&sub=machines → 同状态（URL→sub）', async () => {
+    Object.defineProperty(window, 'innerWidth', { value: 375, configurable: true, writable: true })
+    renderShell('/?tab=settings&sub=machines')
+    await waitFor(() => expect(screen.getByTestId('mobile-tab-settings')).toHaveAttribute('aria-selected', 'true'))
+    expect(await screen.findByTestId('settings-sub-back')).toBeInTheDocument()
+    expect((await screen.findAllByText('本机')).length).toBeGreaterThan(0)
+    // 返回行 → 设置中心（URL 剥 sub）
+    fireEvent.click(screen.getByTestId('settings-sub-back'))
+    await waitFor(() => expect(locationRef()).toBe('/?tab=settings'))
+    expect(screen.getByTestId('pref-session-open-mode')).toBeInTheDocument()
+  })
+
+  it('/?tab=cards&sub=machines 被 normalize 清参（② cards 形状归一连带剥掉残参）', async () => {
+    Object.defineProperty(window, 'innerWidth', { value: 375, configurable: true, writable: true })
+    renderShell('/?tab=cards&sub=machines')
+    await waitFor(() => expect(locationRef()).toBe('/cards'))
+    expect(screen.queryByTestId('settings-sub-back')).toBeNull()
+  })
+
+  it('提醒关 → 底栏角标消失（mock 未读；行内未读点不在compact会话列表断言面）', async () => {
+    Object.defineProperty(window, 'innerWidth', { value: 375, configurable: true, writable: true })
+    vi.mocked(fetchSessions).mockResolvedValue([sessionSummary({ unread: 2 })] as never)
+    renderShell('/')
+    await screen.findByTestId('mobile-home')
+    const sessionsTab = screen.getByTestId('mobile-tab-sessions')
+    expect(within(sessionsTab).getByText('2')).toBeInTheDocument()
+    fireEvent.click(screen.getByTestId('mobile-tab-settings'))
+    fireEvent.click(await screen.findByLabelText(/底栏显示/))
+    await waitFor(() => expect(within(sessionsTab).queryByText('2')).toBeNull())
+  })
+
+  it('scene 档：有在跑任务的会话 → 群聊先开，解析命中后跳任务现场（TUI tab 在场）', async () => {
+    Object.defineProperty(window, 'innerWidth', { value: 375, configurable: true, writable: true })
+    savePrefs({ ...DEFAULT_WEB_PREFS, sessionOpenMode: 'scene' })
+    __resetWebPrefsForTest()
+    const rooms = vi.mocked(await import('../../api/rooms'))
+    rooms.fetchSessions.mockResolvedValue([sessionSummary({ cards: [{ card_id: 'B1', title: '卡甲' }] })] as never)
+    await mockCardLedger([{ Target: 'local', TaskID: 'T1', Purpose: 'implement', LastType: 'question', LastSeq: 3 }])
+    renderShell('/')
+    fireEvent.click(await screen.findByTestId('session-row'))
+    await waitFor(() => expect(locationRef()).toBe('/?tab=sessions&detail=1'))
+    // 解析链异步：挂卡 B1 → task_states ∩ 任务流 → T1 running → 跳任务现场
+    expect(await screen.findByRole('tab', { name: /重构工单通道/ })).toBeInTheDocument()
+    expect(screen.getByTestId('mobile-detail-bar')).toBeInTheDocument()
+  })
+
+  it('scene 档：无卡会话 → 留群聊态不报错不跳转（最坏情况 = 现状）', async () => {
+    Object.defineProperty(window, 'innerWidth', { value: 375, configurable: true, writable: true })
+    savePrefs({ ...DEFAULT_WEB_PREFS, sessionOpenMode: 'scene' })
+    __resetWebPrefsForTest()
+    const rooms = vi.mocked(await import('../../api/rooms'))
+    rooms.fetchSessions.mockResolvedValue([sessionSummary()] as never)
+    renderShell('/')
+    fireEvent.click(await screen.findByTestId('session-row'))
+    await waitFor(() => expect(locationRef()).toBe('/?tab=sessions&detail=1'))
+    await act(async () => {})   // 冲刷解析链微任务：无卡 → 静默 noop
+    expect(screen.queryByRole('tab', { name: /重构工单通道/ })).toBeNull()
+  })
+})
