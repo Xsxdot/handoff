@@ -49,6 +49,16 @@
    `docs/superpowers/ledgers/2026-09-24-session-incidents.md` 的异机验收记录，
    `cmd/root.go` 与 `cmd/ledgercli.go`。
 
+## 来自 B397 spec（2026-09-22）
+
+- **OpenCode V2 冷恢复与事件对账**：agentd 重启后重连既有 serve/session、补偿 live-only
+  event stream 的丢失窗口并恢复 Continue；B397 首版只保证显式转 waiting_review 与扫孤儿。
+  来源：`docs/superpowers/specs/2026-09-22-b397-opencode-v2-support-design.md` Out of Scope。
+- **opencode2 能力扩展**：在有独立契约与真机证据后，再评估 Coordination、OneShot approver、
+  Profile、Skills provider；B397 不把 V1 能力按名字复制给 V2。来源：同上。
+- **V2 细粒度用量与 deny 同帧理由**：补齐 Spend/Timing/Usage 映射，并在原生协议稳定支持时
+  送达 deny reason；B397 保持空值诚实与既有带外说明。来源：同上。
+
 ## 来自 B376 spec（2026-09-17）
 
 - **`go run github.com/…/codegraph` 认成 codegraph 查询**：会编译，不是只读查询。来源：`docs/superpowers/specs/b376.md` Out of Scope。
