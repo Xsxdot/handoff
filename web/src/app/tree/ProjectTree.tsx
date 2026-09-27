@@ -150,8 +150,8 @@ export interface ProjectTreeProps {
   onOpenPreview?: (id: string, machine: string) => void
 }
 
-// MACHINE_LABEL 给机器名做人话标签：""=本机。
-function machineLabel(machine: string): string {
+// MACHINE_LABEL 给机器名做人话标签：""=本机。B369.10 导出：详情面/位置芯片复用。
+export function machineLabel(machine: string): string {
   return machine === '' ? '本机' : machine
 }
 
@@ -169,7 +169,8 @@ function createdDesc(a: Task, b: Task): number {
 
 // locationProblem 判定一个机器节点是否不可达：location 探测失败优先，否则看
 // 跨机汇总信封里对应机器是否 ok=false。返回原因原文；空串=正常。
-function locationProblem(loc: ProjectLocationNode, machines: MachineStatus[] | undefined): string {
+// B369.10 导出：MobileProjectDetail 的 locbar 离线判定复用同一判据。
+export function locationProblem(loc: ProjectLocationNode, machines: MachineStatus[] | undefined): string {
   if (loc.probe_error !== '') return loc.probe_error
   const ms = machines?.find((m) => m.name === loc.machine)
   if (ms && !ms.ok) return ms.error

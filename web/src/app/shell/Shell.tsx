@@ -20,7 +20,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { Navigate, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { ApiError, deleteProject, deletePtySession, fetchLaunchers, fetchPtySessions } from '../../api/client'
 import { fetchCardDetail, fetchCards, fetchDecisions } from '../../api/ledger'
-import type { ProjectNode, ProjectTreeResp, Task } from '../../api/types'
+import type { ProjectNode, ProjectTreeResp, Task, Workspace } from '../../api/types'
 import type { CoordinatorAttachInfo } from '../../api/scheduling'
 import { useMachines } from '../data/useMachines'
 import { useProjectTree } from '../data/useProjectTree'
@@ -36,6 +36,7 @@ import { errorMessage } from '../lib/format'
 import { AddProjectWizard } from '../projects/AddProjectWizard'
 import { ProjectEditDialog } from '../projects/ProjectEditDialog'
 import { findBaseByKey, findBaseOfTask, ProjectTree, workspaceBase, type OpenItem } from '../tree/ProjectTree'
+import { MobileProjectDetail } from '../tree/MobileProjectDetail'
 import { FileTree } from '../files/FileTree'
 import { WorkbenchPage } from '../workbench/WorkbenchPage'
 import { TerminalTab } from '../workbench/TerminalTab'
@@ -228,6 +229,10 @@ export function Shell() {
   // 列表组件只渲染。未启用账本时轮询关闭（与旧房间面同门控）。
   const sessionsState = usePoll(fetchSessions, COLLAB_POLL_MS, { enabled: ledgerEnabled })
   const sessions = useMemo(() => sessionsState.data ?? [], [sessionsState.data])
+  // pty 会话流（B369.10）：项目详情面「这台机器上的终端会话」的数据源。
+  // 只在紧凑视口开表（fetchPtySessions('all') 是会话恢复的唯一真相源，桌面详情
+  // 面不存在，没有理由持续打扰它）；30s 节奏对齐树流——会话列表不是强实时面。
+  const ptySessionsState = usePoll(() => fetchPtySessions('all'), 30_000, { enabled: compact })
   const [sidebarTab, setSidebarTab] = useState<'sessions' | 'tasks'>('sessions')
   const [createOpen, setCreateOpen] = useState(false)
   const [createBusy, setCreateBusy] = useState(false)
@@ -831,6 +836,14 @@ export function Shell() {
   // focusedTaskId：焦点窗格是 tui 内容时的 taskId，左栏任务行据此画焦点态。
   const focusedTaskId = focusedTab && focusedTab.content.kind === 'tui' ? focusedTab.content.taskId : null
 
+  // handleWorktreeCreated 是「建完工作树」的唯一善后：先刷新树再选中。选中只改
+  // useWorkbench 的 base，树上那一行要等这次 refresh 回来才会出现，两件事都必须
+  // 做。ProjectTree 机器行与移动项目详情面（B369.10）两个入口共用，不得分叉。
+  const handleWorktreeCreated = useCallback((project: ProjectNode, machine: string, ws: Workspace) => {
+    treeState.refresh()
+    wb.select(workspaceBase(project, machine, ws))
+  }, [treeState, wb])
+
   // projectTree 是项目树的唯一实例来源：桌面左栏与紧凑视口「项目」tab 共用同一份
   // JSX（P1=A 一份产物）。两处同时挂载会撞 testid，故用 `!compact` 门保证任一时刻
   // 只挂一个实例（见下面两处消费点）。
@@ -870,14 +883,16 @@ export function Shell() {
       onAddProject={() => setWizardOpen(true)}
       onEdit={(p) => setEditProject(p)}
       onUnregister={onUnregister}
-      onWorktreeCreated={(project, machine, ws) => {
-        // 先刷新树再选中：选中只改 useWorkbench 的 base，树上那一行要等
-        // 这次 refresh 回来才会出现，两件事都必须做
-        treeState.refresh()
-        wb.select(workspaceBase(project, machine, ws))
-      }}
+      onWorktreeCreated={handleWorktreeCreated}
     />
   )
+
+  // detailProject 是紧凑详情层的反查目标（B369.10 岔口 1）：project_id 是不透明
+  // id，树上反查不到（树未到/项目被注销/bogus 深链）时详情层不渲染、列表照常
+  // ——与 dir「键失效 → 覆盖层不渲染」同款自愈。桌面 projectId 恒 null。
+  const detailProject = compact && nav.projectId !== null
+    ? treeState.data?.projects.find((p) => p.project_id === nav.projectId) ?? null
+    : null
 
   return (
     <div className="flex h-dvh flex-col overflow-hidden bg-background">
@@ -1124,8 +1139,33 @@ export function Shell() {
                   // 项目推到 scrollHeight 底（实测 note top:6454 / 视口 844），
                   // 「隐藏并给出解释」的解释永远不在视口内。h-full 让 ProjectTree
                   // 自带的三段式在紧凑视口照常钉底；桌面 aside 不经过此处，零接触。
-                  <div className="flex h-full min-h-0 flex-col">
+                  // B369.10：详情层以 absolute 覆盖层挂在同一 relative 容器内——
+                  // ProjectTree 保挂载，折叠集/搜索词/滚动不因进出详情丢失
+                  // （mobile-dir 同款手法）；mobile-dir 是 main 层兄弟覆盖层、DOM 序
+                  // 在后，project+dir 同持时目录层天然盖在详情层上，「详情→浏览文件
+                  // →返回」的层序零代码。详情层在 mobile-home 之内，不算覆盖期闸对象。
+                  <div className="relative flex h-full min-h-0 flex-col">
                     {projectTree ?? <p className="p-4 text-sm text-muted-foreground">正在读取项目…</p>}
+                    {detailProject !== null && (
+                      <MobileProjectDetail
+                        project={detailProject}
+                        machines={treeState.data?.machines}
+                        tasks={tasks}
+                        ptySessions={ptySessionsState.data?.sessions ?? null}
+                        onBack={() => nav.setProject(null)}
+                        onOpenTerminalAt={openTerminalAt}
+                        onOpenDirectory={openDirectory}
+                        onOpenTask={(base, taskId) => openTaskTui(base, taskId)}
+                        onWorktreeCreated={handleWorktreeCreated}
+                        onReopenPtySession={(sessionId, base) => {
+                          // restoreTerminal 消费既有恢复 seam（自动去重/找位），
+                          // 不新建终端承载（B280 keep-alive 神圣）；restoreTerminal
+                          // 之后 detail=1 下钻，露出常驻工作台。
+                          wb.restoreTerminal(base, sessionId)
+                          openMobileDetail()
+                        }}
+                      />
+                    )}
                   </div>
                 )}
                 {nav.tab === 'settings' && (

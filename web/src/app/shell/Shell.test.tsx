@@ -1968,3 +1968,60 @@ describe('B369.9 单焦点投影', () => {
     expect(reachableSwitchers()[0].value).toBe(zhuOption.value)
   })
 })
+
+// —— B369.10 T4：移动项目详情（深链入层、双动作、逐级返回、bogus 自愈）——
+// 列表行主点击进详情的入口由 T3 接线（onOpenProjectDetail），本 describe 用深链
+// 直达详情层，锁挂载形状与返回链；pty-host keep-alive 锁（B270/B369.9）在此不动。
+describe('B369.10 项目详情', () => {
+  function setCompact() {
+    Object.defineProperty(window, 'innerWidth', { value: 375, configurable: true, writable: true })
+  }
+
+  it('深链 /?tab=projects&project=p1 直达详情层：列表仍在下层、URL 保持', async () => {
+    setCompact()
+    renderShell('/?tab=projects&project=p1')
+    await screen.findByTestId('mobile-project-detail')
+    expect(screen.getByTestId('mobile-project-detail').textContent).toContain('handoff')
+    // ProjectTree 常驻下层（覆盖层保挂载，折叠集/搜索词不因进出详情丢失）
+    expect(screen.getByTestId('project-node-p1')).toBeInTheDocument()
+    expect(locationRef()).toBe('/?tab=projects&project=p1')
+  })
+
+  it('详情「浏览文件」→ project+dir 叠加，mobile-dir 盖上；dir 返回 → 详情；详情返回 → 列表', async () => {
+    setCompact()
+    renderShell('/?tab=projects&project=p1')
+    await screen.findByTestId('mobile-project-detail')
+    fireEvent.click(screen.getAllByTestId('project-wt-files')[0])
+    await waitFor(() => expect(locationRef()).toBe('/?tab=projects&dir=%2Fr%2Fhandoff&project=p1'))
+    await screen.findByTestId('mobile-dir')
+    // 逐级返回第一级：目录层 → 详情层
+    fireEvent.click(screen.getByTestId('mobile-dir-back'))
+    await screen.findByTestId('mobile-project-detail')
+    expect(locationRef()).toBe('/?tab=projects&project=p1')
+    // 第二级：详情层 → 列表
+    fireEvent.click(screen.getByTestId('project-detail-back'))
+    await waitFor(() => expect(locationRef()).toBe('/?tab=projects'))
+    expect(screen.queryByTestId('mobile-project-detail')).toBeNull()
+  })
+
+  it('详情「打开终端」→ URL 带 project+detail 下钻；返回条回列表后详情仍在场', async () => {
+    setCompact()
+    renderShell('/?tab=projects&project=p1')
+    await screen.findByTestId('mobile-project-detail')
+    fireEvent.click(screen.getAllByTestId('project-wt-terminal')[0])
+    await waitFor(() => expect(locationRef()).toBe('/?tab=projects&detail=1&project=p1'))
+    await screen.findByTestId('pty-host')
+    // 逐级返回：任务现场 → 详情（project 随行保留）
+    fireEvent.click(screen.getByTestId('mobile-detail-back'))
+    await screen.findByTestId('mobile-project-detail')
+    expect(locationRef()).toBe('/?tab=projects&project=p1')
+  })
+
+  it('project=<bogus> 深链自愈：详情层不渲染、列表照常', async () => {
+    setCompact()
+    renderShell('/?tab=projects&project=bogus')
+    await screen.findByTestId('mobile-home')
+    expect(screen.queryByTestId('mobile-project-detail')).toBeNull()
+    expect(await screen.findByTestId('project-node-p1')).toBeInTheDocument()
+  })
+})
