@@ -1201,7 +1201,7 @@ describe('B369.8 compact 项目折叠与 hover', () => {
 
   it('位置摘要：断开位置计数与 StateDot tone 随 locationProblem', () => {
     const p = props({ compact: true })
-    const tree = { ...p.tree, machines: [{ name: '', ok: false, error: 'dial refused', addr: '', reachable: false, version: '', probe_ms: 0 }] }
+    const tree = { ...p.tree, machines: [{ name: '', ok: false, fetched_at: '', error: 'dial refused' }] }
     render(<ProjectTree {...p} tree={tree} />)
     expect(screen.getByTestId('project-loc-summary')).toHaveTextContent('1 处位置 · 1 处断开')
   })

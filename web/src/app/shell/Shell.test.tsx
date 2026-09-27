@@ -1660,3 +1660,101 @@ describe('B369.8 设置两级（compact）', () => {
     expect(screen.queryByRole('tab', { name: /重构工单通道/ })).toBeNull()
   })
 })
+
+// —— B369.8 T7：覆盖层 a11y 硬闸（workbench-underlay 三件套）——
+describe('B369.8 覆盖层硬闸', () => {
+  it('compact 首页：underlay aria-hidden+inert+pointer-events-none（后台对读屏/键盘/指针三路不可达）', async () => {
+    Object.defineProperty(window, 'innerWidth', { value: 375, configurable: true, writable: true })
+    renderShell()
+    await screen.findByTestId('mobile-home')
+    const underlay = screen.getByTestId('workbench-underlay')
+    expect(underlay.getAttribute('aria-hidden')).toBe('true')
+    expect(underlay.hasAttribute('inert')).toBe(true)
+    expect(underlay.className).toContain('pointer-events-none')
+  })
+
+  it('compact 下钻：会话行进任务现场 → 三件套整体摘除（工作台是活面，反例锁）；返回 → 恢复', async () => {
+    Object.defineProperty(window, 'innerWidth', { value: 375, configurable: true, writable: true })
+    vi.mocked(fetchSessions).mockResolvedValue([sessionSummary()] as never)
+    renderShell('/')
+    fireEvent.click(await screen.findByTestId('session-row'))
+    await screen.findByTestId('mobile-detail-bar')
+    const underlay = screen.getByTestId('workbench-underlay')
+    expect(underlay.getAttribute('aria-hidden')).toBe('false')
+    expect(underlay.hasAttribute('inert')).toBe(false)
+    expect(underlay.className).not.toContain('pointer-events-none')
+    fireEvent.click(screen.getByTestId('mobile-detail-back'))
+    await screen.findByTestId('mobile-home')
+    expect(underlay.getAttribute('aria-hidden')).toBe('true')
+    expect(underlay.hasAttribute('inert')).toBe(true)
+  })
+
+  it('compact 目录覆盖层：mobile-dir 在场 → 同锁；关目录 → 恢复', async () => {
+    Object.defineProperty(window, 'innerWidth', { value: 375, configurable: true, writable: true })
+    renderShell('/?tab=projects')
+    await expandCompactProject()
+    if (screen.queryByText('integration/b2-b3') === null) {
+      fireEvent.click(await screen.findByTestId('machine-row'))
+    }
+    fireEvent.click(await screen.findByText('integration/b2-b3'))
+    expect(await screen.findByTestId('mobile-dir')).toBeInTheDocument()
+    const underlay = screen.getByTestId('workbench-underlay')
+    expect(underlay.getAttribute('aria-hidden')).toBe('true')
+    expect(underlay.hasAttribute('inert')).toBe(true)
+    fireEvent.click(screen.getByTestId('mobile-dir-back'))
+    await waitFor(() => expect(screen.queryByTestId('mobile-dir')).toBeNull())
+    // 关目录回到底栏首页：覆盖层只是换了一层（mobile-home 接手），三件套仍在
+    expect(screen.getByTestId('mobile-home')).toBeInTheDocument()
+    expect(underlay.getAttribute('aria-hidden')).toBe('true')
+    expect(underlay.hasAttribute('inert')).toBe(true)
+  })
+
+  it('桌面：裸工作台 aria-hidden="false" 无 inert（布局无感证据）；/cards 整页覆盖期 → true+inert（FullPageCover 桌面免疫冒烟的反面=覆盖期确实闸上）', async () => {
+    await mockCardLedger()
+    const first = renderShell('/')
+    const underlay = await screen.findByTestId('workbench-underlay')
+    expect(underlay.getAttribute('aria-hidden')).toBe('false')
+    expect(underlay.hasAttribute('inert')).toBe(false)
+    first.unmount()
+    renderShell('/cards')
+    expect(await screen.findByText('工作项')).toBeInTheDocument()
+    const covered = screen.getByTestId('workbench-underlay')
+    expect(covered.getAttribute('aria-hidden')).toBe('true')
+    expect(covered.hasAttribute('inert')).toBe(true)
+  })
+
+  it('跨缝串烧：设置 hub→执行机→返回；卡单列→抽屉三层→关闭焦点归还；会话两态往返；项目折叠展开', async () => {
+    Object.defineProperty(window, 'innerWidth', { value: 375, configurable: true, writable: true })
+    vi.mocked(fetchSessions).mockResolvedValue([sessionSummary()] as never)
+    await mockCardLedger()
+    renderShell('/')
+    // ① 设置 hub → 执行机 → 返回中心
+    fireEvent.click(await screen.findByTestId('mobile-tab-settings'))
+    fireEvent.click(await screen.findByTestId('settings-sub-machines'))
+    await waitFor(() => expect(locationRef()).toBe('/?tab=settings&sub=machines'))
+    fireEvent.click(screen.getByTestId('settings-sub-back'))
+    await waitFor(() => expect(locationRef()).toBe('/?tab=settings'))
+    expect(screen.getByTestId('pref-session-open-mode')).toBeInTheDocument()
+    // ② 卡单列 → 抽屉三层 → 关闭焦点归还
+    fireEvent.click(screen.getByTestId('mobile-tab-cards'))
+    const trigger = await screen.findByText('卡甲')
+    fireEvent.click(trigger)
+    expect(await screen.findByTestId('card-tier-work')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '关闭' }))
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '工作项详情' })).toBeNull())
+    // ③ 会话两态往返
+    fireEvent.click(screen.getByTestId('mobile-tab-sessions'))
+    fireEvent.click(await screen.findByTestId('session-row'))
+    await screen.findByTestId('mobile-detail-bar')
+    fireEvent.click(await screen.findByTestId('session-view-detail'))
+    expect(screen.getByTestId('session-view-detail')).toHaveAttribute('aria-selected', 'true')
+    fireEvent.click(screen.getByTestId('session-view-chat'))
+    expect(screen.getByTestId('session-view-chat')).toHaveAttribute('aria-selected', 'true')
+    // ④ 项目折叠展开
+    fireEvent.click(screen.getByTestId('mobile-detail-back'))
+    fireEvent.click(await screen.findByTestId('mobile-tab-projects'))
+    await expandCompactProject()
+    expect(await screen.findByTestId('machine-row')).toBeInTheDocument()
+    expect(screen.getByTestId('workbench-underlay').hasAttribute('inert')).toBe(true)
+  })
+})

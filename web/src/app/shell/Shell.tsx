@@ -573,6 +573,10 @@ export function Shell() {
   // CardsPage 覆盖层消费 query（同一组件、同一 useSearchParams）。
   const fullPageRoute = !compact && ['/cards', '/flows', '/settings', '/machines', '/codegraph']
     .some((path) => location.pathname.startsWith(path))
+  // B369.8（T7）覆盖层 a11y 硬闸的覆盖判据：compact 首页/目录覆盖层盖住工作台
+  //（未下钻），或桌面整页路由盖上（fullPageRoute 恒 desktop）。下钻态工作台是
+  // 可见活面，三件套整体摘除（§9.1 反例锁）。
+  const workbenchCovered = (compact && !nav.detail) || fullPageRoute
   const cardsRoute = location.pathname.startsWith('/cards')
 
   // onOpenDirectory 是左栏目录的完整入口：选中基准并打开可关闭的文件抽屉。
@@ -943,9 +947,19 @@ export function Shell() {
         <main className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
           {/* 工作台常驻。整页路由盖在上面，不走 path="*" 卸载——卸了 xterm
               会断 WS 再重放 1004h，OpenTUI/Grok 卡死（B270 的病在整页入口复发）。
-              不用 display:none / invisible / pointer-events-none：那些会捏尺寸
-              或让 WKWebView 命中回不来。 */}
-          <div className="h-full min-w-0 overflow-hidden">
+              不用 display:none / invisible：那些会捏尺寸——B280 约束「不卸载、
+              不捏尺寸、WS 不断」依旧全禁。B369.8（T7）：覆盖期加条件三件套
+              aria-hidden + inert + pointer-events-none（沿 WorkbenchPage 后台组
+              先例，覆盖层后面的后台内容对读屏与键盘不可达）——都是属性/类式闸，
+              覆盖期才挂、掀开即整体摘除，keep-alive 语义不变（不卸载、不捏
+              尺寸、WS 不断；TerminalTab :378-380 事件层已兼容 [aria-hidden]/
+              [inert] 祖先；命中随类摘除而回来）。 */}
+          <div
+            data-testid="workbench-underlay"
+            className={`h-full min-w-0 overflow-hidden${workbenchCovered ? ' pointer-events-none' : ''}`}
+            aria-hidden={workbenchCovered}
+            {...(workbenchCovered ? { inert: true } : {})}
+          >
             <WorkbenchPage
               api={wb}
               onAddProject={() => setWizardOpen(true)}
