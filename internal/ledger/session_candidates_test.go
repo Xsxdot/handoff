@@ -47,7 +47,10 @@ func newU5Fixture(t *testing.T) *u5Fixture {
 
 func newU5FixturePG(t *testing.T) *u5Fixture {
 	t.Helper()
-	s := newB409PGStore(t)
+	// 独立 schema 命名空间（与金样腿同一隔离模式）：本夹具对 user:sy/
+	// u5Member 的候选读是全库断言，库内既有数据（如 B409 矩阵残留）会污染
+	// 命中集——schema 隔离使其任何库状态下可复跑，用后 DROP CASCADE。
+	s := newB409PGStoreInIsolatedSchema(t)
 	run := fmt.Sprintf("u5-cand-%d", time.Now().UnixNano())
 	f := u5FinishFixture(t, s)
 	cleanupB409U5Fixture(t, s, run, f.card1, f.card2)

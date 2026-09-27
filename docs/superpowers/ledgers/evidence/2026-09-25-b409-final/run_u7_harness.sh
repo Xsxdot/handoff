@@ -76,7 +76,12 @@ CARD_A=$(grep -o 'card_a=[^ ]*' "$EV_DIR/seed-phase1.log" | head -1 | cut -d= -f
 echo "session_main=$SESSION_MAIN wait_member=$WAIT_MEMBER project=$PROJECT card_a=$CARD_A"
 
 echo "==[4] 启动隔离 agentd（等健康）"
-"$WORK/handoff" --config "$WORK/config.yaml" agentd > "$WORK/agentd.log" 2>&1 &
+# HANDOFF_LOG_LEVEL=info：U6 的 rows_returned/payload_bytes 诊断是 INFO 级，
+# logx 缺省 warn 会整级吞掉（review Critical-1 根因），harness 必须显式打开。
+# datadir 的 agentd.log 跨运行保留（logx 追加写不截断），启动前清空，防止
+# 上次运行的诊断行混进本次 stage-lines 证据（与步骤[2]样本防混拼同一理由）。
+: > "$WORK/data/agentd.log"
+HANDOFF_LOG_LEVEL=info "$WORK/handoff" --config "$WORK/config.yaml" agentd > "$WORK/agentd.log" 2>&1 &
 AGENTD_PID=$!
 trap 'kill $AGENTD_PID 2>/dev/null || true' EXIT
 for _ in $(seq 120); do
@@ -201,12 +206,16 @@ echo "==[8] session wait --timeout 5s 空等 30 次（子进程启动至退出 �
 
 echo "==[9] 收口：agentd 阶段日志、脱敏扫描"
 # agentd 的 slog 经 logx.Setup 落 datadir/agentd.log（stdout 重定向收不到）。
-grep -E 'rows_returned|payload_bytes' "$WORK/data/agentd.log" | head -400 > "$EV_DIR/agentd-stage-lines.log" || true
+# 不设行数上限（review Critical-1：head -400 使超过 400 行的断言必假）；
+# logx 旋转上限 100MB，本 harness 采样规模远达不到。
+grep -E 'rows_returned|payload_bytes' "$WORK/data/agentd.log" > "$EV_DIR/agentd-stage-lines.log" || true
 cp "$WORK/data/agentd.log" "$EV_DIR/agentd-full.log"
 kill $AGENTD_PID 2>/dev/null || true
 wait $AGENTD_PID 2>/dev/null || true
 # 脱敏扫描只针对生成的数据文件（脚本自身的用法示例注释经 code review 入档）。
-if grep -RInE 'handoff_b409_local|postgres://|Bearer [A-Za-z0-9]' \
+# 泛化模式（review Minor-1）：不写死任何口令字面量——连接串（含凭据/端口）、
+# password 赋值、Bearer token 都拦。
+if grep -RInE 'postgres(ql)?://[^[:space:]]*[:@]|[Pp]assword[[:space:]]*[=:]|Bearer [A-Za-z0-9]' \
      "$EV_DIR"/*.log "$EV_DIR"/*.tsv "$EV_DIR"/*.txt "$EV_DIR"/*.json "$EV_DIR"/golden 2>/dev/null; then
   echo "脱敏扫描失败：证据数据文件含敏感串" >&2
   exit 1

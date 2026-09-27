@@ -194,9 +194,11 @@ func explainQueryPlan(t *testing.T, s *Store, query string, args ...any) string 
 
 // PostgreSQL 增长断言 + EXPLAIN (ANALYZE, BUFFERS) 证据（隔离专用库）。
 // 夹具与无关事件按 seq 快照清理：进入前记录 MaxSeq，收尾删除其后的全部行
-// （专用库内测试串行执行，快照之后只有本测试写入）。
+// （专用库内测试串行执行，快照之后只有本测试写入）。Store 打开在独立 schema
+// 命名空间内（与金样腿同一隔离模式）：user:sy 命中数=3 是全库断言，schema
+// 隔离使其不依赖库内无外来数据，用后 DROP CASCADE。
 func TestPGSessionCandidatesGrowth(t *testing.T) {
-	s := newB409PGStore(t)
+	s := newB409PGStoreInIsolatedSchema(t)
 	var before int64
 	if err := s.db.QueryRow(`SELECT COALESCE(MAX(seq), 0) FROM card_events`).Scan(&before); err != nil {
 		t.Fatal(err)

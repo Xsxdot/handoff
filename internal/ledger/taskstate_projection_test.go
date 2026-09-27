@@ -562,7 +562,9 @@ func TestOpenTicketProjectionGrowthKeepsRowsAndPayloadBounded(t *testing.T) {
 }
 
 func TestOpenTicketProjectionPostgresGrowthKeepsRowsAndPayloadBounded(t *testing.T) {
-	s := newB409PGStore(t)
+	// 独立 schema 命名空间（与金样腿同一隔离模式）：未决工单恰 100 条是全库
+	// 绝对量断言，schema 隔离使其不依赖库内无外来数据，用后 DROP CASCADE。
+	s := newB409PGStoreInIsolatedSchema(t)
 	runOpenTicketProjectionGrowthMatrix(t, s)
 }
 

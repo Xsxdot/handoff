@@ -5,7 +5,8 @@
 // 数据边界（红线）：
 //   - SQLite 腿只写 t.TempDir() 文件；PG 腿只写协调者确认的专用可丢弃库
 //     （newB409PGStore 的 handoff_b409_test 库名守卫，本文件不绕过它），
-//     旧库升级腿额外使用同库内独立 schema 命名空间并在用后 DROP。
+//     金样腿与旧库升级腿使用同库内独立 schema 命名空间并在用后 DROP
+//     （绝对量断言与库内既有数据解耦，任何库状态下可复跑）。
 //   - 禁止把本文件的任何写入指向生产/共享账本、本机 ledger.db 或其它主机。
 //   - 中途失败注入只用数据库触发器（测试内建、测试内拆），生产代码与
 //     schema 无任何开关。
@@ -82,6 +83,52 @@ func requireB409IsolatedPGName(t *testing.T, dsn string) {
 	if name != "handoff_b409_test" {
 		t.Fatalf("拒绝向非专用 PostgreSQL 数据库写入合成数据: current_database()=%q", name)
 	}
+}
+
+// newB409PGStoreInIsolatedSchema 在专用库的独立 schema 命名空间内打开 Store
+// （与升级腿 TestB409U7PreProjectionUpgradePostgres 同一隔离模式：库内建全新
+// schema + search_path DSN 指向它，用后 DROP CASCADE）。金样断言含全库绝对量
+// （未决工单恰 2 条、oracle 全表重放），schema 隔离使其与库内既有数据（如
+// 矩阵夹具残留）解耦，任何库状态下可复跑；库外零写入红线由库名守卫保持。
+func newB409PGStoreInIsolatedSchema(t *testing.T) *Store {
+	t.Helper()
+	dsn := os.Getenv("LEDGER_TEST_PG_DSN")
+	if dsn == "" {
+		t.Skip("未设 LEDGER_TEST_PG_DSN，跳过 B409 PG 金样测试")
+	}
+	requireB409IsolatedPGName(t, dsn)
+	schema := fmt.Sprintf("b409_gold_%d", time.Now().UnixNano())
+	admin, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatalf("连接隔离 PG: %v", err)
+	}
+	if _, err := admin.Exec(fmt.Sprintf(`CREATE SCHEMA %s`, schema)); err != nil {
+		admin.Close()
+		t.Fatalf("建隔离 schema: %v", err)
+	}
+	t.Cleanup(func() {
+		// schema 清理与连接关闭同处一个 cleanup：defer 会先于 t.Cleanup 执行，
+		// 不能依赖 defer 的连接存活。
+		if _, err := admin.Exec(fmt.Sprintf(`DROP SCHEMA %s CASCADE`, schema)); err != nil {
+			t.Errorf("清理隔离 schema %s: %v", schema, err)
+		}
+		if err := admin.Close(); err != nil {
+			t.Errorf("关闭隔离 PG 管理连接: %v", err)
+		}
+	})
+	// DSN 已带 query（sslmode）用 &，否则用 ?；search_path 值为本文件生成的
+	// 受控标识符（字母/下划线/数字），无需 URL 编码。
+	sep := "?"
+	if strings.Contains(dsn, "?") {
+		sep = "&"
+	}
+	isolatedDSN := dsn + sep + "search_path=" + schema
+	store, err := Open(isolatedDSN)
+	if err != nil {
+		t.Fatalf("打开隔离 schema 内的 B409 PG 测试库: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+	return store
 }
 
 // —— 金样（步骤 2）：同一逻辑事件集，经真实生产写路径分别落入两个方言 ——
@@ -585,7 +632,7 @@ func cleanupB409U7Golden(t *testing.T, s *Store, g *b409U7Golden) {
 func TestB409U7CrossDialectGoldenAndOracle(t *testing.T) {
 	if dsn := os.Getenv("LEDGER_TEST_PG_DSN"); dsn != "" {
 		t.Run("postgres", func(t *testing.T) {
-			s := newB409PGStore(t)
+			s := newB409PGStoreInIsolatedSchema(t)
 			g := seedB409U7Golden(t, s)
 			t.Cleanup(func() { cleanupB409U7Golden(t, s, g) })
 			assertB409U7Golden(t, s, g, "postgres")
