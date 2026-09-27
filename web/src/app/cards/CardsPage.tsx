@@ -348,7 +348,18 @@ export function CardsPage({ onOpenCoordinatorTerminal, onDrawerCardChange, taskJ
   return (
     <main className={cn('relative flex h-full min-h-0 w-full flex-col bg-background', compact && TOUCH_BASELINE)}>
       {compact ? (
-        <>
+        // B369.8 review 必修：头部三行与内容面同在 cards-surface 硬闸内。
+        // compact 抽屉全宽不透明覆盖，覆盖期头部控件（⚑需要你/chips/两个
+        // select/搜索/+新建）必须与内容一起退出读屏树/Tab 序/指针命中
+        // （plan §4 被盖面含 header；验收判据「覆盖层后的后台内容对读屏与
+        // 键盘不可达」在头部切片同样成立）。contents 包装不生成盒，三行与
+        // surfaceContent 的子元素仍是 main 的有效 flex 子项，拓扑零变化。
+        <div
+          data-testid="cards-surface"
+          className="contents"
+          aria-hidden={selected !== null}
+          {...(selected !== null ? { inert: true } : {})}
+        >
           {/* B369.8 岔口 6：compact 头部三行、全部常驻不折叠（390 宽下常驻比
               折叠少一次点击）。桌面 header（下方分支）逐字节不动。 */}
           <div className="flex min-h-11 flex-wrap items-center gap-2 border-b px-3 py-1.5">
@@ -401,8 +412,10 @@ export function CardsPage({ onOpenCoordinatorTerminal, onDrawerCardChange, taskJ
               </button>
             )}
           </div>
-        </>
+          {surfaceContent}
+        </div>
       ) : (
+        <>
         <header className="flex flex-wrap items-center gap-2 border-b px-4 py-2.5">
           <span className="text-sm font-semibold">工作项</span>
           <div className="inline-flex overflow-hidden rounded-md border"><button type="button" onClick={() => setView('board')} className={`px-2.5 py-1 text-xs ${view === 'board' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground'}`}>看板</button><button type="button" onClick={() => setView('list')} className={`px-2.5 py-1 text-xs ${view === 'list' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground'}`}>列表</button></div>
@@ -443,18 +456,8 @@ export function CardsPage({ onOpenCoordinatorTerminal, onDrawerCardChange, taskJ
           )}
           <span className={`${showOpenInBrowser ? '' : 'ml-auto'} flex items-center gap-1 text-[11px] ${healthStale ? 'text-amber-700' : 'text-green-600'}`} title={healthStale ? `${healthLabel}——该机器的事件已停止镜像，卡上的 task 实况可能是陈的` : '镜像正常'}>{healthStale ? healthLabel : '●'}</span>
         </header>
-      )}
-      {compact ? (
-        <div
-          data-testid="cards-surface"
-          className="contents"
-          aria-hidden={selected !== null}
-          {...(selected !== null ? { inert: true } : {})}
-        >
           {surfaceContent}
-        </div>
-      ) : (
-        surfaceContent
+        </>
       )}
       {selected && <CardDrawer id={selected} onClose={closeDrawer} onOpenCard={(id) => openDrawer(id)} workflowStates={selectedPinnedWorkflow?.states ?? (selectedWorkflowVersion !== undefined && selectedWorkflowVersion > 0 ? workflowStates : undefined)} boardLayout={selectedPinnedWorkflow ? normalizeBoardLayout(selectedPinnedWorkflow.board, selectedPinnedWorkflow.states) : selectedWorkflowVersion !== undefined && selectedWorkflowVersion > 0 ? boardLayout : undefined} initialSection={drawerFocus} nodes={drawerNodes} tasks={tasksPoll.data ?? undefined} onJumpToTask={jumpToTask} onOpenCoordinatorTerminal={onOpenCoordinatorTerminal} compact={compact} />}
       <NewCardDialog

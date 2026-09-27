@@ -549,3 +549,46 @@ describe('B369.8 compact 抽屉 a11y（cards-surface 与焦点归还）', () => 
     expect(document.querySelector('main')!.className).not.toContain('button:not(.min-h-11)')
   })
 })
+
+// —— B369.8 review 必修：头部三行并入 cards-surface 硬闸 ——
+describe('B369.8 compact 头部硬闸（review round 2）', () => {
+  it('抽屉覆盖期「+ 新建」「⚑ 需要你」落于 aria-hidden="true"+inert 的 cards-surface 祖先内；关时闸未挂', async () => {
+    const ledger = await import('../../api/ledger')
+    const surfaceCard = {
+      id: 'B1', title: '闸卡', status: '进行中', priority: '中', project: 'handoff', workflow: '',
+      parent: '', base_branch: '', attachments: [], following: '', blocked: false, blocked_by: [],
+      merged_count: 0, needs: '', open_decisions: 0, children_total: 0, children_done: 0,
+      conflict: false, open_tickets: 0,
+    }
+    vi.mocked(ledger.fetchCards).mockResolvedValue({ cards: [surfaceCard], unlinked: { count: 0, tasks: [], unknown_targets: [] } })
+    vi.mocked(ledger.fetchCardDetail).mockResolvedValue({
+      card: surfaceCard, relations: [], events: [], task_states: [],
+      effective_base_branch: '', decisions: [], needs: '',
+    } as never)
+    render(
+      <MemoryRouter initialEntries={['/cards']}>
+        <Routes>
+          <Route path="/cards" element={<CardsPage compact />} />
+        </Routes>
+      </MemoryRouter>,
+    )
+    await screen.findByTestId('cards-single-column')
+    const surface = screen.getByTestId('cards-surface')
+    // 头部控件在包装内且此时闸未挂（可查 → 未覆盖）
+    const newBtn = within(surface).getByRole('button', { name: '+ 新建' })
+    const needsBtn = within(surface).getByRole('button', { name: /⚑ 需要你/ })
+    expect(surface.getAttribute('aria-hidden')).toBe('false')
+    expect(surface.hasAttribute('inert')).toBe(false)
+    fireEvent.click(screen.getByText('闸卡'))
+    await screen.findByRole('dialog', { name: '工作项详情' })
+    // 覆盖期：同一包装挂上三件套，头部控件就在其内——读屏/键盘/指针三路同断
+    expect(surface.getAttribute('aria-hidden')).toBe('true')
+    expect(surface.hasAttribute('inert')).toBe(true)
+    expect(surface.contains(newBtn)).toBe(true)
+    expect(surface.contains(needsBtn)).toBe(true)
+    fireEvent.click(screen.getByRole('button', { name: '关闭' }))
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '工作项详情' })).toBeNull())
+    expect(surface.getAttribute('aria-hidden')).toBe('false')
+    expect(surface.hasAttribute('inert')).toBe(false)
+  })
+})
