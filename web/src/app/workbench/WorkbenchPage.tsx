@@ -457,12 +457,21 @@ export function WorkbenchPage({
       {dropWarning !== '' && <p role="alert" className="bg-destructive/10 px-3 py-1 text-xs text-destructive">{dropWarning}</p>}
       {newFileError !== '' && <p role="alert" className="bg-destructive/10 px-3 py-1 text-xs text-destructive">新建文件失败：{newFileError}</p>}
       <div className="relative isolate min-h-0 min-w-0 flex-1 overflow-hidden">
-        {wb.groups.map((group) => (
+        {wb.groups.map((group) => {
+        // B369.9（协调者裁决）：原写法是两个条件子槽（active 槽 / 后台槽），
+        // 切组时槽位互换，React 按槽位配对把整组子树卸了重挂——pty-host 换新
+        // 节点 = 断 WS 重放，违反卡验收「后台终端连接常驻，返回或切换不重连、
+        // 不丢状态」（变异锁·卸载即红据此落红，730abe7a 基线即红）。收成单
+        // 条件槽：同一状态渲染输出逐字节不变，切组只翻 visible prop，子树节点
+        // 保留。渲染条件原样：active 组恒渲染；后台组仅当含 terminal。
+        const visible = group.id === wb.activeGroupId
+        const hasTerminal = group.columns.some((column) => column.panes.some((tab) => tab?.content.kind === 'terminal'))
+        return (
           <Fragment key={group.id}>
-            {group.id === wb.activeGroupId && renderGroup(group, true)}
-            {group.id !== wb.activeGroupId && group.columns.some((column) => column.panes.some((tab) => tab?.content.kind === 'terminal')) && renderGroup(group, false)}
+            {(visible || hasTerminal) && renderGroup(group, visible)}
           </Fragment>
-        ))}
+        )
+        })}
       </div>
       {picking !== null && base !== null && <TaskPickerDialog
         open base={base} tree={tree} tasks={tasks}
