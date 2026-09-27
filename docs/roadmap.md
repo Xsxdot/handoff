@@ -911,3 +911,8 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 
 - **target 升级 config 兼容**：升级到含 `35e0b6ba`（配置严格解析）的版本时，target 机 config 的遗留未知键会被拒启（linux-01 实测：`approver.models` 触发 exit 1，已清理并备份 `config.yaml.bak-*`）；mac-02 尚在旧版 93770b5d，下次升级前同查 config。`handoff upgrade` 流程可考虑预检 target config 未知键并提示。
 - **darwin 手动部署需 ad-hoc 签名**：本机构建二进制覆盖 `~/.local/bin/handoff` 后 launchd 拉起被 `OS_REASON_CODESIGNING` 杀，需 `codesign -s - --force` 后重启服务（2026-09-27 实测处置）；`handoff upgrade` 的发布渠道二进制不受此影响。
+
+## 来自 B358 finish（2026-09-27，验收残余）
+
+- **rebind --self 用户会话半边真机验证**：协调者 shell 无席位身份源，`card rebind --self` 的真机链需用户会话配合约 10 分钟（解阻步骤见 B358 卡 2026-09-16 真机报告 §二）；身份出示机制本身归 B358.9（已完成）验收，本条只欠真人会话端到端。来源：B358 最终验收（2026-09-27）遗留。
+- **opencode 技能 symlink 落地为拷贝后的同步债**：本机 `~/.config/opencode/skills/` 下 14 个 charter 技能原为指向 `~/workspace/charter/skills/` 的 symlink，被规则源 fail-closed 校验拒绝（本机协调者 launch 自 2026-09-19 起被卡死）；2026-09-27 落地为实体拷贝后恢复，但失去与 charter 仓的自动同步。修法方向：`handoff skill install` 的同步机制覆盖 charter 技能集，或提供一键重拷脚本。来源：B358 最终验收环境修正。
