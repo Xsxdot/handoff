@@ -30,6 +30,13 @@ export interface WorkbenchPageProps {
   // 下传（单一口径：标签条、窗格标题、面包屑共用）；省略时 tabTitle 自己回退。
   taskName?: (taskId: string) => string | undefined
   // B358.8：固定「◫ 分屏」按钮退役——分屏由左栏会话行拖拽承载（同 spec #1）。
+  // B369.9 singleFocus：phone 档单焦点投影——显示层属性闸：组内至多一个窗格
+  // 可见可达（焦点列/格 z-10，其余 absolute 叠层 + z-0 pointer-events-none +
+  // aria-hidden + inert），不卸载、不 display:none、不捏尺寸，xterm/WS 全常驻；
+  // 布局模型（tabs.ts groups/columns/panes/sizes/focus）零改动。由 Shell 按
+  // viewport === 'phone' 下传，组件不自读视口；不传（pad/desktop）时列/窗格
+  // 两层渲染输出逐字节保持现状。
+  singleFocus?: boolean
 }
 
 type DragOver = {
@@ -44,7 +51,7 @@ function tabCount(group: { columns: Array<{ panes: Array<Tab | null> }> }): numb
 }
 
 export function WorkbenchPage({
-  api, onAddProject, renderContent, terminalUnavailable, onBeforeClose, tree, tasks, onFileCreated, launchers = [], taskName,
+  api, onAddProject, renderContent, terminalUnavailable, onBeforeClose, tree, tasks, onFileCreated, launchers = [], taskName, singleFocus = false,
 }: WorkbenchPageProps) {
   const { wb, base } = api
   const activeGroup = wb.groups.find((group) => group.id === wb.activeGroupId) ?? wb.groups[0]
@@ -303,6 +310,10 @@ export function WorkbenchPage({
     // 但必须 pointer-events-none + inert：z-0 的 WebGL 画布会从激活组抢走滚轮，
     // 眼前那条 TUI 就划不动。激活组从未加过这个类，不走「去掉后命中回不来」。
     // min-w-0 切断设置往返的 min-content 撑越。
+    // B369.9：phone 档（singleFocus）把同款纪律下沉到列/窗格两层——同样的
+    // 三禁令（不移出视口、不 display:none、不 opacity-0）+ 属性闸（z 对 +
+    // pointer-events-none + aria-hidden + inert 展开式），跨档只翻类/属性零重挂；
+    // 非投影档（pad/desktop）两层类串逐字节保持现状。
     <div
       data-testid="workbench-group"
       className={cn(
@@ -312,18 +323,41 @@ export function WorkbenchPage({
       aria-hidden={!visible}
       {...(!visible ? { inert: true } : {})}
     >
-      {/* 原型 .cols { overflow: hidden }：列压进容器，不出现横向滚动 */}
-      <div className="flex min-h-0 flex-1 overflow-hidden bg-border">
-        {group.columns.map((column, columnIndex) => (
+      {/* 原型 .cols { overflow: hidden }：列压进容器，不出现横向滚动。
+          投影档追加 relative 作列/窗格两层 absolute 叠层的锚点（岔口 2）。 */}
+      <div className={cn('flex min-h-0 flex-1 overflow-hidden bg-border', singleFocus && 'relative')}>
+        {group.columns.map((column, columnIndex) => {
+        // 投影焦点判据与 renderTab 的 active 同源（group.focus[column,row]）。
+        // singleFocus 对所有组统一应用：背景组祖层已 inert，双层叠加无害且
+        // 代码路径唯一（不出现第二套规则）。
+        const columnFocused = group.focus[0] === columnIndex
+        return (
           <Fragment key={`${group.id}-column-${columnIndex}`}>
           {/* min-w-0 而非 240px 硬下限：列宽下限由拖拽分隔的 minRatio 夹紧负责，
-              硬下限会把三列顶出窗口（容器 overflow-hidden 后变成裁切不可达） */}
-          <div className="flex min-w-0 min-h-0 flex-1 flex-col" style={{ flexGrow: group.sizes[columnIndex] ?? 1, flexBasis: 0 }}>
-            {column.panes.map((tab, row) => (
+              硬下限会把三列顶出窗口（容器 overflow-hidden 后变成裁切不可达）。
+              投影档：焦点列 absolute inset-0 全宽 z-10，非焦点列 z-0 三件套；
+              flexGrow/flexBasis 保留（absolute 下无几何意义，保 DOM 最小差）。 */}
+          <div
+            className={cn(
+              singleFocus ? 'absolute inset-0 flex min-w-0 min-h-0 flex-col' : 'flex min-w-0 min-h-0 flex-1 flex-col',
+              singleFocus && (columnFocused ? 'z-10' : 'z-0 pointer-events-none'),
+            )}
+            style={{ flexGrow: group.sizes[columnIndex] ?? 1, flexBasis: 0 }}
+            aria-hidden={singleFocus ? !columnFocused : undefined}
+            {...(singleFocus && !columnFocused ? { inert: true } : {})}
+          >
+            {column.panes.map((tab, row) => {
+            const paneFocused = columnFocused && group.focus[1] === row
+            return (
               <div
                 key={tab?.id ?? `${group.id}-${columnIndex}-${row}`}
                 data-testid="workbench-pane"
-                className="relative flex min-h-0 flex-1 flex-col bg-background"
+                className={cn(
+                  singleFocus ? 'absolute inset-0 flex min-h-0 flex-col bg-background' : 'relative flex min-h-0 flex-1 flex-col bg-background',
+                  singleFocus && (paneFocused ? 'z-10' : 'z-0 pointer-events-none'),
+                )}
+                aria-hidden={singleFocus ? !paneFocused : undefined}
+                {...(singleFocus && !paneFocused ? { inert: true } : {})}
                 onDragOver={(event) => {
                   const types = event.dataTransfer.types
                   if (!types.includes(DRAG_TASK_MIME) && !types.includes(DRAG_DIR_MIME) && !types.includes(DRAG_TAB_MIME) && !types.includes(DRAG_SESSION_MIME)) return
@@ -385,11 +419,15 @@ export function WorkbenchPage({
                 </div>
                 <div data-testid="pane-content" className={cn('min-h-0 flex-1 overflow-hidden', dragging && 'pointer-events-none')}>{renderTab(group.id, columnIndex, row, tab)}</div>
               </div>
-            ))}
+            )
+            })}
           </div>
-          {visible && columnIndex < group.columns.length - 1 && <GroupDivider onResize={(delta, width) => api.resize(group.id, columnIndex, delta, width > 0 ? MIN_PANE_PX / width : 0)} />}
+          {/* GroupDivider 随 visible 条件插拔（后台组先例）；投影档组内一律摘除——
+              单焦点下没有并排列可拖，自身无终端内容、摘除不触任何重挂。 */}
+          {visible && !singleFocus && columnIndex < group.columns.length - 1 && <GroupDivider onResize={(delta, width) => api.resize(group.id, columnIndex, delta, width > 0 ? MIN_PANE_PX / width : 0)} />}
           </Fragment>
-        ))}
+        )
+        })}
       </div>
       <div className="hidden" />
     </div>
