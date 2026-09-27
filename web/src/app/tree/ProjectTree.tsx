@@ -60,6 +60,7 @@ import { ARCHIVED_LABEL, ARCHIVED_TITLE, archivedKey, archivedTasks, isTerminalS
 import { StateDot } from '../board/StateDot'
 import { stateTone, type StateTone } from '../board/columns'
 import { cn } from '@/lib/utils'
+import { TOUCH_BASELINE } from '@/lib/touch'
 import { DRAG_BASE_MIME, DRAG_DIR_MIME, DRAG_TAB_MIME, DRAG_TASK_MIME } from '../workbench/paneDrop'
 import { TreePrefsMenu } from './TreePrefsMenu'
 import { sortProjects, splitHiddenProjects, splitIdleWorkspaces } from './treePrefs'
@@ -394,7 +395,11 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
   // 搜索期间旁路 collapsed：搜到了却折叠着等于没搜到。
   // 注意是「旁路」不是「清空」——collapsed 原样保留，查询清空后用户手动
   // 折起来的布局立刻回来，搜索不破坏布局。
-  const expanded = (key: string) => searching || !collapsed.has(key)
+  // B369.8（T6）：compact 缺省折叠——集合语义随缺省档翻转：compact 下集合存
+  // 「已展开」键（空集 = 全折叠，位置摘要代替铺开的内容面），桌面存「已收起」
+  // 键（空集 = 全展开）。toggle 的翻转动作两档同形零改动（翻转成员资格即可，
+  // 语义由本判定解释）；搜索旁路两档一致。
+  const expanded = (key: string) => searching || (compact ? collapsed.has(key) : !collapsed.has(key))
   const openDirectory = (base: BaseDir) => {
     console.debug('project_tree.directory.open', {
       project: base.projectName, machine: base.machine, baseKey: base.key, path: base.path,
@@ -502,7 +507,8 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
     // 三段式：顶部（导航+搜索+标题）不滚 · 中间树独滚 · 底部入口钉死。
     // 为什么不让整个 aside 滚：项目一多，「添加项目」会被推到 scrollHeight
     // 的最下面（实测 top:1100 / 视口 1024），要滚到底才找得到入口
-    <div className="flex min-h-0 flex-1 flex-col py-[13px] pr-[18px] pl-[26px]">
+    // B369.8：compact 根挂触点基线类（树三钮/× 等 24px 次级底线）；桌面零接触。
+    <div className={cn('flex min-h-0 flex-1 flex-col py-[13px] pr-[18px] pl-[26px]', compact && TOUCH_BASELINE)}>
       {/* 第一段：不滚——搜索框 + 「项目 N」。 */}
 
       {/* 搜索框与「项目 N」。N 跟随过滤，搜索时它就是「找到几个」的即时反馈；
@@ -580,6 +586,9 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
         )
         const allProject = tree.projects.find((candidate) => candidate.project_id === project.project_id) ?? project
         const allLocations = allProject.locations
+        // 位置状态原料（B369.8 T6）：断开数 = 探测失败或机器探活失败的位置数
+        //（locationProblem 同机器行 StateDot 的判据）
+        const locationProblemCount = allLocations.filter((loc) => locationProblem(loc, tree.machines) !== '').length
 
         // 本项目的已打开行（Shell 给的顺序即展示顺序 = 组序×格序的打开顺序，
         // 不随聚焦/切基准重排）。搜索时按行名/机器/基准字段放行——与 filterTree
@@ -668,6 +677,15 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
                   <span className="min-w-0 truncate">{project.name}</span>
                 </span>
                 <span className="flex shrink-0 items-center gap-[7px] text-[15px] font-medium text-muted-foreground">
+                  {/* B369.8：compact 位置状态摘要——「项目优先、位置为状态信息」。
+                      位置数 + 断开数（locationProblem 判据），StateDot tone 随之；
+                      明细点 Arrow 展开逐台看。桌面不渲染（铺开面自答这个问题）。 */}
+                  {compact && project.locations.length > 0 && (
+                    <span data-testid="project-loc-summary" className="flex items-center gap-1 text-[13px]">
+                      <StateDot tone={locationProblemCount > 0 ? 'failed' : 'active'} />
+                      <span>{project.locations.length} 处位置{locationProblemCount > 0 ? ` · ${locationProblemCount} 处断开` : ''}</span>
+                    </span>
+                  )}
                   <span data-testid="project-running-count" className="flex items-center gap-[7px]">
                     <img src={dispatchTaskUrl} className="size-4" alt="" />
                     <span className="text-[16px]">{pCounts.running + pCounts.pending + pCounts.previews}</span>
@@ -753,6 +771,7 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
                         }}
                         testId="open-item-row"
                         nameTestId="open-item-name"
+                      compact={compact}
                       />
                     ))}
                     {/* 任务按任务流原序渲染；已打开的 tui 原位呈现已打开态
@@ -770,6 +789,7 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
                           opening={previewOpeningKeys.has(key)}
                           onClick={() => onOpenPreview(session.id, machine)}
                           testId={'preview-row-' + session.id}
+                        compact={compact}
                         />
                       )
                     })}
@@ -805,6 +825,7 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
                             }}
                             testId="open-item-row"
                             nameTestId="open-item-name"
+                          compact={compact}
                           />
                         )
                       }
@@ -823,6 +844,7 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
                             console.debug('project_tree.drag.task', { taskId: task.id, project: taskBase?.projectName ?? '', machine: task.machine, path: taskBase?.path ?? '' })
                           }}
                           onClick={() => onOpenTask(taskBase, task.id)}
+                        compact={compact}
                         />
                       )
                     })}
@@ -855,6 +877,7 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
                         }}
                         testId="open-item-row"
                         nameTestId="open-item-name"
+                      compact={compact}
                       />
                     ))}
                     {/* 空状态行：没有任何进行中的东西（无已打开行、无任务流任务）时，
@@ -928,7 +951,13 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
                             aria-label="在此打开终端"
                             title="在此打开终端"
                             onClick={() => openTerminalAt(base)}
-                            className="absolute right-2 top-1/2 hidden -translate-y-1/2 rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground group-hover:block"
+                            // B369.8 岔口 3 #2：桌面 hover 显形串逐字节保留；compact
+                            // 行内常驻（block）+ 触点加档（p-1.5）
+                            className={
+                              compact
+                                ? 'absolute right-2 top-1/2 block -translate-y-1/2 rounded p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground'
+                                : 'absolute right-2 top-1/2 hidden -translate-y-1/2 rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground group-hover:block'
+                            }
                           >
                             <Terminal className="size-[15px]" />
                           </button>
@@ -984,7 +1013,13 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
                               aria-label="打开主目录终端"
                               title="打开主目录终端"
                               onClick={() => openTerminalAt(mainBase)}
-                              className="absolute right-14 top-1/2 hidden -translate-y-1/2 rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground group-hover:block"
+                              // B369.8 岔口 3 #3：compact 常驻（right-14 位置不变，
+                              // 27px 宽的钮与 right-6 的新建钮不重叠）
+                              className={
+                                compact
+                                  ? 'absolute right-14 top-1/2 block -translate-y-1/2 rounded p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground'
+                                  : 'absolute right-14 top-1/2 hidden -translate-y-1/2 rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground group-hover:block'
+                              }
                             >
                               <Terminal className="size-[15px]" />
                             </button>
@@ -995,7 +1030,12 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
                               aria-label="新建工作树"
                               title="新建工作树"
                               onClick={() => setWorktreeTarget({ project, loc })}
-                              className="absolute right-6 top-1/2 hidden -translate-y-1/2 rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground group-hover:block"
+                              // B369.8 岔口 3 #4：compact 常驻（right-6 位置不变）
+                              className={
+                                compact
+                                  ? 'absolute right-6 top-1/2 block -translate-y-1/2 rounded p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground'
+                                  : 'absolute right-6 top-1/2 hidden -translate-y-1/2 rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground group-hover:block'
+                              }
                             >
                               <Plus className="size-[15px]" />
                             </button>
@@ -1072,6 +1112,7 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
                             console.debug('project_tree.drag.task', { taskId: task.id, project: taskBase?.projectName ?? '', machine: task.machine, path: taskBase?.path ?? '' })
                           }}
                           onClick={() => onOpenTask(taskBase, task.id)}
+                        compact={compact}
                         />
                       )
                     })}
@@ -1111,6 +1152,7 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
                 console.debug('project_tree.drag.task', { taskId: t.id, project: '', machine: t.machine, path: '' })
               }}
               onClick={() => onOpenTask(null, t.id)}
+            compact={compact}
             />
           ))}
           {filtered.unownedNames.map((name) => (
@@ -1130,6 +1172,7 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
                 opening={previewOpeningKeys.has(previewKey(session, machine))}
                 onClick={() => onOpenPreview(session.id, machine)}
                 testId={'preview-row-' + session.id}
+              compact={compact}
               />
             )
           })}
@@ -1342,9 +1385,12 @@ function openItemMatches(item: OpenItem, q: string): boolean {
 // onClose 提供时行外套 group 壳，悬停从右侧滑出 × 快速关闭对应 tab——× 是行
 // button 的**兄弟**而非子元素（button 不能嵌套），点击也就不会触发行本身的聚焦；
 // 悬停期间机器名让位淡出（状态圆点保留），给 × 腾出位置。
+// compact（B369.8 T6）：× 常驻（去 opacity-0/translate-x-1/group-hover 依赖，
+// focus-visible 路径保留），机器名不再被 group-hover 抹掉——否则 × 常驻而标签
+// 恒被 hover 抹掉（plan §12 修正 2）。
 function TaskRow({
   kind, label, machine, dotTone = 'active', open = false, selected = false, indent = false,
-  opening = false, draggable = false, dragPayload, onClose, onClick, testId = 'task-row', nameTestId,
+  opening = false, draggable = false, dragPayload, onClose, onClick, testId = 'task-row', nameTestId, compact = false,
 }: {
   kind: 'tui' | 'terminal' | 'file' | 'preview'
   label: string
@@ -1360,6 +1406,7 @@ function TaskRow({
   onClick: () => void
   testId?: string
   nameTestId?: string
+  compact?: boolean
 }) {
   const row = (
     <button
@@ -1387,7 +1434,7 @@ function TaskRow({
       </span>
       <span data-testid="task-machine" className="ml-auto flex max-w-[88px] shrink-0 items-center gap-[7px] truncate text-[14px] text-muted-foreground">
         <StateDot tone={dotTone} />
-        <span className={cn('truncate', onClose && 'transition-opacity duration-150 group-hover:opacity-0')}>
+        <span className={cn('truncate', onClose && !compact && 'transition-opacity duration-150 group-hover:opacity-0')}>
           {machineLabel(machine)}
         </span>
       </span>
@@ -1397,13 +1444,18 @@ function TaskRow({
   return (
     <div className="group relative">
       {row}
-      {/* × 在不透明度 0 时仍占位可聚焦，键盘用户 tab 到它时必须现身 */}
+      {/* × 在不透明度 0 时仍占位可聚焦，键盘用户 tab 到它时必须现身。
+          compact 常驻：opacity-100 translate-x-0，无 hover 依赖。 */}
       <button
         type="button"
         aria-label={`关闭 ${label}`}
         title="关闭"
         onClick={onClose}
-        className="absolute right-1 top-1/2 flex size-5 -translate-y-1/2 translate-x-1 items-center justify-center rounded text-muted-foreground opacity-0 transition-[opacity,transform] duration-150 hover:bg-accent/60 hover:text-foreground focus-visible:opacity-100 focus-visible:translate-x-0 group-hover:translate-x-0 group-hover:opacity-100"
+        className={
+          compact
+            ? 'absolute right-1 top-1/2 flex size-5 -translate-y-1/2 translate-x-0 items-center justify-center rounded text-muted-foreground opacity-100 transition-[opacity,transform] duration-150 hover:bg-accent/60 hover:text-foreground focus-visible:opacity-100 focus-visible:translate-x-0'
+            : 'absolute right-1 top-1/2 flex size-5 -translate-y-1/2 translate-x-1 items-center justify-center rounded text-muted-foreground opacity-0 transition-[opacity,transform] duration-150 hover:bg-accent/60 hover:text-foreground focus-visible:opacity-100 focus-visible:translate-x-0 group-hover:translate-x-0 group-hover:opacity-100'
+        }
       >
         <X className="size-3.5" />
       </button>

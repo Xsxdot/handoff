@@ -280,6 +280,13 @@ function locationRef(): string | null {
   return screen.getByTestId('test-location').getAttribute('data-ref')
 }
 
+// B369.8 T6：compact 项目行缺省折叠——要先点行展开，机器行/工作树子行才在。
+// expanded:false 定位到项目行按钮（行内其他钮不带 aria-expanded）。
+async function expandCompactProject() {
+  const project = await screen.findByTestId('project-node-p1')
+  fireEvent.click(within(project).getByRole('button', { expanded: false }))
+}
+
 // renderShellWithHistory 与 renderShell 同构，但把 memory history 句柄交出来。
 // window.history 不驱动 MemoryRouter；用例⑯用 history.go(-1)（POP 语义）验证
 // 浏览器返回键一致性——与真机返回键走的是同一份 in-memory 历史栈。
@@ -1219,6 +1226,8 @@ describe('B369.6 移动断点谱系', () => {
     Object.defineProperty(window, 'innerWidth', { value: 375, configurable: true, writable: true })
     renderShell()
     fireEvent.click(await screen.findByTestId('mobile-tab-projects'))
+    // B369.8 T6：compact 项目行缺省折叠，先展开项目再展开机器。
+    await expandCompactProject()
     // 与桌面 openBranch 同款：机器行点击展开工作树子行；已展开时不要重复点
     // （ProjectTree 的 toggle 会把它收回去）。
     if (screen.queryByText('integration/b2-b3') === null) {
@@ -1266,6 +1275,9 @@ describe('B369.6 移动断点谱系', () => {
     })
     renderShell()
     fireEvent.click(await screen.findByTestId('mobile-tab-projects'))
+    // B369.8 T6：compact 项目行缺省折叠，先展开项目；位置摘要应报 1 处断开。
+    await expandCompactProject()
+    expect(screen.getByTestId('project-loc-summary')).toHaveTextContent('2 处位置 · 1 处断开')
     // 离线机器行保持可见并标「已断开」——不静默少一台（CONTEXT「项目位置不可用」）。
     expect(await screen.findByText('已断开')).toBeInTheDocument()
     // 反例锁：离线位置的目录内容一格都不渲染（不降级只读、不摆缓存快照）。
@@ -1521,6 +1533,8 @@ describe('B369.7 紧凑导航统一', () => {
     await screen.findByTestId('mobile-home')
     fireEvent.click(screen.getByTestId('mobile-tab-projects'))
     await waitFor(() => expect(locationRef()).toBe('/?tab=projects'))
+    // B369.8 T6：compact 项目行缺省折叠，先展开项目再展开机器。
+    await expandCompactProject()
     if (screen.queryByText('integration/b2-b3') === null) {
       fireEvent.click(await screen.findByTestId('machine-row'))
     }

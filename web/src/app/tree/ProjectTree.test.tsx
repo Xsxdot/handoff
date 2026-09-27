@@ -60,6 +60,8 @@ function props(over: {
   onAddProject?: () => void
   onUnregister?: (name: string, machine: string) => Promise<void> | void
   onEdit?: (project: ProjectNode) => void
+  onWorktreeCreated?: (project: ProjectNode, machine: string, ws: import('../../api/types').Workspace) => void
+  compact?: boolean
   previews?: PreviewSession[]
   previewOpenKeys?: ReadonlySet<string>
   previewOpeningKeys?: ReadonlySet<string>
@@ -109,6 +111,8 @@ function props(over: {
     // 与 onUnregister 同理：onEdit 也要能显式传 undefined，验证「没传就不给
     // 编辑入口」的分支
     onEdit: 'onEdit' in over ? over.onEdit : vi.fn(),
+    onWorktreeCreated: over.onWorktreeCreated,
+    compact: over.compact ?? false,
     previews: over.previews ?? [],
     previewOpenKeys: over.previewOpenKeys ?? new Set<string>(),
     previewOpeningKeys: over.previewOpeningKeys ?? new Set<string>(),
@@ -1150,4 +1154,111 @@ it('底部 dock 不再提供会话与收件箱入口', () => {
   render(<ProjectTree {...props()} />)
   expect(screen.queryByRole('button', { name: '会话' })).not.toBeInTheDocument()
   expect(screen.queryByRole('button', { name: '收件箱' })).not.toBeInTheDocument()
+})
+
+// —— B369.8 T6：compact 缺省折叠 + 位置摘要 + 树面 hover 处置 ——
+describe('B369.8 compact 项目折叠与 hover', () => {
+  async function renderCompact(over: Parameters<typeof props>[0] = {}) {
+    const p = props({ compact: true, onOpenProjectCards: vi.fn(), onWorktreeCreated: vi.fn(), ...over })
+    render(<ProjectTree {...p} />)
+    return p
+  }
+
+  function expandProject() {
+    const node = screen.getByTestId('project-node-p1')
+    fireEvent.click(within(node).getByRole('button', { expanded: false }))
+  }
+
+  it('缺省折叠：项目内容区不渲染、项目行 aria-expanded="false"、位置摘要在场', () => {
+    renderCompact()
+    const node = screen.getByTestId('project-node-p1')
+    expect(within(node).getByRole('button', { expanded: false })).toHaveAttribute('aria-expanded', 'false')
+    // 机器行/工作树/任务组全部不在（折叠的折叠面）
+    expect(screen.queryByTestId('machine-row')).toBeNull()
+    expect(screen.queryByTestId('workspace-row')).toBeNull()
+    expect(screen.queryByTestId('task-group')).toBeNull()
+    // 位置摘要照常在场（状态信息不随折叠消失）
+    expect(within(node).getByTestId('project-loc-summary')).toHaveTextContent('1 处位置')
+  })
+
+  it('点行展开 → 内容面在场 + aria-expanded 翻转；再点收起；toggle 两档同形', async () => {
+    await renderCompact()
+    expandProject()
+    const row = within(screen.getByTestId('project-node-p1')).getByRole('button', { expanded: true })
+    expect(row).toHaveAttribute('aria-expanded', 'true')
+    expect(await screen.findByTestId('machine-row')).toBeInTheDocument()
+    fireEvent.click(row)
+    expect(screen.queryByTestId('machine-row')).toBeNull()
+  })
+
+  it('搜索命中自动展开（旁路两档一致）', async () => {
+    await renderCompact()
+    fireEvent.change(screen.getByPlaceholderText('搜索项目、机器或任务'), { target: { value: '重构' } })
+    expect(await screen.findByTestId('machine-row')).toBeInTheDocument()
+    // 项目行名以 handoff 开头；「打开 handoff 工作项」钮不含 ^handoff，不撞
+    expect(within(screen.getByTestId('project-node-p1')).getByRole('button', { name: /^handoff/ })).toHaveAttribute('aria-expanded', 'true')
+  })
+
+  it('位置摘要：断开位置计数与 StateDot tone 随 locationProblem', () => {
+    const p = props({ compact: true })
+    const tree = { ...p.tree, machines: [{ name: '', ok: false, error: 'dial refused', addr: '', reachable: false, version: '', probe_ms: 0 }] }
+    render(<ProjectTree {...p} tree={tree} />)
+    expect(screen.getByTestId('project-loc-summary')).toHaveTextContent('1 处位置 · 1 处断开')
+  })
+
+  it('三 hover 钮 compact 常驻：class 含 block、不含 group-hover:block、p-1.5', async () => {
+    await renderCompact()
+    expandProject()
+    fireEvent.click(await screen.findByTestId('machine-row'))
+    // 主目录与工作树两行各一枚终端钮：逐枚断言
+    const wsBtns = await screen.findAllByRole('button', { name: '在此打开终端' })
+    expect(wsBtns.length).toBe(2)
+    for (const btn of [...wsBtns, screen.getByRole('button', { name: '打开主目录终端' }), screen.getByRole('button', { name: '新建工作树' })]) {
+      expect(btn.className).toContain(' p-1.5 ')
+      expect(btn.className).not.toContain('group-hover:block')
+    }
+  })
+
+  it('桌面反例锁：三钮 hover 显形串逐字节保留、expanded 缺省 true', async () => {
+    const p = props({ onOpenProjectCards: vi.fn(), onWorktreeCreated: vi.fn() })
+    render(<ProjectTree {...p} />)
+    // 缺省全展开（桌面语义）
+    expect(within(screen.getByTestId('project-node-p1')).getByRole('button', { expanded: true })).toHaveAttribute('aria-expanded', 'true')
+    fireEvent.click(await screen.findByTestId('machine-row'))
+    const wsBtns = await screen.findAllByRole('button', { name: '在此打开终端' })
+    expect(wsBtns.length).toBe(2)
+    for (const btn of wsBtns) {
+      expect(btn.className).toBe('absolute right-2 top-1/2 hidden -translate-y-1/2 rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground group-hover:block')
+    }
+    const mainBtn = screen.getByRole('button', { name: '打开主目录终端' })
+    expect(mainBtn.className).toBe('absolute right-14 top-1/2 hidden -translate-y-1/2 rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground group-hover:block')
+    const wtBtn = screen.getByRole('button', { name: '新建工作树' })
+    expect(wtBtn.className).toBe('absolute right-6 top-1/2 hidden -translate-y-1/2 rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground group-hover:block')
+    // 位置摘要桌面不渲染（铺开面自答）
+    expect(screen.queryByTestId('project-loc-summary')).toBeNull()
+  })
+
+  it('已打开行 × compact 常驻：opacity-100 / 无 translate-x-1 / 机器名不被 group-hover 抹掉', async () => {
+    await renderCompact({
+      openItems: [openItem()],
+      onCloseOpenItem: vi.fn(),
+    })
+    expandProject()
+    const closeBtn = await screen.findByRole('button', { name: '关闭 bash · main' })
+    expect(closeBtn.className).toContain('opacity-100')
+    expect(closeBtn.className).toContain('translate-x-0')
+    expect(closeBtn.className).not.toContain('opacity-0')
+    // 标签 span：compact 无 group-hover:opacity-0（否则 × 常驻而标签被抹掉）
+    const machineLabel = closeBtn.parentElement!.querySelector('[data-testid="task-machine"] span:last-child')!
+    expect(machineLabel.className).not.toContain('group-hover:opacity-0')
+  })
+
+  it('桌面已打开行 × 反例锁：hover 显形串逐字节、标签让位淡出保留', async () => {
+    const p = props({ openItems: [openItem()], onCloseOpenItem: vi.fn() })
+    render(<ProjectTree {...p} />)
+    const closeBtn = await screen.findByRole('button', { name: '关闭 bash · main' })
+    expect(closeBtn.className).toBe('absolute right-1 top-1/2 flex size-5 -translate-y-1/2 translate-x-1 items-center justify-center rounded text-muted-foreground opacity-0 transition-[opacity,transform] duration-150 hover:bg-accent/60 hover:text-foreground focus-visible:opacity-100 focus-visible:translate-x-0 group-hover:translate-x-0 group-hover:opacity-100')
+    const machineLabel = closeBtn.parentElement!.querySelector('[data-testid="task-machine"] span:last-child')!
+    expect(machineLabel.className).toContain('group-hover:opacity-0')
+  })
 })
