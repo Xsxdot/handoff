@@ -3,10 +3,17 @@
 // 职责：详情+历史两路轮询、打开即已读（markedReads 去重守卫）、拉卡对话框态、
 // 抽屉开关与归档确认。边界：不发身份字段；已读失败只告警不阻塞渲染。
 // 标题不在此渲染——唯一来源是窗格标题行（tabTitle →「会话 · 标题」）。
+// B369.8（T5）：compact 改「群聊 | 详情」两态语义切换（plan 岔口 5）——头部
+// tablist 两枚 tab，两态内容都保持挂载、hidden 属性翻转可见性（群聊的草稿/
+// 回复引用条/@联想全是 SessionChat 内部 state，卸载即丢；群聊无 canvas/WS，
+// display:none 无 B280 式副作用。已知代价：隐藏期间聊天 scrollTop 归零，回
+// 群聊落在顶部——如实接受，不做滚动恢复）。桌面「⋯」抽屉逐字节不动。
 import { useEffect, useRef, useState } from 'react'
 import { archiveSession, fetchRoomMessages, fetchSessionDetail, joinSessionCard, markRoomRead } from '../../api/rooms'
 import type { SessionDetail as SessionDetailDTO } from '../../api/rooms'
 import { errorMessage } from '../lib/format'
+import { TOUCH_BASELINE } from '@/lib/touch'
+import { cn } from '@/lib/utils'
 import { ConfirmDialog } from '../lib/ConfirmDialog'
 import { usePoll } from '../data/usePoll'
 import { COLLAB_POLL_MS } from './constants'
@@ -17,12 +24,16 @@ import { SessionDetail } from './SessionDetail'
 
 const HISTORY_LIMIT = 200
 
-export function SessionTab({ sessionId, title, onOpenCard }: {
+export function SessionTab({ sessionId, title, onOpenCard, compact = false }: {
   sessionId: string
   title: string
   onOpenCard?: (cardId: string) => void
+  compact?: boolean
 }) {
   const [drawerOpen, setDrawerOpen] = useState(false)
+  // paneDetail 是 compact 两态的唯一事实源（真 = 详情态）；桌面不用它，
+  // drawerOpen 语义原样。同层切换、不是导航层级，不进 URL（plan §10 明令）。
+  const [paneDetail, setPaneDetail] = useState(false)
   const [joinOpen, setJoinOpen] = useState(false)
   const [joinBusy, setJoinBusy] = useState(false)
   const [joinError, setJoinError] = useState('')
@@ -49,14 +60,17 @@ export function SessionTab({ sessionId, title, onOpenCard }: {
   }, [sessionId, maxSeq, detailPoll.data])
 
   // 抽屉 Esc 收起：与会话流并存（无遮罩），Esc 是 spec 拍板的第二收起通道。
+  // B369.8：compact 下 Esc 同样关详情态（切回群聊）；桌面抽屉语义原样。
   useEffect(() => {
-    if (!drawerOpen) return
+    if (!drawerOpen && !(compact && paneDetail)) return
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setDrawerOpen(false)
+      if (event.key !== 'Escape') return
+      if (compact) setPaneDetail(false)
+      else setDrawerOpen(false)
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [drawerOpen])
+  }, [drawerOpen, compact, paneDetail])
 
   // joinCards 批量拉卡（B358.8 #8）：逐张顺序发既有单卡端点；失败聚合原文留在
   // 对话框供重试，部分成功也刷新详情——端点语义零改动，批量只是前端循环。
@@ -98,15 +112,49 @@ export function SessionTab({ sessionId, title, onOpenCard }: {
   }
 
   return (
-    <div className="relative flex h-full min-h-0 flex-col">
+    <div className={cn('relative flex h-full min-h-0 flex-col', compact && TOUCH_BASELINE)}>
       <header className="flex shrink-0 items-center justify-end border-b px-2 py-1">
-        <button type="button" aria-label="会话详情" aria-expanded={drawerOpen} onClick={() => setDrawerOpen(true)}
-          className="rounded-md px-2 py-1 text-xs hover:bg-accent">⋯</button>
+        {!compact && (
+          <button type="button" aria-label="会话详情" aria-expanded={drawerOpen} onClick={() => setDrawerOpen(true)}
+            className="rounded-md px-2 py-1 text-xs hover:bg-accent">⋯</button>
+        )}
+        {compact && (
+          // 两态 tablist（岔口 5）：同层「群聊 | 详情」视图切换，aria-selected 翻转。
+          <div role="tablist" aria-label="会话视图" className="flex items-center gap-1">
+            <button type="button" role="tab" aria-selected={!paneDetail} data-testid="session-view-chat"
+              onClick={() => setPaneDetail(false)} className="rounded-md px-2 py-1 text-xs hover:bg-accent">群聊</button>
+            <button type="button" role="tab" aria-selected={paneDetail} data-testid="session-view-detail"
+              onClick={() => setPaneDetail(true)} className="rounded-md px-2 py-1 text-xs hover:bg-accent">详情</button>
+          </div>
+        )}
       </header>
-      <SessionChat sessionId={sessionId} summary={detail?.summary ?? null} events={history}
-        historyError={historyPoll.disconnected ? historyPoll.errorText : ''} onSent={() => historyPoll.refresh()}
-        onJoinCard={() => setJoinOpen(true)} />
-      {drawerOpen && (
+      {compact ? (
+        // —— compact 两态（岔口 5）——
+        <>
+          {/* 群聊面板：hidden 属性翻转保挂载。草稿/回复引用条/@联想是
+              SessionChat 内部 state，卸载即丢；群聊无 canvas/WS，display:none
+              无 B280 式副作用。已知代价：隐藏期间聊天 scrollTop 归零，回群聊
+              落在顶部——如实接受，不做滚动恢复。被详情态盖住时 hidden 面板
+              本就不进读屏树与 Tab 序，无需再叠 inert（被盖面不渲染盒子）。 */}
+          <div role="tabpanel" aria-label="群聊" hidden={paneDetail ? true : undefined} className="flex min-h-0 flex-1 flex-col">
+            <SessionChat sessionId={sessionId} summary={detail?.summary ?? null} events={history}
+              historyError={historyPoll.disconnected ? historyPoll.errorText : ''} onSent={() => historyPoll.refresh()}
+              onJoinCard={() => setJoinOpen(true)} compact={compact} />
+          </div>
+          {/* 详情态占满会话内容区（五块全宽）；归档/拉卡流程接线原样。 */}
+          <div role="tabpanel" aria-label="会话详情" hidden={paneDetail ? undefined : true} className="min-h-0 flex-1 overflow-y-auto">
+            {detail === null
+              ? <p className="p-3 text-sm text-muted-foreground">{detailPoll.disconnected ? `详情读取失败：${detailPoll.errorText}` : '正在读取…'}</p>
+              : <SessionDetail detail={detail} onOpenCard={onOpenCard}
+                  onArchive={() => setArchiveConfirm(true)} archiveBusy={archiveBusy} archiveError={archiveError} />}
+          </div>
+        </>
+      ) : (
+        <SessionChat sessionId={sessionId} summary={detail?.summary ?? null} events={history}
+          historyError={historyPoll.disconnected ? historyPoll.errorText : ''} onSent={() => historyPoll.refresh()}
+          onJoinCard={() => setJoinOpen(true)} />
+      )}
+      {!compact && drawerOpen && (
         <aside data-testid="session-drawer" aria-label="会话详情"
           className="absolute inset-y-0 right-0 z-30 flex w-80 max-w-[85%] flex-col border-l bg-background shadow-xl">
           <div className="flex shrink-0 items-center justify-between border-b px-3 py-2">

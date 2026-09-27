@@ -13,13 +13,18 @@
 //         from=session-<id>|card-<id>（来源，任务现场返回与 ↗ 语境消费）
 //       /：tab ∈ sessions|cards|projects|settings（缺省 sessions）、detail=1（下钻态）、
 //         dir=<baseKey>（目录覆盖层）、from=…（任务现场返回来源，仅 detail=1 时
-//         有消费者——返回条；/cards 上的 from 由任务跳转 seam 消费）
+//         有消费者——返回条；/cards 上的 from 由任务跳转 seam 消费）、
+//         sub=<SettingsSub>（B369.8：设置二级页，仅 tab=settings 时有消费者）
 //     派生规则：pathname==='/cards' ⇒ tab='cards'；否则读 tab 参数。任务现场终态
 //     形如 /?tab=<tab>&detail=1&from=<来源>；「/ 上 tab=cards 且无 detail」是残留
 //     形状，由 normalize ② replace 成 /cards，不留第二形状。
 //   - push/replace 纪律（plan §3.1）：前进类（setTab/openCard/enterDetail/setDir 开）
 //     push；返回/取消类（exitDetail/closeCard/setDir 关）与瞬态跳板（/tasks/:id）
 //     、normalize 改写一律 replace，不留历史格。
+//   - sub 的行进面（B369.8，有意不变量）：enterDetail/exitDetail/setTab/closeCard
+//     构造 fresh URL，sub 天然不跟随——二级页是 settings tab 内的临时深潜，
+//     任何跨 tab 动作都视为离开设置语境，不做残参搬运。openCard 的删参块与
+//     normalize ③ 各自兜一道（openCard 管「正在看二级页时点开卡」，③ 管深链直落）。
 //   - 埋点统一 console.debug('shell.mobile_nav.*', …)，替换既有
 //     shell.mobile_tab.select / shell.mobile_detail.back（无测试断言旧事件名）。
 //   - 不取数、不渲染：fileDrawer 的 BaseDir 反解（findBaseByKey）归 Shell——
@@ -31,6 +36,24 @@ import type { MobileTab } from './MobileTabBar'
 // MobileFrom 是「来源」的受控词表：会话来源（session-<id>）或卡来源（card-<id>）。
 // 任务现场返回条与卡详情 ↗ 的 from 语境都只允许这两种前缀，其他值按无来源处理。
 export type MobileFrom = `session-${string}` | `card-${string}`
+
+// SettingsSub 是「设置二级页」的受控词表（B369.8 岔口 1）：compact 设置中心的
+// 六个二级入口。词表归导航模型所有（对齐 MOBILE_TABS 先例），**不与桌面
+// SectionKey 并型**——桌面词表含 general 无 pairing，compact 相反，强并一个
+// 类型会让桌面深链词表吞进 pairing。
+export const SETTINGS_SUB_KEYS = [
+  'machines', 'pairing', 'discipline', 'automation', 'env', 'update',
+] as const
+export type SettingsSub = (typeof SETTINGS_SUB_KEYS)[number]
+
+// normalizeSettingsSub 白名单外派生为 null（落设置中心）：/?sub=bogus 自愈成中心首屏，
+// 与 tabOfParams 的 bogus→sessions 同一纪律。导出供 SettingsPage 组件边界
+// 归一 props 注入的 sub（组件不感知 router，见 SettingsPage 文件头）。
+export function normalizeSettingsSub(raw: string | null): SettingsSub | null {
+  return raw !== null && (SETTINGS_SUB_KEYS as readonly string[]).includes(raw)
+    ? (raw as SettingsSub)
+    : null
+}
 
 const MOBILE_TABS: readonly string[] = ['sessions', 'cards', 'projects', 'settings']
 
@@ -49,8 +72,12 @@ export interface MobileNav {
   detail: boolean
   dirKey: string | null
   from: MobileFrom | null
+  // sub（B369.8）：compact 设置二级页，仅 tab=settings 时有消费者；桌面恒 null
+  //（compact 设置二级 IA 不存在，桌面深链走 /settings?section= 原机制）。
+  sub: SettingsSub | null
   // 写（compact 下写 URL；桌面下写内部 state、URL 一字不动）
   setTab(t: MobileTab): void
+  setSub(key: string | null): void
   // ctx 值放宽为 string|null：调用方（TaskDeepLink/openTaskTui）从 URL 参数原样
   // 透传，非法值按「未指定」处理——from 未指定时保留当前 URL 的 from（同一任务
   // 现场里经看板换任务不丢来源链），tab 未指定时用派生 tab。
@@ -77,6 +104,7 @@ export function useMobileNav({ compact }: { compact: boolean }): MobileNav {
   const dirKey = compact ? params.get('dir') : desktopDirKey
   const rawFrom = params.get('from')
   const from = compact && isMobileFrom(rawFrom) ? rawFrom : null
+  const sub = compact ? normalizeSettingsSub(params.get('sub')) : null
 
   // here 是当前完整 URL，所有写动作先比对它再 navigate（幂等写，plan §7.2）：
   // 同址不写，避免往历史里塞无意义的同址条目。
@@ -92,6 +120,30 @@ export function useMobileNav({ compact }: { compact: boolean }): MobileNav {
     console.debug('shell.mobile_nav.tab_select', { tab: t })
     navigate(to)
   }, [compact, here, navigate])
+
+  // setSub（B369.8 岔口 1）：设置中心 ↔ 二级页的唯一写口。
+  // 开（有值）push；关（null）replace——返回类不留历史格，与 setDir 同一纪律。
+  // 开侧构造 fresh URL（只带 tab+sub）：settings tab 上无其他合法参数
+  // （dir/from/残参由 normalize ③ 清理），fresh URL 即幂等形态。
+  // 关侧沿用 strip 模式（保留其余参数、剥 sub），与 setDir(null) 同形。
+  // 桌面直通 no-op：compact 二级 IA 不存在，桌面二级页走 /settings?section= 原机制。
+  const setSub = useCallback((key: string | null) => {
+    if (!compact) return
+    if (key === null) {
+      const p = new URLSearchParams(params)
+      p.delete('sub')
+      const qs = p.toString()
+      const to = `/${qs ? `?${qs}` : ''}`
+      if (to === here) return
+      console.debug('shell.mobile_nav.sub_close', {})
+      navigate(to, { replace: true })
+      return
+    }
+    const to = `/?tab=settings&sub=${encodeURIComponent(key)}`
+    if (to === here) return
+    console.debug('shell.mobile_nav.sub_open', { sub: key })
+    navigate(to)
+  }, [compact, params, here, navigate])
 
   const enterDetail = useCallback((ctx?: { from?: string | null; tab?: string | null }) => {
     if (!compact) {
@@ -161,11 +213,13 @@ export function useMobileNav({ compact }: { compact: boolean }): MobileNav {
     if (!compact) return
     const p = new URLSearchParams(params)
     // '/' 宿主的语汇不跟随：tab/detail/dir 是 '/' 专属概念，/cards 上无消费者。
+    // sub 同理（B369.8）：设置二级页只在 tab=settings 有消费者。
     p.delete('tab')
     p.delete('detail')
     p.delete('dir')
     p.delete('card')
     p.delete('from')
+    p.delete('sub')
     // project 过滤保留：从带 project 参数的看板点开卡，丢参数会把用户已选的
     // 项目筛选静默清掉（CardsPage 的 URL→state effect 会跟着置空）。
     p.set('card', cardId)
@@ -215,7 +269,8 @@ export function useMobileNav({ compact }: { compact: boolean }): MobileNav {
     }
     // ③ 无消费者的残参清理：dir 只在项目 tab 有消费者；from 在 '/' 上只有
     //    detail=1（返回条）有消费者——/cards 上的 from 由任务跳转 seam 消费，
-    //    不是残参（会话来源链靠它回会话）。
+    //    不是残参（会话来源链靠它回会话）。sub（B369.8）只在 tab=settings
+    //    且值在词表内有消费者，两条各自独立清理。
     let dirty = false
     if (p.has('dir') && p.get('tab') !== 'projects') {
       p.delete('dir')
@@ -223,6 +278,14 @@ export function useMobileNav({ compact }: { compact: boolean }): MobileNav {
     }
     if (p.has('from') && !isCards && p.get('detail') !== '1') {
       p.delete('from')
+      dirty = true
+    }
+    if (p.has('sub') && p.get('tab') !== 'settings') {
+      p.delete('sub')
+      dirty = true
+    }
+    if (p.has('sub') && !normalizeSettingsSub(p.get('sub'))) {
+      p.delete('sub')
       dirty = true
     }
     if (dirty) {
@@ -234,7 +297,7 @@ export function useMobileNav({ compact }: { compact: boolean }): MobileNav {
   }, [compact, location.pathname, location.search, derivedTab, here, navigate])
 
   return useMemo(() => ({
-    tab, detail, dirKey, from,
-    setTab, enterDetail, exitDetail, setDir, openCard, closeCard, normalize,
-  }), [tab, detail, dirKey, from, setTab, enterDetail, exitDetail, setDir, openCard, closeCard, normalize])
+    tab, detail, dirKey, from, sub,
+    setTab, setSub, enterDetail, exitDetail, setDir, openCard, closeCard, normalize,
+  }), [tab, detail, dirKey, from, sub, setTab, setSub, enterDetail, exitDetail, setDir, openCard, closeCard, normalize])
 }

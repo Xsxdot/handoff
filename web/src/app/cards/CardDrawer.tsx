@@ -3,14 +3,18 @@ import { X } from 'lucide-react'
 import { fetchTaskDetail, replyTicket } from '../../api/client'
 import type { Task, TaskDetail, Ticket } from '../../api/types'
 import { acceptCard, answerDecision, attachFile, clearCardNeeds, detachFile, fetchCardDetail, moveCard, noteCard, patchCard } from '../../api/ledger'
-import type { CardDetail, Decision, LedgerEvent, NodeDef, TaskStateRow } from '../../api/ledger'
+import type { CardDetail, Decision, LedgerEvent, NodeDef } from '../../api/ledger'
 import type { CoordinatorAttachInfo } from '../../api/scheduling'
 import { errorMessage } from '../lib/format'
+import { TOUCH_BASELINE } from '@/lib/touch'
+import { cn } from '@/lib/utils'
 import { TicketsPanel } from '../task/TicketsPanel'
 import { boardColumnFor, boardColumns, nodeLabelFor, normalizeBoardLayout, type BoardLayout } from './columns'
 import { CoordinatorPanel } from './CoordinatorPanel'
+// linkedTaskOf/isRunningRow 迁往共享 taskRun.ts（B369.8 §3.2）：Shell 的 scene 档
+// 解析链要用同一口径，抽模块避免复制。行为零变化。
+import { isRunningRow, linkedTaskOf } from './taskRun'
 import { TaskState } from '../board/StateDot'
-import { isTerminalState } from '../workbench/TaskPickerDialog'
 
 type Relation = { From: string; To: string; Type: string }
 
@@ -253,23 +257,6 @@ function timelineGroups(events: LedgerEvent[]): Array<{ kind: 'mirror' | 'event'
 
 type DrawerTaskDetail = TaskDetail & { tickets?: Ticket[]; events?: unknown[] }
 
-// linkedTaskOf 把账本挂账行关联到任务流里的真实任务；关联不上返回 undefined。
-// 关联不上是真实情形（任务已归档清出流 / 流首拉未回），调用方按「实况未知」
-// 如实降级，不猜不冒充——与 internal/ledger/taskstate.go 文件头「滞后要显性化，
-// 不拿陈旧实况冒充新鲜」是同一纪律在前端的落法。
-function linkedTaskOf(row: TaskStateRow, tasks: Task[] | undefined): Task | undefined {
-  return tasks?.find((task) => task.id === row.TaskID)
-}
-
-// isRunningRow 判「这一行此刻在不在跑」。口径刻意与看板分栏、任务选择弹层同源：
-// 非 isTerminalState 即在跑（waiting_answer/waiting_review 是「等你动手」，不是
-// 「结束」；spec §5 明令复用这一个终态集合，不许自造第三套）。关联不上的一律
-// 不算在跑：不知道的事不能报成「活着」。n 是几十量级，不做 memo 化。
-function isRunningRow(row: TaskStateRow, tasks: Task[] | undefined): boolean {
-  const live = linkedTaskOf(row, tasks)
-  return live !== undefined && !isTerminalState(live.state)
-}
-
 function pendingTickets(detail: DrawerTaskDetail): Ticket[] {
   return detail.pending_tickets ?? detail.tickets ?? []
 }
@@ -285,6 +272,9 @@ export interface CardDrawerProps {
   tasks?: Task[]
   onJumpToTask?: (taskId: string) => void
   onOpenCoordinatorTerminal?: (info: CoordinatorAttachInfo) => void
+  // compact（B369.8 T4）：抽屉全宽 + aria-modal + 焦点移交 + 13 块三层分组。
+  // 缺省 false = 桌面 aside 类串与块序逐字节不动（§3.1 的桌面净改动承诺）。
+  compact?: boolean
 }
 
 export function CardDrawer({
@@ -298,6 +288,7 @@ export function CardDrawer({
   tasks,
   onJumpToTask,
   onOpenCoordinatorTerminal,
+  compact = false,
 }: CardDrawerProps) {
   const [detail, setDetail] = useState<CardDetail | null>(null)
   const [error, setError] = useState('')
@@ -338,6 +329,13 @@ export function CardDrawer({
   const [moveBusy, setMoveBusy] = useState(false)
   const [moveError, setMoveError] = useState('')
   const mergeRef = useRef<HTMLDivElement>(null)
+  // 焦点移交（B369.8 §3.1/§4，compact-only）：抽屉挂载即把焦点移入面板
+  // （Overlay :32-33 先例，tabIndex={-1} 收焦点）；关闭归还触发钮归
+  // CardsPage.closeDrawer。桌面 560px 侧板非模态，不抢焦点不 tabindex。
+  const panelRef = useRef<HTMLElement | null>(null)
+  useEffect(() => {
+    if (compact) panelRef.current?.focus()
+  }, [compact])
 
   const load = () => {
     setError('')
@@ -604,15 +602,380 @@ export function CardDrawer({
     }
   }
 
+  // —— 13 块渲染函数（B369.8 T4）：块内部 JSX 与重构前逐字节一致。桌面按原序
+  // 展开（renderBlocksDesktop，抽屉既有用例 = 块序未动的证据）；compact 按
+  // 三层分组重排（renderBlocksCompact，plan §2 岔口 2）。
+  const renderCoordinatorPanel = () => (
+    <CoordinatorPanel cardId={id} onOpenTerminal={onOpenCoordinatorTerminal ?? (() => undefined)} />
+  )
+
+  const renderCoordinatorSeat = () => (
+    <section className="mb-5 rounded-lg border p-3">
+      <h3 className="mb-1.5 text-xs font-semibold text-muted-foreground">协调者席位</h3>
+      {driverSession
+        ? <dl className="grid grid-cols-[max-content_minmax(0,1fr)] gap-x-3 gap-y-1 text-xs"><dt className="text-muted-foreground">身份</dt><dd className="break-all font-mono">{driverSession}</dd><dt className="text-muted-foreground">来源</dt><dd>{driverSource === 'bind' ? '坐下' : driverSource === 'coordinate' ? '叫机器人' : '席位异常'}</dd></dl>
+        : <p className="text-xs text-muted-foreground">空座：可选择“叫机器人”启动协调者。</p>}
+    </section>
+  )
+
+  const renderStatusChips = () => (
+    <section className="mb-5">
+      <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+        {boardColumns(states, resolvedBoardLayout).map((column) => <span key={column} className={`rounded-full border px-2 py-0.5 ${column === boardColumnFor(status, resolvedBoardLayout) ? 'border-primary bg-primary text-primary-foreground' : column === '结束' ? 'border-dashed text-muted-foreground' : 'text-muted-foreground'}`}>{column}</span>)}
+      </div>
+    </section>
+  )
+
+  const renderMeta = () => (
+    <section className="mb-5">
+      <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
+        <dt className="text-muted-foreground">项目</dt><dd>{value(card, 'project', '—')}</dd>
+        <dt className="text-muted-foreground">工作流</dt><dd>{value(card, 'workflow', '—')} @ v{value(card, 'workflow_version', 0)}</dd>
+        <dt className="text-muted-foreground">优先级</dt>
+        <dd>
+          {priorityEditing ? (
+            <span className="flex items-center gap-1.5">
+              <select aria-label="优先级" value={priorityDraft} onChange={(event) => setPriorityDraft(event.target.value)} className="rounded border bg-background px-1.5 py-0.5 text-xs">
+                {['高', '中', '低'].map((level) => <option key={level} value={level}>{level}</option>)}
+              </select>
+              <button type="button" disabled={priorityBusy} onClick={() => void submitPriority()} className="rounded border px-1.5 py-0.5 text-[11px] disabled:opacity-50">保存优先级</button>
+              <button type="button" disabled={priorityBusy} onClick={() => setPriorityEditing(false)} className="rounded border px-1.5 py-0.5 text-[11px]">取消</button>
+            </span>
+          ) : (
+            <span className="flex items-center gap-1.5"><span>{value(card, 'priority', '—')}</span><button type="button" onClick={beginPriorityEdit} className="rounded border px-1.5 py-0.5 text-[11px]">改优先级</button></span>
+          )}
+        </dd>
+        {priorityError && <dd role="alert" className="col-span-2 break-words text-xs text-destructive">{priorityError}</dd>}
+        <dt className="text-muted-foreground">附件</dt><dd>{attachments.map((item) => item.path).join('、') || '—'}</dd>
+        <dt className="text-muted-foreground">基线</dt>
+        <dd className="font-mono">
+          {baseEditing ? (
+            <span className="flex flex-wrap items-center gap-1.5 font-sans">
+              <input aria-label="基线分支" value={baseDraft} onChange={(event) => setBaseDraft(event.target.value)}
+                className="min-w-0 flex-1 rounded border bg-background px-2 py-1 font-mono text-xs" />
+              <button type="button" disabled={baseBusy} onClick={() => void submitBase()}
+                className="rounded border px-2 py-1 text-[11px] disabled:opacity-50">保存基线</button>
+              <button type="button" disabled={baseBusy} onClick={() => setBaseEditing(false)}
+                className="rounded border px-2 py-1 text-[11px]">取消</button>
+            </span>
+          ) : (
+            <span className="flex flex-wrap items-center gap-1.5">
+              <span>{baseLabel}</span>
+              <button type="button" onClick={beginBaseEdit} className="font-sans rounded border px-2 py-1 text-[11px]">编辑基线</button>
+            </span>
+          )}
+          {baseError && <span role="alert" className="mt-1 block break-words font-sans text-xs text-destructive">{baseError}</span>}
+        </dd>
+        {(following || driverStale) && <><dt className="text-muted-foreground">驱动/跟随</dt><dd>{following ? `跟随 ${following}` : `驱动异常：${driverSession}`}</dd></>}
+      </dl>
+    </section>
+  )
+
+  const renderAcceptance = () => (
+    <section className="mb-5">
+      <h3 className="mb-1.5 text-xs font-semibold text-muted-foreground">验收</h3>
+      <div className="rounded-lg border p-3 text-xs">
+        <div className="mb-1.5 font-medium">{acceptanceLabel}</div>
+        {acceptanceEditing ? (
+          <div className="space-y-1.5">
+            <textarea
+              value={acceptanceDraft}
+              onChange={(event) => setAcceptanceDraft(event.target.value)}
+              placeholder="这张卡怎样算做完了…"
+              rows={4}
+              className="w-full rounded border bg-background px-2 py-1.5 text-xs"
+            />
+            <div className="flex gap-2">
+              <button type="button" disabled={acceptanceBusy} onClick={() => void submitAcceptance()}
+                className={cn('rounded-md bg-primary px-2.5 py-1 text-xs text-primary-foreground disabled:opacity-50', compact && 'min-h-11')}>保存判据</button>
+              <button type="button" disabled={acceptanceBusy} onClick={() => setAcceptanceEditing(false)}
+                className="rounded-md border px-2.5 py-1 text-xs">取消</button>
+            </div>
+            {acceptanceError && <p role="alert" className="break-words text-xs text-destructive">{acceptanceError}</p>}
+          </div>
+        ) : (
+          <>
+            <p className="whitespace-pre-wrap leading-5">{acceptanceInfo.criteria || '尚未填写验收判据。'}</p>
+            <button type="button" onClick={beginAcceptanceEdit} className="mt-2 rounded-md border px-2.5 py-1 text-xs hover:bg-accent">编辑判据</button>
+          </>
+        )}
+        {acceptanceInfo.evidence && <p className="mt-2 border-l-2 pl-2 leading-5 text-muted-foreground">{acceptanceInfo.evidence}</p>}
+        {!acceptanceInfo.verified && (
+          !acceptOpen ? (
+            <button type="button" onClick={() => setAcceptOpen(true)}
+              className="mt-2 rounded-md border px-2.5 py-1 text-xs hover:bg-accent">标记已验…</button>
+          ) : (
+            <div className="mt-2 space-y-1.5">
+              <textarea value={acceptEvidence} onChange={(event) => setAcceptEvidence(event.target.value)}
+                rows={3} placeholder="证据：怎么验的、在哪台机器、日志在哪"
+                className="w-full rounded border bg-background px-2 py-1 text-xs" />
+              <div className="flex gap-2">
+                <button type="button" disabled={acceptBusy || !acceptEvidence.trim()} onClick={() => void submitAccept()}
+                  className={cn('rounded-md bg-primary px-2.5 py-1 text-xs text-primary-foreground disabled:opacity-50', compact && 'min-h-11')}>确认</button>
+                <button type="button" onClick={() => { setAcceptOpen(false); setAcceptError('') }}
+                  className="rounded-md border px-2.5 py-1 text-xs">取消</button>
+              </div>
+              {acceptError && <p role="alert" className="break-words text-xs text-destructive">{acceptError}</p>}
+            </div>
+          )
+        )}
+      </div>
+    </section>
+  )
+
+  const renderAttachments = () => (
+    <section className="mb-5">
+      <h3 className="mb-1.5 text-xs font-semibold text-muted-foreground">附件管理</h3>
+      <div className="space-y-1.5 rounded-lg border p-3 text-xs">
+        {attachments.length > 0 ? (
+          <ul className="space-y-1">
+            {attachments.map((attachment) => (
+              <li key={`${attachment.kind}:${attachment.path}`} className="flex items-center gap-2">
+                <span className="min-w-0 flex-1 break-all font-mono">{attachment.path}</span>
+                <span className="shrink-0 text-muted-foreground">{attachment.kind || '附件'}</span>
+                <button
+                  type="button"
+                  aria-label={`摘掉 ${attachment.path}`}
+                  disabled={attachmentBusy}
+                  onClick={() => void removeAttachment(attachment.path)}
+                  className="shrink-0 rounded border px-1.5 py-0.5 text-[11px] disabled:opacity-50"
+                >摘掉</button>
+              </li>
+            ))}
+          </ul>
+        ) : <p className="text-muted-foreground">尚未挂附件。</p>}
+        <div className="flex flex-wrap items-center gap-1.5">
+          <select aria-label="附件类型" value={attachmentKind} onChange={(event) => setAttachmentKind(event.target.value)} className="rounded border bg-background px-1.5 py-1 text-xs">
+            {['spec', 'plan', 'doc'].map((kind) => <option key={kind} value={kind}>{kind}</option>)}
+          </select>
+          <input
+            value={attachmentPath}
+            onChange={(event) => setAttachmentPath(event.target.value)}
+            placeholder="docs/superpowers/plans/…"
+            className="min-w-0 flex-1 rounded border bg-background px-2 py-1 text-xs"
+          />
+          <button type="button" disabled={attachmentBusy || !attachmentPath.trim()} onClick={() => void submitAttachment()}
+            className="rounded border px-2 py-1 text-xs disabled:opacity-50">挂上</button>
+        </div>
+        {attachmentError && <p role="alert" className="break-words text-xs text-destructive">{attachmentError}</p>}
+      </div>
+    </section>
+  )
+
+  const renderMergedMembers = () => mergedMembers.length > 0 ? (
+    <section ref={mergeRef} className="mb-5">
+      <h3 className="mb-1.5 text-xs font-semibold text-muted-foreground">⊕ 并入本卡（状态跟随，验收各自保留）</h3>
+      {mergedMembers.map((relation) => {
+        const memberID = relationValue(relation, 'From')
+        return <div key={memberID} className="mb-1 flex items-center gap-2 rounded-md border px-2 py-1.5 text-xs"><button type="button" className="font-mono underline" onClick={() => onOpenCard(memberID)}>{memberID}</button><span className="text-muted-foreground">未验</span><span className="ml-auto rounded-full border px-1.5 text-[10px]">跟随 badge</span><button type="button" disabled title="CLI: handoff card unmerge" className="rounded border px-1.5 text-[10px] text-muted-foreground">拆回</button></div>
+      })}
+    </section>
+  ) : null
+
+  const renderRelations = () => visibleRelations.length > 0 ? (
+    <section className="mb-5">
+      <h3 className="mb-1.5 text-xs font-semibold text-muted-foreground">关系</h3>
+      {visibleRelations.map((relation, index) => {
+        const from = relationValue(relation, 'From')
+        const to = relationValue(relation, 'To')
+        const type = relationValue(relation, 'Type')
+        const label: Record<string, string> = { blocks: '阻塞', discovered_from: '发现自', split_from: '拆分自', relates: '关联' }
+        return <div key={`${from}-${to}-${type}-${index}`} className="mb-1 text-xs"><span className="mr-1.5 text-muted-foreground">{label[type] ?? type}</span><button type="button" className="font-mono underline" onClick={() => onOpenCard(from === id ? to : from)}>{from === id ? to : from}</button></div>
+      })}
+    </section>
+  ) : null
+
+  const renderChildren = () => (detail?.children ?? []).length > 0 ? (
+    <section className="mb-5">
+      <h3 className="mb-1.5 text-xs font-semibold text-muted-foreground">子任务</h3>
+      {(detail?.children ?? []).map((child) => (
+        <div key={child.id} className="mb-1 flex items-center gap-2 rounded-md border px-2 py-1.5 text-xs">
+          <button type="button" className="font-mono underline" onClick={() => onOpenCard(child.id)}>{child.id}</button>
+          <span className="min-w-0 flex-1 truncate">{child.title}</span>
+          <span className="ml-auto rounded-full border px-1.5 py-0.5 text-[10px] text-muted-foreground">{child.status}</span>
+        </div>
+      ))}
+    </section>
+  ) : null
+
+  const renderTaskRows = () => taskRows.length > 0 ? (
+    <section className="mb-5">
+      <h3 className="mb-1.5 text-xs font-semibold text-muted-foreground">
+        {/* 计数与行渲染同源（同一个 taskRows/isRunningRow 派生），不会各说各话 */}
+        {runningCount === null ? '关联执行（task）' : `关联执行 · ${runningCount} 个在跑 / 共 ${taskRows.length} 个`}
+      </h3>
+      {taskRows.map((row) => {
+        const open = expandedTask === row.TaskID
+        const taskDetail = taskDetails[row.TaskID]
+        const linked = linkedTaskOf(row, tasks)
+        return (
+          <div key={`${row.Target}/${row.TaskID}`} className="mb-1 rounded-md border text-xs">
+            {/* 整行点击=展开工单（现状职责，spec §3.3 不动它）。外层从
+                <button> 换成 div[role=button] 是为了容纳行内的 ↗ 真
+                按钮（button 不能嵌 button）；role/tabIndex/键盘处理
+                照抄 CardItem.tsx:35-44 的行内可点先例，cursor-pointer
+                补回原生 button 自带的指针。 */}
+            <div
+              role="button"
+              tabIndex={0}
+              aria-expanded={open}
+              onClick={() => toggleTask(row.TaskID)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                  event.preventDefault()
+                  toggleTask(row.TaskID)
+                }
+              }}
+              className="flex w-full cursor-pointer items-center gap-2 px-2 py-1.5 text-left"
+            >
+              {/* 实况来自页面级 2.5s 任务流的真 state，渲染与看板同一套
+                  圆点+文案。LastType 只是镜像事件的类型不是状态：
+                  turn_failed 可 continue、completed 事件早于落态，拿它判
+                  「跑没跑完」会和看板得出相反结论（spec §3.1）。关联不上
+                  就写「实况未知」并把 LastType 当线索列出。 */}
+              <span className="font-mono">{row.TaskID}</span><span>{row.Purpose}</span>
+              {linked ? (
+                <span className="ml-auto"><TaskState state={linked.state} /></span>
+              ) : (
+                <span className="ml-auto text-muted-foreground">实况未知{row.LastType !== '' && ` · 最后事件 ${row.LastType}`}</span>
+              )}
+              <span className="text-muted-foreground">{row.Target}</span>
+              {onJumpToTask && (
+                <button
+                  type="button"
+                  aria-label={`跳到 ${row.TaskID}`}
+                  title="去该任务所在的目录并打开它的 TUI 标签页；目录解析不到时会开在当前目录下"
+                  onClick={(event) => {
+                    // 跳转必须掐掉冒泡：整行的点击语义是展开工单，
+                    // 一次点击不能又跳走又把面板拉出来（spec §3.3；
+                    // 验收含「去掉 stopPropagation 必须红」的变异复验）
+                    event.stopPropagation()
+                    onJumpToTask(row.TaskID)
+                  }}
+                  className="shrink-0 rounded border px-1.5 py-0.5 text-[11px] hover:bg-accent"
+                >↗</button>
+              )}
+            </div>
+            {open && (
+              <div className="border-t px-2 py-2">
+                {/* 远程 task 的工单在这里也答得了：agentd 的 byTask 中间件会把
+                    /api/tasks/{id}/* 透明代理到该 task 的属主机器。所以这一段
+                    是纯前端复用，不需要任何新后端。 */}
+                {taskLoading === row.TaskID && <p className="text-xs text-muted-foreground">正在读取工单…</p>}
+                {taskErrors[row.TaskID] && <p role="alert" className="break-words text-xs text-destructive">{taskErrors[row.TaskID]}</p>}
+                {taskDetail && (
+                  <TicketsPanel
+                    bare
+                    tickets={pendingTickets(taskDetail)}
+                    disabled={false}
+                    onReply={(ticket, answer) => replyTaskTicket(row.TaskID, ticket, answer)}
+                  />
+                )}
+              </div>
+            )}
+          </div>
+        )
+      })}
+    </section>
+  ) : null
+
+  const renderAttention = () => ((detail?.decisions ?? []).length > 0 || (detail?.needs ?? '') !== '') ? (
+    <CardAttention cardId={id} needs={detail?.needs ?? ''} decisions={detail?.decisions ?? []} onAnswered={load} />
+  ) : null
+
+  const renderMove = () => (
+    <section className="mb-5">
+      <h3 className="mb-1.5 text-xs font-semibold text-muted-foreground">环节动作</h3>
+      <p className="mb-2 text-xs text-muted-foreground">节点执行由协调者生命周期统一接管；此处只保留状态转移。</p>
+      {!moveConfirm ? <button type="button" onClick={() => setMoveConfirm(true)} className={cn('rounded-md border px-2.5 py-1 text-xs hover:bg-accent', compact && 'min-h-11')}>转移状态…</button> : <div className="flex flex-wrap items-center gap-2"><select value={moveTarget} onChange={(event) => setMoveTarget(event.target.value)} className="rounded-md border bg-background px-2 py-1 text-xs"><option value="">选择目标态</option>{states.filter((state) => state !== status).map((state) => <option key={state} value={state}>{state}</option>)}</select><button type="button" disabled={!moveTarget || moveBusy} onClick={() => void submitMove()} className={cn('rounded-md bg-primary px-2.5 py-1 text-xs text-primary-foreground disabled:opacity-50', compact && 'min-h-11')}>确认转移</button><button type="button" onClick={() => setMoveConfirm(false)} className="rounded-md border px-2.5 py-1 text-xs">取消</button></div>}
+      {moveError && <p role="alert" className="mt-1 break-words text-xs text-destructive">{moveError}</p>}
+    </section>
+  )
+
+  const renderTimeline = () => (
+    <section className="mb-5">
+      <h3 className="mb-1.5 text-xs font-semibold text-muted-foreground">Timeline</h3>
+      <div className="mb-2 flex flex-wrap gap-1"><span className="sr-only">timeline filter</span>{(['all', 'comment', 'verdict', 'system'] as const).map((filter) => <button key={filter} type="button" onClick={() => setTimelineFilter(filter)} className={`rounded-full border px-2 py-0.5 text-[11px] ${timelineFilter === filter ? 'bg-primary text-primary-foreground' : 'text-muted-foreground'}`}>{filter === 'all' ? '全部' : filter === 'comment' ? '评论' : filter === 'verdict' ? '裁决' : '系统'}</button>)}</div>
+      <div className="space-y-1.5">
+        {groups.map((group, index) => group.kind === 'mirror' ? <details key={`mirror-${index}`} className="text-xs text-muted-foreground"><summary className="cursor-pointer">镜像执行事件（{group.events.length}）</summary><div className="ml-2 border-l pl-2">{group.events.map((event) => <div key={event.seq} className="py-0.5">#{event.seq} {eventSummary(event)}</div>)}</div></details> : group.events.map((event) => event.type === 'review_verdict' ? <VerdictCard key={event.seq} event={event} /> : event.type === 'comment' ? <div key={event.seq} className="rounded-lg bg-muted px-3 py-2 text-xs leading-5"><div className="mb-0.5 text-[11px] text-muted-foreground">{event.actor}</div>{eventSummary(event)}</div> : <div key={event.seq} className="flex gap-2 text-xs text-muted-foreground"><span className="font-mono">#{event.seq}</span><span>{eventSummary(event)}</span></div>))}
+        {groups.length === 0 && <p className="text-xs text-muted-foreground">还没有事件。</p>}
+      </div>
+      <div className="mt-3 flex gap-1.5"><input value={note} onChange={(event) => setNote(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void submitNote() } }} placeholder="写评论… 用 #B142 引用其他工作项" className="min-w-0 flex-1 rounded-md border bg-background px-2 py-1.5 text-xs" /><button type="button" disabled={noteBusy || !note.trim()} onClick={() => void submitNote()} className="rounded-md border px-2.5 py-1 text-xs disabled:opacity-50">发布</button></div>
+      {noteError && <p role="alert" className="mt-1 text-xs text-destructive">{noteError}</p>}
+      <p className="mt-1 text-[11px] text-muted-foreground">#B 号引用会自动建立关联边。</p>
+    </section>
+  )
+
+  // 桌面块序（重构前原序，一字不动）：协调者面板 → 席位 → 状态列 → 元数据 →
+  // 验收 → 附件 → 并入 → 关系 → 子任务 → 关联执行 → 需要你 → 环节动作 → Timeline。
+  const renderBlocksDesktop = () => (
+    <>
+      {renderCoordinatorPanel()}
+      {renderCoordinatorSeat()}
+      {renderStatusChips()}
+      {renderMeta()}
+      {renderAcceptance()}
+      {renderAttachments()}
+      {renderMergedMembers()}
+      {renderRelations()}
+      {renderChildren()}
+      {renderTaskRows()}
+      {renderAttention()}
+      {renderMove()}
+      {renderTimeline()}
+    </>
+  )
+
+  // compact 三层块序（plan §2 岔口 2）：工作项（状态地图 + 验收）→ 当前动作
+  // （等人/裁决答复 → 环节转移 → 关联执行整块 → 协调者面板）→ 证据（Timeline
+  // → 附件 → 并入 → 关系 → 子任务 → 元数据 → 席位）。两个归属裁定：关联执行
+  // 行与它展开的工单答复是同一 aria-expanded 行块，整块归当前动作不拆；状态列
+  // chips 归工作项组（完成定义语境，与验收同族）。层标题上缘 border-t 分隔。
+  const tierHeadingClass = 'mb-3 border-t pt-3 text-xs font-semibold text-muted-foreground'
+  const renderBlocksCompact = () => (
+    <>
+      <h2 data-testid="card-tier-work" className={tierHeadingClass}>工作项</h2>
+      {renderStatusChips()}
+      {renderAcceptance()}
+      <h2 data-testid="card-tier-action" className={tierHeadingClass}>当前动作</h2>
+      {renderAttention()}
+      {renderMove()}
+      {renderTaskRows()}
+      {renderCoordinatorPanel()}
+      <h2 data-testid="card-tier-evidence" className={tierHeadingClass}>证据</h2>
+      {renderTimeline()}
+      {renderAttachments()}
+      {renderMergedMembers()}
+      {renderRelations()}
+      {renderChildren()}
+      {renderMeta()}
+      {renderCoordinatorSeat()}
+    </>
+  )
+
   return (
-    <aside className="absolute inset-y-0 right-0 z-40 flex w-[560px] max-w-[92vw] flex-col border-l bg-background shadow-xl" role="dialog" aria-label="工作项详情">
+    // 桌面类串逐字节保留（w-[560px] max-w-[92vw]）；compact 全宽（inset-x-0）
+    // + 触点基线类。aria-modal/焦点移交 compact-only（§3.1）：桌面是 560px
+    // 侧板、看板左半仍可见可点（双栏是设计形态），贴 aria-modal 是向读屏谎报。
+    <aside
+      ref={panelRef}
+      tabIndex={compact ? -1 : undefined}
+      className={
+        compact
+          ? `absolute inset-y-0 right-0 inset-x-0 z-40 flex flex-col border-l bg-background shadow-xl ${TOUCH_BASELINE}`
+          : 'absolute inset-y-0 right-0 z-40 flex w-[560px] max-w-[92vw] flex-col border-l bg-background shadow-xl'
+      }
+      role="dialog"
+      aria-label="工作项详情"
+      aria-modal={compact ? 'true' : undefined}
+    >
       <header className="border-b px-4 py-3">
         <div className="flex items-center gap-2" data-testid="card-drawer-header">
           <span className="font-mono text-xs text-muted-foreground">{value(card, 'id', id)}</span>
           {/* B287：头部状态只渲染一次——单枚深色 chip，节点标签优先、状态回落。 */}
           <span className="rounded-full bg-slate-900 px-2 py-0.5 text-xs text-white">{nodeLabel ?? (status || '加载中')}</span>
           {acceptanceInfo.verified && <span className="rounded-full border border-green-300 bg-green-50 px-2 py-0.5 text-[10px] text-green-700">已验</span>}
-          <button type="button" aria-label="关闭" onClick={onClose} className="ml-auto rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground"><X className="size-4" /></button>
+          <button type="button" aria-label="关闭" onClick={onClose} className={cn('ml-auto rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground', compact && 'min-h-11')}><X className="size-4" /></button>
         </div>
         {titleEditing ? (
           <div className="mt-2 flex items-center gap-2">
@@ -638,294 +1001,7 @@ export function CardDrawer({
       <div className="min-h-0 flex-1 overflow-y-auto p-4">
         {error && <p role="alert" className="mb-3 break-words rounded border border-destructive/40 bg-destructive/5 p-2 text-sm text-destructive">{error}</p>}
         {!detail && !error && <p className="text-sm text-muted-foreground">正在读取账本…</p>}
-        {detail && (
-          <>
-            <CoordinatorPanel cardId={id} onOpenTerminal={onOpenCoordinatorTerminal ?? (() => undefined)} />
-
-            <section className="mb-5 rounded-lg border p-3">
-              <h3 className="mb-1.5 text-xs font-semibold text-muted-foreground">协调者席位</h3>
-              {driverSession
-                ? <dl className="grid grid-cols-[max-content_minmax(0,1fr)] gap-x-3 gap-y-1 text-xs"><dt className="text-muted-foreground">身份</dt><dd className="break-all font-mono">{driverSession}</dd><dt className="text-muted-foreground">来源</dt><dd>{driverSource === 'bind' ? '坐下' : driverSource === 'coordinate' ? '叫机器人' : '席位异常'}</dd></dl>
-                : <p className="text-xs text-muted-foreground">空座：可选择“叫机器人”启动协调者。</p>}
-            </section>
-
-            <section className="mb-5">
-              <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
-                {boardColumns(states, resolvedBoardLayout).map((column) => <span key={column} className={`rounded-full border px-2 py-0.5 ${column === boardColumnFor(status, resolvedBoardLayout) ? 'border-primary bg-primary text-primary-foreground' : column === '结束' ? 'border-dashed text-muted-foreground' : 'text-muted-foreground'}`}>{column}</span>)}
-              </div>
-            </section>
-
-            <section className="mb-5">
-              <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
-                <dt className="text-muted-foreground">项目</dt><dd>{value(card, 'project', '—')}</dd>
-                <dt className="text-muted-foreground">工作流</dt><dd>{value(card, 'workflow', '—')} @ v{value(card, 'workflow_version', 0)}</dd>
-                <dt className="text-muted-foreground">优先级</dt>
-                <dd>
-                  {priorityEditing ? (
-                    <span className="flex items-center gap-1.5">
-                      <select aria-label="优先级" value={priorityDraft} onChange={(event) => setPriorityDraft(event.target.value)} className="rounded border bg-background px-1.5 py-0.5 text-xs">
-                        {['高', '中', '低'].map((level) => <option key={level} value={level}>{level}</option>)}
-                      </select>
-                      <button type="button" disabled={priorityBusy} onClick={() => void submitPriority()} className="rounded border px-1.5 py-0.5 text-[11px] disabled:opacity-50">保存优先级</button>
-                      <button type="button" disabled={priorityBusy} onClick={() => setPriorityEditing(false)} className="rounded border px-1.5 py-0.5 text-[11px]">取消</button>
-                    </span>
-                  ) : (
-                    <span className="flex items-center gap-1.5"><span>{value(card, 'priority', '—')}</span><button type="button" onClick={beginPriorityEdit} className="rounded border px-1.5 py-0.5 text-[11px]">改优先级</button></span>
-                  )}
-                </dd>
-                {priorityError && <dd role="alert" className="col-span-2 break-words text-xs text-destructive">{priorityError}</dd>}
-                <dt className="text-muted-foreground">附件</dt><dd>{attachments.map((item) => item.path).join('、') || '—'}</dd>
-                <dt className="text-muted-foreground">基线</dt>
-                <dd className="font-mono">
-                  {baseEditing ? (
-                    <span className="flex flex-wrap items-center gap-1.5 font-sans">
-                      <input aria-label="基线分支" value={baseDraft} onChange={(event) => setBaseDraft(event.target.value)}
-                        className="min-w-0 flex-1 rounded border bg-background px-2 py-1 font-mono text-xs" />
-                      <button type="button" disabled={baseBusy} onClick={() => void submitBase()}
-                        className="rounded border px-2 py-1 text-[11px] disabled:opacity-50">保存基线</button>
-                      <button type="button" disabled={baseBusy} onClick={() => setBaseEditing(false)}
-                        className="rounded border px-2 py-1 text-[11px]">取消</button>
-                    </span>
-                  ) : (
-                    <span className="flex flex-wrap items-center gap-1.5">
-                      <span>{baseLabel}</span>
-                      <button type="button" onClick={beginBaseEdit} className="font-sans rounded border px-2 py-1 text-[11px]">编辑基线</button>
-                    </span>
-                  )}
-                  {baseError && <span role="alert" className="mt-1 block break-words font-sans text-xs text-destructive">{baseError}</span>}
-                </dd>
-                {(following || driverStale) && <><dt className="text-muted-foreground">驱动/跟随</dt><dd>{following ? `跟随 ${following}` : `驱动异常：${driverSession}`}</dd></>}
-              </dl>
-            </section>
-
-            <section className="mb-5">
-              <h3 className="mb-1.5 text-xs font-semibold text-muted-foreground">验收</h3>
-              <div className="rounded-lg border p-3 text-xs">
-                <div className="mb-1.5 font-medium">{acceptanceLabel}</div>
-                {acceptanceEditing ? (
-                  <div className="space-y-1.5">
-                    <textarea
-                      value={acceptanceDraft}
-                      onChange={(event) => setAcceptanceDraft(event.target.value)}
-                      placeholder="这张卡怎样算做完了…"
-                      rows={4}
-                      className="w-full rounded border bg-background px-2 py-1.5 text-xs"
-                    />
-                    <div className="flex gap-2">
-                      <button type="button" disabled={acceptanceBusy} onClick={() => void submitAcceptance()}
-                        className="rounded-md bg-primary px-2.5 py-1 text-xs text-primary-foreground disabled:opacity-50">保存判据</button>
-                      <button type="button" disabled={acceptanceBusy} onClick={() => setAcceptanceEditing(false)}
-                        className="rounded-md border px-2.5 py-1 text-xs">取消</button>
-                    </div>
-                    {acceptanceError && <p role="alert" className="break-words text-xs text-destructive">{acceptanceError}</p>}
-                  </div>
-                ) : (
-                  <>
-                    <p className="whitespace-pre-wrap leading-5">{acceptanceInfo.criteria || '尚未填写验收判据。'}</p>
-                    <button type="button" onClick={beginAcceptanceEdit} className="mt-2 rounded-md border px-2.5 py-1 text-xs hover:bg-accent">编辑判据</button>
-                  </>
-                )}
-                {acceptanceInfo.evidence && <p className="mt-2 border-l-2 pl-2 leading-5 text-muted-foreground">{acceptanceInfo.evidence}</p>}
-                {!acceptanceInfo.verified && (
-                  !acceptOpen ? (
-                    <button type="button" onClick={() => setAcceptOpen(true)}
-                      className="mt-2 rounded-md border px-2.5 py-1 text-xs hover:bg-accent">标记已验…</button>
-                  ) : (
-                    <div className="mt-2 space-y-1.5">
-                      <textarea value={acceptEvidence} onChange={(event) => setAcceptEvidence(event.target.value)}
-                        rows={3} placeholder="证据：怎么验的、在哪台机器、日志在哪"
-                        className="w-full rounded border bg-background px-2 py-1 text-xs" />
-                      <div className="flex gap-2">
-                        <button type="button" disabled={acceptBusy || !acceptEvidence.trim()} onClick={() => void submitAccept()}
-                          className="rounded-md bg-primary px-2.5 py-1 text-xs text-primary-foreground disabled:opacity-50">确认</button>
-                        <button type="button" onClick={() => { setAcceptOpen(false); setAcceptError('') }}
-                          className="rounded-md border px-2.5 py-1 text-xs">取消</button>
-                      </div>
-                      {acceptError && <p role="alert" className="break-words text-xs text-destructive">{acceptError}</p>}
-                    </div>
-                  )
-                )}
-              </div>
-            </section>
-
-            <section className="mb-5">
-              <h3 className="mb-1.5 text-xs font-semibold text-muted-foreground">附件管理</h3>
-              <div className="space-y-1.5 rounded-lg border p-3 text-xs">
-                {attachments.length > 0 ? (
-                  <ul className="space-y-1">
-                    {attachments.map((attachment) => (
-                      <li key={`${attachment.kind}:${attachment.path}`} className="flex items-center gap-2">
-                        <span className="min-w-0 flex-1 break-all font-mono">{attachment.path}</span>
-                        <span className="shrink-0 text-muted-foreground">{attachment.kind || '附件'}</span>
-                        <button
-                          type="button"
-                          aria-label={`摘掉 ${attachment.path}`}
-                          disabled={attachmentBusy}
-                          onClick={() => void removeAttachment(attachment.path)}
-                          className="shrink-0 rounded border px-1.5 py-0.5 text-[11px] disabled:opacity-50"
-                        >摘掉</button>
-                      </li>
-                    ))}
-                  </ul>
-                ) : <p className="text-muted-foreground">尚未挂附件。</p>}
-                <div className="flex flex-wrap items-center gap-1.5">
-                  <select aria-label="附件类型" value={attachmentKind} onChange={(event) => setAttachmentKind(event.target.value)} className="rounded border bg-background px-1.5 py-1 text-xs">
-                    {['spec', 'plan', 'doc'].map((kind) => <option key={kind} value={kind}>{kind}</option>)}
-                  </select>
-                  <input
-                    value={attachmentPath}
-                    onChange={(event) => setAttachmentPath(event.target.value)}
-                    placeholder="docs/superpowers/plans/…"
-                    className="min-w-0 flex-1 rounded border bg-background px-2 py-1 text-xs"
-                  />
-                  <button type="button" disabled={attachmentBusy || !attachmentPath.trim()} onClick={() => void submitAttachment()}
-                    className="rounded border px-2 py-1 text-xs disabled:opacity-50">挂上</button>
-                </div>
-                {attachmentError && <p role="alert" className="break-words text-xs text-destructive">{attachmentError}</p>}
-              </div>
-            </section>
-
-            {mergedMembers.length > 0 && (
-              <section ref={mergeRef} className="mb-5">
-                <h3 className="mb-1.5 text-xs font-semibold text-muted-foreground">⊕ 并入本卡（状态跟随，验收各自保留）</h3>
-                {mergedMembers.map((relation) => {
-                  const memberID = relationValue(relation, 'From')
-                  return <div key={memberID} className="mb-1 flex items-center gap-2 rounded-md border px-2 py-1.5 text-xs"><button type="button" className="font-mono underline" onClick={() => onOpenCard(memberID)}>{memberID}</button><span className="text-muted-foreground">未验</span><span className="ml-auto rounded-full border px-1.5 text-[10px]">跟随 badge</span><button type="button" disabled title="CLI: handoff card unmerge" className="rounded border px-1.5 text-[10px] text-muted-foreground">拆回</button></div>
-                })}
-              </section>
-            )}
-
-            {visibleRelations.length > 0 && (
-              <section className="mb-5">
-                <h3 className="mb-1.5 text-xs font-semibold text-muted-foreground">关系</h3>
-                {visibleRelations.map((relation, index) => {
-                  const from = relationValue(relation, 'From')
-                  const to = relationValue(relation, 'To')
-                  const type = relationValue(relation, 'Type')
-                  const label: Record<string, string> = { blocks: '阻塞', discovered_from: '发现自', split_from: '拆分自', relates: '关联' }
-                  return <div key={`${from}-${to}-${type}-${index}`} className="mb-1 text-xs"><span className="mr-1.5 text-muted-foreground">{label[type] ?? type}</span><button type="button" className="font-mono underline" onClick={() => onOpenCard(from === id ? to : from)}>{from === id ? to : from}</button></div>
-                })}
-              </section>
-            )}
-
-            {(detail.children ?? []).length > 0 && (
-              <section className="mb-5">
-                <h3 className="mb-1.5 text-xs font-semibold text-muted-foreground">子任务</h3>
-                {(detail.children ?? []).map((child) => (
-                  <div key={child.id} className="mb-1 flex items-center gap-2 rounded-md border px-2 py-1.5 text-xs">
-                    <button type="button" className="font-mono underline" onClick={() => onOpenCard(child.id)}>{child.id}</button>
-                    <span className="min-w-0 flex-1 truncate">{child.title}</span>
-                    <span className="ml-auto rounded-full border px-1.5 py-0.5 text-[10px] text-muted-foreground">{child.status}</span>
-                  </div>
-                ))}
-              </section>
-            )}
-
-            {taskRows.length > 0 && (
-              <section className="mb-5">
-                <h3 className="mb-1.5 text-xs font-semibold text-muted-foreground">
-                  {/* 计数与行渲染同源（同一个 taskRows/isRunningRow 派生），不会各说各话 */}
-                  {runningCount === null ? '关联执行（task）' : `关联执行 · ${runningCount} 个在跑 / 共 ${taskRows.length} 个`}
-                </h3>
-                {taskRows.map((row) => {
-                  const open = expandedTask === row.TaskID
-                  const taskDetail = taskDetails[row.TaskID]
-                  const linked = linkedTaskOf(row, tasks)
-                  return (
-                    <div key={`${row.Target}/${row.TaskID}`} className="mb-1 rounded-md border text-xs">
-                      {/* 整行点击=展开工单（现状职责，spec §3.3 不动它）。外层从
-                          <button> 换成 div[role=button] 是为了容纳行内的 ↗ 真
-                          按钮（button 不能嵌 button）；role/tabIndex/键盘处理
-                          照抄 CardItem.tsx:35-44 的行内可点先例，cursor-pointer
-                          补回原生 button 自带的指针。 */}
-                      <div
-                        role="button"
-                        tabIndex={0}
-                        aria-expanded={open}
-                        onClick={() => toggleTask(row.TaskID)}
-                        onKeyDown={(event) => {
-                          if (event.key === 'Enter' || event.key === ' ') {
-                            event.preventDefault()
-                            toggleTask(row.TaskID)
-                          }
-                        }}
-                        className="flex w-full cursor-pointer items-center gap-2 px-2 py-1.5 text-left"
-                      >
-                        {/* 实况来自页面级 2.5s 任务流的真 state，渲染与看板同一套
-                            圆点+文案。LastType 只是镜像事件的类型不是状态：
-                            turn_failed 可 continue、completed 事件早于落态，拿它判
-                            「跑没跑完」会和看板得出相反结论（spec §3.1）。关联不上
-                            就写「实况未知」并把 LastType 当线索列出。 */}
-                        <span className="font-mono">{row.TaskID}</span><span>{row.Purpose}</span>
-                        {linked ? (
-                          <span className="ml-auto"><TaskState state={linked.state} /></span>
-                        ) : (
-                          <span className="ml-auto text-muted-foreground">实况未知{row.LastType !== '' && ` · 最后事件 ${row.LastType}`}</span>
-                        )}
-                        <span className="text-muted-foreground">{row.Target}</span>
-                        {onJumpToTask && (
-                          <button
-                            type="button"
-                            aria-label={`跳到 ${row.TaskID}`}
-                            title="去该任务所在的目录并打开它的 TUI 标签页；目录解析不到时会开在当前目录下"
-                            onClick={(event) => {
-                              // 跳转必须掐掉冒泡：整行的点击语义是展开工单，
-                              // 一次点击不能又跳走又把面板拉出来（spec §3.3；
-                              // 验收含「去掉 stopPropagation 必须红」的变异复验）
-                              event.stopPropagation()
-                              onJumpToTask(row.TaskID)
-                            }}
-                            className="shrink-0 rounded border px-1.5 py-0.5 text-[11px] hover:bg-accent"
-                          >↗</button>
-                        )}
-                      </div>
-                      {open && (
-                        <div className="border-t px-2 py-2">
-                          {/* 远程 task 的工单在这里也答得了：agentd 的 byTask 中间件会把
-                              /api/tasks/{id}/* 透明代理到该 task 的属主机器。所以这一段
-                              是纯前端复用，不需要任何新后端。 */}
-                          {taskLoading === row.TaskID && <p className="text-xs text-muted-foreground">正在读取工单…</p>}
-                          {taskErrors[row.TaskID] && <p role="alert" className="break-words text-xs text-destructive">{taskErrors[row.TaskID]}</p>}
-                          {taskDetail && (
-                            <TicketsPanel
-                              bare
-                              tickets={pendingTickets(taskDetail)}
-                              disabled={false}
-                              onReply={(ticket, answer) => replyTaskTicket(row.TaskID, ticket, answer)}
-                            />
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  )
-                })}
-              </section>
-            )}
-
-            {((detail.decisions ?? []).length > 0 || (detail.needs ?? '') !== '') && (
-              <CardAttention cardId={id} needs={detail.needs ?? ''} decisions={detail.decisions ?? []} onAnswered={load} />
-            )}
-
-            <section className="mb-5">
-              <h3 className="mb-1.5 text-xs font-semibold text-muted-foreground">环节动作</h3>
-              <p className="mb-2 text-xs text-muted-foreground">节点执行由协调者生命周期统一接管；此处只保留状态转移。</p>
-              {!moveConfirm ? <button type="button" onClick={() => setMoveConfirm(true)} className="rounded-md border px-2.5 py-1 text-xs hover:bg-accent">转移状态…</button> : <div className="flex flex-wrap items-center gap-2"><select value={moveTarget} onChange={(event) => setMoveTarget(event.target.value)} className="rounded-md border bg-background px-2 py-1 text-xs"><option value="">选择目标态</option>{states.filter((state) => state !== status).map((state) => <option key={state} value={state}>{state}</option>)}</select><button type="button" disabled={!moveTarget || moveBusy} onClick={() => void submitMove()} className="rounded-md bg-primary px-2.5 py-1 text-xs text-primary-foreground disabled:opacity-50">确认转移</button><button type="button" onClick={() => setMoveConfirm(false)} className="rounded-md border px-2.5 py-1 text-xs">取消</button></div>}
-              {moveError && <p role="alert" className="mt-1 break-words text-xs text-destructive">{moveError}</p>}
-            </section>
-
-            <section className="mb-5">
-              <h3 className="mb-1.5 text-xs font-semibold text-muted-foreground">Timeline</h3>
-              <div className="mb-2 flex flex-wrap gap-1"><span className="sr-only">timeline filter</span>{(['all', 'comment', 'verdict', 'system'] as const).map((filter) => <button key={filter} type="button" onClick={() => setTimelineFilter(filter)} className={`rounded-full border px-2 py-0.5 text-[11px] ${timelineFilter === filter ? 'bg-primary text-primary-foreground' : 'text-muted-foreground'}`}>{filter === 'all' ? '全部' : filter === 'comment' ? '评论' : filter === 'verdict' ? '裁决' : '系统'}</button>)}</div>
-              <div className="space-y-1.5">
-                {groups.map((group, index) => group.kind === 'mirror' ? <details key={`mirror-${index}`} className="text-xs text-muted-foreground"><summary className="cursor-pointer">镜像执行事件（{group.events.length}）</summary><div className="ml-2 border-l pl-2">{group.events.map((event) => <div key={event.seq} className="py-0.5">#{event.seq} {eventSummary(event)}</div>)}</div></details> : group.events.map((event) => event.type === 'review_verdict' ? <VerdictCard key={event.seq} event={event} /> : event.type === 'comment' ? <div key={event.seq} className="rounded-lg bg-muted px-3 py-2 text-xs leading-5"><div className="mb-0.5 text-[11px] text-muted-foreground">{event.actor}</div>{eventSummary(event)}</div> : <div key={event.seq} className="flex gap-2 text-xs text-muted-foreground"><span className="font-mono">#{event.seq}</span><span>{eventSummary(event)}</span></div>))}
-                {groups.length === 0 && <p className="text-xs text-muted-foreground">还没有事件。</p>}
-              </div>
-              <div className="mt-3 flex gap-1.5"><input value={note} onChange={(event) => setNote(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void submitNote() } }} placeholder="写评论… 用 #B142 引用其他工作项" className="min-w-0 flex-1 rounded-md border bg-background px-2 py-1.5 text-xs" /><button type="button" disabled={noteBusy || !note.trim()} onClick={() => void submitNote()} className="rounded-md border px-2.5 py-1 text-xs disabled:opacity-50">发布</button></div>
-              {noteError && <p role="alert" className="mt-1 text-xs text-destructive">{noteError}</p>}
-              <p className="mt-1 text-[11px] text-muted-foreground">#B 号引用会自动建立关联边。</p>
-            </section>
-          </>
-        )}
+        {detail && (compact ? renderBlocksCompact() : renderBlocksDesktop())}
       </div>
     </aside>
   )

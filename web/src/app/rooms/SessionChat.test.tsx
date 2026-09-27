@@ -219,3 +219,30 @@ describe('SessionChat', () => {
     expect(screen.queryByRole('button', { name: /回复 #/ })).toBeNull()
   })
 })
+
+// —— B369.8 T5：compact 回复钮常驻（hover 零依赖）——
+describe('B369.8 compact 回复钮', () => {
+  const e7 = event(7, '收到')
+
+  it('compact：class 含 opacity-100 常驻、不含 group-hover/opacity-0 hover 依赖', () => {
+    render(<SessionChat sessionId="session:1" summary={summary()} events={[e7]} historyError="" onSent={() => {}} compact />)
+    const cls = screen.getByTestId('reply-7').className
+    expect(cls).toContain('opacity-100')
+    expect(cls).not.toContain('group-hover:opacity-100')
+    expect(cls).not.toContain('opacity-0')
+  })
+
+  it('桌面反例锁：class 仍是 hover 显形串（opacity-0 + group-hover:opacity-100）', () => {
+    render(<SessionChat sessionId="session:1" summary={summary()} events={[e7]} historyError="" onSent={() => {}} />)
+    // 集合级逐字锁（cn/tailwind-merge 会重排冲突组，断言产物串本身；
+    // focus:opacity-100 与 opacity-100 子串撞车，toContain 不可用）
+    expect(screen.getByTestId('reply-7').className).toBe(
+      'shrink-0 rounded p-1 text-muted-foreground transition-opacity hover:bg-accent hover:text-foreground focus:opacity-100 opacity-0 group-hover:opacity-100',
+    )
+  })
+
+  it('compact：发送钮主动作触控档 min-h-11', () => {
+    render(<SessionChat sessionId="session:1" summary={summary()} events={[]} historyError="" onSent={() => {}} compact />)
+    expect(screen.getByRole('button', { name: '发送' }).className).toContain('min-h-11')
+  })
+})

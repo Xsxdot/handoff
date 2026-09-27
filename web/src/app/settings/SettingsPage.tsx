@@ -24,6 +24,8 @@ import { EnvPage } from './EnvPage'
 import { GeneralPage } from './GeneralPage'
 import { UpdatePage } from './UpdatePage'
 import { SchedulingPage } from './SchedulingPage'
+import { SettingsHub } from './SettingsHub'
+import { normalizeSettingsSub } from '../shell/useMobileNav'
 import { cn } from '@/lib/utils'
 
 // SECTIONS 是设置页的六个分区；自动化紧跟执行纪律，?section=automation 可深链进入。
@@ -38,7 +40,19 @@ const SECTIONS = [
 
 type SectionKey = (typeof SECTIONS)[number]['key']
 
-export function SettingsPage({ onClose }: { onClose: () => void }) {
+// SettingsPage 的输入仍只有 props 与 window 两种（B369.8 岔口 1）：
+//   - 桌面深链 = window.location.search 直读（useState 初始化器，原样保留，
+//     独立单测继续可渲染）
+//   - compact 深链 = Shell 从 useMobileNav 读 nav.sub 经 props 注入——组件自身
+//     永远不碰 router hook，「统一」落在组件边界
+// compact=true 时 body 渲染 SettingsHub 分支（两级 IA：四分区中心 + 二级页）；
+// 桌面 JSX body 逐字节不动（缺省 compact=false 走原路径）。
+export function SettingsPage({ onClose, compact = false, sub, onSubChange }: {
+  onClose: () => void
+  compact?: boolean
+  sub?: string | null
+  onSubChange?: (key: string | null) => void
+}) {
   const [section, setSection] = useState<SectionKey>(() => {
     // 提示框的「查看详情」用 query 指向更新分区；读取 window 而不是 router hook，
     // 保持 SettingsPage 在现有的独立单测与嵌入场景中也能直接渲染。
@@ -64,43 +78,60 @@ export function SettingsPage({ onClose }: { onClose: () => void }) {
         <button
           type="button"
           onClick={onClose}
-          className="ml-auto inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
+          className={cn(
+            'ml-auto inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground',
+            // compact 档主动作触控档（plan §3.3）；桌面类串逐字节等价（cn 恒假不加）
+            compact && 'min-h-11',
+          )}
         >
           <ArrowLeft className="size-3.5" />
           返回工作台
         </button>
       </header>
 
-      <div className="flex min-h-0 flex-1">
-        <nav className="w-40 shrink-0 border-r p-2">
-          {SECTIONS.map((s) => (
-            <button
-              key={s.key}
-              type="button"
-              onClick={() => setSection(s.key)}
-              aria-current={section === s.key ? 'true' : undefined}
-              className={cn(
-                'block w-full rounded-md px-2 py-1.5 text-left text-[13px] hover:bg-accent',
-                section === s.key && 'bg-accent font-medium',
-              )}
-            >
-              {s.label}
-              {s.key === 'update' && updateAvailable && (
-                <span aria-label="有可用更新" data-testid="update-available-dot" className="ml-1 inline-block size-1.5 rounded-full bg-amber-500 align-middle" />
-              )}
-            </button>
-          ))}
-        </nav>
-
+      {compact ? (
         <div className="min-h-0 flex-1 overflow-auto">
-          {section === 'machines' && <MachinesPage tree={treeState.data} />}
-          {section === 'discipline' && <DisciplinePage />}
-          {section === 'automation' && <SchedulingPage />}
-          {section === 'general' && <GeneralPage tree={treeState.data} />}
-          {section === 'env' && <EnvPage />}
-          {section === 'update' && <UpdatePage desktopState={desktopState.data} latest={latest.data} />}
+          <SettingsHub
+            tree={treeState.data}
+            desktopState={desktopState.data}
+            latest={latest.data}
+            updateAvailable={updateAvailable}
+            sub={normalizeSettingsSub(sub ?? null)}
+            onSubChange={onSubChange ?? (() => {})}
+          />
         </div>
-      </div>
+      ) : (
+        <div className="flex min-h-0 flex-1">
+          <nav className="w-40 shrink-0 border-r p-2">
+            {SECTIONS.map((s) => (
+              <button
+                key={s.key}
+                type="button"
+                onClick={() => setSection(s.key)}
+                aria-current={section === s.key ? 'true' : undefined}
+                className={cn(
+                  'block w-full rounded-md px-2 py-1.5 text-left text-[13px] hover:bg-accent',
+                  section === s.key && 'bg-accent font-medium',
+                )}
+              >
+                {s.label}
+                {s.key === 'update' && updateAvailable && (
+                  <span aria-label="有可用更新" data-testid="update-available-dot" className="ml-1 inline-block size-1.5 rounded-full bg-amber-500 align-middle" />
+                )}
+              </button>
+            ))}
+          </nav>
+
+          <div className="min-h-0 flex-1 overflow-auto">
+            {section === 'machines' && <MachinesPage tree={treeState.data} />}
+            {section === 'discipline' && <DisciplinePage />}
+            {section === 'automation' && <SchedulingPage />}
+            {section === 'general' && <GeneralPage tree={treeState.data} />}
+            {section === 'env' && <EnvPage />}
+            {section === 'update' && <UpdatePage desktopState={desktopState.data} latest={latest.data} />}
+          </div>
+        </div>
+      )}
     </div>
   )
 }
