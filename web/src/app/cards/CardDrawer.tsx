@@ -275,6 +275,9 @@ export interface CardDrawerProps {
   // compact（B369.8 T4）：抽屉全宽 + aria-modal + 焦点移交 + 13 块三层分组。
   // 缺省 false = 桌面 aside 类串与块序逐字节不动（§3.1 的桌面净改动承诺）。
   compact?: boolean
+  // B369.10 T8：compact 双跳行第二跳「驾驶会话 → 群聊」的回调（CardsPage 经
+  // onOpenSessionForCard 注入，Shell 会话流反查）。缺席不渲染——桌面永不渲染。
+  onOpenDriverSession?: () => void
 }
 
 export function CardDrawer({
@@ -289,6 +292,7 @@ export function CardDrawer({
   onJumpToTask,
   onOpenCoordinatorTerminal,
   compact = false,
+  onOpenDriverSession,
 }: CardDrawerProps) {
   const [detail, setDetail] = useState<CardDetail | null>(null)
   const [error, setError] = useState('')
@@ -410,6 +414,13 @@ export function CardDrawer({
     })
   }, [detail, tasks])
   const runningCount = tasks === undefined ? null : taskRows.filter((row) => isRunningRow(row, tasks)).length
+
+  // B369.10 T8 双跳行 hot 判据（与 renderAttention 同源：等人 ∪ 挂卡裁决）且
+  // 关联执行存在在跑行——落点取第一个在跑行的 TaskID（taskRows 已按在跑优先
+  // 排序），同 taskJumpHref 深链语境。tasks 未到不猜（诚实降级，行不渲染）。
+  const needsHot = detail !== null
+    && ((detail.needs ?? '') !== '' || (detail.decisions ?? []).some((decision) => decision.status === 'open'))
+  const firstRunningTaskId = tasks === undefined ? null : (taskRows.find((row) => isRunningRow(row, tasks))?.TaskID ?? null)
 
   const beginTitleEdit = () => {
     if (!detail) return
@@ -674,52 +685,116 @@ export function CardDrawer({
   const renderAcceptance = () => (
     <section className="mb-5">
       <h3 className="mb-1.5 text-xs font-semibold text-muted-foreground">验收</h3>
-      <div className="rounded-lg border p-3 text-xs">
-        <div className="mb-1.5 font-medium">{acceptanceLabel}</div>
-        {acceptanceEditing ? (
-          <div className="space-y-1.5">
-            <textarea
-              value={acceptanceDraft}
-              onChange={(event) => setAcceptanceDraft(event.target.value)}
-              placeholder="这张卡怎样算做完了…"
-              rows={4}
-              className="w-full rounded border bg-background px-2 py-1.5 text-xs"
-            />
-            <div className="flex gap-2">
-              <button type="button" disabled={acceptanceBusy} onClick={() => void submitAcceptance()}
-                className={cn('rounded-md bg-primary px-2.5 py-1 text-xs text-primary-foreground disabled:opacity-50', compact && 'min-h-11')}>保存判据</button>
-              <button type="button" disabled={acceptanceBusy} onClick={() => setAcceptanceEditing(false)}
-                className="rounded-md border px-2.5 py-1 text-xs">取消</button>
-            </div>
-            {acceptanceError && <p role="alert" className="break-words text-xs text-destructive">{acceptanceError}</p>}
-          </div>
-        ) : (
-          <>
-            <p className="whitespace-pre-wrap leading-5">{acceptanceInfo.criteria || '尚未填写验收判据。'}</p>
-            <button type="button" onClick={beginAcceptanceEdit} className="mt-2 rounded-md border px-2.5 py-1 text-xs hover:bg-accent">编辑判据</button>
-          </>
-        )}
-        {acceptanceInfo.evidence && <p className="mt-2 border-l-2 pl-2 leading-5 text-muted-foreground">{acceptanceInfo.evidence}</p>}
-        {!acceptanceInfo.verified && (
-          !acceptOpen ? (
-            <button type="button" onClick={() => setAcceptOpen(true)}
-              className="mt-2 rounded-md border px-2.5 py-1 text-xs hover:bg-accent">标记已验…</button>
-          ) : (
-            <div className="mt-2 space-y-1.5">
-              <textarea value={acceptEvidence} onChange={(event) => setAcceptEvidence(event.target.value)}
-                rows={3} placeholder="证据：怎么验的、在哪台机器、日志在哪"
-                className="w-full rounded border bg-background px-2 py-1 text-xs" />
+      {compact ? (
+        /* B369.10 T8 compact 行式：判据/证据/已验三行分行（原型 mobile-card 验收
+           区行式版式）。「标记已验…」交互与确认语义原样保留——原型的逐条开关是
+           逐条验收语义，wire 的验收是整卡一门（acceptCard(id, evidence)），无逐条
+           开关可落，整卡语义保持（偏离记台账，替代形态=行式呈现在此）。 */
+        <div className="space-y-2 rounded-lg border p-3 text-xs">
+          {acceptanceEditing ? (
+            <div className="space-y-1.5">
+              <textarea
+                value={acceptanceDraft}
+                onChange={(event) => setAcceptanceDraft(event.target.value)}
+                placeholder="这张卡怎样算做完了…"
+                rows={4}
+                className="w-full rounded border bg-background px-2 py-1.5 text-xs"
+              />
               <div className="flex gap-2">
-                <button type="button" disabled={acceptBusy || !acceptEvidence.trim()} onClick={() => void submitAccept()}
-                  className={cn('rounded-md bg-primary px-2.5 py-1 text-xs text-primary-foreground disabled:opacity-50', compact && 'min-h-11')}>确认</button>
-                <button type="button" onClick={() => { setAcceptOpen(false); setAcceptError('') }}
+                <button type="button" disabled={acceptanceBusy} onClick={() => void submitAcceptance()}
+                  className="min-h-11 rounded-md bg-primary px-2.5 py-1 text-xs text-primary-foreground disabled:opacity-50">保存判据</button>
+                <button type="button" disabled={acceptanceBusy} onClick={() => setAcceptanceEditing(false)}
+                  className="min-h-11 rounded-md border px-2.5 py-1 text-xs">取消</button>
+              </div>
+              {acceptanceError && <p role="alert" className="break-words text-xs text-destructive">{acceptanceError}</p>}
+            </div>
+          ) : (
+            <div data-testid="acceptance-criteria-row" className="flex items-start gap-2">
+              <span className="w-8 shrink-0 pt-0.5 text-muted-foreground">判据</span>
+              <p className="min-w-0 flex-1 whitespace-pre-wrap leading-5">{acceptanceInfo.criteria || '尚未填写验收判据。'}</p>
+              <button type="button" onClick={beginAcceptanceEdit} className="min-h-11 shrink-0 rounded border px-2 py-1 text-[11px] hover:bg-accent">编辑判据</button>
+            </div>
+          )}
+          {acceptanceInfo.evidence !== '' && (
+            <div data-testid="acceptance-evidence-row" className="flex items-start gap-2">
+              <span className="w-8 shrink-0 pt-0.5 text-muted-foreground">证据</span>
+              <p className="min-w-0 flex-1 whitespace-pre-wrap leading-5 text-muted-foreground">{acceptanceInfo.evidence}</p>
+            </div>
+          )}
+          <div data-testid="acceptance-verified-row" className="flex items-start gap-2">
+            <span className="w-8 shrink-0 pt-0.5 text-muted-foreground">已验</span>
+            <div className="min-w-0 flex-1">
+              <p className="leading-5">{acceptanceInfo.verified ? '已验证' : '未验证'}</p>
+              {!acceptanceInfo.verified && (
+                !acceptOpen ? (
+                  <button type="button" onClick={() => setAcceptOpen(true)}
+                    className="mt-1.5 min-h-11 rounded-md border px-2.5 py-1 text-xs hover:bg-accent">标记已验…</button>
+                ) : (
+                  <div className="mt-1.5 space-y-1.5">
+                    <textarea value={acceptEvidence} onChange={(event) => setAcceptEvidence(event.target.value)}
+                      rows={3} placeholder="证据：怎么验的、在哪台机器、日志在哪"
+                      className="w-full rounded border bg-background px-2 py-1 text-xs" />
+                    <div className="flex gap-2">
+                      <button type="button" disabled={acceptBusy || !acceptEvidence.trim()} onClick={() => void submitAccept()}
+                        className="min-h-11 rounded-md bg-primary px-2.5 py-1 text-xs text-primary-foreground disabled:opacity-50">确认</button>
+                      <button type="button" onClick={() => { setAcceptOpen(false); setAcceptError('') }}
+                        className="min-h-11 rounded-md border px-2.5 py-1 text-xs">取消</button>
+                    </div>
+                    {acceptError && <p role="alert" className="break-words text-xs text-destructive">{acceptError}</p>}
+                  </div>
+                )
+              )}
+            </div>
+          </div>
+        </div>
+      ) : (
+        <div className="rounded-lg border p-3 text-xs">
+          <div className="mb-1.5 font-medium">{acceptanceLabel}</div>
+          {acceptanceEditing ? (
+            <div className="space-y-1.5">
+              <textarea
+                value={acceptanceDraft}
+                onChange={(event) => setAcceptanceDraft(event.target.value)}
+                placeholder="这张卡怎样算做完了…"
+                rows={4}
+                className="w-full rounded border bg-background px-2 py-1.5 text-xs"
+              />
+              <div className="flex gap-2">
+                <button type="button" disabled={acceptanceBusy} onClick={() => void submitAcceptance()}
+                  className={cn('rounded-md bg-primary px-2.5 py-1 text-xs text-primary-foreground disabled:opacity-50', compact && 'min-h-11')}>保存判据</button>
+                <button type="button" disabled={acceptanceBusy} onClick={() => setAcceptanceEditing(false)}
                   className="rounded-md border px-2.5 py-1 text-xs">取消</button>
               </div>
-              {acceptError && <p role="alert" className="break-words text-xs text-destructive">{acceptError}</p>}
+              {acceptanceError && <p role="alert" className="break-words text-xs text-destructive">{acceptanceError}</p>}
             </div>
-          )
-        )}
-      </div>
+          ) : (
+            <>
+              <p className="whitespace-pre-wrap leading-5">{acceptanceInfo.criteria || '尚未填写验收判据。'}</p>
+              <button type="button" onClick={beginAcceptanceEdit} className="mt-2 rounded-md border px-2.5 py-1 text-xs hover:bg-accent">编辑判据</button>
+            </>
+          )}
+          {acceptanceInfo.evidence && <p className="mt-2 border-l-2 pl-2 leading-5 text-muted-foreground">{acceptanceInfo.evidence}</p>}
+          {!acceptanceInfo.verified && (
+            !acceptOpen ? (
+              <button type="button" onClick={() => setAcceptOpen(true)}
+                className="mt-2 rounded-md border px-2.5 py-1 text-xs hover:bg-accent">标记已验…</button>
+            ) : (
+              <div className="mt-2 space-y-1.5">
+                <textarea value={acceptEvidence} onChange={(event) => setAcceptEvidence(event.target.value)}
+                  rows={3} placeholder="证据：怎么验的、在哪台机器、日志在哪"
+                  className="w-full rounded border bg-background px-2 py-1 text-xs" />
+                <div className="flex gap-2">
+                  <button type="button" disabled={acceptBusy || !acceptEvidence.trim()} onClick={() => void submitAccept()}
+                    className={cn('rounded-md bg-primary px-2.5 py-1 text-xs text-primary-foreground disabled:opacity-50', compact && 'min-h-11')}>确认</button>
+                  <button type="button" onClick={() => { setAcceptOpen(false); setAcceptError('') }}
+                    className="rounded-md border px-2.5 py-1 text-xs">取消</button>
+                </div>
+                {acceptError && <p role="alert" className="break-words text-xs text-destructive">{acceptError}</p>}
+              </div>
+            )
+          )}
+        </div>
+      )}
     </section>
   )
 
@@ -932,8 +1007,33 @@ export function CardDrawer({
   // 行与它展开的工单答复是同一 aria-expanded 行块，整块归当前动作不拆；状态列
   // chips 归工作项组（完成定义语境，与验收同族）。层标题上缘 border-t 分隔。
   const tierHeadingClass = 'mb-3 border-t pt-3 text-xs font-semibold text-muted-foreground'
+  // B369.10 T8 双跳行：compact 三层块序之上顶置（原型 mobile-card .jump 行）。
+  // ①hot 行=needs 态×在跑行×onJumpToTask 三者齐备；②驾驶会话行=driverSession
+  // 在场×onOpenDriverSession 注入。已有行的 ↗ 与详情态会话卡入口不撤。
+  const renderJumpRows = () => (
+    (needsHot && firstRunningTaskId !== null && onJumpToTask !== undefined)
+    || (driverSession !== '' && onOpenDriverSession !== undefined) ? (
+      <div className="mb-3 space-y-1.5" data-testid="card-jump-rows">
+        {needsHot && firstRunningTaskId !== null && onJumpToTask !== undefined && (
+          <button type="button" data-testid="card-jump-task" onClick={() => onJumpToTask(firstRunningTaskId)}
+            className="flex min-h-11 w-full items-center gap-2 rounded-md border border-amber-200 bg-amber-50 px-2.5 py-2 text-left text-xs text-amber-900">
+            <span className="shrink-0 font-semibold">⚑ 当前节点等你裁决</span>
+            <span className="ml-auto shrink-0 text-[11px]">→ 任务现场</span>
+          </button>
+        )}
+        {driverSession !== '' && onOpenDriverSession !== undefined && (
+          <button type="button" data-testid="card-jump-session" onClick={onOpenDriverSession}
+            className="flex min-h-11 w-full items-center gap-2 rounded-md border px-2.5 py-2 text-left text-xs">
+            <span className="shrink-0 font-semibold">💬 驾驶会话</span>
+            <span className="ml-auto shrink-0 text-[11px] text-muted-foreground">{driverSession} · → 群聊</span>
+          </button>
+        )}
+      </div>
+    ) : null
+  )
   const renderBlocksCompact = () => (
     <>
+      {renderJumpRows()}
       <h2 data-testid="card-tier-work" className={tierHeadingClass}>工作项</h2>
       {renderStatusChips()}
       {renderAcceptance()}

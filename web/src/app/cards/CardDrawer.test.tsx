@@ -763,3 +763,97 @@ describe('B369.8 compact 三层分组', () => {
     expect(document.activeElement).not.toBe(drawer)
   })
 })
+
+// —— B369.10 T8：compact 双跳行（hot=needs×在跑行）+ 验收区行式（整卡语义）——
+describe('B369.10 compact 双跳行与验收行式', () => {
+  const runningRow = { Target: 'local', TaskID: 'task-x', Purpose: 'implement', LastType: '', LastSeq: 1 }
+  // hot 正例夹具：needs 在场 + 一条挂账行（关联任务流由 tasks prop 给出）
+  const hotDetail: CardDetail = {
+    ...detailWithRows([runningRow]),
+    card: card({ id: 'B30', title: '在跑的卡', acceptance_criteria: '判据：全绿' }),
+    needs: '合并前需人工确认',
+  }
+
+  it('hot 双跳行：needs 态 × 在跑行 × 回调 → 在场，点击带第一个在跑行 TaskID', async () => {
+    const ledger = await import('../../api/ledger')
+    vi.mocked(ledger.fetchCardDetail).mockResolvedValue(hotDetail as never)
+    const onJumpToTask = vi.fn()
+    render(<CardDrawer id="B30" compact onClose={() => {}} onOpenCard={() => {}} onJumpToTask={onJumpToTask}
+      tasks={[task({ id: 'task-x', state: 'running' })]} />)
+    const jump = await screen.findByTestId('card-jump-task')
+    expect(jump.textContent).toContain('当前节点等你裁决')
+    expect(jump.className).toContain('bg-amber-50')
+    fireEvent.click(jump)
+    expect(onJumpToTask).toHaveBeenCalledWith('task-x')
+  })
+
+  it('hot 反例两连：needs 在场但任务全终态不渲染；在跑行在场但卡无 needs 态也不渲染', async () => {
+    const ledger = await import('../../api/ledger')
+    const onJumpToTask = vi.fn()
+    vi.mocked(ledger.fetchCardDetail).mockResolvedValue(hotDetail as never)
+    const first = render(<CardDrawer id="B30" compact onClose={() => {}} onOpenCard={() => {}} onJumpToTask={onJumpToTask}
+      tasks={[task({ id: 'task-x', state: 'completed' })]} />)
+    await screen.findByTestId('card-tier-work')
+    expect(screen.queryByTestId('card-jump-task')).toBeNull()
+    first.unmount()
+    // 反例二：在跑行在场但卡无 needs/open 裁决（renderAttention 同源判据的反面）
+    // ——同 id 换 detail 必须重挂：抽屉只在 id 变化时重取，rerender 会残留旧 state。
+    vi.mocked(ledger.fetchCardDetail).mockResolvedValue(detailWithRows([runningRow]) as never)
+    render(<CardDrawer id="B30" compact onClose={() => {}} onOpenCard={() => {}} onJumpToTask={onJumpToTask}
+      tasks={[task({ id: 'task-x', state: 'running' })]} />)
+    await screen.findByTestId('card-tier-work')
+    expect(screen.queryByTestId('card-jump-task')).toBeNull()
+  })
+
+  it('驾驶会话行：driverSession + 回调 → 点击回调；回调缺席 → 行不渲染', async () => {
+    const ledger = await import('../../api/ledger')
+    const driverDetail: CardDetail = { ...detailWithRows([]), card: card({ id: 'B30', driver_session: 'session:9' }) }
+    vi.mocked(ledger.fetchCardDetail).mockResolvedValue(driverDetail as never)
+    const onOpenDriverSession = vi.fn()
+    const { rerender } = render(<CardDrawer id="B30" compact onClose={() => {}} onOpenCard={() => {}} onOpenDriverSession={onOpenDriverSession} />)
+    const row = await screen.findByTestId('card-jump-session')
+    expect(row.textContent).toContain('驾驶会话')
+    expect(row.textContent).toContain('session:9')
+    fireEvent.click(row)
+    expect(onOpenDriverSession).toHaveBeenCalledOnce()
+    rerender(<CardDrawer id="B30" compact onClose={() => {}} onOpenCard={() => {}} />)
+    await waitFor(() => expect(screen.queryByTestId('card-jump-session')).toBeNull())
+  })
+
+  it('验收区行式：判据/证据/已验分行 testid 在场；无逐条开关（checkbox 缺席）；标记已验交互原样', async () => {
+    const ledger = await import('../../api/ledger')
+    const detail: CardDetail = {
+      ...detailWithRows([]),
+      card: card({ id: 'B30', acceptance_criteria: '判据：全绿' }),
+      events: [{ seq: 1, card_id: 'B30', type: 'acceptance_recorded', actor: 'user:sy', created_at: '',
+        payload: { verified_on_real_machine: false, evidence: '真机跑了 3 轮' } }],
+    }
+    vi.mocked(ledger.fetchCardDetail).mockResolvedValue(detail as never)
+    render(<CardDrawer id="B30" compact onClose={() => {}} onOpenCard={() => {}} />)
+    await screen.findByTestId('acceptance-criteria-row')
+    expect(screen.getByTestId('acceptance-criteria-row').textContent).toContain('判据：全绿')
+    expect(screen.getByTestId('acceptance-evidence-row').textContent).toContain('真机跑了 3 轮')
+    expect(screen.getByTestId('acceptance-verified-row').textContent).toContain('未验证')
+    // 原型逐条开关不落（wire 验收是整卡一门）：验收区无 checkbox，行式是替代形态
+    expect(screen.queryByRole('checkbox')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: /标记已验/ }))
+    fireEvent.change(screen.getByPlaceholderText(/证据/), { target: { value: '日志在 ci/run-9' } })
+    fireEvent.click(screen.getByRole('button', { name: '确认' }))
+    await waitFor(() => expect(vi.mocked(ledger.acceptCard)).toHaveBeenCalledWith('B30', '日志在 ci/run-9'))
+  })
+
+  it('桌面反例锁：双跳行不在场（回调注入也不渲染）、验收块原样（无行式 testid）', async () => {
+    const ledger = await import('../../api/ledger')
+    vi.mocked(ledger.fetchCardDetail).mockResolvedValue(hotDetail as never)
+    render(<CardDrawer id="B30" onClose={() => {}} onOpenCard={() => {}} onJumpToTask={() => {}}
+      onOpenDriverSession={() => {}} tasks={[task({ id: 'task-x', state: 'running' })]} />)
+    expect(await screen.findByText('在跑的卡')).toBeInTheDocument()
+    expect(screen.queryByTestId('card-jump-rows')).toBeNull()
+    expect(screen.queryByTestId('card-jump-task')).toBeNull()
+    expect(screen.queryByTestId('card-jump-session')).toBeNull()
+    expect(screen.queryByTestId('acceptance-criteria-row')).toBeNull()
+    // 桌面验收块原样：acceptanceLabel 一行块，判据直接内嵌
+    expect(screen.getByText('未验')).toBeInTheDocument()
+    expect(screen.getByText('判据：全绿')).toBeInTheDocument()
+  })
+})

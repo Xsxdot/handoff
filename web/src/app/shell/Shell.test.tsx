@@ -2144,3 +2144,24 @@ describe('B369.10 裁决横幅', () => {
     expect(screen.queryByTestId('task-verdict-banner')).toBeNull()
   })
 })
+
+// —— B369.10 T8 seam 冒烟：卡抽屉「驾驶会话」→ Shell 会话流反查开群聊 ——
+describe('B369.10 卡到会话双跳 seam', () => {
+  it('compact 抽屉「驾驶会话」行 → openSession：session tab 在场 + 下钻任务层', async () => {
+    Object.defineProperty(window, 'innerWidth', { value: 375, configurable: true, writable: true })
+    const rooms = vi.mocked(await import('../../api/rooms'))
+    rooms.fetchSessions.mockResolvedValue([sessionSummary({ cards: [{ card_id: 'B1' }] })] as never)
+    await mockCardLedger()
+    // 夹具补 driver_session（mockCardLedger 的 b1CardView 无此字段）
+    const ledger = vi.mocked(await import('../../api/ledger'))
+    ledger.fetchCardDetail.mockResolvedValue({
+      ...b1CardDetail(), card: { ...b1CardView, driver_session: 'session:1' },
+    } as never)
+    renderShell('/cards?card=B1')
+    expect(await screen.findByRole('dialog', { name: '工作项详情' })).toBeInTheDocument()
+    fireEvent.click(await screen.findByTestId('card-jump-session'))
+    // 会话流反查命中 session:1 → 群聊 tab 开在中央区 + 下钻（返回条在场）
+    expect(await screen.findByRole('tab', { name: /架构物理化/ })).toBeInTheDocument()
+    expect(await screen.findByTestId('mobile-detail-bar')).toBeInTheDocument()
+  })
+})

@@ -592,3 +592,32 @@ describe('B369.8 compact 头部硬闸（review round 2）', () => {
     expect(surface.hasAttribute('inert')).toBe(false)
   })
 })
+
+// —— B369.10 T8 seam 冒烟：卡 → 驾驶会话双跳（CardsPage 注入 → 抽屉行）——
+describe('B369.10 卡到会话双跳 seam', () => {
+  it('compact 抽屉「驾驶会话」行点击 → onOpenSessionForCard(cardId)', async () => {
+    const ledger = await import('../../api/ledger')
+    const jumpCard = {
+      id: 'B1', title: '跳卡', status: '进行中', priority: '中', project: 'handoff', workflow: '',
+      parent: '', base_branch: '', attachments: [], following: '', blocked: false, blocked_by: [],
+      merged_count: 0, needs: '', open_decisions: 0, children_total: 0, children_done: 0,
+      conflict: false, open_tickets: 0, driver_session: 'session:7',
+    }
+    vi.mocked(ledger.fetchCards).mockResolvedValue({ cards: [jumpCard], unlinked: { count: 0, tasks: [], unknown_targets: [] } })
+    vi.mocked(ledger.fetchCardDetail).mockResolvedValue({
+      card: jumpCard, relations: [], events: [], task_states: [],
+      effective_base_branch: '', decisions: [], needs: '',
+    } as never)
+    const onOpenSessionForCard = vi.fn()
+    render(
+      <MemoryRouter initialEntries={['/cards']}>
+        <Routes>
+          <Route path="/cards" element={<CardsPage compact onOpenSessionForCard={onOpenSessionForCard} />} />
+        </Routes>
+      </MemoryRouter>,
+    )
+    fireEvent.click(await screen.findByText('跳卡'))
+    fireEvent.click(await screen.findByTestId('card-jump-session'))
+    expect(onOpenSessionForCard).toHaveBeenCalledWith('B1')
+  })
+})

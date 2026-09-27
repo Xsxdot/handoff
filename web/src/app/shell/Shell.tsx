@@ -546,6 +546,15 @@ export function Shell() {
     if (compact && webPrefs.sessionOpenMode === 'scene') void resolveSessionScene(session)
   }
 
+  // onOpenSessionForCard（B369.10 T8）：卡详情「驾驶会话」双跳的落点——会话流
+  // 反查（SessionSummary.cards 含 card_id，零新端点），找不到静默返回（行已按
+  // driverSession 渲染但无会话可开时点击不动作，不弹错不空转）。
+  const onOpenSessionForCard = (cardId: string) => {
+    const session = sessions.find((candidate) => (candidate.cards ?? []).some((card) => card.card_id === cardId))
+    if (session) openSession(session)
+    else console.debug('shell.session.for_card_missing', { cardId })
+  }
+
   // confirmCreateSession 建会话：owner 统一记法（服务端权威校验），失败原文
   // 留在对话框；成功关弹层、立即刷新会话流（不等下一个 5s 周期），并把 owner
   // 写进 localStorage 记忆（B358.8 #7：下次新建直接预填，第一次使用仍需输一次）。
@@ -1157,6 +1166,7 @@ export function Shell() {
                     onDrawerCardChange={onDrawerCardChange}
                     taskJumpHref={taskJumpHref}
                     compact={compact}
+                    onOpenSessionForCard={onOpenSessionForCard}
                   />
                 )}
                 {nav.tab === 'projects' && (
