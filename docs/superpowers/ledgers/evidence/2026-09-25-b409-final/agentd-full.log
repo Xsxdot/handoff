@@ -1,0 +1,13 @@
+{"time":"2026-09-27T10:45:05.929033+08:00","level":"WARN","msg":"控制台身份未配置，请求拒收（fail-closed）","component":"agentd","method":"GET","path":"/api/sessions"}
+{"time":"2026-09-27T10:53:50.94592+08:00","level":"WARN","msg":"会话详情投影完成","component":"agentd","operation_id":"op-bc50bbc5","ledger_call_ns":1700167,"ledger_calls":1,"projection_ns":500,"rows_returned":0,"outcome":"error","elapsed_ns":1700667,"error_class":"read_error","session":"session:nope-u7"}
+{"time":"2026-09-27T10:53:50.946388+08:00","level":"WARN","msg":"会话详情读取失败","component":"agentd","session":"session:nope-u7","cause":"collab: 房间不存在"}
+{"time":"2026-09-27T10:53:50.984188+08:00","level":"WARN","msg":"鉴权失败","component":"agentd","remote_addr":"127.0.0.1:62078","method":"GET","path":"/api/cards","reason":"无凭据"}
+{"time":"2026-09-27T11:02:27.982826+08:00","level":"WARN","msg":"会话详情投影完成","component":"agentd","operation_id":"op-89065f81","ledger_call_ns":1315625,"ledger_calls":1,"projection_ns":625,"rows_returned":0,"outcome":"error","elapsed_ns":1316250,"error_class":"read_error","session":"session:nope-u7"}
+{"time":"2026-09-27T11:02:27.983117+08:00","level":"WARN","msg":"会话详情读取失败","component":"agentd","session":"session:nope-u7","cause":"collab: 房间不存在"}
+{"time":"2026-09-27T11:02:28.030915+08:00","level":"WARN","msg":"鉴权失败","component":"agentd","remote_addr":"127.0.0.1:65142","method":"GET","path":"/api/cards","reason":"无凭据"}
+{"time":"2026-09-27T11:12:14.848016+08:00","level":"WARN","msg":"会话详情投影完成","component":"agentd","operation_id":"op-fa03fff2","ledger_call_ns":6408250,"ledger_calls":1,"projection_ns":541,"rows_returned":0,"outcome":"error","elapsed_ns":6408791,"error_class":"read_error","session":"session:nope-u7"}
+{"time":"2026-09-27T11:12:14.848508+08:00","level":"WARN","msg":"会话详情读取失败","component":"agentd","session":"session:nope-u7","cause":"collab: 房间不存在"}
+{"time":"2026-09-27T11:12:14.891584+08:00","level":"WARN","msg":"鉴权失败","component":"agentd","remote_addr":"127.0.0.1:52005","method":"GET","path":"/api/cards","reason":"无凭据"}
+{"time":"2026-09-27T11:34:37.943854+08:00","level":"WARN","msg":"会话详情投影完成","component":"agentd","operation_id":"op-6463ecf3","ledger_call_ns":2311416,"ledger_calls":1,"projection_ns":667,"rows_returned":0,"outcome":"error","elapsed_ns":2312083,"error_class":"read_error","session":"session:nope-u7"}
+{"time":"2026-09-27T11:34:37.944167+08:00","level":"WARN","msg":"会话详情读取失败","component":"agentd","session":"session:nope-u7","cause":"collab: 房间不存在"}
+{"time":"2026-09-27T11:34:37.984904+08:00","level":"WARN","msg":"鉴权失败","component":"agentd","remote_addr":"127.0.0.1:60648","method":"GET","path":"/api/cards","reason":"无凭据"}
