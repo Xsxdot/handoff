@@ -74,6 +74,59 @@ describe('useMobileNav 派生规则（compact 读 URL）', () => {
   })
 })
 
+// —— B369.8 T1：设置二级页 sub 语汇 ——
+// 派生层只做白名单过滤（白名单外→null）；「tab≠settings 不该有 sub」由
+// normalize ③ 在 URL 层清理（见下），Shell 消费点 nav.tab==='settings' 门控兜底。
+describe('useMobileNav sub 派生（B369.8）', () => {
+  it.each([
+    ['/?tab=settings', null],
+    ['/?tab=settings&sub=machines', 'machines'],
+    ['/?tab=settings&sub=pairing', 'pairing'],
+    ['/?tab=settings&sub=update', 'update'],
+    ['/?tab=settings&sub=bogus', null],
+  ])('初值 %s → sub=%s', (entry, expected) => {
+    const { result } = mountNav(entry)
+    expect(result.current.sub).toBe(expected)
+  })
+
+  it('桌面直通：sub 恒 null（URL 参数不参与派生）', () => {
+    const { result } = mountNav('/?tab=settings&sub=machines', false)
+    expect(result.current.sub).toBeNull()
+  })
+})
+
+describe('useMobileNav setSub（B369.8）', () => {
+  it('开：push /?tab=settings&sub=<key>', () => {
+    const { result } = mountNav('/?tab=settings')
+    const after = drive(result.current, (n) => n.setSub('machines'))
+    expect(after.url).toBe('/?tab=settings&sub=machines')
+    expect(after.action).toBe('PUSH')
+  })
+
+  it('关：replace strip sub、留 tab=settings', () => {
+    const { result } = mountNav('/?tab=settings&sub=machines')
+    const after = drive(result.current, (n) => n.setSub(null))
+    expect(after.url).toBe('/?tab=settings')
+    expect(after.action).toBe('REPLACE')
+  })
+
+  it('幂等写：同址不产生第二次导航', () => {
+    const { result } = mountNav('/?tab=settings')
+    drive(result.current, (n) => n.setSub('machines'))
+    const before = lastNav!
+    drive(result.current, (n) => n.setSub('machines'))
+    expect(lastNav).toBe(before)
+  })
+
+  it('桌面直通：setSub 只写 state 概念不存在，URL 一字不动', () => {
+    const { result } = mountNav('/?tab=settings', false)
+    drive(result.current, (n) => n.setSub('machines'))
+    expect(lastNav!.url).toBe('/?tab=settings')
+    drive(result.current, (n) => n.setSub(null))
+    expect(lastNav!.url).toBe('/?tab=settings')
+  })
+})
+
 describe('useMobileNav 写入 URL 形状（compact）', () => {
   it('setTab：cards 写 pathname /cards，其余写 /?tab=<t>', () => {
     const { result } = mountNav('/')
@@ -129,6 +182,11 @@ describe('useMobileNav 写入 URL 形状（compact）', () => {
     const fromSlash = mountNav('/?tab=projects&detail=1&dir=k')
     const jumped = drive(fromSlash.result.current, (n) => n.openCard('B9'))
     expect(jumped.url).toBe('/cards?card=B9')
+    cleanup()
+    // B369.8：设置二级页里点开卡，sub 不跟随（'/' 宿主语汇不跟随面）
+    const fromSub = mountNav('/?tab=settings&sub=machines&project=p1')
+    const withSub = drive(fromSub.result.current, (n) => n.openCard('B1'))
+    expect(withSub.url).toBe('/cards?project=p1&card=B1')
   })
 
   it('closeCard：replace 剥 card+from、保留 project；无残参时落 /cards', () => {
@@ -217,6 +275,22 @@ describe('useMobileNav normalize 三条（compact）', () => {
     const legitDir = mountNav('/?tab=projects&dir=k')
     drive(legitDir.result.current, (n) => n.normalize(gate))
     expect(lastNav!.url).toBe('/?tab=projects&dir=k')
+  })
+
+  it('③ sub 残参清理（B369.8）：tab≠settings 清 sub；tab=settings 但词表外也清；合法值不动', () => {
+    const gate = { ledgerEnabled: true, ledgerLoading: false }
+    const straySub = mountNav('/?tab=sessions&sub=machines')
+    expect(drive(straySub.result.current, (n) => n.normalize(gate)).url).toBe('/?tab=sessions')
+    cleanup()
+    const cardsSub = mountNav('/cards?card=B1&sub=machines')
+    expect(drive(cardsSub.result.current, (n) => n.normalize(gate)).url).toBe('/cards?card=B1')
+    cleanup()
+    const bogusSub = mountNav('/?tab=settings&sub=bogus')
+    expect(drive(bogusSub.result.current, (n) => n.normalize(gate)).url).toBe('/?tab=settings')
+    cleanup()
+    const legitSub = mountNav('/?tab=settings&sub=machines')
+    drive(legitSub.result.current, (n) => n.normalize(gate))
+    expect(lastNav!.url).toBe('/?tab=settings&sub=machines')
   })
 })
 
