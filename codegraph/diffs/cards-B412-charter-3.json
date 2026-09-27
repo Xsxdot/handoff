@@ -1,0 +1,81 @@
+{
+  "view": "cards/B412-charter-3",
+  "base": "0eafd3986f2fc78d88f7ca0627dcc59ffe881f58",
+  "summary": "B412：合并视图按各流当前版本看板配置归列——columns 新增 mergeIntoDefaultColumns/mergedLayoutFor/asLayoutResolver 与 WorkflowBoardLookup/CardLayoutResolver 类型，cardsInColumn/visibleColumns 签名扩为 BoardLayout | CardLayoutResolver",
+  "nodesAdded": {
+    "n_web_app_cards_mergeIntoDefaultColumns": {
+      "kind": "func",
+      "container": "k_web_app_cards",
+      "order": 80,
+      "name": "mergeIntoDefaultColumns",
+      "file": "web/src/app/cards/columns.ts",
+      "line": 44,
+      "signature": "export function mergeIntoDefaultColumns(layout: BoardLayout): BoardLayout",
+      "summary": "把某条流的布局收敛到固定默认五列（合并视图，spec D2/D3）：列集合恒为 DEFAULT_BOARD_COLUMNS，映射目标不在默认五列的状态与未映射状态都落「进行中」；只在「全部工作流」合并视图用，单流视图不调本函数。"
+    },
+    "n_web_app_cards_mergedLayoutFor": {
+      "kind": "func",
+      "container": "k_web_app_cards",
+      "order": 81,
+      "name": "mergedLayoutFor",
+      "file": "web/src/app/cards/columns.ts",
+      "line": 60,
+      "signature": "export function mergedLayoutFor(",
+      "summary": "合并视图下单张卡的呈现布局（spec D1/D3）：该流布局收敛到默认五列；流未知（flows 未加载完/已删改名）时退回默认映射，与现状同形的诚实兜底，不新增请求。"
+    },
+    "n_web_app_cards_asLayoutResolver": {
+      "kind": "func",
+      "container": "k_web_app_cards",
+      "order": 82,
+      "name": "asLayoutResolver",
+      "file": "web/src/app/cards/columns.ts",
+      "line": 90,
+      "signature": "function asLayoutResolver(",
+      "summary": "兼容两种 layout 入参形态：既有调用点传 BoardLayout（或 undefined）零改动，合并视图传 CardLayoutResolver 逐卡解析；BoardLayout 是对象、resolver 是函数，用 typeof 区分。"
+    },
+    "m_web_app_cards_WorkflowBoardLookup": {
+      "kind": "model",
+      "container": "k_web_app_cards_model",
+      "order": 15,
+      "name": "WorkflowBoardLookup",
+      "file": "web/src/app/cards/columns.ts",
+      "line": 53,
+      "signature": "export type WorkflowBoardLookup = (workflow: string) => BoardLayout | undefined",
+      "summary": "按工作流名取该流**当前版本**的看板布局；未知流返回 undefined。",
+      "modelKind": "dto"
+    },
+    "m_web_app_cards_CardLayoutResolver": {
+      "kind": "model",
+      "container": "k_web_app_cards_model",
+      "order": 16,
+      "name": "CardLayoutResolver",
+      "file": "web/src/app/cards/columns.ts",
+      "line": 86,
+      "signature": "export type CardLayoutResolver = (card: CardView) => BoardLayout",
+      "summary": "给一张卡解析它的呈现布局：合并视图逐卡按流解析，单流视图所有卡共用一份。",
+      "modelKind": "dto"
+    }
+  },
+  "nodesModified": {
+    "n_web_app_cards_cardsInColumn": {
+      "kind": "func",
+      "container": "k_web_app_cards",
+      "order": 75,
+      "name": "cardsInColumn",
+      "file": "web/src/app/cards/columns.ts",
+      "line": 99,
+      "signature": "export function cardsInColumn(cards: CardView[], column: string, layout?: BoardLayout | CardLayoutResolver): CardView[]",
+      "signatureOld": "export function cardsInColumn(cards: CardView[], column: string, layout?: BoardLayout): CardView[]"
+    },
+    "n_web_app_cards_visibleColumns": {
+      "kind": "func",
+      "container": "k_web_app_cards",
+      "order": 79,
+      "name": "visibleColumns",
+      "file": "web/src/app/cards/columns.ts",
+      "line": 159,
+      "signature": "export function visibleColumns(columns: string[], cards: CardView[], collapseEmpty: boolean, layout?: BoardLayout | CardLayoutResolver): string[]",
+      "signatureOld": "export function visibleColumns(columns: string[], cards: CardView[], collapseEmpty: boolean, layout?: BoardLayout): string[]"
+    }
+  }
+}
