@@ -57,7 +57,7 @@ const (
 	// 忽略未知类型即在（与 work_branch_published 同形）。
 	EvWorkBranchRegistered = "work_branch_registered"
 	EvReviewVerdict        = "review_verdict"
-	EvMerged              = "merged"
+	EvMerged               = "merged"
 	// EvBranchMerged 合并环节把工作分支合进基线并推 origin。与 EvMerged
 	// （卡并入承载卡）是两回事，不可复用。
 	EvBranchMerged       = "branch_merged"
