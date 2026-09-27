@@ -1,70 +1,70 @@
 ### handoff card list --json
-2026/09/27 11:34:32 INFO cards.driver_carrier 列已存在，跳过加列
-2026/09/27 11:34:32 INFO cards.driver_source 列已存在，跳过加列
-2026/09/27 11:34:32 INFO 账本库已打开 dialect=postgres database=handoff_b409_test
-2026/09/27 11:34:32 INFO 列卡完成 rows_returned=2 elapsed_ns=6652500
-{"base_branch":"","base_frozen":false,"blocked":false,"blocked_by":null,"following":"","id":"B911790480056","needs":"","open_decisions":0,"parent":"","priority":"中","project":"u7-matrix-1790480056","status":"待办","title":"B409 U7 矩阵列卡 A"}
-{"base_branch":"","base_frozen":false,"blocked":false,"blocked_by":null,"following":"","id":"C911790480056","needs":"","open_decisions":0,"parent":"","priority":"中","project":"u7-matrix-1790480056","status":"待办","title":"B409 U7 矩阵列卡 B"}
-### handoff card wait B911790480056 --timeout 4s（首行 card_snapshot，随后空等到 124）
+2026/09/27 12:40:34 INFO cards.driver_carrier 列已存在，跳过加列
+2026/09/27 12:40:34 INFO cards.driver_source 列已存在，跳过加列
+2026/09/27 12:40:34 INFO 账本库已打开 dialect=postgres database=handoff_b409_test
+2026/09/27 12:40:34 INFO 列卡完成 rows_returned=2 elapsed_ns=5415250
+{"base_branch":"","base_frozen":false,"blocked":false,"blocked_by":null,"following":"","id":"B911790484019","needs":"","open_decisions":0,"parent":"","priority":"中","project":"u7-matrix-1790484019","status":"待办","title":"B409 U7 矩阵列卡 A"}
+{"base_branch":"","base_frozen":false,"blocked":false,"blocked_by":null,"following":"","id":"C911790484019","needs":"","open_decisions":0,"parent":"","priority":"中","project":"u7-matrix-1790484019","status":"待办","title":"B409 U7 矩阵列卡 B"}
+### handoff card wait B911790484019 --timeout 4s（首行 card_snapshot，随后空等到 124）
 card_wait_exit=124 124=timeout-close; first line should be a full card_snapshot
-{"type":"card_snapshot","card_id":"B911790480056","subtree":false,"from_seq":21021,"members":["B911790480056"],"actionable":[{"card_id":"B911790480056","source_target":"u7-mirror-1790480056","source_task":"u7-task-open","ticket_id":"u7-matrix-open-a","task_type":"question","payload":{"ticket_id":"u7-matrix-open-a"}}],"needs":[]}
+{"type":"card_snapshot","card_id":"B911790484019","subtree":false,"from_seq":21021,"members":["B911790484019"],"actionable":[{"card_id":"B911790484019","source_target":"u7-mirror-1790484019","source_task":"u7-task-open","ticket_id":"u7-matrix-open-a","task_type":"question","payload":{"ticket_id":"u7-matrix-open-a"}}],"needs":[]}
 ### handoff session list --json
-2026/09/27 11:34:36 INFO cards.driver_carrier 列已存在，跳过加列
-2026/09/27 11:34:36 INFO cards.driver_source 列已存在，跳过加列
-2026/09/27 11:34:36 INFO 账本库已打开 dialect=postgres database=handoff_b409_test
-2026/09/27 11:34:36 INFO 列卡完成 rows_returned=2 elapsed_ns=6835750
-2026/09/27 11:34:36 INFO 房间消息摘要读取完成 rooms_requested=2 rows_returned=1 pool_wait_ns=667 sql_call_ns=1963958 row_read_ns=27708 db_read_ns=1992042 rows_read=1 result_bytes=111 elapsed_ns=2001500
-2026/09/27 11:34:36 INFO 会话列表投影完成 ledger_call_ns=15139083 ledger_calls=6 projection_ns=6875 rows_returned=2 outcome=success_nonempty elapsed_ns=15145958 member=""
-{"id":"session:1","kind":"session","title":"B409 U7 主会话 b409-u7-1790480056","owner":"user:sy","archived":false,"unread":0,"needs_human":false,"last_activity":"2026-09-27T11:34:18.021159+08:00","preview":{"body":"u7 定向消息 b409-u7-1790480056 #3","seq":257,"created_at":"2026-09-27T11:34:18.021159+08:00"},"members":[{"identity":"user:sy","kind":"human","status":"last_active","last_active":"0001-01-01T00:00:00Z"},{"identity":"agent:u7-wait-1790480056","kind":"agent","status":"last_active","last_active":"0001-01-01T00:00:00Z"},{"identity":"agent:u7-idle-1790480056","kind":"agent","status":"last_active","last_active":"0001-01-01T00:00:00Z"}]}
-{"id":"session:2","kind":"session","title":"B409 U7 空会话 b409-u7-1790480056","owner":"user:sy","archived":false,"unread":0,"needs_human":false,"last_activity":"2026-09-27T11:34:17.668006+08:00","members":[{"identity":"user:sy","kind":"human","status":"last_active","last_active":"0001-01-01T00:00:00Z"}]}
-2026/09/27 11:34:36 INFO CLI 会话列表已输出 member="" count=2 format=json
+2026/09/27 12:40:38 INFO cards.driver_carrier 列已存在，跳过加列
+2026/09/27 12:40:38 INFO cards.driver_source 列已存在，跳过加列
+2026/09/27 12:40:38 INFO 账本库已打开 dialect=postgres database=handoff_b409_test
+2026/09/27 12:40:38 INFO 列卡完成 rows_returned=2 elapsed_ns=5945709
+2026/09/27 12:40:38 INFO 房间消息摘要读取完成 rooms_requested=2 rows_returned=1 pool_wait_ns=416 sql_call_ns=1604042 row_read_ns=6334 db_read_ns=1610666 rows_read=1 result_bytes=111 elapsed_ns=1616000
+2026/09/27 12:40:38 INFO 会话列表投影完成 ledger_call_ns=11580001 ledger_calls=6 projection_ns=4874 rows_returned=2 outcome=success_nonempty elapsed_ns=11584875 member=""
+{"id":"session:1","kind":"session","title":"B409 U7 主会话 b409-u7-1790484019","owner":"user:sy","archived":false,"unread":0,"needs_human":false,"last_activity":"2026-09-27T12:40:21.211051+08:00","preview":{"body":"u7 定向消息 b409-u7-1790484019 #3","seq":257,"created_at":"2026-09-27T12:40:21.211051+08:00"},"members":[{"identity":"user:sy","kind":"human","status":"last_active","last_active":"0001-01-01T00:00:00Z"},{"identity":"agent:u7-wait-1790484019","kind":"agent","status":"last_active","last_active":"0001-01-01T00:00:00Z"},{"identity":"agent:u7-idle-1790484019","kind":"agent","status":"last_active","last_active":"0001-01-01T00:00:00Z"}]}
+{"id":"session:2","kind":"session","title":"B409 U7 空会话 b409-u7-1790484019","owner":"user:sy","archived":false,"unread":0,"needs_human":false,"last_activity":"2026-09-27T12:40:20.910408+08:00","members":[{"identity":"user:sy","kind":"human","status":"last_active","last_active":"0001-01-01T00:00:00Z"}]}
+2026/09/27 12:40:38 INFO CLI 会话列表已输出 member="" count=2 format=json
 ### handoff session detail session:1 --json
-2026/09/27 11:34:36 INFO cards.driver_carrier 列已存在，跳过加列
-2026/09/27 11:34:36 INFO cards.driver_source 列已存在，跳过加列
-2026/09/27 11:34:36 INFO 账本库已打开 dialect=postgres database=handoff_b409_test
-2026/09/27 11:34:36 INFO 会话详情投影事件读取完成 session=session:1 cards=0 rows_returned=1 pool_wait_ns=2417 sql_call_ns=1100792 row_read_ns=12250 db_read_ns=1113292 rows_read=1 result_bytes=88 elapsed_ns=1123292
-2026/09/27 11:34:36 INFO 房间消息摘要读取完成 rooms_requested=1 rows_returned=1 pool_wait_ns=667 sql_call_ns=1674459 row_read_ns=10333 db_read_ns=1684958 rows_read=1 result_bytes=111 elapsed_ns=1691041
-2026/09/27 11:34:36 INFO 会话详情投影完成 ledger_call_ns=6779793 ledger_calls=4 projection_ns=11666 rows_returned=1 outcome=success_nonempty elapsed_ns=6791459 session=session:1
-2026/09/27 11:34:36 INFO CLI 会话详情已输出 session=session:1 format=json
-{"summary":{"id":"session:1","kind":"session","title":"B409 U7 主会话 b409-u7-1790480056","owner":"user:sy","archived":false,"unread":0,"needs_human":false,"last_activity":"2026-09-27T11:34:18.021159+08:00","preview":{"body":"u7 定向消息 b409-u7-1790480056 #3","seq":257,"created_at":"2026-09-27T11:34:18.021159+08:00"},"members":[{"identity":"user:sy","kind":"human","status":"last_active","last_active":"0001-01-01T00:00:00Z"},{"identity":"agent:u7-wait-1790480056","kind":"agent","status":"last_active","last_active":"0001-01-01T00:00:00Z"},{"identity":"agent:u7-idle-1790480056","kind":"agent","status":"last_active","last_active":"0001-01-01T00:00:00Z"}]},"timeline":[{"seq":3,"kind":"created","actor":"b409-u7","created_at":"2026-09-27T11:34:17.665447+08:00"}]}
+2026/09/27 12:40:38 INFO cards.driver_carrier 列已存在，跳过加列
+2026/09/27 12:40:38 INFO cards.driver_source 列已存在，跳过加列
+2026/09/27 12:40:38 INFO 账本库已打开 dialect=postgres database=handoff_b409_test
+2026/09/27 12:40:38 INFO 会话详情投影事件读取完成 session=session:1 cards=0 rows_returned=1 pool_wait_ns=1958 sql_call_ns=1055292 row_read_ns=5500 db_read_ns=1061042 rows_read=1 result_bytes=88 elapsed_ns=1070250
+2026/09/27 12:40:38 INFO 房间消息摘要读取完成 rooms_requested=1 rows_returned=1 pool_wait_ns=334 sql_call_ns=1415375 row_read_ns=5750 db_read_ns=1421500 rows_read=1 result_bytes=111 elapsed_ns=1426125
+2026/09/27 12:40:38 INFO 会话详情投影完成 ledger_call_ns=5909584 ledger_calls=4 projection_ns=9666 rows_returned=1 outcome=success_nonempty elapsed_ns=5919250 session=session:1
+2026/09/27 12:40:38 INFO CLI 会话详情已输出 session=session:1 format=json
+{"summary":{"id":"session:1","kind":"session","title":"B409 U7 主会话 b409-u7-1790484019","owner":"user:sy","archived":false,"unread":0,"needs_human":false,"last_activity":"2026-09-27T12:40:21.211051+08:00","preview":{"body":"u7 定向消息 b409-u7-1790484019 #3","seq":257,"created_at":"2026-09-27T12:40:21.211051+08:00"},"members":[{"identity":"user:sy","kind":"human","status":"last_active","last_active":"0001-01-01T00:00:00Z"},{"identity":"agent:u7-wait-1790484019","kind":"agent","status":"last_active","last_active":"0001-01-01T00:00:00Z"},{"identity":"agent:u7-idle-1790484019","kind":"agent","status":"last_active","last_active":"0001-01-01T00:00:00Z"}]},"timeline":[{"seq":3,"kind":"created","actor":"b409-u7","created_at":"2026-09-27T12:40:20.907952+08:00"}]}
 ### handoff room list
-2026/09/27 11:34:36 INFO cards.driver_carrier 列已存在，跳过加列
-2026/09/27 11:34:36 INFO cards.driver_source 列已存在，跳过加列
-2026/09/27 11:34:36 INFO 账本库已打开 dialect=postgres database=handoff_b409_test
-2026/09/27 11:34:36 INFO 列卡完成 rows_returned=2 elapsed_ns=7462666
-2026/09/27 11:34:36 INFO 房间消息摘要读取完成 rooms_requested=4 rows_returned=0 pool_wait_ns=1042 sql_call_ns=1826250 row_read_ns=7042 db_read_ns=1833459 rows_read=0 result_bytes=0 elapsed_ns=1842625
-2026/09/27 11:34:36 INFO 会话列表已组装 ledger_call_ns=9413458 ledger_calls=2 projection_ns=9000 rows_returned=4 outcome=success_nonempty elapsed_ns=9422458 project="" member=""
-2026/09/27 11:34:36 INFO CLI 会话列表已输出 project="" count=4
+2026/09/27 12:40:38 INFO cards.driver_carrier 列已存在，跳过加列
+2026/09/27 12:40:38 INFO cards.driver_source 列已存在，跳过加列
+2026/09/27 12:40:38 INFO 账本库已打开 dialect=postgres database=handoff_b409_test
+2026/09/27 12:40:38 INFO 列卡完成 rows_returned=2 elapsed_ns=5824833
+2026/09/27 12:40:38 INFO 房间消息摘要读取完成 rooms_requested=4 rows_returned=0 pool_wait_ns=416 sql_call_ns=1444542 row_read_ns=2750 db_read_ns=1447500 rows_read=0 result_bytes=0 elapsed_ns=1454959
+2026/09/27 12:40:38 INFO 会话列表已组装 ledger_call_ns=7344666 ledger_calls=2 projection_ns=11959 rows_returned=4 outcome=success_nonempty elapsed_ns=7356625 project="" member=""
+2026/09/27 12:40:38 INFO CLI 会话列表已输出 project="" count=4
 ID                            类型       标题                    绑定  活      只读     最近活动
-C911790480056                 card     B409 U7 矩阵列卡 B            false  false  2026-09-27 11:34:17
-B911790480056                 card     B409 U7 矩阵列卡 A            false  false  2026-09-27 11:34:17
-project:u7-matrix-1790480056  project  u7-matrix-1790480056      false  false  0001-01-01 00:00:00
+C911790484019                 card     B409 U7 矩阵列卡 B            false  false  2026-09-27 12:40:20
+B911790484019                 card     B409 U7 矩阵列卡 A            false  false  2026-09-27 12:40:20
+project:u7-matrix-1790484019  project  u7-matrix-1790484019      false  false  0001-01-01 00:00:00
 global                        global   全员                        false  false  0001-01-01 00:00:00
 ### handoff room read session:1（行数统计）
-2026/09/27 11:34:36 INFO cards.driver_carrier 列已存在，跳过加列
-2026/09/27 11:34:36 INFO cards.driver_source 列已存在，跳过加列
-2026/09/27 11:34:36 INFO 账本库已打开 dialect=postgres database=handoff_b409_test
-2026/09/27 11:34:36 INFO 房间历史读取开始 operation_id=op-95008c70 room_id=session:1 before_seq=0 limit=200
-2026/09/27 11:34:36 INFO 房间历史账本查询开始 operation_id=op-95008c70 room_id=session:1 before_seq=0 limit=200
-2026/09/27 11:34:36 INFO 房间历史账本查询完成 operation_id=op-95008c70 room_id=session:1 before_seq=0 limit=200 rows_returned=200 payload_bytes=17657 pool_wait_ns=3000 sql_call_ns=1499875 row_read_ns=145917 db_read_ns=1648917 elapsed_ns=1664583
-2026/09/27 11:34:36 INFO 房间历史读取完成 operation_id=op-95008c70 room_id=session:1 before_seq=0 limit=200 rows_returned=200 payload_bytes=17657 ledger_call_ns=1697083 assembly_ns=500 elapsed_ns=1717375
-2026/09/27 11:34:36 INFO CLI 房间历史已输出 operation_id=op-95008c70 room=session:1 count=200
-2026/09/27 11:34:36 INFO CLI room read 完成 operation_id=op-95008c70 command=room_read room=session:1 rows_returned=200 stdout_bytes=10506 outcome=success_nonempty elapsed_ns=47475375
+2026/09/27 12:40:38 INFO cards.driver_carrier 列已存在，跳过加列
+2026/09/27 12:40:38 INFO cards.driver_source 列已存在，跳过加列
+2026/09/27 12:40:38 INFO 账本库已打开 dialect=postgres database=handoff_b409_test
+2026/09/27 12:40:38 INFO 房间历史读取开始 operation_id=op-43d0741f room_id=session:1 before_seq=0 limit=200
+2026/09/27 12:40:38 INFO 房间历史账本查询开始 operation_id=op-43d0741f room_id=session:1 before_seq=0 limit=200
+2026/09/27 12:40:38 INFO 房间历史账本查询完成 operation_id=op-43d0741f room_id=session:1 before_seq=0 limit=200 rows_returned=200 payload_bytes=17657 pool_wait_ns=2709 sql_call_ns=1336042 row_read_ns=187542 db_read_ns=1526625 elapsed_ns=1540583
+2026/09/27 12:40:38 INFO 房间历史读取完成 operation_id=op-43d0741f room_id=session:1 before_seq=0 limit=200 rows_returned=200 payload_bytes=17657 ledger_call_ns=1578333 assembly_ns=625 elapsed_ns=1602667
+2026/09/27 12:40:38 INFO CLI 房间历史已输出 operation_id=op-43d0741f room=session:1 count=200
+2026/09/27 12:40:38 INFO CLI room read 完成 operation_id=op-43d0741f command=room_read room=session:1 rows_returned=200 stdout_bytes=10506 outcome=success_nonempty elapsed_ns=40389666
      200
 room_read_first3:
-#58	user:sy	u7 基准消息 b409-u7-1790480056 #54
-#59	user:sy	u7 基准消息 b409-u7-1790480056 #55
-#60	user:sy	u7 基准消息 b409-u7-1790480056 #56
+#58	user:sy	u7 基准消息 b409-u7-1790484019 #54
+#59	user:sy	u7 基准消息 b409-u7-1790484019 #55
+#60	user:sy	u7 基准消息 b409-u7-1790484019 #56
 ### handoff room inbox（经 agentd HTTP）
-2026/09/27 11:34:36 INFO agentd 收件箱已解码 url=http://127.0.0.1:17877 count=1
-{"origin":"mention","title":"@你：u7 定向消息 b409-u7-1790480056 #3","ref_id":"257"}
-2026/09/27 11:34:36 INFO CLI 收件箱已输出 count=1
-### handoff session wait agent:u7-wait-1790480056（首个完整 backlog 行）
-{"type":"session_backlog","member":"agent:u7-wait-1790480056","from_seq":0,"to_seq":256,"hits":[{"hit":{"seq":255,"room":"session:1","actor":"user:sy","body":"u7 定向消息 b409-u7-1790480056 #1"}},{"hit":{"seq":256,"room":"session:1","actor":"user:sy","body":"u7 定向消息 b409-u7-1790480056 #2"}}]}
+2026/09/27 12:40:38 INFO agentd 收件箱已解码 url=http://127.0.0.1:17877 count=1
+{"origin":"mention","title":"@你：u7 定向消息 b409-u7-1790484019 #3","ref_id":"257"}
+2026/09/27 12:40:38 INFO CLI 收件箱已输出 count=1
+### handoff session wait agent:u7-wait-1790484019（首个完整 backlog 行）
+{"type":"session_backlog","member":"agent:u7-wait-1790484019","from_seq":0,"to_seq":256,"hits":[{"hit":{"seq":255,"room":"session:1","actor":"user:sy","body":"u7 定向消息 b409-u7-1790484019 #1"}},{"hit":{"seq":256,"room":"session:1","actor":"user:sy","body":"u7 定向消息 b409-u7-1790484019 #2"}}]}
 wait_hit_exit=0 expect 0
-### handoff session wait agent:u7-wait-1790480056 --timeout 400ms（已交付不回放）
+### handoff session wait agent:u7-wait-1790484019 --timeout 400ms（已交付不回放）
 Error: session wait 超时
 wait_replay_exit=124 expect 124 and no output above
-### handoff session wait agent:u7-idle-1790480056 --timeout 400ms（空积压不输出）
+### handoff session wait agent:u7-idle-1790484019 --timeout 400ms（空积压不输出）
 Error: session wait 超时
 wait_idle_exit=124 expect 124 and no output above
