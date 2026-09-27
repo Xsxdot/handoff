@@ -678,11 +678,14 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
               {/* B369.7：桌面 hidden group-hover:flex 逐字节保留；compact 下容器
                   常驻 flex（触屏无 hover），「代码图」子钮不渲染（/codegraph 整页
                   只在桌面注册，compact 点了就是死入口），「工作项」钮触点与底栏
-                  同档（p-1.5）。同一 aria-label，两档只差可见性策略。 */}
+                  同档（p-1.5）。同一 aria-label，两档只差可见性策略。offset 用
+                  right-20（桌面 right-14）：compact 行宽 390 下两位数进行中计数
+                  （图标 16 + 间距 7 + 两位数字 ≈19 + 间距 7 + 箭头 16 ≈ 65px）
+                  比 right-14 的 56px 让位更宽，常驻钮不与计数/箭头挤压。 */}
               {(onOpenProjectCards || onOpenProjectCodegraph) && (
                 <span className={cn(
-                  'absolute right-14 top-1/2 -translate-y-1/2 items-center gap-0.5 bg-background',
-                  compact ? 'flex' : 'hidden group-hover:flex',
+                  'absolute top-1/2 -translate-y-1/2 items-center gap-0.5 bg-background',
+                  compact ? 'right-20 flex' : 'right-14 hidden group-hover:flex',
                 )}>
                   {onOpenProjectCards && (
                     <button

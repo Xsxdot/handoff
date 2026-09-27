@@ -1445,6 +1445,12 @@ describe('B369.7 紧凑导航统一', () => {
     expect(screen.queryByRole('button', { name: '流程' })).toBeNull()
     expect(screen.queryByRole('button', { name: '代码图' })).toBeNull()
     expect(screen.getByTestId('mobile-nav-note')).toHaveTextContent('流程与代码图暂未适配移动端，请在桌面宽屏使用。')
+    // 目检项静态锁：常驻簇用加宽的 right-20 让位进行中计数/箭头，不回落 hover 策略
+    const cluster = within(screen.getByTestId('project-node-p1'))
+      .getByRole('button', { name: '打开 handoff 工作项' }).closest('span')!
+    expect(cluster.className).toContain('right-20')
+    expect(cluster.className).toContain('flex')
+    expect(cluster.className).not.toContain('group-hover')
   })
 
   it('compact 项目行「工作项」钮常驻可点 → /cards?project=<name> 且项目过滤生效', async () => {
