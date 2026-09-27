@@ -9,9 +9,10 @@
 //
 // 注意：本文件依赖 Task 12-15 的组件（BoardOverlay / TicketsOverlay /
 // useGlobalTickets / SettingsPage），在那些任务落地前无法运行，属预期的全期红。
-import { createEvent, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { createEvent, fireEvent, render, screen, waitFor, within, act } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter, useLocation } from 'react-router-dom'
+import { MemoryRouter, Router, UNSAFE_createMemoryHistory, useLocation } from 'react-router-dom'
+import { useLayoutEffect, useState } from 'react'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AppRoutes } from '../../App'
 import { coordinatorBase } from './Shell'
@@ -277,6 +278,25 @@ function renderShell(path = '/') {
 // locationRef 读探针当前记录的 URL。
 function locationRef(): string | null {
   return screen.getByTestId('test-location').getAttribute('data-ref')
+}
+
+// renderShellWithHistory 与 renderShell 同构，但把 memory history 句柄交出来。
+// window.history 不驱动 MemoryRouter；用例⑯用 history.go(-1)（POP 语义）验证
+// 浏览器返回键一致性——与真机返回键走的是同一份 in-memory 历史栈。
+function renderShellWithHistory(path = '/') {
+  const history = UNSAFE_createMemoryHistory({ initialEntries: [path], v5Compat: true })
+  function ShellRouter({ router }: { router: typeof history }) {
+    const [state, setState] = useState({ action: router.action, location: router.location })
+    useLayoutEffect(() => router.listen(setState), [router])
+    return (
+      <Router location={state.location} navigationType={state.action} navigator={router}>
+        <LocationProbe />
+        <AppRoutes />
+      </Router>
+    )
+  }
+  const rendered = render(<ShellRouter router={history} />)
+  return { history, ...rendered }
 }
 
 async function openBranch() {
@@ -1446,5 +1466,78 @@ describe('B369.7 紧凑导航统一', () => {
     expect(cluster.className).toContain('hidden group-hover:flex')
     expect(screen.getByRole('button', { name: '流程' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '代码图' })).toBeInTheDocument()
+  })
+
+  it('北极星全链：会话→卡详情→任务现场→返回会话→返回列表（URL 轨迹+状态集）', async () => {
+    Object.defineProperty(window, 'innerWidth', { value: 375, configurable: true, writable: true })
+    const rooms = vi.mocked(await import('../../api/rooms'))
+    rooms.fetchSessions.mockResolvedValue([sessionSummary()] as never)
+    rooms.fetchSessionDetail.mockResolvedValue({
+      summary: { ...sessionSummary(), cards: [{ card_id: 'B1', title: '卡甲', seat: 'user:sy' }] },
+      nodes: [],
+      timeline: [],
+    } as never)
+    await mockCardLedger([{ Target: 'local', TaskID: 'T1', Purpose: 'implement', LastType: 'question', LastSeq: 3 }])
+    renderShell('/')
+    // ① 会话行 → 下钻态
+    fireEvent.click(await screen.findByTestId('session-row'))
+    await waitFor(() => expect(locationRef()).toBe('/?tab=sessions&detail=1'))
+    // ② 卡身份行 → 卡 tab 卡详情（不进任务现场）
+    fireEvent.click(await screen.findByRole('button', { name: '会话详情' }))
+    fireEvent.click(await screen.findByTestId('session-card-row'))
+    await waitFor(() => expect(locationRef()).toBe('/cards?card=B1&from=session-session%3A1'))
+    expect(await screen.findByRole('dialog', { name: '工作项详情' })).toBeInTheDocument()
+    expect(screen.getByTestId('mobile-tab-cards')).toHaveAttribute('aria-selected', 'true')
+    expect(screen.queryByTestId('mobile-detail-bar')).toBeNull()
+    // ③ 卡抽屉 ↗ → 任务现场（会话来源随行，返回条在场，TUI tab 在场）
+    fireEvent.click(await screen.findByRole('button', { name: '跳到 T1' }))
+    expect(await screen.findByTestId('mobile-detail-bar')).toBeInTheDocument()
+    await waitFor(() => expect(locationRef()).toBe('/?tab=cards&detail=1&from=session-session%3A1'))
+    expect(await screen.findByRole('tab', { name: /重构工单通道/ })).toBeInTheDocument()
+    // ④ 返回 → 会话 tab 重建（openOrFocus 幂等），仍在下钻态
+    fireEvent.click(screen.getByTestId('mobile-detail-back'))
+    await waitFor(() => expect(locationRef()).toBe('/?tab=sessions&detail=1'))
+    expect(await screen.findByRole('tab', { name: /架构物理化/ })).toBeInTheDocument()
+    // ⑤ 再返回 → 会话列表（from 已清，逐级出栈兜底）
+    fireEvent.click(screen.getByTestId('mobile-detail-back'))
+    await waitFor(() => expect(locationRef()).toBe('/?tab=sessions'))
+    expect(screen.getByTestId('mobile-home')).toBeInTheDocument()
+    expect(screen.queryByTestId('mobile-detail-bar')).toBeNull()
+  })
+
+  it('浏览器返回键一致性：目录下钻后历史回退到上一导航态，无死 URL', async () => {
+    Object.defineProperty(window, 'innerWidth', { value: 375, configurable: true, writable: true })
+    const { history } = renderShellWithHistory('/')
+    await screen.findByTestId('mobile-home')
+    fireEvent.click(screen.getByTestId('mobile-tab-projects'))
+    await waitFor(() => expect(locationRef()).toBe('/?tab=projects'))
+    if (screen.queryByText('integration/b2-b3') === null) {
+      fireEvent.click(await screen.findByTestId('machine-row'))
+    }
+    fireEvent.click(await screen.findByText('integration/b2-b3'))
+    await waitFor(() => expect(screen.getByTestId('mobile-dir')).toBeInTheDocument())
+    await waitFor(() => expect(locationRef()).toBe('/?tab=projects&dir=%2Fw%2Fb2-b3'))
+    // 返回键（memory history go(-1)，POP）：回退到下钻前的 /?tab=projects——
+    // 目录覆盖层收起、底栏首页在场，不落在一个无人消费的死 URL 上
+    act(() => { history.go(-1) })
+    await waitFor(() => expect(locationRef()).toBe('/?tab=projects'))
+    expect(screen.getByTestId('mobile-home')).toBeInTheDocument()
+    expect(screen.queryByTestId('mobile-dir')).toBeNull()
+    expect(screen.getByTestId('mobile-tab-projects')).toHaveAttribute('aria-selected', 'true')
+  })
+
+  it('桌面免疫冒烟：from 深链不被改写、/?tab= 无副作用', async () => {
+    await mockCardLedger()
+    // 桌面 /cards 深链：抽屉开、URL 原样（from 不被消费也不被清除）
+    const first = renderShell('/cards?card=B1&from=session-session:1')
+    expect(await screen.findByRole('dialog', { name: '工作项详情' })).toBeInTheDocument()
+    expect(locationRef()).toBe('/cards?card=B1&from=session-session:1')
+    expect(screen.queryByTestId('mobile-home')).toBeNull()
+    first.unmount()
+    // 桌面 /?tab=projects：工作台正常渲染，URL 无副作用
+    renderShell('/?tab=projects')
+    expect(await screen.findByTestId('project-node-p1')).toBeInTheDocument()
+    expect(screen.queryByTestId('mobile-home')).toBeNull()
+    expect(locationRef()).toBe('/?tab=projects')
   })
 })
