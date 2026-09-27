@@ -183,10 +183,12 @@ describe('useMobileNav 写入 URL 形状（compact）', () => {
     const jumped = drive(fromSlash.result.current, (n) => n.openCard('B9'))
     expect(jumped.url).toBe('/cards?card=B9')
     cleanup()
-    // B369.8：设置二级页里点开卡，sub 不跟随（'/' 宿主语汇不跟随面）
+    // B369.8：设置二级页里点开卡，sub 不跟随（'/' 宿主语汇不跟随面）；
+    // B369.10 收紧：'/' 宿主的 project 是项目详情参数，同样不跟随进 /cards
+    //（保留条款精确到 /cards 宿主，正反用例见下方 B369.10 describe）
     const fromSub = mountNav('/?tab=settings&sub=machines&project=p1')
     const withSub = drive(fromSub.result.current, (n) => n.openCard('B1'))
-    expect(withSub.url).toBe('/cards?project=p1&card=B1')
+    expect(withSub.url).toBe('/cards?card=B1')
   })
 
   it('closeCard：replace 剥 card+from、保留 project；无残参时落 /cards', () => {
@@ -225,6 +227,99 @@ describe('useMobileNav push/replace 纪律（compact）', () => {
     cleanup()
     const gate = mountNav('/')
     expect(drive(gate.result.current, (n) => n.normalize({ ledgerEnabled: false, ledgerLoading: false })).action).toBe('REPLACE')
+  })
+})
+
+// —— B369.10 T1：项目详情 project 语汇 ——
+// 派生层只读参数不筛宿主（消费点只在 tab=projects 认它）；「tab≠projects 不该有
+// project」由 normalize ③ 在 URL 层清理（/cards 宿主除外——那是看板筛选）。
+describe('useMobileNav project 派生（B369.10）', () => {
+  it.each([
+    ['/?tab=projects&project=p1', 'p1'],
+    ['/?tab=projects', null],
+    ['/?tab=sessions&project=p1', 'p1'],
+  ])('初值 %s → projectId=%s', (entry, expected) => {
+    const { result } = mountNav(entry)
+    expect(result.current.projectId).toBe(expected)
+  })
+
+  it('桌面直通：projectId 恒 null（URL 参数不参与派生）', () => {
+    const { result } = mountNav('/?tab=projects&project=p1', false)
+    expect(result.current.projectId).toBeNull()
+  })
+})
+
+describe('useMobileNav setProject（B369.10）', () => {
+  it('开：push /?tab=projects&project=<id>', () => {
+    const { result } = mountNav('/?tab=projects')
+    const after = drive(result.current, (n) => n.setProject('p1'))
+    expect(after.url).toBe('/?tab=projects&project=p1')
+    expect(after.action).toBe('PUSH')
+  })
+
+  it('关：replace strip project、留其余参数', () => {
+    const { result } = mountNav('/?tab=projects&dir=%2Fw&project=p1')
+    const after = drive(result.current, (n) => n.setProject(null))
+    expect(after.url).toBe('/?tab=projects&dir=%2Fw')
+    expect(after.action).toBe('REPLACE')
+  })
+
+  it('幂等写：同址不产生第二次导航', () => {
+    const { result } = mountNav('/?tab=projects')
+    drive(result.current, (n) => n.setProject('p1'))
+    const before = lastNav!
+    drive(result.current, (n) => n.setProject('p1'))
+    expect(lastNav).toBe(before)
+  })
+
+  it('桌面直通：setProject no-op，URL 一字不动', () => {
+    const { result } = mountNav('/?tab=projects', false)
+    drive(result.current, (n) => n.setProject('p1'))
+    expect(lastNav!.url).toBe('/?tab=projects')
+    drive(result.current, (n) => n.setProject(null))
+    expect(lastNav!.url).toBe('/?tab=projects')
+  })
+})
+
+describe('useMobileNav project 逐级返回链（B369.10）', () => {
+  it('enterDetail 随行 project：详情里下钻后返回条能逐级回到详情', () => {
+    const { result } = mountNav('/?tab=projects&project=p1')
+    const after = drive(result.current, (n) => n.enterDetail())
+    expect(after.url).toBe('/?tab=projects&detail=1&project=p1')
+  })
+
+  it('exitDetail 保留 project（replace）', () => {
+    const { result } = mountNav('/?tab=projects&detail=1&project=p1')
+    const after = drive(result.current, (n) => n.exitDetail())
+    expect(after.url).toBe('/?tab=projects&project=p1')
+    expect(after.action).toBe('REPLACE')
+  })
+
+  it('setDir 开侧携带 project：详情→浏览文件后 project 不丢', () => {
+    const { result } = mountNav('/?tab=projects&project=p1')
+    const after = drive(result.current, (n) => n.setDir('/w/b2-b3'))
+    expect(after.url).toBe(`/?tab=projects&dir=${encodeURIComponent('/w/b2-b3')}&project=p1`)
+    expect(after.action).toBe('PUSH')
+  })
+
+  it('setDir 关侧 strip 天然保留 project：浏览文件→返回后回详情', () => {
+    const { result } = mountNav('/?tab=projects&dir=%2Fw&project=p1')
+    const after = drive(result.current, (n) => n.setDir(null))
+    expect(after.url).toBe('/?tab=projects&project=p1')
+  })
+})
+
+describe('useMobileNav openCard project 保留收紧（B369.10）', () => {
+  it('正面：/cards 宿主保留 project（看板筛选语义不变）', () => {
+    const { result } = mountNav('/cards?project=p1&card=B1')
+    const after = drive(result.current, (n) => n.openCard('B2'))
+    expect(after.url).toBe('/cards?project=p1&card=B2')
+  })
+
+  it('反面：/ 宿主的 project 是详情参数，openCard 丢弃（防静默改写看板筛选）', () => {
+    const { result } = mountNav('/?tab=projects&project=p1')
+    const after = drive(result.current, (n) => n.openCard('B2'))
+    expect(after.url).toBe('/cards?card=B2')
   })
 })
 
@@ -291,6 +386,20 @@ describe('useMobileNav normalize 三条（compact）', () => {
     const legitSub = mountNav('/?tab=settings&sub=machines')
     drive(legitSub.result.current, (n) => n.normalize(gate))
     expect(lastNav!.url).toBe('/?tab=settings&sub=machines')
+  })
+
+  it('③ project 残参清理（B369.10）：tab≠projects 清 project；/cards 宿主的 project 是看板筛选不清', () => {
+    const gate = { ledgerEnabled: true, ledgerLoading: false }
+    const strayProject = mountNav('/?tab=sessions&project=p1')
+    expect(drive(strayProject.result.current, (n) => n.normalize(gate)).url).toBe('/?tab=sessions')
+    cleanup()
+    const cardsProject = mountNav('/cards?card=B1&project=p1')
+    drive(cardsProject.result.current, (n) => n.normalize(gate))
+    expect(lastNav!.url).toBe('/cards?card=B1&project=p1')
+    cleanup()
+    const legitProject = mountNav('/?tab=projects&project=p1')
+    drive(legitProject.result.current, (n) => n.normalize(gate))
+    expect(lastNav!.url).toBe('/?tab=projects&project=p1')
   })
 })
 
