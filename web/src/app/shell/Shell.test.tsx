@@ -1789,6 +1789,7 @@ describe('B369.9 单焦点投影', () => {
 
   const reachablePanes = () => screen.getAllByTestId('workbench-pane').filter(reachable)
   const reachableKeybars = () => screen.getAllByTestId('mobile-keybar').filter(reachable)
+  const reachableSwitchers = () => screen.getAllByTestId('pane-switcher').filter(reachable) as HTMLSelectElement[]
 
   // compact 下钻三步：项目 tab 缺省已在 → 展开项目（+机器行）→ 工作树行终端钮。
   // 下钻态 mobile-home 让开、返回后树折叠状态重置，所以每次都要重新展开。
@@ -1886,14 +1887,10 @@ describe('B369.9 单焦点投影', () => {
     expect(screen.getAllByTestId('pty-host')[1]).toBe(hosts[1])
   })
 
-  it('pad 768 反例锚：同组两列并排零投影痕迹——pane 类现状、separator 在场、逐终端键条', async () => {
-    setViewport(768)
-    renderShell('/?tab=projects')
-    await openWorkspaceTerminal('主目录')
-    const host = await screen.findByTestId('pty-host')
-    // 下钻态工作树行不在 DOM（mobile-home 让开），按 WorkbenchPage.test「从远端
-    // 项目拖目录到窗格」先例直接构造行 dragstart 的同款 DRAG_DIR_MIME 载荷，
-    // 投到窗格右半 → 同组第二列 terminal（投影不拆拖放 handler，岔口 4）
+  // 下钻态工作树行不在 DOM（mobile-home 让开），按 WorkbenchPage.test「从远端
+  // 项目拖目录到窗格」先例直接构造行 dragstart 的同款 DRAG_DIR_MIME 载荷，投到
+  // 窗格右半 → 同组第二列 terminal（投影不拆拖放 handler，岔口 4）。
+  async function dropDirOntoPane() {
     const values = new Map<string, string>()
     const dataTransfer = {
       types: [DRAG_DIR_MIME, DRAG_BASE_MIME],
@@ -1914,6 +1911,14 @@ describe('B369.9 单焦点投影', () => {
     Object.defineProperty(event, 'clientX', { value: 720 })
     Object.defineProperty(event, 'clientY', { value: 300 })
     fireEvent(pane, event)
+  }
+
+  it('pad 768 反例锚：同组两列并排零投影痕迹——pane 类现状、separator 在场、逐终端键条、无切换入口', async () => {
+    setViewport(768)
+    renderShell('/?tab=projects')
+    await openWorkspaceTerminal('主目录')
+    const host = await screen.findByTestId('pty-host')
+    await dropDirOntoPane()
     await waitFor(() => expect(screen.getAllByTestId('pty-host')).toHaveLength(2))
     expect(screen.getAllByTestId('pty-host')[0]).toBe(host)
     // pad 反例锚：两列并排，投影零痕迹
@@ -1926,5 +1931,36 @@ describe('B369.9 单焦点投影', () => {
     expect(screen.getAllByRole('separator')).toHaveLength(1)
     // 逐终端键条：可达键条数 = 终端数（pad 不收窄成单键条）
     expect(reachableKeybars()).toHaveLength(2)
+    // pad 不投影也就没有切换入口（T3 后补的断言）
+    expect(screen.queryByTestId('pane-switcher')).toBeNull()
+  })
+
+  it('375 冒烟：同组双列焦点头 pane-switcher 两步切换；TabBar 切到单格组后不在场', async () => {
+    setViewport(375)
+    renderShell('/?tab=projects')
+    await openWorkspaceTerminal('主目录')
+    await dropDirOntoPane()
+    await waitFor(() => expect(screen.getAllByTestId('pty-host')).toHaveLength(2))
+    // 焦点头 switcher 可达恰 1，option = 本组非空格数
+    const switcher = reachableSwitchers()[0]
+    expect(switcher).toBeDefined()
+    const options = within(switcher).getAllByRole('option') as HTMLOptionElement[]
+    expect(options).toHaveLength(2)
+    // 两步切换：change 选中另一格 → 焦点换列（可达窗格节点换成另一格的窗格）
+    const zhuOption = options.find((option) => option.textContent?.includes('主目录'))!
+    const paneBefore = reachablePanes()[0]
+    fireEvent.change(switcher, { target: { value: zhuOption.value } })
+    await waitFor(() => expect(reachablePanes()[0]).not.toBe(paneBefore))
+    // 受控 select 跟随焦点：新焦点头的 switcher 选中主目录终端
+    expect(reachableSwitchers()[0].value).toBe(zhuOption.value)
+    // 再开一终端 = 独立新组（组内单格）→ 切过去后 switcher 不可达（不在场）
+    fireEvent.click(screen.getByTestId('mobile-detail-back'))
+    await screen.findByTestId('mobile-home')
+    await openWorkspaceTerminal('integration/b2-b3')
+    expect(reachableSwitchers()).toHaveLength(0)
+    // TabBar 切回双列组：switcher 又可达恰 1（在焦点头）
+    fireEvent.click(tabByLabel('主目录'))
+    await waitFor(() => expect(reachableSwitchers()).toHaveLength(1))
+    expect(reachableSwitchers()[0].value).toBe(zhuOption.value)
   })
 })

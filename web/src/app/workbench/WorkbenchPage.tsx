@@ -406,6 +406,26 @@ export function WorkbenchPage({
                     {tab ? tabTitle(tab.content, tab.base.label, taskName) : '空窗格'}
                     {tab?.base.projectName && <span className="ml-2 text-muted-foreground">{tab.base.projectName}{tab.base.machine ? ` · ${tab.base.machine}` : ''}</span>}
                   </div>
+                  {/* B369.9 窗格切换入口（岔口 1）：只渲染在投影档焦点格头——
+                      焦点头是唯一保证非 inert 的窗格 chrome；option 只含本组非空格
+                      （空槽是焦点格内容不是切换目标），onChange 只写 wb 焦点
+                      （api.activate），零布局操作；onClick stopPropagation 防止
+                      冒泡进窗格 onClick 触发冗余 activate。组数无界，原生 select
+                      不随 N 溢出且触屏走系统 picker。 */}
+                  {singleFocus && paneFocused && tabCount(group) >= 2 && (
+                    <select
+                      data-testid="pane-switcher"
+                      aria-label="切换窗格"
+                      value={tab?.id ?? ''}
+                      onClick={(event) => event.stopPropagation()}
+                      onChange={(event) => api.activate(group.id, event.target.value)}
+                      className="shrink-0 rounded border bg-background px-1 py-0.5 text-xs"
+                    >
+                      {group.columns.flatMap((column) => column.panes).filter((pane): pane is Tab => pane !== null).map((pane) => (
+                        <option key={pane.id} value={pane.id}>{tabTitle(pane.content, pane.base.label, taskName)}</option>
+                      ))}
+                    </select>
+                  )}
                   <button
                     type="button"
                     aria-label={`关闭 ${tab ? tabTitle(tab.content, tab.base.label, taskName) : '空窗格'}`}

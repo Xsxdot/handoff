@@ -657,6 +657,78 @@ describe('B369.9 单焦点投影', () => {
     expect(filled.hasAttribute('inert')).toBe(true)
   })
 
+  it('pane-switcher：只在焦点格头渲染，option 按列序行序只含非空格', () => {
+    const { panes } = renderTwoPanes()
+    // 只在焦点格头（非焦点格在 inert 层且渲染条件不含它）
+    // 非焦点格头不渲染（条件不含它，且整体在 inert 层内）
+    expect(panes[0].querySelectorAll('[data-testid="pane-switcher"]')).toHaveLength(0)
+    const all = [...document.querySelectorAll('[data-testid="pane-switcher"]')] as HTMLSelectElement[]
+    expect(all).toHaveLength(1)
+    expect(all[0].getAttribute('aria-label')).toBe('切换窗格')
+    // option = 本组非空格按列序行序枚举（同列双格，无空槽）
+    const options = [...all[0].querySelectorAll('option')]
+    expect(options).toHaveLength(2)
+    expect(options[0]!.textContent).toContain('bash · local')
+  })
+
+  it('pane-switcher：fireEvent.change 选中另一格 → 焦点翻转 + 三件套随焦点翻转', () => {
+    const { hook, view, groupId, panes } = renderTwoPanes()
+    const switcher = document.querySelector('[data-testid="pane-switcher"]') as HTMLSelectElement
+    const options = [...switcher.querySelectorAll('option')]
+    const focusedTabId = hook.result.current.wb.groups[0].columns[0].panes[1]!.id
+    const other = options.find((option) => option.value !== focusedTabId)!
+    fireEvent.change(switcher, { target: { value: other.value } })
+    view.rerender(page(hook.result.current, true))
+    // 焦点落到第一格：类与属性翻转
+    expect(panes[0].className).toBe('absolute inset-0 flex min-h-0 flex-col bg-background z-10')
+    expect(panes[0].hasAttribute('inert')).toBe(false)
+    expect(panes[1].className).toBe('absolute inset-0 flex min-h-0 flex-col bg-background z-0 pointer-events-none')
+    expect(panes[1].hasAttribute('inert')).toBe(true)
+    expect(hook.result.current.wb.activeGroupId).toBe(groupId)
+  })
+
+  it('pane-switcher：空槽不占切换位（option 数 = 非空格数）', () => {
+    const hook = renderHook(() => useWorkbench())
+    // col0 [t1, null] + col1 [t2]：tabCount=2 → switcher 在场；null 槽不是切换目标
+    const layout: Workbench = {
+      activeGroupId: 'g1',
+      groups: [{
+        id: 'g1', name: '', autoName: false,
+        columns: [
+          { panes: [{ id: 't1', base: local, content: { kind: 'terminal', seq: 1 } }, null] },
+          { panes: [{ id: 't2', base: remote, content: { kind: 'terminal', seq: 2 } }] },
+        ],
+        sizes: [1, 1],
+        focus: [0, 0],
+      }],
+    }
+    act(() => hook.result.current.hydrate(layout))
+    const view = render(page(hook.result.current, true))
+    const switcher = view.container.querySelector('[data-testid="pane-switcher"]') as HTMLSelectElement
+    expect(switcher).not.toBeNull()
+    const options = [...switcher.querySelectorAll('option')]
+    expect(options).toHaveLength(2)
+    expect(options.map((option) => option.value)).toEqual(['t1', 't2'])
+  })
+
+  it('pane-switcher：单格组与桌面档都不渲染', () => {
+    const single = renderHook(() => useWorkbench())
+    act(() => single.result.current.open({ kind: 'terminal', seq: 1 }, local))
+    const singleView = render(page(single.result.current, true))
+    expect(singleView.container.querySelector('[data-testid="pane-switcher"]')).toBeNull()
+    const { view } = renderTwoPanes(false)
+    expect(view.container.querySelector('[data-testid="pane-switcher"]')).toBeNull()
+  })
+
+  it('pane-switcher onClick stopPropagation 不触发窗格冗余 activate', () => {
+    const { hook } = renderTwoPanes()
+    const switcher = document.querySelector('[data-testid="pane-switcher"]') as HTMLSelectElement
+    const wbBefore = hook.result.current.wb
+    fireEvent.click(switcher)
+    // activate 若被调用会 cloneWorkbench 换 wb 引用；wb 不变 = 冒泡被拦下
+    expect(hook.result.current.wb).toBe(wbBefore)
+  })
+
   it('桌面/pad 守卫：不传 singleFocus，列/窗格类串逐字节现状、separator 在场', () => {
     const { view, panes } = renderTwoColumns(false)
     // 窗格类串逐字节等于现状（最高纪律：非投影档渲染输出零漂移）
