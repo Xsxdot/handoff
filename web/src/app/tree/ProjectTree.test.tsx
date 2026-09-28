@@ -60,6 +60,9 @@ function props(over: {
   onAddProject?: () => void
   onUnregister?: (name: string, machine: string) => Promise<void> | void
   onEdit?: (project: ProjectNode) => void
+  onOpenProjectDetail?: (project: ProjectNode) => void
+  onWorktreeCreated?: (project: ProjectNode, machine: string, ws: import('../../api/types').Workspace) => void
+  compact?: boolean
   previews?: PreviewSession[]
   previewOpenKeys?: ReadonlySet<string>
   previewOpeningKeys?: ReadonlySet<string>
@@ -109,6 +112,9 @@ function props(over: {
     // 与 onUnregister 同理：onEdit 也要能显式传 undefined，验证「没传就不给
     // 编辑入口」的分支
     onEdit: 'onEdit' in over ? over.onEdit : vi.fn(),
+    onOpenProjectDetail: over.onOpenProjectDetail,
+    onWorktreeCreated: over.onWorktreeCreated,
+    compact: over.compact ?? false,
     previews: over.previews ?? [],
     previewOpenKeys: over.previewOpenKeys ?? new Set<string>(),
     previewOpeningKeys: over.previewOpeningKeys ?? new Set<string>(),
@@ -1150,4 +1156,199 @@ it('底部 dock 不再提供会话与收件箱入口', () => {
   render(<ProjectTree {...props()} />)
   expect(screen.queryByRole('button', { name: '会话' })).not.toBeInTheDocument()
   expect(screen.queryByRole('button', { name: '收件箱' })).not.toBeInTheDocument()
+})
+
+// —— B369.8 T6：compact 缺省折叠 + 位置摘要 + 树面 hover 处置 ——
+// —— B369.10 T3：compact 项目行主点击改「进详情」，折叠入口收窄为行内 Arrow ——
+describe('B369.8 compact 项目折叠与 hover', () => {
+  async function renderCompact(over: Parameters<typeof props>[0] = {}) {
+    const p = props({ compact: true, onOpenProjectCards: vi.fn(), onWorktreeCreated: vi.fn(), onOpenProjectDetail: vi.fn(), ...over })
+    render(<ProjectTree {...p} />)
+    return p
+  }
+
+  // expandProject 走行内 Arrow：B369.10 起 compact 行 button 是详情入口，折叠
+  // 语义收窄到 Arrow 的 aria-label（「展开」/「收起」）上，行 button 不再挂
+  // aria-expanded（否则读屏把它报成可展开按钮、点下去却是跳页）。
+  function expandProject() {
+    fireEvent.click(within(screen.getByTestId('project-node-p1')).getByLabelText('展开'))
+  }
+
+  it('缺省折叠：内容区不渲染、行 button 不挂 aria-expanded（折叠语义在 Arrow）、逐位置芯片在场', () => {
+    renderCompact()
+    const node = screen.getByTestId('project-node-p1')
+    expect(within(node).getByRole('button', { name: /^handoff/ })).not.toHaveAttribute('aria-expanded')
+    expect(within(node).getByLabelText('展开')).toBeInTheDocument()
+    // 机器行/工作树/任务组全部不在（折叠的折叠面）
+    expect(screen.queryByTestId('machine-row')).toBeNull()
+    expect(screen.queryByTestId('workspace-row')).toBeNull()
+    expect(screen.queryByTestId('task-group')).toBeNull()
+    // 位置芯片照常在场（状态信息不随折叠消失，也不必展开才能看见）
+    expect(within(node).getByTestId('project-loc-chips')).toBeInTheDocument()
+  })
+
+  it('点行 → onOpenProjectDetail 回调带整 project；主点击不再折叠（内容面仍不在）', () => {
+    const p = props({ compact: true, onOpenProjectDetail: vi.fn() })
+    render(<ProjectTree {...p} />)
+    fireEvent.click(within(screen.getByTestId('project-node-p1')).getByRole('button', { name: /^handoff/ }))
+    expect(p.onOpenProjectDetail).toHaveBeenCalledTimes(1)
+    expect(p.onOpenProjectDetail).toHaveBeenCalledWith(p.tree.projects[0])
+    expect(screen.queryByTestId('machine-row')).toBeNull()
+  })
+
+  it('点 Arrow 展开 → 内容面在场 + Arrow 标签翻转；再点收起（主点击不参与）', async () => {
+    await renderCompact()
+    expandProject()
+    const node = screen.getByTestId('project-node-p1')
+    expect(within(node).getByLabelText('收起')).toBeInTheDocument()
+    expect(await screen.findByTestId('machine-row')).toBeInTheDocument()
+    fireEvent.click(within(node).getByLabelText('收起'))
+    expect(screen.queryByTestId('machine-row')).toBeNull()
+    expect(within(node).getByLabelText('展开')).toBeInTheDocument()
+  })
+
+  it('搜索命中自动展开（旁路两档一致；展开入口仍是 Arrow）', async () => {
+    await renderCompact()
+    fireEvent.change(screen.getByPlaceholderText('搜索项目、机器或任务'), { target: { value: '重构' } })
+    expect(await screen.findByTestId('machine-row')).toBeInTheDocument()
+    const node = screen.getByTestId('project-node-p1')
+    // 命中面已展开：项目/机器两级 Arrow 都在「收起」态（这里是 getAll——搜索
+    // 旁路会把两级一起展开，getBy 会撞多枚）
+    expect(within(node).getAllByLabelText('收起').length).toBeGreaterThan(0)
+    expect(within(node).getByText('重构工单通道')).toBeInTheDocument()
+  })
+
+  it('逐位置芯片：每位置一枚「机器名 · N 活跃」，离线位「· 离线」且 tone 随之', () => {
+    const p = props({ compact: true, onOpenProjectDetail: vi.fn() })
+    const tree: ProjectTreeResp = {
+      projects: [{
+        ...p.tree.projects[0],
+        locations: [
+          p.tree.projects[0].locations[0],
+          {
+            machine: 'devbox', name: 'handoff', path: '/srv/handoff', probe_error: '',
+            workspaces: [{ path: '/srv/handoff', branch: 'main', head: 'aaa', is_main: true, managed: false, created_at: '' }],
+          },
+        ],
+      }],
+      unowned: [],
+      machines: [
+        { name: '', ok: true, fetched_at: '', error: '' },
+        { name: 'devbox', ok: false, fetched_at: '', error: 'connection refused' },
+      ],
+    }
+    render(<ProjectTree {...p} tree={tree} />)
+    const chips = screen.getAllByTestId('project-loc-chip')
+    expect(chips).toHaveLength(2)
+    // 活跃数口径 = 该位置工作树下 running + waiting_answer + waiting_review（T1 挂在 /w/b2-b3）
+    expect(chips[0]).toHaveTextContent('本机 · 1 活跃')
+    expect(chips[0].querySelector('.bg-state-active')).not.toBeNull()
+    // 探活失败的位置只标记状态，不把它的工作树藏起来
+    expect(chips[1]).toHaveTextContent('devbox · 离线')
+    expect(chips[1].querySelector('.bg-state-failed')).not.toBeNull()
+    // 升格后旧摘要形态不再渲染（两形态互斥）
+    expect(screen.queryByTestId('project-loc-summary')).toBeNull()
+  })
+
+  // B369.10 验收实走修正（390 真机实测）：芯片原先塞在名旁，长名下容器被挤瘪、
+  // 单枚芯片溢出容器后伸进「工作项」绝对定位钮的 right-20 区被图标压字。修法是
+  // 把芯片行整行化（原型 .pcard .top / .locs 两段形态）并给钮区留位。
+  it('芯片整行：行 button flex-wrap + 芯片 w-full 独占一行 + 有工作项钮时留行尾位', () => {
+    const p = props({ compact: true, onOpenProjectDetail: vi.fn(), onOpenProjectCards: vi.fn() })
+    render(<ProjectTree {...p} />)
+    const node = screen.getByTestId('project-node-p1')
+    const row = within(node).getByRole('button', { name: /^handoff/ })
+    expect(row.className).toContain('flex-wrap')
+    const chips = within(node).getByTestId('project-loc-chips')
+    expect(chips.className).toContain('w-full')
+    // 工作项钮在场（admit 了 onOpenProjectCards）→ 芯片行预留 right-20 那段
+    expect(chips.className).toContain('pr-20')
+    // 芯片文本可截断（容器比芯片还窄时的兜底是截断，不是溢出横向滚动）
+    expect(within(node).getByTestId('project-loc-chip').querySelector('.truncate')).not.toBeNull()
+  })
+
+  it('无工作项钮（未注入 onOpenProjectCards）时芯片行不留行尾空位', () => {
+    const p = props({ compact: true, onOpenProjectDetail: vi.fn() })
+    render(<ProjectTree {...p} />)
+    const chips = screen.getByTestId('project-loc-chips')
+    expect(chips.className).toContain('w-full')
+    expect(chips.className).not.toContain('pr-20')
+  })
+
+  it('onOpenProjectDetail 缺席（直渲染树）时维持摘要形态 + 主点击折叠', () => {
+    const p = props({ compact: true })
+    render(<ProjectTree {...p} />)
+    const node = screen.getByTestId('project-node-p1')
+    expect(within(node).getByTestId('project-loc-summary')).toHaveTextContent('1 处位置')
+    expect(screen.queryByTestId('project-loc-chips')).toBeNull()
+    fireEvent.click(within(node).getByLabelText('展开'))
+    expect(screen.getByTestId('machine-row')).toBeInTheDocument()
+  })
+
+  it('三 hover 钮 compact 常驻：class 含 block、不含 group-hover:block、p-1.5', async () => {
+    await renderCompact()
+    expandProject()
+    fireEvent.click(await screen.findByTestId('machine-row'))
+    // 主目录与工作树两行各一枚终端钮：逐枚断言
+    const wsBtns = await screen.findAllByRole('button', { name: '在此打开终端' })
+    expect(wsBtns.length).toBe(2)
+    for (const btn of [...wsBtns, screen.getByRole('button', { name: '打开主目录终端' }), screen.getByRole('button', { name: '新建工作树' })]) {
+      expect(btn.className).toContain(' p-1.5 ')
+      expect(btn.className).not.toContain('group-hover:block')
+    }
+  })
+
+  it('桌面反例锁：三钮 hover 显形串逐字节保留、expanded 缺省 true', async () => {
+    const p = props({ onOpenProjectCards: vi.fn(), onWorktreeCreated: vi.fn() })
+    render(<ProjectTree {...p} />)
+    // 缺省全展开（桌面语义）
+    expect(within(screen.getByTestId('project-node-p1')).getByRole('button', { expanded: true })).toHaveAttribute('aria-expanded', 'true')
+    fireEvent.click(await screen.findByTestId('machine-row'))
+    const wsBtns = await screen.findAllByRole('button', { name: '在此打开终端' })
+    expect(wsBtns.length).toBe(2)
+    for (const btn of wsBtns) {
+      expect(btn.className).toBe('absolute right-2 top-1/2 hidden -translate-y-1/2 rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground group-hover:block')
+    }
+    const mainBtn = screen.getByRole('button', { name: '打开主目录终端' })
+    expect(mainBtn.className).toBe('absolute right-14 top-1/2 hidden -translate-y-1/2 rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground group-hover:block')
+    const wtBtn = screen.getByRole('button', { name: '新建工作树' })
+    expect(wtBtn.className).toBe('absolute right-6 top-1/2 hidden -translate-y-1/2 rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground group-hover:block')
+    // 位置摘要/芯片桌面都不渲染（铺开面自答）
+    expect(screen.queryByTestId('project-loc-summary')).toBeNull()
+    expect(screen.queryByTestId('project-loc-chips')).toBeNull()
+  })
+
+  it('桌面反例锁：点项目行只折叠、不进详情（onOpenProjectDetail 传了也不消费）', () => {
+    const onOpenProjectDetail = vi.fn()
+    const p = props({ onOpenProjectDetail })
+    render(<ProjectTree {...p} />)
+    const row = within(screen.getByTestId('project-node-p1')).getByRole('button', { expanded: true })
+    fireEvent.click(row)
+    expect(onOpenProjectDetail).not.toHaveBeenCalled()
+    expect(screen.queryByTestId('machine-row')).toBeNull()
+  })
+
+  it('已打开行 × compact 常驻：opacity-100 / 无 translate-x-1 / 机器名不被 group-hover 抹掉', async () => {
+    await renderCompact({
+      openItems: [openItem()],
+      onCloseOpenItem: vi.fn(),
+    })
+    expandProject()
+    const closeBtn = await screen.findByRole('button', { name: '关闭 bash · main' })
+    expect(closeBtn.className).toContain('opacity-100')
+    expect(closeBtn.className).toContain('translate-x-0')
+    expect(closeBtn.className).not.toContain('opacity-0')
+    // 标签 span：compact 无 group-hover:opacity-0（否则 × 常驻而标签被抹掉）
+    const machineLabel = closeBtn.parentElement!.querySelector('[data-testid="task-machine"] span:last-child')!
+    expect(machineLabel.className).not.toContain('group-hover:opacity-0')
+  })
+
+  it('桌面已打开行 × 反例锁：hover 显形串逐字节、标签让位淡出保留', async () => {
+    const p = props({ openItems: [openItem()], onCloseOpenItem: vi.fn() })
+    render(<ProjectTree {...p} />)
+    const closeBtn = await screen.findByRole('button', { name: '关闭 bash · main' })
+    expect(closeBtn.className).toBe('absolute right-1 top-1/2 flex size-5 -translate-y-1/2 translate-x-1 items-center justify-center rounded text-muted-foreground opacity-0 transition-[opacity,transform] duration-150 hover:bg-accent/60 hover:text-foreground focus-visible:opacity-100 focus-visible:translate-x-0 group-hover:translate-x-0 group-hover:opacity-100')
+    const machineLabel = closeBtn.parentElement!.querySelector('[data-testid="task-machine"] span:last-child')!
+    expect(machineLabel.className).toContain('group-hover:opacity-0')
+  })
 })

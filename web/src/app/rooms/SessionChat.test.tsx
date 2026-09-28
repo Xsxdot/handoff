@@ -239,3 +239,76 @@ describe('SessionChat', () => {
     expect(await screen.findByTestId('msg-53')).toHaveClass('items-end')
   })
 })
+
+// —— B369.8 T5：compact 回复钮常驻（hover 零依赖）——
+describe('B369.8 compact 回复钮', () => {
+  const e7 = event(7, '收到')
+
+  it('compact：class 含 opacity-100 常驻、不含 group-hover/opacity-0 hover 依赖', () => {
+    render(<SessionChat sessionId="session:1" summary={summary()} events={[e7]} historyError="" onSent={() => {}} compact />)
+    const cls = screen.getByTestId('reply-7').className
+    expect(cls).toContain('opacity-100')
+    expect(cls).not.toContain('group-hover:opacity-100')
+    expect(cls).not.toContain('opacity-0')
+  })
+
+  it('桌面反例锁：class 仍是 hover 显形串（opacity-0 + group-hover:opacity-100）', () => {
+    render(<SessionChat sessionId="session:1" summary={summary()} events={[e7]} historyError="" onSent={() => {}} />)
+    // 集合级逐字锁（cn/tailwind-merge 会重排冲突组，断言产物串本身；
+    // focus:opacity-100 与 opacity-100 子串撞车，toContain 不可用）
+    expect(screen.getByTestId('reply-7').className).toBe(
+      'shrink-0 rounded p-1 text-muted-foreground transition-opacity hover:bg-accent hover:text-foreground focus:opacity-100 opacity-0 group-hover:opacity-100',
+    )
+  })
+
+  it('compact：发送钮主动作触控档 min-h-11', () => {
+    render(<SessionChat sessionId="session:1" summary={summary()} events={[]} historyError="" onSent={() => {}} compact />)
+    expect(screen.getByRole('button', { name: '发送' }).className).toContain('min-h-11')
+  })
+})
+
+// —— B369.10 T7：群聊顶部「本会话的卡」chiprow（琥珀判定如实降级）——
+describe('B369.10 compact 会话卡横排', () => {
+  it('胶囊逐卡渲染与回调载荷：chiprow 首位「本会话的卡：」，点击带 card_id', async () => {
+    const user = userEvent.setup()
+    const onOpenCard = vi.fn()
+    render(<SessionChat sessionId="session:1" summary={summary()} events={[]} historyError="" onSent={() => {}} compact onOpenCard={onOpenCard} />)
+    expect(screen.getByTestId('session-card-chips').textContent).toContain('本会话的卡：')
+    const chips = screen.getAllByTestId('session-card-chip')
+    expect(chips).toHaveLength(2)
+    expect(chips[0]).toHaveTextContent('B233.14 · 查看卡')
+    expect(chips[1]).toHaveTextContent('B233.17 · 查看卡')
+    // aria-label 如实带状态（wire 的 SessionCard.status，不可证实的归因不伪造）
+    expect(chips[0]).toHaveAttribute('aria-label', '查看卡 B233.14，进行中')
+    expect(chips[1]).toHaveAttribute('aria-label', '查看卡 B233.17，待办')
+    await user.click(chips[0])
+    expect(onOpenCard).toHaveBeenCalledWith('B233.14')
+  })
+
+  it('单卡 + needs_human 染琥珀（会话级 needs 归因到唯一卡）+ ⚑ 前缀', () => {
+    render(
+      <SessionChat sessionId="session:1" historyError="" onSent={() => {}}
+        summary={summary({ needs_human: true, cards: [{ card_id: 'B233.17', title: '组装点收窄', status: '待裁决' }] })}
+        events={[]} compact onOpenCard={() => {}} />,
+    )
+    const chip = screen.getByTestId('session-card-chip')
+    expect(chip).toHaveTextContent('⚑ B233.17 · 查看卡')
+    expect(chip.className).toContain('bg-amber-100')
+    expect(chip.className).toContain('text-amber-700')
+  })
+
+  it('多卡会话一律中性：needs_human 为真也不可证实归因到任何一张卡', () => {
+    render(<SessionChat sessionId="session:1" summary={summary({ needs_human: true })} events={[]} historyError="" onSent={() => {}} compact onOpenCard={() => {}} />)
+    for (const chip of screen.getAllByTestId('session-card-chip')) {
+      expect(chip.className).not.toContain('amber')
+      expect(chip.textContent).not.toContain('⚑')
+    }
+  })
+
+  it('归档不渲染；桌面不渲染（反例锁：chips 行缺席）', () => {
+    const archived = render(<SessionChat sessionId="session:1" summary={summary({ archived: true })} events={[]} historyError="" onSent={() => {}} compact onOpenCard={() => {}} />)
+    expect(archived.container.querySelector('[data-testid="session-card-chips"]')).toBeNull()
+    const desktop = render(<SessionChat sessionId="session:1" summary={summary()} events={[]} historyError="" onSent={() => {}} onOpenCard={() => {}} />)
+    expect(desktop.container.querySelector('[data-testid="session-card-chips"]')).toBeNull()
+  })
+})

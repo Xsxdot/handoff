@@ -13,6 +13,7 @@ import type { IdentityResp, RoomHistoryItem, SessionSummary } from '../../api/ro
 import { addSessionMember, fetchIdentity, sendRoomMessage } from '../../api/rooms'
 import { ApiError } from '../../api/client'
 import { errorMessage } from '../lib/format'
+import { cn } from '@/lib/utils'
 import { logRoom } from './roomLog'
 import { applyMention, extractSessionMentions, isSelfActor, memberKindLabel, mentionCandidates, segmentBody, signatureText } from './sessionModel'
 
@@ -24,9 +25,15 @@ export interface SessionChatProps {
   historyLoading?: boolean
   onSent: () => void
   onJoinCard?: () => void
+  // compact（B369.8 T5）：回复钮常驻（岔口 3 #1，键盘 focus 现身路径保留）、
+  // 发送钮主动作触控档（min-h-11）。缺省 false = 桌面类串逐字节不动。
+  compact?: boolean
+  // B369.10 T7：compact 群聊顶部「本会话的卡」chiprow 的点击回调（SessionTab
+  // 的 onOpenCard seam，Shell 已通 nav.openCard）。缺省 undefined = 桌面不渲染。
+  onOpenCard?: (cardId: string) => void
 }
 
-function MessageRow({ event, referenced, highlight, archived, selfMember, onJump, onReply }: {
+function MessageRow({ event, referenced, highlight, archived, selfMember, onJump, onReply, compact = false }: {
   event: RoomHistoryItem
   referenced: RoomHistoryItem | null
   highlight: boolean
@@ -34,6 +41,7 @@ function MessageRow({ event, referenced, highlight, archived, selfMember, onJump
   selfMember: string | null
   onJump: (seq: number) => void
   onReply: (event: RoomHistoryItem) => void
+  compact?: boolean
 }) {
   const payload = event.payload as { body?: string; mentions?: string[]; reply_to?: number; device?: string }
   const self = isSelfActor(event.actor, selfMember)
@@ -62,7 +70,12 @@ function MessageRow({ event, referenced, highlight, archived, selfMember, onJump
         {!archived && (
           <button type="button" data-testid={`reply-${event.seq}`} aria-label={`回复 #${event.seq}`}
             onClick={() => onReply(event)}
-            className="shrink-0 rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground focus:opacity-100 group-hover:opacity-100">
+            className={cn(
+              'shrink-0 rounded p-1 text-muted-foreground transition-opacity hover:bg-accent hover:text-foreground focus:opacity-100',
+              // 岔口 3 #1：桌面 hover 显形逐字节保留（focus 现身路径两档都在）；
+              // compact 行内常驻（opacity-100，去 opacity-0/group-hover 依赖）
+              compact ? 'opacity-100' : 'opacity-0 group-hover:opacity-100',
+            )}>
             <CornerUpLeft className="size-3.5" />
           </button>
         )}
@@ -71,7 +84,7 @@ function MessageRow({ event, referenced, highlight, archived, selfMember, onJump
   )
 }
 
-export function SessionChat({ sessionId, summary, events, historyError, historyLoading = false, onSent, onJoinCard }: SessionChatProps) {
+export function SessionChat({ sessionId, summary, events, historyError, historyLoading = false, onSent, onJoinCard, compact = false, onOpenCard }: SessionChatProps) {
   const [draft, setDraft] = useState('')
   const [sending, setSending] = useState(false)
   const [sendError, setSendError] = useState('')
@@ -206,13 +219,37 @@ export function SessionChat({ sessionId, summary, events, historyError, historyL
         <div className="shrink-0 border-b bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-700">会话已归档，只读。</div>
       )}
       <div className="min-h-0 flex-1 space-y-2 overflow-y-auto bg-slate-50/60 p-3">
+        {/* B369.10 T7：群聊顶部「本会话的卡」chiprow（compact 且未归档且有卡）。
+            琥珀判定如实降级：wire 无逐卡 needs 位（SessionCard 只有 id/title/
+            status/seat，会话级 needs_human 是「任意一张卡」的合取），可证实的
+            归因只有「needs 且唯一卡」——多卡一律中性，aria-label 如实带状态，
+            不可证实的归因不伪造（原型 note ③ 纪律；偏离记台账）。桌面与归档
+            不渲染；chiprow 是消息容器的首子元素，随内容滚动（原型同形态）。 */}
+        {compact && !archived && (summary?.cards?.length ?? 0) > 0 && onOpenCard !== undefined && (
+          <div className="flex flex-wrap items-center gap-1.5" data-testid="session-card-chips">
+            <span className="shrink-0 text-[11px] text-muted-foreground">本会话的卡：</span>
+            {summary!.cards!.map((card) => {
+              const amber = summary!.needs_human && summary!.cards!.length === 1
+              return (
+                <button key={card.card_id} type="button" data-testid="session-card-chip" data-card-id={card.card_id}
+                  aria-label={card.status ? `查看卡 ${card.card_id}，${card.status}` : `查看卡 ${card.card_id}`}
+                  onClick={() => onOpenCard(card.card_id)}
+                  className={amber
+                    ? 'rounded-full border border-amber-200 bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-700'
+                    : 'rounded-full border px-2 py-0.5 text-[11px] text-muted-foreground hover:bg-accent/60'}>
+                  {amber && '⚑ '}{card.card_id} · 查看卡
+                </button>
+              )
+            })}
+          </div>
+        )}
         {events.length === 0 ? <p className="text-sm text-muted-foreground">{historyLoading ? '正在读取消息…' : historyError !== '' ? '消息暂时无法读取' : '（还没有消息）'}</p>
           : events.map((item) => {
             const payload = item.payload as { reply_to?: number }
             const replyTo = typeof payload.reply_to === 'number' && payload.reply_to > 0 ? payload.reply_to : null
             return <MessageRow key={item.seq} event={item} referenced={replyTo !== null ? bySeq.get(replyTo) ?? null : null}
               highlight={highlightSeq === item.seq} archived={archived} selfMember={selfMember}
-              onJump={jumpTo} onReply={startReply} />
+              onJump={jumpTo} onReply={startReply} compact={compact} />
           })}
       </div>
       <footer className="shrink-0 border-t bg-background p-2.5">
@@ -263,7 +300,7 @@ export function SessionChat({ sessionId, summary, events, historyError, historyL
             className="min-w-0 flex-1 resize-none border-0 bg-transparent px-1.5 py-1 text-sm outline-none"
             placeholder={archived ? '' : '发消息…（要谁办就 @ 谁；没 @ 的发言不唤醒任何人）'} />
           <button type="button" aria-label="发送" onClick={() => void send()} disabled={archived || sending || draft.trim() === ''}
-            className="rounded-xl bg-slate-900 px-3 py-1.5 text-xs text-white disabled:opacity-50">发送</button>
+            className={cn('rounded-xl bg-slate-900 px-3 py-1.5 text-xs text-white disabled:opacity-50', compact && 'min-h-11')}>发送</button>
         </div>
       </footer>
     </div>

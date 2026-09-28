@@ -64,8 +64,8 @@ beforeEach(() => {
   )
 })
 
-function dir(entries: { name: string; is_dir: boolean; ignored?: boolean }[]) {
-  return { entries: entries.map((e) => ({ ...e, size: 0 })) }
+function dir(entries: { name: string; is_dir: boolean; ignored?: boolean; size?: number }[]) {
+  return { entries: entries.map((e) => ({ ...e, size: e.size ?? 0 })) }
 }
 
 // stubHostname 临时替换 window.location.hostname，由 afterEach 统一还原。
@@ -478,5 +478,97 @@ describe('FileTree', () => {
     await userEvent.type(screen.getByLabelText('关键词'), 'x')
     await userEvent.click(screen.getByRole('button', { name: '搜索' }))
     expect(await screen.findByText(/结果过多，仅显示前 1 条/)).toBeInTheDocument()
+  })
+})
+
+// —— B369.10 T9：compact 行式触点档（行高加档 + 文件行尾只读尺寸列）——
+//
+// 这两串是桌面右栏的编译产物锁：T9 只增 compact 档，桌面档的根类串与行类串
+// 不许被顺手改写（反例锁，逐字节）。
+const ASIDE_DESKTOP = 'flex h-full min-h-0 flex-col border-l bg-background'
+const ROW_DESKTOP = 'flex w-full items-center gap-2 py-1 pr-3 text-left text-[13px] hover:bg-accent'
+
+describe('B369.10 FileTree compact 行式', () => {
+  function renderCompact() {
+    const onOpenFile = vi.fn()
+    const view = render(
+      <FileTree base={base} taskId={null} onOpenFile={onOpenFile} onOpenTerminal={vi.fn()} revealSupported={true} compact />,
+    )
+    return { onOpenFile, ...view }
+  }
+
+  function rowOf(name: string): HTMLElement {
+    const el = screen.getByText(name).closest('button')
+    if (el === null) throw new Error(`没找到 ${name} 所在的行`)
+    return el
+  }
+
+  it('compact：根挂触点基线、行高加档，文件行尾有尺寸列（目录行没有）', async () => {
+    vi.mocked(fetchWorkspaceDir).mockResolvedValue(
+      dir([
+        { name: 'internal', is_dir: true },
+        { name: 'CHANGELOG.md', is_dir: false, size: 31744 },
+        { name: 'go.mod', is_dir: false, size: 2048 },
+      ]),
+    )
+    const { onOpenFile, container } = renderCompact()
+    await waitFor(() => expect(screen.getByText('go.mod')).toBeInTheDocument())
+    const aside = container.querySelector('aside')
+    expect(aside?.className).toContain('[&_button:not(.min-h-11)]:min-h-6')
+    expect(aside?.className).toContain('[&_button]:min-w-6')
+    // 行式行高：文件行与目录行同档（触点 44px），不是桌面那条约 26px 的行
+    expect(rowOf('go.mod').className).toContain('min-h-11')
+    expect(rowOf('internal').className).toContain('min-h-11')
+    // 尺寸列：formatSize 既有口径，逐文件一枚
+    expect(screen.getAllByTestId('file-size').map((e) => e.textContent)).toEqual(['31.0 KB', '2.0 KB'])
+    expect(rowOf('internal').querySelector('[data-testid="file-size"]')).toBeNull()
+    fireEvent.click(screen.getByText('go.mod'))
+    expect(onOpenFile).toHaveBeenCalledWith('go.mod')
+  })
+
+  it('桌面反例锁：不传 compact 时根/行类串逐字节同现状，尺寸列不渲染', async () => {
+    vi.mocked(fetchWorkspaceDir).mockResolvedValue(dir([{ name: 'go.mod', is_dir: false, size: 2048 }]))
+    const { container } = render(
+      <FileTree base={base} taskId={null} onOpenFile={vi.fn()} onOpenTerminal={vi.fn()} revealSupported={true} />,
+    )
+    await waitFor(() => expect(screen.getByText('go.mod')).toBeInTheDocument())
+    expect(container.querySelector('aside')?.className).toBe(ASIDE_DESKTOP)
+    expect(rowOf('go.mod').className).toBe(ROW_DESKTOP)
+    expect(screen.queryAllByTestId('file-size')).toHaveLength(0)
+  })
+
+  it('行尾只有一个 ml-auto 持有者：compact 下尺寸列占位、角标与 ⊘ 让位缀其后，目录行的 ⊘ 仍在行尾', async () => {
+    vi.mocked(fetchWorkspaceDir).mockResolvedValue(
+      dir([
+        { name: 'node_modules', is_dir: true, ignored: true },
+        { name: 'coverage.out', is_dir: false, ignored: true, size: 1024 },
+      ]),
+    )
+    renderCompact()
+    await waitFor(() => expect(screen.getByText('coverage.out')).toBeInTheDocument())
+    const marks = screen.getAllByTitle(/被 \.gitignore 排除/)
+    // 目录行：没有尺寸列，⊘ 仍是行尾那个
+    expect(marks[0].className).toContain('ml-auto')
+    // 文件行：ml-auto 归尺寸列，⊘ 缀在其后（两个 ml-auto 会把行尾撕成两段）
+    expect(marks[1].className).not.toContain('ml-auto')
+    expect(screen.getByTestId('file-size').className).toContain('ml-auto')
+    expect(screen.getByTestId('file-size').textContent).toBe('1.0 KB')
+  })
+
+  it('compact 有改动角标时：角标让出 ml-auto、尺寸列仍钉在行尾；桌面档角标仍是行尾的 ml-auto 持有者', async () => {
+    vi.mocked(fetchWorkspaceDir).mockResolvedValue(dir([{ name: 'go.mod', is_dir: false, size: 2048 }]))
+    vi.mocked(fetchTaskDiff).mockResolvedValue({ diff: 'diff --git a/go.mod b/go.mod' })
+    const compactView = render(
+      <FileTree base={base} taskId="T1" onOpenFile={vi.fn()} onOpenTerminal={vi.fn()} revealSupported={true} compact />,
+    )
+    const mark = await screen.findByText('M')
+    expect(mark.className).not.toContain('ml-auto')
+    expect(screen.getByTestId('file-size').className).toContain('ml-auto')
+    compactView.unmount()
+
+    render(<FileTree base={base} taskId="T1" onOpenFile={vi.fn()} onOpenTerminal={vi.fn()} revealSupported={true} />)
+    const desktopMark = await screen.findByText('M')
+    expect(desktopMark.className).toContain('ml-auto')
+    expect(screen.queryAllByTestId('file-size')).toHaveLength(0)
   })
 })

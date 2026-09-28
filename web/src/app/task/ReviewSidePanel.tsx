@@ -29,10 +29,19 @@ function autoBaseHint(branches: BranchesResult | null): string {
 }
 
 // ReviewSidePanel 渲染审阅栏。onClose 由页头的开关与栏内 ✕ 共用。
-export function ReviewSidePanel({ taskId, onClose }: { taskId: string; onClose: () => void }) {
+// compact（B369.10 岔口 4）：紧凑档取全宽抽屉形态——390 视口下桌面 44% 侧滑的
+// min-w-[400px] 直接溢出，且形态语言与 CardDrawer 的全宽右层一致（用户已学过
+// 「全宽右层 + 关闭钮」）。缺省 false，桌面侧滑类串逐字节不动。
+export function ReviewSidePanel({ taskId, onClose, compact = false }: { taskId: string; onClose: () => void; compact?: boolean }) {
   const [tab, setTab] = useState<ReviewTab>('diff')
   return (
-    <aside className="flex h-full min-h-0 w-[44%] min-w-[400px] max-w-[620px] flex-col border-l bg-background">
+    <aside
+      className={cn(
+        compact
+          ? 'absolute inset-y-0 right-0 z-40 w-full flex h-full min-h-0 flex-col border-l bg-background'
+          : 'flex h-full min-h-0 w-[44%] min-w-[400px] max-w-[620px] flex-col border-l bg-background',
+      )}
+    >
       <div className="flex items-center gap-1.5 border-b px-3 py-2">
         {(['diff', 'run', 'file'] as const).map((t) => (
           <button

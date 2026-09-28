@@ -29,6 +29,7 @@ export function FileTab({
   onDraftChange,
   onDraftChangeLive,
   onStatus,
+  compact = false,
 }: {
   base: BaseDir
   rel: string
@@ -41,6 +42,11 @@ export function FileTab({
    * 消费方是左栏文件行的圆点（冲突红/删灰；已编辑与干净由宿主按草稿有无自判，
    * 不经本缝）。可缺席；组件卸载后宿主保留最后上报值，重开即刷新。 */
   onStatus?: (status: 'conflict' | 'deleted' | 'ok') => void
+  /** B369.10 T9：compact 只读档——头部「只读」徽标替换保存钮、无 ⌘S/冲突条/
+   * 编辑交互，正文恒走只读 pre；草稿不静默丢（dirty 时头部下一行提示去终端），
+   * onDraftChange 回写缝原样（草稿仍随 tab 生命周期落盘）。缺省 false = 桌面
+   * 编辑器逐字节不动。 */
+  compact?: boolean
 }) {
   const [read, setRead] = useState<FileRead | null>(
     // initial 命中时用草稿造一个临时的 read，让「editable + dirty」从第一帧就成立，
@@ -255,6 +261,9 @@ export function FileTab({
         // ⌘S 挂在**本 tab 的容器上走冒泡**，不挂 window、更不用 capture：
         // 分屏时另一侧可能是终端，⌘S 在终端有焦点时应该归终端。这与 B74 的
         // ⌘K 是同一个教训的另一面
+        // compact（B369.10）：无编辑交互，⌘S 不接管（也避免把只读档里恢复的
+        // 草稿直接写盘）。
+        if (compact) return
         if ((e.metaKey || e.ctrlKey) && e.key === 's') {
           e.preventDefault()
           void save()
@@ -264,19 +273,32 @@ export function FileTab({
       <div className="flex items-center gap-2 border-b px-3 py-1.5 text-xs text-muted-foreground">
         <span className="truncate font-mono text-foreground">{rel}</span>
         <span className="ml-auto shrink-0">{headerNote(read, dirty)}</span>
-        {editable && (
-          <button
-            type="button"
-            className="shrink-0 rounded border px-2 py-0.5 disabled:opacity-50"
-            disabled={!dirty || saving}
-            onClick={() => void save()}
-          >
-            {saving ? '保存中…' : '保存'}
-          </button>
+        {compact ? (
+          // B369.10 T9：只读徽标替换保存钮（原型 mobile-file note ③「编辑不做、
+          // 改代码去终端」）。
+          <span data-testid="file-readonly-badge" className="shrink-0 rounded-full border px-1.5 py-0.5 font-medium text-muted-foreground">只读</span>
+        ) : (
+          editable && (
+            <button
+              type="button"
+              className="shrink-0 rounded border px-2 py-0.5 disabled:opacity-50"
+              disabled={!dirty || saving}
+              onClick={() => void save()}
+            >
+              {saving ? '保存中…' : '保存'}
+            </button>
+          )
         )}
       </div>
+      {compact && dirty && (
+        // B369.10 T9：草稿不静默丢（spec §6 风险 4）——390 档不提供编辑，但要让
+        // 用户知道桌面端有一份未保存的草稿在；只提示、不提供编辑入口。
+        <p data-testid="file-draft-hint" className="border-b bg-amber-50 px-3 py-1.5 text-xs text-amber-800">
+          桌面端有未保存的草稿，改代码请去终端
+        </p>
+      )}
       {saveError !== '' && <p className="border-b px-3 py-1.5 text-xs text-destructive">{saveError}</p>}
-      {conflict !== null && (
+      {!compact && conflict !== null && (
         <div className="border-b bg-muted px-3 py-2 text-xs">
           <p className="text-foreground">
             {conflict.reason === 'stale-draft'
@@ -312,6 +334,10 @@ export function FileTab({
           <p className="p-4 text-sm text-muted-foreground">
             前 8 KiB 里出现了 NUL 字节，agentd 不会把它当文本返回，本版不支持在线编辑。
           </p>
+        ) : compact ? (
+          // B369.10 T9：compact 恒走只读 pre（既有分支复用）——390 不提供编辑，
+          // 「浏览语义齐，差小屏只读版式」。
+          <pre data-testid="file-readonly-pre" className="p-4 font-mono text-xs leading-relaxed whitespace-pre-wrap">{read.content}</pre>
         ) : editable ? (
           <textarea
             aria-label={rel}

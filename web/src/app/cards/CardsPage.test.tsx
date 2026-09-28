@@ -6,6 +6,7 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import type { Task } from '../../api/types'
 import { CardsPage } from './CardsPage'
+import { CARD_STATUSES } from './statusVocab'
 
 vi.mock('../../api/client', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../api/client')>()),
@@ -499,6 +500,7 @@ describe('B412 合并视图按各流当前版本看板配置归列', () => {
     merged_count: 0, needs: '', open_decisions: 0, children_total: 0, children_done: 0,
     conflict: false, open_tickets: 0, ...over,
   })
+
   const charterFlows = {
     workflows: [{
       name: 'charter', version: 12,
@@ -561,5 +563,219 @@ describe('B412 合并视图按各流当前版本看板配置归列', () => {
     fireEvent.click(screen.getByText('spec 卡'))
     const drawer = await screen.findByRole('dialog', { name: '工作项详情' })
     expect(within(drawer).getByText('沟通中').className).toContain('bg-primary')
+  })
+})
+
+// —— B369.8 T3：compact 单列扫描面 + 三行头部 ——
+// 桌面零漂移的证据 = 本文件全部既有 describe（桌面头部/看板/列表）全绿；
+// 这里只锁 compact 分支自身的形状。
+describe('B369.8 compact 单列', () => {
+  const compactCard = (over: Partial<import('../../api/ledger').CardView> = {}) => ({
+    id: 'B1', title: '单列卡', status: '进行中', priority: '中', project: 'handoff', workflow: '',
+    parent: '', base_branch: '', attachments: [], following: '', blocked: false, blocked_by: [],
+    merged_count: 0, needs: '', open_decisions: 0, children_total: 0, children_done: 0,
+    conflict: false, open_tickets: 0, ...over,
+  })
+
+  async function renderCompact(entry = '/cards') {
+    const ledger = await import('../../api/ledger')
+    vi.mocked(ledger.fetchCards).mockResolvedValue({ cards: [compactCard()], unlinked: { count: 0, tasks: [], unknown_targets: [] } })
+    render(
+      <MemoryRouter initialEntries={[entry]}>
+        <Routes>
+          <Route path="/cards" element={<CardsPage compact />} />
+          <Route path="/tasks/:id" element={<p>deep-link-hit</p>} />
+        </Routes>
+      </MemoryRouter>,
+    )
+    await screen.findByTestId('cards-single-column')
+  }
+
+  it('单列在场（CardItem 纵堆）；看板横滚容器/ListView/视图切换一律不渲染', async () => {
+    await renderCompact()
+    expect(screen.getByText('单列卡')).toBeInTheDocument()
+    // compact 的扫描面只有单列：视图切换是无消费者的死控件，看板横滚容器不渲染
+    expect(screen.queryByRole('button', { name: '看板' })).toBeNull()
+    expect(screen.queryByRole('button', { name: '列表' })).toBeNull()
+    expect(document.querySelector('main .overflow-x-auto')).toBeNull()
+  })
+
+  it('「⚑ 需要你」在行 1 且计数含项目级请示（默认 mock 1 条不挂卡裁决）', async () => {
+    await renderCompact()
+    const needsButton = await screen.findByRole('button', { name: /⚑ 需要你 1/ })
+    const row1 = needsButton.closest('div')!
+    // 行 1（主控）= 工作项标题 + 健康灯 + 需要你；ml-auto 推到行尾
+    expect(row1.textContent).toContain('工作项')
+    expect(needsButton.className).toContain('min-h-11')
+    expect(needsButton.className).toContain('ml-auto')
+  })
+
+  it('行 2 状态 chips 逐值渲染 CARD_STATUSES 词表；行 3 次级四控件在场且 min-h-11', async () => {
+    await renderCompact()
+    for (const status of CARD_STATUSES) {
+      expect(screen.getByTestId(`card-status-${status}`)).toBeInTheDocument()
+    }
+    const secondary = screen.getByTestId('cards-controls-secondary')
+    expect(within(secondary).getByRole('combobox', { name: '项目' })).toBeInTheDocument()
+    expect(within(secondary).getByRole('combobox', { name: '工作流' })).toBeInTheDocument()
+    expect(within(secondary).getByPlaceholderText('搜 B 号 / 标题')).toBeInTheDocument()
+    expect(within(secondary).getByRole('button', { name: '+ 新建' })).toBeInTheDocument()
+    for (const control of within(secondary).getAllByRole('combobox')) {
+      expect(control.className).toContain('min-h-11')
+    }
+  })
+
+  it('main 根挂触点基线类（24px 次级底线）', async () => {
+    await renderCompact()
+    expect(document.querySelector('main')!.className).toContain('button:not(.min-h-11)')
+  })
+})
+
+describe('B369.8 compact 抽屉 a11y（cards-surface 与焦点归还）', () => {
+  const surfaceCard = {
+    id: 'B1', title: '面卡', status: '进行中', priority: '中', project: 'handoff', workflow: '',
+    parent: '', base_branch: '', attachments: [], following: '', blocked: false, blocked_by: [],
+    merged_count: 0, needs: '', open_decisions: 0, children_total: 0, children_done: 0,
+    conflict: false, open_tickets: 0,
+  }
+
+  async function renderCompactSurface(entry = '/cards') {
+    const ledger = await import('../../api/ledger')
+    vi.mocked(ledger.fetchCards).mockResolvedValue({ cards: [surfaceCard], unlinked: { count: 0, tasks: [], unknown_targets: [] } })
+    vi.mocked(ledger.fetchCardDetail).mockResolvedValue({
+      card: surfaceCard, relations: [], events: [], task_states: [],
+      effective_base_branch: '', decisions: [], needs: '',
+    } as never)
+    render(
+      <MemoryRouter initialEntries={[entry]}>
+        <Routes>
+          <Route path="/cards" element={<CardsPage compact />} />
+          <Route path="/tasks/:id" element={<p>deep-link-hit</p>} />
+        </Routes>
+      </MemoryRouter>,
+    )
+    await screen.findByTestId('cards-single-column')
+  }
+
+  it('抽屉开 → surface aria-hidden="true"+inert；关 → 撤覆盖属性', async () => {
+    await renderCompactSurface()
+    const surface = screen.getByTestId('cards-surface')
+    // 覆盖前：aria-hidden="false"（与 WorkbenchPage 先例同款 boolean 写法）、无 inert
+    expect(surface.getAttribute('aria-hidden')).toBe('false')
+    expect(surface.hasAttribute('inert')).toBe(false)
+    fireEvent.click(screen.getByText('面卡'))
+    expect(await screen.findByRole('dialog', { name: '工作项详情' })).toBeInTheDocument()
+    expect(surface.getAttribute('aria-hidden')).toBe('true')
+    expect(surface.hasAttribute('inert')).toBe(true)
+    fireEvent.click(screen.getByRole('button', { name: '关闭' }))
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '工作项详情' })).toBeNull())
+    expect(surface.getAttribute('aria-hidden')).toBe('false')
+    expect(surface.hasAttribute('inert')).toBe(false)
+  })
+
+  it('关闭归还焦点到打开抽屉的触发钮（isConnected 守卫路径）', async () => {
+    await renderCompactSurface()
+    // 触发钮先取（抽屉开后卡标题在抽屉里重复出现，getByText 会撞多元素）
+    const trigger = screen.getByText('面卡').closest('article')!
+    trigger.focus()
+    fireEvent.click(trigger)
+    const drawer = await screen.findByRole('dialog', { name: '工作项详情' })
+    // 开抽屉焦点移入面板（compact aria-modal 档）
+    expect(document.activeElement).toBe(drawer)
+    fireEvent.click(screen.getByRole('button', { name: '关闭' }))
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '工作项详情' })).toBeNull())
+    expect(document.activeElement).toBe(trigger)
+  })
+
+  it('桌面反例锁：抽屉开时 cards-surface 不存在（双栏可达性显式反例）', async () => {
+    const ledger = await import('../../api/ledger')
+    vi.mocked(ledger.fetchCards).mockResolvedValue({ cards: [surfaceCard], unlinked: { count: 0, tasks: [], unknown_targets: [] } })
+    vi.mocked(ledger.fetchCardDetail).mockResolvedValue({
+      card: surfaceCard, relations: [], events: [], task_states: [],
+      effective_base_branch: '', decisions: [], needs: '',
+    } as never)
+    render(
+      <MemoryRouter initialEntries={['/cards']}>
+        <Routes>
+          <Route path="/cards" element={<CardsPage />} />
+        </Routes>
+      </MemoryRouter>,
+    )
+    fireEvent.click(await screen.findByText('面卡'))
+    expect(await screen.findByRole('dialog', { name: '工作项详情' })).toBeInTheDocument()
+    expect(screen.queryByTestId('cards-surface')).toBeNull()
+    expect(document.querySelector('main')!.className).not.toContain('button:not(.min-h-11)')
+  })
+})
+
+// —— B369.8 review 必修：头部三行并入 cards-surface 硬闸 ——
+describe('B369.8 compact 头部硬闸（review round 2）', () => {
+  it('抽屉覆盖期「+ 新建」「⚑ 需要你」落于 aria-hidden="true"+inert 的 cards-surface 祖先内；关时闸未挂', async () => {
+    const ledger = await import('../../api/ledger')
+    const surfaceCard = {
+      id: 'B1', title: '闸卡', status: '进行中', priority: '中', project: 'handoff', workflow: '',
+      parent: '', base_branch: '', attachments: [], following: '', blocked: false, blocked_by: [],
+      merged_count: 0, needs: '', open_decisions: 0, children_total: 0, children_done: 0,
+      conflict: false, open_tickets: 0,
+    }
+    vi.mocked(ledger.fetchCards).mockResolvedValue({ cards: [surfaceCard], unlinked: { count: 0, tasks: [], unknown_targets: [] } })
+    vi.mocked(ledger.fetchCardDetail).mockResolvedValue({
+      card: surfaceCard, relations: [], events: [], task_states: [],
+      effective_base_branch: '', decisions: [], needs: '',
+    } as never)
+    render(
+      <MemoryRouter initialEntries={['/cards']}>
+        <Routes>
+          <Route path="/cards" element={<CardsPage compact />} />
+        </Routes>
+      </MemoryRouter>,
+    )
+    await screen.findByTestId('cards-single-column')
+    const surface = screen.getByTestId('cards-surface')
+    // 头部控件在包装内且此时闸未挂（可查 → 未覆盖）
+    const newBtn = within(surface).getByRole('button', { name: '+ 新建' })
+    const needsBtn = within(surface).getByRole('button', { name: /⚑ 需要你/ })
+    expect(surface.getAttribute('aria-hidden')).toBe('false')
+    expect(surface.hasAttribute('inert')).toBe(false)
+    fireEvent.click(screen.getByText('闸卡'))
+    await screen.findByRole('dialog', { name: '工作项详情' })
+    // 覆盖期：同一包装挂上三件套，头部控件就在其内——读屏/键盘/指针三路同断
+    expect(surface.getAttribute('aria-hidden')).toBe('true')
+    expect(surface.hasAttribute('inert')).toBe(true)
+    expect(surface.contains(newBtn)).toBe(true)
+    expect(surface.contains(needsBtn)).toBe(true)
+    fireEvent.click(screen.getByRole('button', { name: '关闭' }))
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '工作项详情' })).toBeNull())
+    expect(surface.getAttribute('aria-hidden')).toBe('false')
+    expect(surface.hasAttribute('inert')).toBe(false)
+  })
+})
+
+// —— B369.10 T8 seam 冒烟：卡 → 驾驶会话双跳（CardsPage 注入 → 抽屉行）——
+describe('B369.10 卡到会话双跳 seam', () => {
+  it('compact 抽屉「驾驶会话」行点击 → onOpenSessionForCard(cardId)', async () => {
+    const ledger = await import('../../api/ledger')
+    const jumpCard = {
+      id: 'B1', title: '跳卡', status: '进行中', priority: '中', project: 'handoff', workflow: '',
+      parent: '', base_branch: '', attachments: [], following: '', blocked: false, blocked_by: [],
+      merged_count: 0, needs: '', open_decisions: 0, children_total: 0, children_done: 0,
+      conflict: false, open_tickets: 0, driver_session: 'session:7',
+    }
+    vi.mocked(ledger.fetchCards).mockResolvedValue({ cards: [jumpCard], unlinked: { count: 0, tasks: [], unknown_targets: [] } })
+    vi.mocked(ledger.fetchCardDetail).mockResolvedValue({
+      card: jumpCard, relations: [], events: [], task_states: [],
+      effective_base_branch: '', decisions: [], needs: '',
+    } as never)
+    const onOpenSessionForCard = vi.fn()
+    render(
+      <MemoryRouter initialEntries={['/cards']}>
+        <Routes>
+          <Route path="/cards" element={<CardsPage compact onOpenSessionForCard={onOpenSessionForCard} />} />
+        </Routes>
+      </MemoryRouter>,
+    )
+    fireEvent.click(await screen.findByText('跳卡'))
+    fireEvent.click(await screen.findByTestId('card-jump-session'))
+    expect(onOpenSessionForCard).toHaveBeenCalledWith('B1')
   })
 })

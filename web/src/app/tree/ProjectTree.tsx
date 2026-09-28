@@ -60,6 +60,7 @@ import { ARCHIVED_LABEL, ARCHIVED_TITLE, archivedKey, archivedTasks, isTerminalS
 import { StateDot } from '../board/StateDot'
 import { stateTone, type StateTone } from '../board/columns'
 import { cn } from '@/lib/utils'
+import { TOUCH_BASELINE } from '@/lib/touch'
 import { DRAG_BASE_MIME, DRAG_DIR_MIME, DRAG_TAB_MIME, DRAG_TASK_MIME } from '../workbench/paneDrop'
 import { TreePrefsMenu } from './TreePrefsMenu'
 import { sortProjects, splitHiddenProjects, splitIdleWorkspaces } from './treePrefs'
@@ -127,11 +128,22 @@ export interface ProjectTreeProps {
   onOpenSettings: () => void
   onOpenCodegraph?: () => void
   onOpenProjectCodegraph?: (project: ProjectNode) => void
+  // compact（B369.7）：紧凑视口形态。缺省 false = 桌面行为零改动。
+  // 三个处置：①项目行右侧簇常驻渲染「工作项」钮（触屏无 hover 也可见可点），
+  // 「代码图」子钮不渲染；②底部「流程」「代码图」钮配合回调缺席一并隐藏——
+  // /flows、/codegraph 整页路由只在桌面注册，紧凑下点了就是「URL 变了没人消费」
+  // 的死按钮；③底部入口行下方渲染一行解释文案（mobile-nav-note），同一视口内
+  // 说清「为什么不在、去哪用」。
+  compact?: boolean
   // onAddProject 打开项目登记向导。入口是「项目 N」标题行右侧的 + 图标——
   // 它改变树本身，与底部那排「去别处看」的跳转入口不是一类东西。
   onAddProject?: () => void
   onUnregister?: (name: string, machine: string) => Promise<void> | void
   onEdit?: (project: ProjectNode) => void
+  // onOpenProjectDetail（B369.10 T3）：compact 下项目行**主点击**的落点——进移动
+  // 项目详情面（Shell 接 nav.setProject）。它缺席时主点击维持折叠 toggle（桌面
+  // 与「直渲染树」的既有语义逐字节不变）。
+  onOpenProjectDetail?: (project: ProjectNode) => void
   // onWorktreeCreated 建完树后回调，由 Shell 刷新树并把新目录选为当前基准目录。
   // 与 onUnregister / onEdit 同一条规矩：没传就不给这个入口。
   onWorktreeCreated?: (project: ProjectNode, machine: string, ws: Workspace) => void
@@ -142,8 +154,8 @@ export interface ProjectTreeProps {
   onOpenPreview?: (id: string, machine: string) => void
 }
 
-// MACHINE_LABEL 给机器名做人话标签：""=本机。
-function machineLabel(machine: string): string {
+// MACHINE_LABEL 给机器名做人话标签：""=本机。B369.10 导出：详情面/位置芯片复用。
+export function machineLabel(machine: string): string {
   return machine === '' ? '本机' : machine
 }
 
@@ -161,7 +173,8 @@ function createdDesc(a: Task, b: Task): number {
 
 // locationProblem 判定一个机器节点是否不可达：location 探测失败优先，否则看
 // 跨机汇总信封里对应机器是否 ok=false。返回原因原文；空串=正常。
-function locationProblem(loc: ProjectLocationNode, machines: MachineStatus[] | undefined): string {
+// B369.10 导出：MobileProjectDetail 的 locbar 离线判定复用同一判据。
+export function locationProblem(loc: ProjectLocationNode, machines: MachineStatus[] | undefined): string {
   if (loc.probe_error !== '') return loc.probe_error
   const ms = machines?.find((m) => m.name === loc.machine)
   if (ms && !ms.ok) return ms.error
@@ -243,6 +256,24 @@ export function tasksOfWorkspace(
   })
 }
 
+// locationActiveCount 数一个位置下沉睡的活跃任务（running + waiting_answer +
+// waiting_review）——B369.10 T3 的项目行位置芯片上那个「N 活跃」。
+//
+// 口径与 wsMetrics.tasks（目录行排序键）逐字同源：逐个工作树走 tasksOfWorkspace
+// 再按同样三态过滤。为什么不用 countsForProject 的 running+waiting：那个是项目级
+// 计数（含 pending/previews 的展示口径），位置芯片问的是「这台机器上有没有在跑
+// 的活」，同一棵树两处报不同的数才叫分叉。
+function locationActiveCount(tasks: Task[], project: ProjectNode, loc: ProjectLocationNode): number {
+  return loc.workspaces.reduce(
+    (n, ws) =>
+      n +
+      tasksOfWorkspace(tasks, project, loc.machine, ws).filter(
+        (t) => t.state === 'running' || t.state === 'waiting_answer' || t.state === 'waiting_review',
+      ).length,
+    0,
+  )
+}
+
 // findBaseOfTask 在树上反查任务所在的目录。
 //
 // 返回 null 的两种情形都是真实的，不要当异常处理：任务未归属（项目不在树上），
@@ -310,7 +341,7 @@ function TaskIconSlot({ kind }: { kind: 'tui' | 'terminal' | 'file' | 'preview' 
   )
 }
 
-export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDir, openItems, focusedTaskId, onFocusOpenItem, onCloseOpenItem, onOpenTerminalAt, onOpenDirectory, onOpenTask, onOpenBoard, onOpenCards, onOpenProjectCards, ledgerEnabled = false, onOpenFlows, cardNeedsCount = 0, unlinkedCount = 0, onOpenTickets, onOpenSettings, onOpenCodegraph, onOpenProjectCodegraph, onAddProject, onUnregister, onEdit, onWorktreeCreated, previews = [], previewMachines = [], previewOpenKeys = new Set<string>(), previewOpeningKeys = new Set<string>(), onOpenPreview = () => {} }: ProjectTreeProps) {
+export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDir, openItems, focusedTaskId, onFocusOpenItem, onCloseOpenItem, onOpenTerminalAt, onOpenDirectory, onOpenTask, onOpenBoard, onOpenCards, onOpenProjectCards, ledgerEnabled = false, onOpenFlows, cardNeedsCount = 0, unlinkedCount = 0, onOpenTickets, onOpenSettings, onOpenCodegraph, onOpenProjectCodegraph, compact = false, onAddProject, onUnregister, onEdit, onOpenProjectDetail, onWorktreeCreated, previews = [], previewMachines = [], previewOpenKeys = new Set<string>(), previewOpeningKeys = new Set<string>(), onOpenPreview = () => {} }: ProjectTreeProps) {
   // collapsed：空集 = 全展开。为什么用「收起集合」而不是「展开集合」：默认全展开
   // 意味着初值空集，渲染时 `!collapsed.has(key)` 天然为真，不用为每个节点预填。
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
@@ -387,7 +418,11 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
   // 搜索期间旁路 collapsed：搜到了却折叠着等于没搜到。
   // 注意是「旁路」不是「清空」——collapsed 原样保留，查询清空后用户手动
   // 折起来的布局立刻回来，搜索不破坏布局。
-  const expanded = (key: string) => searching || !collapsed.has(key)
+  // B369.8（T6）：compact 缺省折叠——集合语义随缺省档翻转：compact 下集合存
+  // 「已展开」键（空集 = 全折叠，位置摘要代替铺开的内容面），桌面存「已收起」
+  // 键（空集 = 全展开）。toggle 的翻转动作两档同形零改动（翻转成员资格即可，
+  // 语义由本判定解释）；搜索旁路两档一致。
+  const expanded = (key: string) => searching || (compact ? collapsed.has(key) : !collapsed.has(key))
   const openDirectory = (base: BaseDir) => {
     console.debug('project_tree.directory.open', {
       project: base.projectName, machine: base.machine, baseKey: base.key, path: base.path,
@@ -495,7 +530,8 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
     // 三段式：顶部（导航+搜索+标题）不滚 · 中间树独滚 · 底部入口钉死。
     // 为什么不让整个 aside 滚：项目一多，「添加项目」会被推到 scrollHeight
     // 的最下面（实测 top:1100 / 视口 1024），要滚到底才找得到入口
-    <div className="flex min-h-0 flex-1 flex-col py-[13px] pr-[18px] pl-[26px]">
+    // B369.8：compact 根挂触点基线类（树三钮/× 等 24px 次级底线）；桌面零接触。
+    <div className={cn('flex min-h-0 flex-1 flex-col py-[13px] pr-[18px] pl-[26px]', compact && TOUCH_BASELINE)}>
       {/* 第一段：不滚——搜索框 + 「项目 N」。 */}
 
       {/* 搜索框与「项目 N」。N 跟随过滤，搜索时它就是「找到几个」的即时反馈；
@@ -565,6 +601,15 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
       {orderedProjects.map((project, projectIndex) => {
         const pKey = 'p:' + project.project_id
         const pOpen = expanded(pKey)
+        // B369.10 T3：这个项目行的「主点击」落点。compact 下注入方给了详情入口
+        // 就进详情（折叠改走行内 Arrow），否则维持折叠 toggle——桌面恒走后者。
+        const openDetail = compact ? onOpenProjectDetail : undefined
+        // B369.10 验收实走修正：有位置芯片时行分两段（上段名+右簇、下段芯片整行），
+        // 见行 button 上的长注释——390 实走实测的挤压/压字由此而起。
+        const chipsLine = openDetail !== undefined && project.locations.length > 0
+        // 「工作项」绝对定位钮在 compact 常驻（right-20，宽约 26px）：芯片行要给它
+        // 预留行尾 54~80px 那段，否则芯片文字被图标压住。钮的条件与下方渲染同源。
+        const rowActionZone = compact && (onOpenProjectCards !== undefined || onOpenProjectCodegraph !== undefined)
         const pCounts = countsForProject(tasks, project, previews)
         const projectHit = searching && project.name.toLowerCase().includes(filtered.query)
         const projectPreviews = previews.filter((session) => previewBelongsToProject(session, project))
@@ -573,6 +618,9 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
         )
         const allProject = tree.projects.find((candidate) => candidate.project_id === project.project_id) ?? project
         const allLocations = allProject.locations
+        // 位置状态原料（B369.8 T6）：断开数 = 探测失败或机器探活失败的位置数
+        //（locationProblem 同机器行 StateDot 的判据）
+        const locationProblemCount = allLocations.filter((loc) => locationProblem(loc, tree.machines) !== '').length
 
         // 本项目的已打开行（Shell 给的顺序即展示顺序 = 组序×格序的打开顺序，
         // 不随聚焦/切基准重排）。搜索时按行名/机器/基准字段放行——与 filterTree
@@ -649,9 +697,20 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
             <div className="group relative">
               <button
                 type="button"
-                aria-expanded={project.locations.length > 0 ? pOpen : undefined}
-                onClick={() => toggle(pKey)}
-                className="flex min-h-[31px] w-full items-center justify-between gap-2.5 rounded-lg px-0 text-left text-[18px] font-normal hover:bg-[#fafafa]"
+                // B369.10 T3：compact 且能进详情时，行 button 不再是折叠开关——
+                // aria-expanded 不再挂它（折叠语义收窄到行内 Arrow 的 aria-label），
+                // 否则读屏会把它报成「可展开的按钮」而点下去是跳页面。
+                aria-expanded={project.locations.length > 0 && openDetail === undefined ? pOpen : undefined}
+                onClick={() => (openDetail ? openDetail(project) : toggle(pKey))}
+                className={cn(
+                  'flex min-h-[31px] w-full items-center justify-between gap-2.5 rounded-lg px-0 text-left text-[18px] font-normal hover:bg-[#fafafa]',
+                  // B369.10 验收实走修正（390 真机实测）：有位置芯片时行升为两段——
+                  // 上段名+右簇、下段芯片整行（原型 mobile-projects 的 .pcard .top /
+                  // .locs 两段形态，chips 本就自带一行）。原先把芯片塞在名旁，长名下
+                  // 容器被挤到 95px 而单枚芯片 151px，溢出后伸进「工作项」绝对定位钮的
+                  // right-20 区被图标压字（实测 chip right=361 vs 钮 284..310）。
+                  chipsLine && 'flex-wrap gap-y-1',
+                )}
               >
                 <span className="flex min-w-0 items-center gap-2.5">
                   <FolderGit2
@@ -659,6 +718,22 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
                     className="size-[17px] shrink-0 text-[#16a34a]"
                   />
                   <span className="min-w-0 truncate">{project.name}</span>
+                  {/* B369.8：compact 位置状态摘要——「项目优先、位置为状态信息」。
+                      位置数 + 断开数（locationProblem 判据），StateDot tone 随之；
+                      明细点 Arrow 展开逐台看。放在名旁而不是右侧簇：右簇还要给
+                      B369.7 的「工作项」绝对定位钮（right-20）让位，摘要在簇内
+                      会伸进钮区（390 目检项 1 的挤压）；名旁随 min-w-0 收缩，
+                      超长时项目名先截断。桌面不渲染（铺开面自答这个问题）。
+                      B369.10 T3：能进详情时升格为**逐位置芯片**（原型
+                      mobile-projects ②「活跃数 = 该位置在跑任务数」），落成见右簇
+                      之后的整行芯片；onOpenProjectDetail 缺席（桌面/直渲染树）时
+                      维持摘要形态。 */}
+                  {compact && project.locations.length > 0 && openDetail === undefined && (
+                    <span data-testid="project-loc-summary" className="flex shrink-0 items-center gap-1 text-[13px] text-muted-foreground">
+                      <StateDot tone={locationProblemCount > 0 ? 'failed' : 'active'} />
+                      <span>{project.locations.length} 处位置{locationProblemCount > 0 ? ` · ${locationProblemCount} 处断开` : ''}</span>
+                    </span>
+                  )}
                 </span>
                 <span className="flex shrink-0 items-center gap-[7px] text-[15px] font-medium text-muted-foreground">
                   <span data-testid="project-running-count" className="flex items-center gap-[7px]">
@@ -667,21 +742,66 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
                   </span>
                   {project.locations.length > 0 && <Arrow open={pOpen} onToggle={() => toggle(pKey)} />}
                 </span>
+                {chipsLine && (
+                  // 整行芯片：w-full 让它在 flex-wrap 的父里独占一行；pr-20 预备
+                  // 「工作项」绝对定位钮的 zone（钮在 right-20、宽约 26px，挡的是
+                  // 行尾 54~80px 那段），否则芯片文字仍会被钮压住。
+                  <span
+                    data-testid="project-loc-chips"
+                    className={cn(
+                      'flex w-full min-w-0 flex-wrap items-center gap-1 text-[13px] text-muted-foreground',
+                      rowActionZone && 'pr-20',
+                    )}
+                  >
+                    {project.locations.map((loc) => {
+                      const offline = locationProblem(loc, tree.machines) !== ''
+                      return (
+                        <span
+                          key={loc.machine}
+                          data-testid="project-loc-chip"
+                          className="flex min-w-0 items-center gap-1 rounded-full border px-1.5 py-px"
+                        >
+                          <StateDot tone={offline ? 'failed' : 'active'} />
+                          {/* min-w-0 + truncate：390 下芯片比可用宽度还长的兜底是
+                              截断文本，不是溢出容器（溢出会横滚或压到邻元素）。 */}
+                          <span className="truncate">
+                            {offline
+                              ? `${machineLabel(loc.machine)} · 离线`
+                              : `${machineLabel(loc.machine)} · ${locationActiveCount(tasks, project, loc)} 活跃`}
+                          </span>
+                        </span>
+                      )
+                    })}
+                  </span>
+                )}
               </button>
+              {/* B369.7：桌面 hidden group-hover:flex 逐字节保留；compact 下容器
+                  常驻 flex（触屏无 hover），「代码图」子钮不渲染（/codegraph 整页
+                  只在桌面注册，compact 点了就是死入口），「工作项」钮触点与底栏
+                  同档（p-1.5）。同一 aria-label，两档只差可见性策略。offset 用
+                  right-20（桌面 right-14）：compact 行宽 390 下两位数进行中计数
+                  （图标 16 + 间距 7 + 两位数字 ≈19 + 间距 7 + 箭头 16 ≈ 65px）
+                  比 right-14 的 56px 让位更宽，常驻钮不与计数/箭头挤压。 */}
               {(onOpenProjectCards || onOpenProjectCodegraph) && (
-                <span className="absolute right-14 top-1/2 hidden -translate-y-1/2 items-center gap-0.5 bg-background group-hover:flex">
+                <span className={cn(
+                  'absolute top-1/2 -translate-y-1/2 items-center gap-0.5 bg-background',
+                  compact ? 'right-20 flex' : 'right-14 hidden group-hover:flex',
+                )}>
                   {onOpenProjectCards && (
                     <button
                       type="button"
                       aria-label={'打开 ' + project.name + ' 工作项'}
                       title="工作项"
                       onClick={() => onOpenProjectCards(project)}
-                      className="rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground"
+                      className={cn(
+                        'rounded text-muted-foreground hover:bg-accent hover:text-foreground',
+                        compact ? 'p-1.5' : 'p-0.5',
+                      )}
                     >
                       <SquareKanban className="size-3.5" />
                     </button>
                   )}
-                  {onOpenProjectCodegraph && (
+                  {!compact && onOpenProjectCodegraph && (
                     <button
                       type="button"
                       aria-label={'打开 ' + project.name + ' 代码图'}
@@ -733,6 +853,7 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
                         }}
                         testId="open-item-row"
                         nameTestId="open-item-name"
+                      compact={compact}
                       />
                     ))}
                     {/* 任务按任务流原序渲染；已打开的 tui 原位呈现已打开态
@@ -750,6 +871,7 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
                           opening={previewOpeningKeys.has(key)}
                           onClick={() => onOpenPreview(session.id, machine)}
                           testId={'preview-row-' + session.id}
+                        compact={compact}
                         />
                       )
                     })}
@@ -785,6 +907,7 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
                             }}
                             testId="open-item-row"
                             nameTestId="open-item-name"
+                          compact={compact}
                           />
                         )
                       }
@@ -803,6 +926,7 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
                             console.debug('project_tree.drag.task', { taskId: task.id, project: taskBase?.projectName ?? '', machine: task.machine, path: taskBase?.path ?? '' })
                           }}
                           onClick={() => onOpenTask(taskBase, task.id)}
+                        compact={compact}
                         />
                       )
                     })}
@@ -835,6 +959,7 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
                         }}
                         testId="open-item-row"
                         nameTestId="open-item-name"
+                      compact={compact}
                       />
                     ))}
                     {/* 空状态行：没有任何进行中的东西（无已打开行、无任务流任务）时，
@@ -908,7 +1033,13 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
                             aria-label="在此打开终端"
                             title="在此打开终端"
                             onClick={() => openTerminalAt(base)}
-                            className="absolute right-2 top-1/2 hidden -translate-y-1/2 rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground group-hover:block"
+                            // B369.8 岔口 3 #2：桌面 hover 显形串逐字节保留；compact
+                            // 行内常驻（block）+ 触点加档（p-1.5）
+                            className={
+                              compact
+                                ? 'absolute right-2 top-1/2 block -translate-y-1/2 rounded p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground'
+                                : 'absolute right-2 top-1/2 hidden -translate-y-1/2 rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground group-hover:block'
+                            }
                           >
                             <Terminal className="size-[15px]" />
                           </button>
@@ -964,7 +1095,13 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
                               aria-label="打开主目录终端"
                               title="打开主目录终端"
                               onClick={() => openTerminalAt(mainBase)}
-                              className="absolute right-14 top-1/2 hidden -translate-y-1/2 rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground group-hover:block"
+                              // B369.8 岔口 3 #3：compact 常驻（right-14 位置不变，
+                              // 27px 宽的钮与 right-6 的新建钮不重叠）
+                              className={
+                                compact
+                                  ? 'absolute right-14 top-1/2 block -translate-y-1/2 rounded p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground'
+                                  : 'absolute right-14 top-1/2 hidden -translate-y-1/2 rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground group-hover:block'
+                              }
                             >
                               <Terminal className="size-[15px]" />
                             </button>
@@ -975,7 +1112,12 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
                               aria-label="新建工作树"
                               title="新建工作树"
                               onClick={() => setWorktreeTarget({ project, loc })}
-                              className="absolute right-6 top-1/2 hidden -translate-y-1/2 rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground group-hover:block"
+                              // B369.8 岔口 3 #4：compact 常驻（right-6 位置不变）
+                              className={
+                                compact
+                                  ? 'absolute right-6 top-1/2 block -translate-y-1/2 rounded p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground'
+                                  : 'absolute right-6 top-1/2 hidden -translate-y-1/2 rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground group-hover:block'
+                              }
                             >
                               <Plus className="size-[15px]" />
                             </button>
@@ -1052,6 +1194,7 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
                             console.debug('project_tree.drag.task', { taskId: task.id, project: taskBase?.projectName ?? '', machine: task.machine, path: taskBase?.path ?? '' })
                           }}
                           onClick={() => onOpenTask(taskBase, task.id)}
+                        compact={compact}
                         />
                       )
                     })}
@@ -1091,6 +1234,7 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
                 console.debug('project_tree.drag.task', { taskId: t.id, project: '', machine: t.machine, path: '' })
               }}
               onClick={() => onOpenTask(null, t.id)}
+            compact={compact}
             />
           ))}
           {filtered.unownedNames.map((name) => (
@@ -1110,6 +1254,7 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
                 opening={previewOpeningKeys.has(previewKey(session, machine))}
                 onClick={() => onOpenPreview(session.id, machine)}
                 testId={'preview-row-' + session.id}
+              compact={compact}
               />
             )
           })}
@@ -1163,7 +1308,9 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
             </span>
           )}
         </button>
-        {ledgerEnabled && (
+        {/* B369.7：紧凑下 onOpenFlows 缺省（/flows 整页只在桌面注册）→ 按钮不渲染。
+            与代码图钮的 onOpenCodegraph 注入门控同一先例。 */}
+        {ledgerEnabled && onOpenFlows && (
           <button
             type="button"
             aria-label="流程"
@@ -1211,6 +1358,15 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
           <Settings className="size-4" />
         </button>
       </div>
+
+      {/* B369.7：被藏入口的解释文案——一行覆盖全部三类（底栏「流程」、底栏
+          「代码图」、项目行「代码图」），只在 compact 渲染，与入口隐藏同条件
+          挂在同一 prop 缝上，永不脱钩（plan §2 岔口 3，措辞逐字定死）。 */}
+      {compact && (
+        <p data-testid="mobile-nav-note" className="px-3 pb-2 pt-1.5 text-[11px] leading-4 text-muted-foreground">
+          流程与代码图暂未适配移动端，请在桌面宽屏使用。
+        </p>
+      )}
 
       {onUnregister && (
         <ConfirmDialog
@@ -1311,9 +1467,12 @@ function openItemMatches(item: OpenItem, q: string): boolean {
 // onClose 提供时行外套 group 壳，悬停从右侧滑出 × 快速关闭对应 tab——× 是行
 // button 的**兄弟**而非子元素（button 不能嵌套），点击也就不会触发行本身的聚焦；
 // 悬停期间机器名让位淡出（状态圆点保留），给 × 腾出位置。
+// compact（B369.8 T6）：× 常驻（去 opacity-0/translate-x-1/group-hover 依赖，
+// focus-visible 路径保留），机器名不再被 group-hover 抹掉——否则 × 常驻而标签
+// 恒被 hover 抹掉（plan §12 修正 2）。
 function TaskRow({
   kind, label, machine, dotTone = 'active', open = false, selected = false, indent = false,
-  opening = false, draggable = false, dragPayload, onClose, onClick, testId = 'task-row', nameTestId,
+  opening = false, draggable = false, dragPayload, onClose, onClick, testId = 'task-row', nameTestId, compact = false,
 }: {
   kind: 'tui' | 'terminal' | 'file' | 'preview'
   label: string
@@ -1329,6 +1488,7 @@ function TaskRow({
   onClick: () => void
   testId?: string
   nameTestId?: string
+  compact?: boolean
 }) {
   const row = (
     <button
@@ -1356,7 +1516,7 @@ function TaskRow({
       </span>
       <span data-testid="task-machine" className="ml-auto flex max-w-[88px] shrink-0 items-center gap-[7px] truncate text-[14px] text-muted-foreground">
         <StateDot tone={dotTone} />
-        <span className={cn('truncate', onClose && 'transition-opacity duration-150 group-hover:opacity-0')}>
+        <span className={cn('truncate', onClose && !compact && 'transition-opacity duration-150 group-hover:opacity-0')}>
           {machineLabel(machine)}
         </span>
       </span>
@@ -1366,13 +1526,18 @@ function TaskRow({
   return (
     <div className="group relative">
       {row}
-      {/* × 在不透明度 0 时仍占位可聚焦，键盘用户 tab 到它时必须现身 */}
+      {/* × 在不透明度 0 时仍占位可聚焦，键盘用户 tab 到它时必须现身。
+          compact 常驻：opacity-100 translate-x-0，无 hover 依赖。 */}
       <button
         type="button"
         aria-label={`关闭 ${label}`}
         title="关闭"
         onClick={onClose}
-        className="absolute right-1 top-1/2 flex size-5 -translate-y-1/2 translate-x-1 items-center justify-center rounded text-muted-foreground opacity-0 transition-[opacity,transform] duration-150 hover:bg-accent/60 hover:text-foreground focus-visible:opacity-100 focus-visible:translate-x-0 group-hover:translate-x-0 group-hover:opacity-100"
+        className={
+          compact
+            ? 'absolute right-1 top-1/2 flex size-5 -translate-y-1/2 translate-x-0 items-center justify-center rounded text-muted-foreground opacity-100 transition-[opacity,transform] duration-150 hover:bg-accent/60 hover:text-foreground focus-visible:opacity-100 focus-visible:translate-x-0'
+            : 'absolute right-1 top-1/2 flex size-5 -translate-y-1/2 translate-x-1 items-center justify-center rounded text-muted-foreground opacity-0 transition-[opacity,transform] duration-150 hover:bg-accent/60 hover:text-foreground focus-visible:opacity-100 focus-visible:translate-x-0 group-hover:translate-x-0 group-hover:opacity-100'
+        }
       >
         <X className="size-3.5" />
       </button>

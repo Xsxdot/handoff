@@ -23,10 +23,20 @@ export interface SessionSidebarProps {
   onProjectFilter: (project: string) => void
   projectOptions: string[]
   projectOfCard: (cardId: string) => string
+  // B369.10（岔口 5/8）：compact 移动首页形态——头部 chips 行在上（项目筛选行
+  // 原样在下，「原型未覆盖能力保留」）+ 行内成员横排（5 枚上限 + 溢出 +N）与
+  // 群主行。缺省 false，桌面 toggle 行与行结构逐字节不动。
+  compact?: boolean
 }
 
+// 成员头像底色轮换：原型 mobile-home.html .mv 五色逐值转写（岔口 8，字面量
+// 不引 token——横排只此一处消费，理由同键条暗色）。
+const MEMBER_COLORS = ['#fde68a', '#dbeafe', '#dcfce7', '#ede9fe', '#fce7f3']
+// 横排上限：第 6 枚起折成「+N」文本 chip（N = 总数 − 5）。
+const MEMBER_AVATAR_MAX = 5
+
 export function SessionSidebar({ sessions, loading, errorText, needsOnly, onToggleNeeds, onOpen, onCreate,
-  projectFilter, onProjectFilter, projectOptions, projectOfCard }: SessionSidebarProps) {
+  projectFilter, onProjectFilter, projectOptions, projectOfCard, compact = false }: SessionSidebarProps) {
   const byProject = filterSessionsByProject(sessions, projectOfCard, projectFilter)
   const visible = needsOnly ? byProject.filter((session) => session.needs_human) : byProject
   const needsCount = sessions.filter((session) => session.needs_human).length
@@ -45,22 +55,54 @@ export function SessionSidebar({ sessions, loading, errorText, needsOnly, onTogg
         <button type="button" aria-label="新建会话" onClick={onCreate} className="rounded-md border px-2 py-1 text-xs hover:bg-accent">＋ 新建会话</button>
       </div>
       {/* 筛选单行（走查 09-17，对 board.html 原型 .im-filters）：项目下拉 + 需要你
-          开关 + 计数同处一行，纯文字项不做成带边框表单控件 */}
-      <div data-testid="session-filters" className="flex shrink-0 items-center gap-1 border-b px-3 py-1.5 text-xs">
-        <label htmlFor="session-project-filter" className="shrink-0 text-muted-foreground">▦ 项目</label>
-        <select id="session-project-filter" data-testid="session-project-filter" value={projectFilter}
-          onChange={(event) => onProjectFilter(event.target.value)}
-          className="min-w-0 max-w-[8rem] flex-1 cursor-pointer appearance-none bg-transparent py-0.5 pl-0.5 text-xs outline-none">
-          <option value="">全部项目</option>
-          {projectOptions.map((project) => <option key={project} value={project}>{project}</option>)}
-        </select>
-        <span aria-hidden="true" className="shrink-0 text-[10px] text-muted-foreground">∨</span>
-        <span aria-hidden="true" className="mx-1 h-3.5 w-px shrink-0 bg-border" />
-        <button type="button" aria-pressed={needsOnly} onClick={onToggleNeeds} className={needsOnly ? 'font-semibold text-amber-700' : 'text-muted-foreground'}>
-          ⚑ 需要你 <span data-testid="needs-count" className="rounded-full bg-amber-100 px-1.5 text-[10px] font-semibold text-amber-700">{needsCount}</span>
-        </button>
-        <span className="ml-auto shrink-0 text-muted-foreground" data-testid="session-total">{loading ? '读取中' : `${visible.length} 个会话`}</span>
-      </div>
+          开关 + 计数同处一行，纯文字项不做成带边框表单控件。桌面随 main，只在
+          !compact 时渲染（compact 走下方 chips 行 + 项目筛选行两段式）。 */}
+      {!compact && (
+        <div data-testid="session-filters" className="flex shrink-0 items-center gap-1 border-b px-3 py-1.5 text-xs">
+          <label htmlFor="session-project-filter" className="shrink-0 text-muted-foreground">▦ 项目</label>
+          <select id="session-project-filter" data-testid="session-project-filter" value={projectFilter}
+            onChange={(event) => onProjectFilter(event.target.value)}
+            className="min-w-0 max-w-[8rem] flex-1 cursor-pointer appearance-none bg-transparent py-0.5 pl-0.5 text-xs outline-none">
+            <option value="">全部项目</option>
+            {projectOptions.map((project) => <option key={project} value={project}>{project}</option>)}
+          </select>
+          <span aria-hidden="true" className="shrink-0 text-[10px] text-muted-foreground">∨</span>
+          <span aria-hidden="true" className="mx-1 h-3.5 w-px shrink-0 bg-border" />
+          <button type="button" aria-pressed={needsOnly} onClick={onToggleNeeds} className={needsOnly ? 'font-semibold text-amber-700' : 'text-muted-foreground'}>
+            ⚑ 需要你 <span data-testid="needs-count" className="rounded-full bg-amber-100 px-1.5 text-[10px] font-semibold text-amber-700">{needsCount}</span>
+          </button>
+          <span className="ml-auto shrink-0 text-muted-foreground" data-testid="session-total">{loading ? '读取中' : `${visible.length} 个会话`}</span>
+        </div>
+      )}
+      {compact && (
+        /* B369.10（岔口 5）：compact 头部次序对齐原型「筛选紧贴头部」的阅读序
+           ——chips 行在上、项目筛选行在下（只留项目 select，不再渲染第二枚
+           needs-count/session-total：同一 testid 一棵树里只能出现一次）。chips
+           两态 = 既有 needsOnly 回调（点已选中的 chip 不再翻转，避免 toggle
+           语义下的反向突跳）。 */
+        <div className="flex shrink-0 items-center gap-2 border-b px-3 py-1.5 text-xs" data-testid="session-filter-chips">
+          <button type="button" aria-pressed={needsOnly} onClick={() => { if (!needsOnly) onToggleNeeds() }}
+            className={needsOnly ? 'rounded-full border border-amber-200 bg-amber-100 px-2 py-0.5 font-semibold text-amber-700' : 'rounded-full border px-2 py-0.5 text-muted-foreground'}>
+            ⚑ 需要你 <span data-testid="needs-count">{needsCount}</span>
+          </button>
+          <button type="button" aria-pressed={!needsOnly} onClick={() => { if (needsOnly) onToggleNeeds() }}
+            className={!needsOnly ? 'rounded-full border bg-accent px-2 py-0.5 font-medium' : 'rounded-full border px-2 py-0.5 text-muted-foreground'}>
+            全部
+          </button>
+          <span className="ml-auto text-muted-foreground" data-testid="session-total">{loading ? '读取中' : `${visible.length} 个会话`}</span>
+        </div>
+      )}
+      {compact && (
+        <div className="flex shrink-0 items-center gap-2 border-b px-3 py-1.5 text-xs">
+          <label htmlFor="session-project-filter" className="shrink-0 text-muted-foreground">项目</label>
+          <select id="session-project-filter" data-testid="session-project-filter" value={projectFilter}
+            onChange={(event) => onProjectFilter(event.target.value)}
+            className="min-w-0 max-w-[8rem] flex-1 cursor-pointer appearance-none bg-transparent py-0.5 pl-0.5 text-xs outline-none">
+            <option value="">全部项目</option>
+            {projectOptions.map((project) => <option key={project} value={project}>{project}</option>)}
+          </select>
+        </div>
+      )}
       {errorText !== '' && <p role="alert" className="shrink-0 border-b bg-amber-50 px-3 py-1.5 text-xs text-amber-800">会话列表已断开：{errorText}</p>}
       <div className="min-h-0 flex-1 overflow-y-auto p-1">
         {!loading && errorText === '' && visible.length === 0 ? (
@@ -87,6 +129,28 @@ export function SessionSidebar({ sessions, loading, errorText, needsOnly, onTogg
                 {session.archived && <span className="shrink-0 rounded-full border px-1.5 text-[10px] text-muted-foreground">已归档</span>}
                 <span className="truncate">{session.preview?.body ?? '暂无预览'}</span>
               </span>
+              {/* B369.10（岔口 8）：成员横排与群主行 compact-only——横排只报身份
+                  不报状态文字（memberStatusText 是详情态口径，390 行内放不下逐人
+                  状态）；上限 5 枚 + 溢出「+N」；owner 空串不渲染群主行。 */}
+              {compact && (session.members?.length ?? 0) > 0 && (
+                <span className="mt-1 flex min-w-0 items-center gap-1" data-testid="session-members">
+                  {session.members!.slice(0, MEMBER_AVATAR_MAX).map((member, index) => (
+                    <span key={`${member.identity}-${index}`} aria-label={member.identity}
+                      className="flex size-5 shrink-0 items-center justify-center rounded-full text-[9px] font-semibold text-slate-700"
+                      style={{ backgroundColor: MEMBER_COLORS[index % MEMBER_COLORS.length] }}>
+                      {member.identity.slice(0, 2)}
+                    </span>
+                  ))}
+                  {session.members!.length > MEMBER_AVATAR_MAX && (
+                    <span className="shrink-0 rounded-full border px-1.5 text-[10px] text-muted-foreground" data-testid="session-members-more">
+                      +{session.members!.length - MEMBER_AVATAR_MAX}
+                    </span>
+                  )}
+                </span>
+              )}
+              {compact && session.owner !== '' && (
+                <span className="mt-0.5 block truncate text-[11px] text-muted-foreground" data-testid="session-owner">群主：{session.owner}</span>
+              )}
             </span>
           </button>
         ))}

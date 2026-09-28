@@ -31,6 +31,13 @@ export interface WorkbenchPageProps {
   // 下传（单一口径：标签条、窗格标题、面包屑共用）；省略时 tabTitle 自己回退。
   taskName?: (taskId: string) => string | undefined
   // B358.8：固定「◫ 分屏」按钮退役——分屏由左栏会话行拖拽承载（同 spec #1）。
+  // B369.9 singleFocus：phone 档单焦点投影——显示层属性闸：组内至多一个窗格
+  // 可见可达（焦点列/格 z-10，其余 absolute 叠层 + z-0 pointer-events-none +
+  // aria-hidden + inert），不卸载、不 display:none、不捏尺寸，xterm/WS 全常驻；
+  // 布局模型（tabs.ts groups/columns/panes/sizes/focus）零改动。由 Shell 按
+  // viewport === 'phone' 下传，组件不自读视口；不传（pad/desktop）时列/窗格
+  // 两层渲染输出逐字节保持现状。
+  singleFocus?: boolean
 }
 
 type DragOver = {
@@ -45,7 +52,7 @@ function tabCount(group: { columns: Array<{ panes: Array<Tab | null> }> }): numb
 }
 
 export function WorkbenchPage({
-  api, onAddProject, renderContent, terminalUnavailable, onBeforeClose, tree, tasks, onFileCreated, launchers = [], taskName,
+  api, onAddProject, renderContent, terminalUnavailable, onBeforeClose, tree, tasks, onFileCreated, launchers = [], taskName, singleFocus = false,
 }: WorkbenchPageProps) {
   const { wb, base } = api
   const activeGroup = wb.groups.find((group) => group.id === wb.activeGroupId) ?? wb.groups[0]
@@ -304,6 +311,10 @@ export function WorkbenchPage({
     // 但必须 pointer-events-none + inert：z-0 的 WebGL 画布会从激活组抢走滚轮，
     // 眼前那条 TUI 就划不动。激活组从未加过这个类，不走「去掉后命中回不来」。
     // min-w-0 切断设置往返的 min-content 撑越。
+    // B369.9：phone 档（singleFocus）把同款纪律下沉到列/窗格两层——同样的
+    // 三禁令（不移出视口、不 display:none、不 opacity-0）+ 属性闸（z 对 +
+    // pointer-events-none + aria-hidden + inert 展开式），跨档只翻类/属性零重挂；
+    // 非投影档（pad/desktop）两层类串逐字节保持现状。
     <div
       data-testid="workbench-group"
       className={cn(
@@ -313,18 +324,41 @@ export function WorkbenchPage({
       aria-hidden={!visible}
       {...(!visible ? { inert: true } : {})}
     >
-      {/* 原型 .cols { overflow: hidden }：列压进容器，不出现横向滚动 */}
-      <div className="flex min-h-0 flex-1 overflow-hidden bg-border">
-        {group.columns.map((column, columnIndex) => (
+      {/* 原型 .cols { overflow: hidden }：列压进容器，不出现横向滚动。
+          投影档追加 relative 作列/窗格两层 absolute 叠层的锚点（岔口 2）。 */}
+      <div className={cn('flex min-h-0 flex-1 overflow-hidden bg-border', singleFocus && 'relative')}>
+        {group.columns.map((column, columnIndex) => {
+        // 投影焦点判据与 renderTab 的 active 同源（group.focus[column,row]）。
+        // singleFocus 对所有组统一应用：背景组祖层已 inert，双层叠加无害且
+        // 代码路径唯一（不出现第二套规则）。
+        const columnFocused = group.focus[0] === columnIndex
+        return (
           <Fragment key={`${group.id}-column-${columnIndex}`}>
           {/* min-w-0 而非 240px 硬下限：列宽下限由拖拽分隔的 minRatio 夹紧负责，
-              硬下限会把三列顶出窗口（容器 overflow-hidden 后变成裁切不可达） */}
-          <div className="flex min-w-0 min-h-0 flex-1 flex-col" style={{ flexGrow: group.sizes[columnIndex] ?? 1, flexBasis: 0 }}>
-            {column.panes.map((tab, row) => (
+              硬下限会把三列顶出窗口（容器 overflow-hidden 后变成裁切不可达）。
+              投影档：焦点列 absolute inset-0 全宽 z-10，非焦点列 z-0 三件套；
+              flexGrow/flexBasis 保留（absolute 下无几何意义，保 DOM 最小差）。 */}
+          <div
+            className={cn(
+              singleFocus ? 'absolute inset-0 flex min-w-0 min-h-0 flex-col' : 'flex min-w-0 min-h-0 flex-1 flex-col',
+              singleFocus && (columnFocused ? 'z-10' : 'z-0 pointer-events-none'),
+            )}
+            style={{ flexGrow: group.sizes[columnIndex] ?? 1, flexBasis: 0 }}
+            aria-hidden={singleFocus ? !columnFocused : undefined}
+            {...(singleFocus && !columnFocused ? { inert: true } : {})}
+          >
+            {column.panes.map((tab, row) => {
+            const paneFocused = columnFocused && group.focus[1] === row
+            return (
               <div
                 key={tab?.id ?? `${group.id}-${columnIndex}-${row}`}
                 data-testid="workbench-pane"
-                className="relative flex min-h-0 flex-1 flex-col bg-background"
+                className={cn(
+                  singleFocus ? 'absolute inset-0 flex min-h-0 flex-col bg-background' : 'relative flex min-h-0 flex-1 flex-col bg-background',
+                  singleFocus && (paneFocused ? 'z-10' : 'z-0 pointer-events-none'),
+                )}
+                aria-hidden={singleFocus ? !paneFocused : undefined}
+                {...(singleFocus && !paneFocused ? { inert: true } : {})}
                 onDragOver={(event) => {
                   const types = event.dataTransfer.types
                   if (!types.includes(DRAG_TASK_MIME) && !types.includes(DRAG_DIR_MIME) && !types.includes(DRAG_TAB_MIME) && !types.includes(DRAG_SESSION_MIME)) return
@@ -387,6 +421,26 @@ export function WorkbenchPage({
                       className="rounded p-0.5 text-muted-foreground hover:bg-accent"
                     >⋯</button>
                   )}
+                  {/* B369.9 窗格切换入口（岔口 1）：只渲染在投影档焦点格头——
+                      焦点头是唯一保证非 inert 的窗格 chrome；option 只含本组非空格
+                      （空槽是焦点格内容不是切换目标），onChange 只写 wb 焦点
+                      （api.activate），零布局操作；onClick stopPropagation 防止
+                      冒泡进窗格 onClick 触发冗余 activate。组数无界，原生 select
+                      不随 N 溢出且触屏走系统 picker。 */}
+                  {singleFocus && paneFocused && tabCount(group) >= 2 && (
+                    <select
+                      data-testid="pane-switcher"
+                      aria-label="切换窗格"
+                      value={tab?.id ?? ''}
+                      onClick={(event) => event.stopPropagation()}
+                      onChange={(event) => api.activate(group.id, event.target.value)}
+                      className="shrink-0 rounded border bg-background px-1 py-0.5 text-xs"
+                    >
+                      {group.columns.flatMap((column) => column.panes).filter((pane): pane is Tab => pane !== null).map((pane) => (
+                        <option key={pane.id} value={pane.id}>{tabTitle(pane.content, pane.base.label, taskName)}</option>
+                      ))}
+                    </select>
+                  )}
                   <button
                     type="button"
                     aria-label={`关闭 ${tab ? tabTitle(tab.content, tab.base.label, taskName) : '空窗格'}`}
@@ -400,11 +454,15 @@ export function WorkbenchPage({
                 </div>
                 <div data-testid="pane-content" className={cn('min-h-0 flex-1 overflow-hidden', dragging && 'pointer-events-none')}>{renderTab(group.id, columnIndex, row, tab)}</div>
               </div>
-            ))}
+            )
+            })}
           </div>
-          {visible && columnIndex < group.columns.length - 1 && <GroupDivider onResize={(delta, width) => api.resize(group.id, columnIndex, delta, width > 0 ? MIN_PANE_PX / width : 0)} />}
+          {/* GroupDivider 随 visible 条件插拔（后台组先例）；投影档组内一律摘除——
+              单焦点下没有并排列可拖，自身无终端内容、摘除不触任何重挂。 */}
+          {visible && !singleFocus && columnIndex < group.columns.length - 1 && <GroupDivider onResize={(delta, width) => api.resize(group.id, columnIndex, delta, width > 0 ? MIN_PANE_PX / width : 0)} />}
           </Fragment>
-        ))}
+        )
+        })}
       </div>
       <div className="hidden" />
     </div>
@@ -434,18 +492,21 @@ export function WorkbenchPage({
       {dropWarning !== '' && <p role="alert" className="bg-destructive/10 px-3 py-1 text-xs text-destructive">{dropWarning}</p>}
       {newFileError !== '' && <p role="alert" className="bg-destructive/10 px-3 py-1 text-xs text-destructive">新建文件失败：{newFileError}</p>}
       <div className="relative isolate min-h-0 min-w-0 flex-1 overflow-hidden">
-        {wb.groups.map((group) => (
-          // 单槽位条件：visible 翻转只改同一 div 的类名/aria/inert，不换槽位。
-          // 写成 `{a && el}{b && el}` 双槽位时，visible 一翻 React 就按索引
-          // 卸载重建——xterm 全套 teardown/replay、Viewport 定时器打在已
-          // dispose 的 RenderService 上刷 dimensions、PTY 重连定时器变孤儿
-          // （B367 回归实测）。纯文件/会话组后台仍照旧卸载（keep-alive 只保终端）。
+        {wb.groups.map((group) => {
+        // B369.9（协调者裁决）：原写法是两个条件子槽（active 槽 / 后台槽），
+        // 切组时槽位互换，React 按槽位配对把整组子树卸了重挂——pty-host 换新
+        // 节点 = 断 WS 重放，违反卡验收「后台终端连接常驻，返回或切换不重连、
+        // 不丢状态」（变异锁·卸载即红据此落红，730abe7a 基线即红）。收成单
+        // 条件槽：同一状态渲染输出逐字节不变，切组只翻 visible prop，子树节点
+        // 保留。渲染条件原样：active 组恒渲染；后台组仅当含 terminal。
+        const visible = group.id === wb.activeGroupId
+        const hasTerminal = group.columns.some((column) => column.panes.some((tab) => tab?.content.kind === 'terminal'))
+        return (
           <Fragment key={group.id}>
-            {(group.id === wb.activeGroupId ||
-              group.columns.some((column) => column.panes.some((tab) => tab?.content.kind === 'terminal'))) &&
-              renderGroup(group, group.id === wb.activeGroupId)}
+            {(visible || hasTerminal) && renderGroup(group, visible)}
           </Fragment>
-        ))}
+        )
+        })}
       </div>
       {picking !== null && base !== null && <TaskPickerDialog
         open base={base} tree={tree} tasks={tasks}

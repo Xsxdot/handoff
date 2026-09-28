@@ -122,7 +122,7 @@ export function logTermResize(label: string, cols: number, rows: number, reason:
 // 注意：出现大量「补发」是正常的——WebKit 下中文标点每敲一下就是一条。
 // 真正要警惕的是同一次输入既有「补发」又有「让给 xterm」，那说明判据串了，
 // 用户会看到重复字符。
-export function logTermFix(label: string, kind: '补发' | '让给 xterm' | '拦下注入键事件' | '⌘← 行首' | '⌘→ 行尾' | '⌘K 清屏' | 'Option Meta' | 'Shift+Enter 换行', text: string): void {
+export function logTermFix(label: string, kind: '补发' | '让给 xterm' | '拦下注入键事件' | '⌘← 行首' | '⌘→ 行尾' | '⌘K 清屏' | 'Option Meta' | 'Shift+Enter 换行' | '粘滞 Ctrl', text: string): void {
   if (!terminalDebugEnabled()) return
   console.debug('[term:fix]', { 终端: label, 动作: kind, 原文: JSON.stringify(text) })
 }

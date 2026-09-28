@@ -94,6 +94,15 @@ export interface TerminalTabProps {
   keybar?: boolean
 }
 
+// ARROW_KEY_MOD 把键条方向序列映射到 CSI 修饰位（B369.10 粘滞 Ctrl 组合用）：
+// armed + 方向发 \x1b[1;5<A/B/C/D>（Ctrl+方向，Emacs/readline 词跳等通用）。
+const ARROW_KEY_MOD: Record<string, string> = {
+  '\x1b[A': 'A',
+  '\x1b[B': 'B',
+  '\x1b[C': 'C',
+  '\x1b[D': 'D',
+}
+
 // ptyBase 把一个基准目录翻译成建会话请求的两个字段。
 //
 // home 基准的 path 是字面量 '~'，**不是**服务端认识的路径（useWorkbench 里
@@ -171,6 +180,12 @@ export function TerminalTab({
   // forceSpawn：用户点了「重开」。无 sessionId 的死 tab 点重开时 liveId 本来就是
   // undefined，必须靠这个状态让 effect 再跑一遍，不能只 setDiscarded。
   const [forceSpawn, setForceSpawn] = useState(false)
+  // 粘滞 Ctrl 的 armed 态（B369.10 岔口 3）：每终端独立（本组件即终端实例），
+  // 切 tab/关 tab 随组件生命周期天然复位。经 ref 供 installTerminalInputFix 的
+  // 转发闭包读最新值（effect 只装一次，闭包持 state 会拿到旧值）。
+  const [ctrlArmed, setCtrlArmed] = useState(false)
+  const ctrlArmedRef = useRef(false)
+  ctrlArmedRef.current = ctrlArmed
   const liveId = sessionId !== undefined && sessionId !== discarded ? sessionId : undefined
   const shouldSpawn = spawn || forceSpawn
   const incompatibleLive = incompatible && liveId !== undefined
@@ -458,7 +473,14 @@ export function TerminalTab({
     // 比在 blur 里读 document.activeElement 准——blur 触发时新的焦点元素还没落定。
     // 输入补漏必须装在 term.open() 之后：它要拿 term.textarea，也要抢在 xterm
     // 的 textarea 监听之前读一次「发了没有」的计数（细节见 terminalInput.ts 文件头）。
-    const inputFix = installTerminalInputFix(term, host, label)
+    // 粘滞 Ctrl 经第 4 参转发进同一处理器（B369.10 岔口 3）——xterm 的钩子槽位
+    // 只有一个，别挂第二路监听；armed/consume 走 ref 与 setState 保持实时。
+    const inputFix = installTerminalInputFix(term, host, label, {
+      stickyCtrl: {
+        armed: () => ctrlArmedRef.current,
+        consume: () => setCtrlArmed(false),
+      },
+    })
 
     // 从访达拖进来的文件：把路径当成用户敲进去的字符送给 shell，跟在真终端里
     // 拖文件的观感一致（补一个尾随空格，好接着敲下一个参数）。
@@ -793,10 +815,24 @@ export function TerminalTab({
       <div ref={hostRef} data-testid="pty-host" className="min-h-0 flex-1 overscroll-none bg-[#0b0b0c]" />
       {keybar && (
         <MobileKeybar
+          ctrlArmed={ctrlArmed}
+          onCtrlToggle={() => setCtrlArmed((v) => !v)}
           onKey={(seq) => {
             // 走 term.input 而不是直接 handle.send：与手敲输入合流，取证与尺寸逻辑
             // 不必知道键条存在（与 terminalInput.ts 同一条纪律）。
             console.debug('term.keybar.send', { seq: JSON.stringify(seq) })
+            // 粘滞 Ctrl 的键条组合（B369.10 岔口 3）：armed + 方向 → CSI 修饰序列
+            // 并解除 armed；armed + 其他键（|/~/⌫/Tab/Esc）不是「打不出的组合」，
+            // 原样直发不放大语义；'ctrl-c' 不经此路（键位直发恒 \x03 且不动 armed
+            // ——粘滞补组合、直发补单键，两通道互不污染）。
+            if (ctrlArmedRef.current) {
+              const mod = ARROW_KEY_MOD[seq]
+              if (mod) {
+                setCtrlArmed(false)
+                termRef.current?.input(`\x1b[1;5${mod}`)
+                return
+              }
+            }
             termRef.current?.input(seq)
           }}
         />

@@ -73,4 +73,25 @@ describe('ReviewSidePanel', () => {
     await waitFor(() => expect(screen.getByRole('combobox')).toBeInTheDocument())
     expect(screen.getByRole('option', { name: '自动推导' })).toBeInTheDocument()
   })
+
+  // —— B369.10 岔口 4：compact 全宽抽屉 vs 桌面 44% 侧滑（类串逐字节反例锁）——
+  it('桌面（缺省）侧滑类串逐字节保留', async () => {
+    render(<ReviewSidePanel taskId="t1" onClose={() => {}} />)
+    await waitFor(() => expect(screen.getByRole('combobox')).toBeInTheDocument())
+    const aside = screen.getByRole('complementary')
+    expect(aside.className).toContain('w-[44%]')
+    expect(aside.className).toContain('min-w-[400px]')
+    expect(aside.className).toContain('max-w-[620px]')
+    expect(aside.className).not.toContain('w-full')
+  })
+
+  it('compact 全宽抽屉：w-full 在场、44%/min-w/max-w 不在场', async () => {
+    render(<ReviewSidePanel taskId="t1" onClose={() => {}} compact />)
+    await waitFor(() => expect(screen.getByRole('combobox')).toBeInTheDocument())
+    const aside = screen.getByRole('complementary')
+    expect(aside.className).toContain('absolute inset-y-0 right-0 z-40 w-full')
+    expect(aside.className).not.toContain('w-[44%]')
+    expect(aside.className).not.toContain('min-w-[400px]')
+    expect(aside.className).not.toContain('max-w-[620px]')
+  })
 })
