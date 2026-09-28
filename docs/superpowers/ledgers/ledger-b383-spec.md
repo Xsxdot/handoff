@@ -17,3 +17,6 @@
 | 13 | codegraph 存在（`codegraph/best.json` 等）但本轮以 grep/读码定位（跨包链路需多域拼图，图查询收益低——记一笔，不属覆盖债） | ls |
 | 14 | 放弃的尝试：远端执行机日志取证（is_child 关联）——不可达，spec 按「代码链路 + 入库样本」定案，真机验证排 acceptance 轮 | 判断 |
 | 15 | 独立审计（Explore 子代理，SPEC-NEEDS-FIX 五条已全部并入）：A/B 节 PASS（事实骨架与 H3 链路全对上）；C/D/E CONCERN——对账路径同形缺口（`reconcile.go:219-237`）、VoidReason 缺位（`manager.go:3487-3491` 审计谎言风险）、台账 item 6 更正、§5 措辞（未导出符号）、WP1 方案 2 超卡标注 | 审计报告 2026-09-28 |
+| 16 | **用户裁决（2026-09-28）：v1 暂不批准**；方向 A=b、B=a 支持；五条阻塞：①分级按代码图三顶层域改 L3 补契约语义；②WP2 多造了提取器责任——RedirectTargets 已存在，真实缺口是 heredoc 正文与 cd 相对路径，rm 不与重定向共用提取器；③A=b 对账收紧——row4 ToolStatus=error 双义不可全标被拒，VoidReasonTurnDiscipline 不适合有意拒绝；④B=a 只收可证明安全子集（git checkout -- 写工作树、模块缓存 Paths 先被范围门拦、psql -c 非笼统只读），需写明维持人工清单；⑤H3 降级待验证假说，用新鲜样本定修复范围 | 用户消息 2026-09-28 |
+| 17 | v2 复核读数：`RedirectTargets` redirect.go:48-104（`> >> >| n> &>`，边界明写不处理 heredoc/不跟 cd :8，已知 cd 相对写误放行残余 :15-17）；`judgeBash` 落点循环 permgate.go:242-249 先于 `safeCommandID` :267；VoidReason 两档 executor.go:105-110；reconcile row4 reconcile.go:168-169 双义 + classifyReconciled :223-233 补 question；零文本 result 缺 VoidReason adapter.go:2230-2234；指纹版本盐 fingerprint.go:41-43 + manager.go:452；codegraph/best.json 顶层 15 域，本卡跨 d_policy/d_execution(_adapters/_contract)/d_orchestration | 读码 |
+| 18 | roadmap 落账三条（跨任务记忆、executor 只读基准、拒绝理由送达）→ docs/roadmap.md 队列 4-6；v2 提交后推送 cards/B383-charter | 落账 |

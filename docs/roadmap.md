@@ -872,3 +872,9 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 - **首个零文本事件的唤醒抑制与 retry ownership 全局可见性**：B402 不抑制首个 `turn_failed(zero_text)` 的 Publish/唤醒，`wait --follow` 仍可能看到；安全性靠「任何路径不早归档」与 `waiting_review` 状态门，而非隐藏事件。来源：`docs/superpowers/specs/b402.md` §10；`b402-contract.md` §3。
 - **跨 agentd 重启的同一 task 自动续接计数与恢复**：B402 的一次续接不做持久计数，进程重启不重放已消费的失败事件；恢复语义需单独冻结持久化/恢复契约。来源：`docs/superpowers/specs/b402.md` §4.2/§10。
 - **供应商流中断本身的根因治理**：B402 只处理已确认的零文本分类、一次续接与生命周期不早归档，不修供应商断流根因。来源：`docs/superpowers/specs/b402.md` §10。
+
+## 来自 B383 spec（2026-09-28，本期不做、后续要做）
+
+- **跨任务同类指纹记忆**：拍板 B 选 a（静态判据扩容承接）后被否决的 b 案——动 schema/新事件、TTL 与快照版本语义、deny 不可记忆；若静态扩容落地后同类重复升级仍痛，从本条重走 spec。来源：`docs/superpowers/specs/b383.md` §3 WP3。
+- **executor 只读基准**：Go 模块缓存等以 `Paths` 上报的只读读，在 `judgeBash` 落点循环（`permgate.go:242-249`）先于安全命令白名单（`:267`）被范围门拦下；承接需 Scope 层「只读基准」并与写面分离，另立卡。来源：`docs/superpowers/specs/b383.md` §3 WP3 / §8。
+- **opencode 拒绝理由送达模型**：拒绝理由现是死存储（`adapter.go:702` 丢参、guidance 唯一消费点被 `!taskIsOpenCode` 门住 `manager.go:2896-2901`），模型学不到为何被拒；打开 in-band 或 guidance 通路是独立改进。来源：`docs/superpowers/specs/b383.md` §8。
