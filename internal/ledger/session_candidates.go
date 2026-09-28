@@ -40,14 +40,14 @@ const sessionCandidatesLimitMax = 10000
 // 的 JSON 表达式方言点，rooms.go roomExpr 同款先例）。占位符统一写 ?，经 q()
 // 重写为 $N——禁止使用 jsonb 的 ? 存在性运算符（会被 q() 吃掉）。
 const (
-	mentionMatchPG = `EXISTS (SELECT 1 FROM jsonb_array_elements_text(payload->'mentions') m WHERE m = ?)`
+	mentionMatchPG     = `EXISTS (SELECT 1 FROM jsonb_array_elements_text(payload->'mentions') m WHERE m = ?)`
 	mentionCardMatchPG = `EXISTS (
 		SELECT 1 FROM jsonb_array_elements_text(payload->'mentions') m
 		JOIN cards c ON c.id = m
 		WHERE c.driver_session = ?)`
 	replyToExprPG = `(%s.payload->>'reply_to')::bigint`
 
-	mentionMatchSQLite = `EXISTS (SELECT 1 FROM json_each(payload, '$.mentions') m WHERE m.value = ?)`
+	mentionMatchSQLite     = `EXISTS (SELECT 1 FROM json_each(payload, '$.mentions') m WHERE m.value = ?)`
 	mentionCardMatchSQLite = `EXISTS (
 		SELECT 1 FROM json_each(payload, '$.mentions') m
 		JOIN cards c ON c.id = m.value

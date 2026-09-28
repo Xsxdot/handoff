@@ -3,6 +3,7 @@
 // 候选读只按地址键枚举「可能被 MessageWakeTargets 定向到 member」的超集：
 //   - mentions 精确含 member（身份）或含 member 当前席位的卡号；
 //   - reply_to 指向 member 是作者的消息；
+//
 // 唯一裁决仍在 collab.Service.MessageWakeTargets（契约第 19/20 条），因此
 // by_system/pointer/非会话房间等「枚举进来但判定拒绝」的行必须出现在候选里
 // ——把寻址规则的任何一条复制进 SQL 都会让这些金样变红。

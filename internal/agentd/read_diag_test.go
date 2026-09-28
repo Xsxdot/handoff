@@ -201,7 +201,7 @@ func TestRoomMessagesReadLogsCorrelatedOperationID(t *testing.T) {
 	for _, msg := range []string{
 		"房间历史 HTTP 请求完成", // HTTP 外围
 		"房间历史读取完成",       // collab 投影
-		"房间历史账本查询完成",      // ledger 查询
+		"房间历史账本查询完成",     // ledger 查询
 	} {
 		rec, ok := capture.find(msg)
 		if !ok {
@@ -258,7 +258,7 @@ func TestReadDiagCompletionHasStatusBytesAndOutcome(t *testing.T) {
 	}
 }
 
-// TestReadDiagEmptyReadClassifiedSuccessEmpty 锁合法空读：200 + 0 行 = 
+// TestReadDiagEmptyReadClassifiedSuccessEmpty 锁合法空读：200 + 0 行 =
 // success_empty，不伪造错误也不冒充非空。
 func TestReadDiagEmptyReadClassifiedSuccessEmpty(t *testing.T) {
 	capture := &diagLogCapture{}
@@ -410,7 +410,7 @@ func TestCardsReadLogsCorrelatedOperationID(t *testing.T) {
 		t.Fatalf("同一次读取应只有一个 operation_id，得到 %v", ids)
 	}
 	for _, msg := range []string{
-		"列卡完成",         // ledger 列卡 SQL 阶段
+		"列卡完成",       // ledger 列卡 SQL 阶段
 		"聚合未决工单投影完成", // 未决工单聚合 SQL 阶段
 	} {
 		rec, found := capture.find(msg)

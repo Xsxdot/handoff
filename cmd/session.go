@@ -211,6 +211,7 @@ func isWaitCancel(err error) bool {
 //     不主动退出——SIGINT/SIGTERM 退出 0；--timeout 语义变为空闲上限（任意
 //     两命中帧之间的最大间隔，0 = 不设限），到点 124（与 runCardWait 的
 //     follow 语义同形，card_wait.go:55-56）。
+//
 // countingWriter 统计经 stdout 写出的字节数（B409.6 诊断用；原样透传，
 // 不改写内容——stdout 的每行 JSON 语义不动）。
 type countingWriter struct {
