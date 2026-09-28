@@ -1602,7 +1602,7 @@ func TestSessionWaitCursorWriteFailureAllowsRepeat(t *testing.T) {
 }
 
 // 游标读错误不得当 0：共享水位读失败必须显式报错，不输出伪造的空 backlog
-//（契约第 10/43 条的反向读面）。
+// （契约第 10/43 条的反向读面）。
 func TestSessionWaitCursorReadErrorFailsExplicitly(t *testing.T) {
 	dir := t.TempDir()
 	svc, _, st, _ := mustWaitFixture(t, dir)

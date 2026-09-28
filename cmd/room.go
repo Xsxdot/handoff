@@ -19,8 +19,8 @@ import (
 	"time"
 
 	"github.com/Xsxdot/handoff/internal/collab"
-	"github.com/Xsxdot/handoff/internal/diag"
 	"github.com/Xsxdot/handoff/internal/collab/cursor"
+	"github.com/Xsxdot/handoff/internal/diag"
 	"github.com/Xsxdot/handoff/internal/ledger"
 	ledgerapi "github.com/Xsxdot/handoff/internal/ledger/api"
 	"github.com/Xsxdot/handoff/internal/proto"

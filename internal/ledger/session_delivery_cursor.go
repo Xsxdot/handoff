@@ -16,7 +16,7 @@ func (s *Store) SessionDeliveryCursor(member string) (int64, error) {
 }
 
 // SessionDeliveryCursorContext 是 SessionDeliveryCursor 的可取消入口
-//（B409.6：补收起点读随 CLI context 取消）。点读不单独量池等待。
+// （B409.6：补收起点读随 CLI context 取消）。点读不单独量池等待。
 func (s *Store) SessionDeliveryCursorContext(ctx context.Context, member string) (int64, error) {
 	if member == "" {
 		return 0, fmt.Errorf("交付游标成员不能为空")

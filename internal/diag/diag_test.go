@@ -1,5 +1,5 @@
 // diag_test.go 锁关联标识的 context 往返与日志展开行为：无关联时 Attrs 为 nil
-//（空 id 不得冒充有关联），有关联时 operation_id/refresh_id 按序展开。
+// （空 id 不得冒充有关联），有关联时 operation_id/refresh_id 按序展开。
 package diag
 
 import (

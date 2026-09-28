@@ -95,7 +95,7 @@ func projectionErrorClass(err error) string {
 }
 
 // finishLogAttrs 组装一次投影读的统一收口字段：关联 id、账本/装配分段
-//（projection_ns = elapsed - ledger，账本之外的应用装配耗时）、行数、结果
+// （projection_ns = elapsed - ledger，账本之外的应用装配耗时）、行数、结果
 // 分类与总耗时。失败时附 error_class；extra 由调用方补语义字段。
 func (t *projectionTimer) finishLogAttrs(ctx context.Context, rows int, err error, extra ...any) []any {
 	elapsedNs := time.Since(t.started).Nanoseconds()
@@ -579,7 +579,9 @@ func (s *Service) Mentions(member string, afterSeq int64, limit int) (out []prot
 		level("未消费提及已组装", attrs...)
 	}()
 	var markers []int64
-	markers, err = timedLedger(t, func() ([]int64, error) { return s.lc.ConsumedMessageSeqsContext(context.Background(), member, afterSeq) })
+	markers, err = timedLedger(t, func() ([]int64, error) {
+		return s.lc.ConsumedMessageSeqsContext(context.Background(), member, afterSeq)
+	})
 	if err != nil {
 		log().Warn("提及读取失败：读消费标记", "member", member, "cause", err)
 		return nil, err

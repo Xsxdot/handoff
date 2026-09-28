@@ -663,7 +663,6 @@ func ticketTitle(tk proto.Ticket) string {
 	return "提问工单待答复"
 }
 
-
 // attachOutcome 把一次 attach lookup 的失败归入有限类别（成功路径不调用）：
 // 总 deadline 与关停取消分开，其余按错误处理。
 func attachOutcome(err error) string {

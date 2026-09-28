@@ -2,10 +2,11 @@
 //
 // 固定有效候选集，分两档灌入无关事件（镜像历史带大载荷 / 结构无关类型 / 无关
 // 房间的群消息），断言：
-//   1. 候选查询实际返回 rows / payload bytes 恒定（不随全流增长）；
-//   2. 执行计划用地址候选键 + seq 范围：SQLite EXPLAIN QUERY PLAN 不出现
-//      card_events 全表 SCAN；PostgreSQL EXPLAIN (ANALYZE, BUFFERS) 走
-//      room_message 局部索引，不出现 Seq Scan on card_events。
+//  1. 候选查询实际返回 rows / payload bytes 恒定（不随全流增长）；
+//  2. 执行计划用地址候选键 + seq 范围：SQLite EXPLAIN QUERY PLAN 不出现
+//     card_events 全表 SCAN；PostgreSQL EXPLAIN (ANALYZE, BUFFERS) 走
+//     room_message 局部索引，不出现 Seq Scan on card_events。
+//
 // 原始计划文本经 t.Logf（前缀 B409_U5_*）落测试输出，作为交付证据原文。
 package ledger
 
@@ -55,12 +56,12 @@ func candidatePerfFixture(t *testing.T, s *Store, actor string) (memberCard stri
 	send := func(roomID, kind string, mentions []string, replyTo int64) int64 {
 		return sendAs(actor, roomID, kind, mentions, replyTo)
 	}
-	send("session:1", proto.RoomMsgUser, []string{"user:sy"}, 0)              // 身份 @：user:sy 命中
-	memberMsg := sendAs("user:sy", "session:1", proto.RoomMsgUser, nil, 0)    // user:sy 作者（reply 目标）
-	send("session:1", proto.RoomMsgUser, nil, memberMsg)                      // reply→user:sy：命中
-	send("session:1", proto.RoomMsgUser, []string{c1.ID}, 0)                  // member 席位卡 @：命中
-	send("session:1", proto.RoomMsgUser, []string{c2.ID}, 0)                  // other 席位卡 @：非命中
-	send("session:1", proto.RoomMsgUser, nil, 0)                              // 无寻址：非命中
+	send("session:1", proto.RoomMsgUser, []string{"user:sy"}, 0)           // 身份 @：user:sy 命中
+	memberMsg := sendAs("user:sy", "session:1", proto.RoomMsgUser, nil, 0) // user:sy 作者（reply 目标）
+	send("session:1", proto.RoomMsgUser, nil, memberMsg)                   // reply→user:sy：命中
+	send("session:1", proto.RoomMsgUser, []string{c1.ID}, 0)               // member 席位卡 @：命中
+	send("session:1", proto.RoomMsgUser, []string{c2.ID}, 0)               // other 席位卡 @：非命中
+	send("session:1", proto.RoomMsgUser, nil, 0)                           // 无寻址：非命中
 
 	gotRows, gotBytes := mustCandidateStats(t, s)
 	if gotRows != 3 {
