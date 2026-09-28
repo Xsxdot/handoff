@@ -1,5 +1,7 @@
 <resources>
-    <style name="Theme.HandoffMobile" parent="Theme.AppCompat.DayNight.NoActionBar">
+    <!-- B419：钉死 Light——DayNight 会跟随系统深色切白字，与写死的白底叠加成
+         白字白底（夜间自动深色时段整机不可见）。深色模式支持记 roadmap。 -->
+    <style name="Theme.HandoffMobile" parent="Theme.AppCompat.Light.NoActionBar">
         <item name="android:windowBackground">@android:color/white</item>
     </style>
 </resources>
