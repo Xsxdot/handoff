@@ -33,8 +33,13 @@ type coreAPI interface {
 
 var (
 	log = slog.Default()
-	// core 指向真实连接核；测试用 swapCore 注入替身。
-	core coreAPI = mobilecore.New(nil, log)
+	// liveCore 是默认运行时**唯一**的真实 Core 实例（B392 §4.1 组装不变量）：
+	// 配对视图（core）与会话适配视图（sessions）都从它导出，共享同一机器表、
+	// 同一活动会话槽与同一生命周期。禁止再起第二个 Core——两个核会分裂机器表
+	// 与活动槽，Pair 成功也保证不了 SwitchMachine 可用。
+	liveCore = mobilecore.New(nil, log)
+	// core 指向真实连接核（配对面视图）；测试用 swapCore 注入替身。
+	core coreAPI = liveCore
 )
 
 // Pair 解析一份配对 bundle 载荷并登记其中的机器（含离线机，不整单失败）。

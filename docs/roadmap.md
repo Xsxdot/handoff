@@ -25,6 +25,12 @@
 5. **卡与工作树双向可见**：从工作树看「这棵树上挂着哪些卡」。上条 spec 本期只做
    单向（卡知道自己的基线）。来源：同上 spec 的 Out of Scope。
 
+## 来自 B392 spec（2026-09-24）
+
+- **mobilecore 图覆盖债**：当前 baseline 未收录 `Core.Pair`、`Core.Activate`、`Core.Session` 等 S2 新符号；另走图债卡重扫或视图 absorb，不在 B392 偷带全图刷新。来源：`docs/superpowers/specs/b392.md` §11。
+- **切机时是否服务端吊销旧 session**：当前冻结语义只清核内单槽与 webview 旧 cookie；若产品/安全要把旧会话立即吊销，需另开卡定义跨端会话状态与失败补偿。来源：`docs/superpowers/specs/b392.md` Out of Scope。
+- **配对后的默认机器选择策略**：B392 不发明自动选择；壳仍显式选择目标机。若产品需要“默认激活第一台在线机器”或别的规则，另开卡定义多机选择、可发现性与失败反馈。来源：`docs/superpowers/specs/b392.md` 非目标。
+
 ## 来自 B376 spec（2026-09-17）
 
 - **`go run github.com/…/codegraph` 认成 codegraph 查询**：会编译，不是只读查询。来源：`docs/superpowers/specs/b376.md` Out of Scope。

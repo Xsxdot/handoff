@@ -1,13 +1,11 @@
 package bind
 
-import "errors"
-
-// 本文件是 P4=A 要求的核侧会话入口适配层：绑定面导出的 SessionCookie /
-// SwitchMachine 是**稳定的壳契约**；核侧实际方法名以 S2（B369.2）落地为准，
-// S2 到位后只改本文件的 sessions 装配，不动导出面。
+// 本文件是核侧会话入口的导出面：绑定面导出的 SessionCookie / SwitchMachine 是
+// **稳定的壳契约**（B386 后七函数之一）。生产装配由 adapter.go 的 coreSessions
+// 接到 bind.go 的唯一真实 Core（liveCore），不再有 notWiredSessions 占位。
 //
-// 为什么用 interface 而非直接调 *mobilecore.Core：S2 尚未落地，S4 不发明 S2 的
-// 冻结签名；接口让绑定层可编译、可测，且把「名字对齐」收敛到一处。
+// sessionAPI 只保留为测试缝（swapSessions）；它不是跨语言契约，也不是新的生产
+// 占位入口。
 
 // sessionAPI 是绑定面对核侧会话入口的窄消费面（duck typing）。
 type sessionAPI interface {
@@ -17,17 +15,9 @@ type sessionAPI interface {
 	SwitchMachine(machine string) (string, error)
 }
 
-// errSessionsNotWired 是 S2 未落地时的 fail-closed 结果：绝不静默成功。
-var errSessionsNotWired = errors.New("核侧会话入口未接线（S2 未落地）")
-
-// notWiredSessions 在 S2 落地前占住 sessionAPI 的生产接线点。
-type notWiredSessions struct{}
-
-func (notWiredSessions) SessionCookie(string) (string, error) { return "", errSessionsNotWired }
-func (notWiredSessions) SwitchMachine(string) (string, error) { return "", errSessionsNotWired }
-
-// sessions 是核侧会话入口的装配点；S2 落地后在此接 *mobilecore.Core 的适配器。
-var sessions sessionAPI = notWiredSessions{}
+// sessions 是会话入口的装配点：默认接 liveCore（与配对面同一实例），
+// 测试用 swapSessions 换替身。生产路径不得再出现占位实现或第二个 Core。
+var sessions sessionAPI = newCoreSessions(liveCore)
 
 // SessionCookie 返回某台机器当前会话 cookie 的值，供壳注入 webview cookie jar。
 // 空串 + error 表示未配对或兑换失败；**绝不返回 token**。
