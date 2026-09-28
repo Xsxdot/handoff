@@ -6,6 +6,7 @@ final class FakeCookieJar: CookieJar {
     var cookies: [HTTPCookie] = []
     var lastSet: HTTPCookie?
     var deleteCompletionHangs = false   // 模拟「清罐未完成」
+    var setCompletionHangs = false      // 模拟「注入未完成」
     private let recorder: CallRecorder?
     init(recorder: CallRecorder? = nil) { self.recorder = recorder }
 
@@ -20,7 +21,9 @@ final class FakeCookieJar: CookieJar {
         completion()
     }
     func set(_ cookie: HTTPCookie, completion: @escaping () -> Void) {
-        recorder?.record("set"); lastSet = cookie; cookies.append(cookie); completion()
+        recorder?.record("set"); lastSet = cookie; cookies.append(cookie)
+        if setCompletionHangs { return }   // 不回调 → 不得导航
+        completion()
     }
 }
 

@@ -9,6 +9,7 @@ final class CallRecorder {
 
 final class FakeConnectCore: ConnectCore {
     var machines: [MachineView] = []
+    var nilIndices: Set<Int> = []   // 界内但 machineAt 返回 nil 的索引（模拟核的内存/平台缺口）
     var pairError: Error?
     var switchError: Error?
     var sessionError: Error?
@@ -25,6 +26,7 @@ final class FakeConnectCore: ConnectCore {
     func machineCount() -> Int { machines.count }
     func machineAt(_ index: Int) -> MachineView? {
         guard index >= 0 && index < machines.count else { return nil }
+        if nilIndices.contains(index) { return nil }
         return machines[index]
     }
     func origin(_ machine: String) throws -> String { switchOrigin }

@@ -1,6 +1,11 @@
 import Foundation
 import WebKit
 
+// main 队列执行器缝：WKHTTPCookieStore.set 的 completion 线程由平台决定（非主线程），
+// 其中触发的 webView.load 必须在主线程（WebKit 硬要求，`mainDocumentURL`/`WKWebView` 非线程安全）。
+// 生产 = DispatchQueue.main.async；测试注入同步执行器把「派发到主队列」这一步确定化。
+typealias MainQueueExecutor = (@escaping () -> Void) -> Void
+
 // 导航加载缝（测试可注入假 loader 断言「失败不 load」）。
 protocol OriginLoader: AnyObject { func load(origin: String) }
 
@@ -67,6 +72,7 @@ final class CookieBridge {
     private let core: ConnectCore
     private let jar: CookieJar
     private let loader: OriginLoader
+    private let onMain: MainQueueExecutor
 
     // 生产装配：本类拥有 webView 与其 cookie store。
     convenience init(core: ConnectCore) {
@@ -78,12 +84,14 @@ final class CookieBridge {
                   webView: webView)
     }
 
-    // 测试缝：注入假 jar / 假 loader。
-    init(core: ConnectCore, jar: CookieJar, loader: OriginLoader, webView: WKWebView = WKWebView()) {
+    // 测试缝：注入假 jar / 假 loader / 同步化的 main 队列执行器。
+    init(core: ConnectCore, jar: CookieJar, loader: OriginLoader, webView: WKWebView = WKWebView(),
+         onMain: @escaping MainQueueExecutor = { DispatchQueue.main.async(execute: $0) }) {
         self.core = core
         self.jar = jar
         self.loader = loader
         self.webView = webView
+        self.onMain = onMain
     }
 
     // I3 承载调用序：SwitchMachine → 清罐（等完成）→ SessionCookie → 注入（等完成）→ load。
@@ -145,9 +153,13 @@ final class CookieBridge {
         }
         jar.set(cookie) { [weak self] in
             guard let self else { return }
-            Log.shell.info("cookie 注入完成并导航 name=\(machine, privacy: .public)")
-            self.loader.load(origin: origin)
-            completion(.success(()))
+            // set 的 completion 线程由平台决定，load 必须在主线程 → 统一经 onMain 派发。
+            self.onMain { [weak self] in
+                guard let self else { return }
+                Log.shell.info("cookie 注入完成并导航 name=\(machine, privacy: .public)")
+                self.loader.load(origin: origin)
+                completion(.success(()))
+            }
         }
     }
 }

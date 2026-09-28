@@ -49,6 +49,15 @@ final class MachineListViewController: UIViewController, UITableViewDataSource, 
         return cell
     }
 
+    // 离线行不可选中（I5 条 32）：置 nil 让 UIKit 直接吞掉点击，不到 didSelectRowAt。
+    func tableView(_ tableView: UITableView, willSelectRowAt indexPath: IndexPath) -> IndexPath? {
+        guard machines.indices.contains(indexPath.row), machines[indexPath.row].online else {
+            Log.shell.error("离线机不可进入 row=\(indexPath.row, privacy: .public)")
+            return nil
+        }
+        return indexPath
+    }
+
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
         enter(index: indexPath.row)

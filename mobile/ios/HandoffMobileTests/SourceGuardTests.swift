@@ -30,6 +30,15 @@ final class SourceGuardTests: XCTestCase {
         XCTAssertTrue(illegal.isEmpty, "壳源码出现非导出面绑定符号：\(illegal)")   // 条 3
     }
 
+    // 条 3 负向：壳只经 7 个导出绑定调用，不得出现 Token/Dial/Credential 等绕过 cookie 闸的入口。
+    func testNoCookieBypassSymbols() {
+        let text = appSources.joined(separator: "\n")
+        for forbidden in ["Token", "Dial", "Credential"] {
+            XCTAssertFalse(text.contains(forbidden),
+                           "壳源码出现绕过 cookie 闸的符号（条 3 负向）：\(forbidden)")
+        }
+    }
+
     func testNoBundleJSONParsing() {
         for src in appSources {
             XCTAssertFalse(src.contains("JSONDecoder"), "壳不得解析 bundle（条 4 负向）")
