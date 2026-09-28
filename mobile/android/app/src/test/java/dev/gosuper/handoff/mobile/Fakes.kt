@@ -8,6 +8,8 @@ import dev.gosuper.handoff.mobile.core.CoreGateway
 import dev.gosuper.handoff.mobile.core.MachineView
 import dev.gosuper.handoff.mobile.core.SecretStore
 import dev.gosuper.handoff.mobile.core.SessionCore
+import dev.gosuper.handoff.mobile.web.CookieStore
+import dev.gosuper.handoff.mobile.web.WebviewNavigator
 
 /** 记录全局调用序的假绑定面（同一 order 列表可跨设备共享）。 */
 class FakeCore(
@@ -59,4 +61,33 @@ class FakeSecretStore(private var value: String? = null) : SecretStore {
 
     override fun readBundle(): String? = value
     override fun clear() { value = null }
+}
+
+/** 可查询的假 cookie jar：clear 后查询为空，set 后仅一条。 */
+class FakeCookieStore(private val order: MutableList<String>) : CookieStore {
+    val cookies = mutableListOf<String>()
+    var clearShouldThrow = false
+    var setShouldThrow = false
+
+    override suspend fun clearHost(host: String) {
+        order.add("clearHost:$host")
+        if (clearShouldThrow) throw RuntimeException("clear failed")
+        cookies.clear()
+    }
+
+    override suspend fun setCookie(url: String, setCookieHeader: String) {
+        // 记录注入时刻 jar 的大小：断言「清罐后注入前 jar 为空」。
+        order.add("setCookie:jarSize=${cookies.size}")
+        if (setShouldThrow) throw RuntimeException("set failed")
+        cookies.add(setCookieHeader)
+    }
+}
+
+/** 记录 load 的假导航器。 */
+class FakeNavigator(private val order: MutableList<String>) : WebviewNavigator {
+    val loaded = mutableListOf<String>()
+    override fun load(url: String) {
+        order.add("load:$url")
+        loaded.add(url)
+    }
 }
