@@ -1,9 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  B417.1 Android 壳清单（T1 骨架；Activity 在 T7 加入）。
+  B417.1 Android 壳清单（T7 加入 Application 与三条 Activity）。
   职责：显式关闭 allowBackup（配对 bundle = 主令牌集，禁云备份外泄）；
-        以最小 network-security-config 仅对明文回环 127.0.0.1 放行；不开 usesCleartextTraffic 全局放行。
-  边界：不声明后台服务/内容提供者。
+        以最小 network-security-config 仅对明文回环 127.0.0.1 放行；不开 usesCleartextTraffic 全局放行；
+        以 .HandoffApp 持有进程级 AppGraph（Go 核单例的唯一入口），入口屏为 PairingActivity。
+  边界：不声明后台服务/内容提供者；仅 WebviewActivity 声明 configChanges（旋转不重建核/不重复清罐）。
 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
@@ -12,10 +13,30 @@
     <uses-feature android:name="android.hardware.camera" android:required="false" />
 
     <application
+        android:name=".HandoffApp"
         android:allowBackup="false"
         android:usesCleartextTraffic="false"
         android:networkSecurityConfig="@xml/network_security_config"
         android:label="@string/app_name"
         android:supportsRtl="true"
-        android:theme="@style/Theme.HandoffMobile" />
+        android:theme="@style/Theme.HandoffMobile">
+
+        <activity
+            android:name=".ui.PairingActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <activity
+            android:name=".ui.MachineListActivity"
+            android:exported="false" />
+
+        <activity
+            android:name=".ui.WebviewActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|keyboardHidden" />
+    </application>
 </manifest>

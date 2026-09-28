@@ -68,10 +68,18 @@ class SourceGuardTest {
 
     @Test
     fun 日志不插值凭据变量() {
-        // 禁止在 Log 调用里插值 value/bundleJSON/setCookieHeader/raw/bundle。
-        val re = Regex("""Log\.[a-zA-Z]+\("[^"]*"[^)]*\$(value|bundleJSON|setCookieHeader|raw|bundle)\b""")
-        val hit = re.find(readAllKotlin())
-        assertTrue("日志插值了凭据变量: ${hit?.value}", hit == null)
+        // 禁止在 Log 调用里插值凭据变量（value/bundleJSON/setCookieHeader/raw/bundle/token/cookie）。
+        // 必须覆盖两种形态：`Log.<m>(TAG, "...")` 与 `Log.<m>("...")`——真正的日志写法是前者
+        // （方法名后紧跟 TAG，而非字符串字面量），此前正则要求紧跟字面量故恒不命中（盲区）。
+        // `[^;\n]*` 限定在单条语句/单行内，避免跨语句误命中；`(?!\s*\.length)` 放行「只记长度」
+        // 的合法写法（如 `${bundleJSON.length}`），只拦「内插值本身」。
+        val re = Regex("""Log\.[a-zA-Z]+\([^;\n]*\$\{?([a-zA-Z_][a-zA-Z0-9_]*)\b(?!\s*\.length)""")
+        val creds = setOf("value", "bundleJSON", "setCookieHeader", "raw", "bundle", "token", "cookie")
+        val hits = re.findAll(readAllKotlin())
+            .filter { it.groupValues[1] in creds }
+            .map { it.value }
+            .toList()
+        assertTrue("日志插值了凭据变量: $hits", hits.isEmpty())
     }
 
     @Test
