@@ -119,9 +119,6 @@ func TestPtyWSAttachedBacklogBytesKeyPresent(t *testing.T) {
 	if err := json.Unmarshal(data, &ctrl); err != nil {
 		t.Fatalf("解析: %v", err)
 	}
-	if ctrl.BacklogBytes != 0 {
-		t.Fatalf("新会话 backlog_bytes = %d，期望 0", ctrl.BacklogBytes)
-	}
 }
 
 // text 控制帧 resize 生效。

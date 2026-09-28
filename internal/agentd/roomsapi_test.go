@@ -803,6 +803,16 @@ func TestRoomMessagesEndpoint(t *testing.T) {
 	if len(empty.Messages) != 0 {
 		t.Fatalf("不存在房间历史应零条: %+v", empty.Messages)
 	}
+	if err := env.ledger.Close(); err != nil {
+		t.Fatalf("关闭账本以模拟历史查询失败: %v", err)
+	}
+	var failed struct {
+		Error string `json:"error"`
+	}
+	code = env.getJSON(t, "/api/rooms/"+session.ID+"/messages", &failed)
+	if code != http.StatusInternalServerError || failed.Error == "" {
+		t.Fatalf("账本查询失败必须作为 HTTP 错误返回，而不能伪装成空历史: status=%d body=%+v", code, failed)
+	}
 }
 
 func TestRoomSendEndpoint(t *testing.T) {

@@ -25,6 +25,7 @@ import (
 
 	"github.com/Xsxdot/handoff/internal/collab"
 	"github.com/Xsxdot/handoff/internal/collab/client"
+	"github.com/Xsxdot/handoff/internal/diag"
 	"github.com/Xsxdot/handoff/internal/ledger"
 	"github.com/Xsxdot/handoff/internal/proto"
 )
@@ -147,12 +148,14 @@ func (s *Server) handleSessionsList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	member := id.Member
-	summaries, err := s.rooms.ListSessions(member)
+	summaries, err := s.rooms.ListSessionsContext(r.Context(), member)
 	if err != nil {
-		s.log.Warn("会话列表读取失败", "member", member, "cause", err)
+		s.log.Warn("会话列表读取失败", append(diag.Attrs(r.Context()),
+			"member", member, "cause", err)...)
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
+	annotateReadRows(r.Context(), len(summaries))
 	s.log.Info("会话列表响应成功", "member", member, "sessions", len(summaries))
 	writeJSON(w, http.StatusOK, map[string]any{"sessions": summaries})
 }
@@ -164,12 +167,13 @@ func (s *Server) handleSessionsList(w http.ResponseWriter, r *http.Request) {
 // （%w 保住 ErrNoRoom 映射）。
 func (s *Server) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	detail, err := s.rooms.SessionDetail(id)
+	detail, err := s.rooms.SessionDetailContext(r.Context(), id)
 	if err != nil {
 		s.log.Warn("会话详情读取失败", "session", id, "cause", err)
 		sessionErr(w, fmt.Errorf("会话 %s: %w", id, err))
 		return
 	}
+	annotateReadRows(r.Context(), len(detail.Timeline))
 	s.log.Info("会话详情响应成功", "session", id)
 	writeJSON(w, http.StatusOK, detail)
 }

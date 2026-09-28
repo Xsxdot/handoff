@@ -479,7 +479,7 @@ func setupLedger(cfg *config.Config, srv *agentd.Server, taskStore *store.Store,
 	}
 	lst, err := ledger.Open(ldsn)
 	if err != nil {
-		logger.Error("打开账本库失败", "dsn", ldsn, "cause", err)
+		logger.Error("打开账本库失败", "dsn_configured", cfg.Ledger.DSN != "", "cause", err)
 		return nil, fmt.Errorf("打开账本库: %w", err)
 	}
 	srv.SetLedger(lst)
@@ -528,7 +528,9 @@ func setupLedger(cfg *config.Config, srv *agentd.Server, taskStore *store.Store,
 	// B156.3 K5：账本打开后才能启动自动化事件流。
 	// ctx 随 agentd 停机取消；首轮先重放事件与队列，再进入轮询。
 	srv.StartAutomation(ctx)
-	logger.Info("自动化编排已挂载", "dsn", ldsn, "poll", "2s")
+	// B409.6 脱敏红线：DSN URL/密码不进日志。诊断保留 dsn_configured 布尔
+	//（与 TestSetupLedgerFailureDoesNotLogDSNCredentials 同族，Wave 0 先例）。
+	logger.Info("自动化编排已挂载", "dsn_configured", ldsn != "", "poll", "2s")
 	// 恒挂载：机器清单来自 target 客户端池的活配置读取，启动时没有机器
 	// 不代表以后没有——留着 len(cfg.Targets)>0 的闸会让控制台新增的第一台
 	// 机器永远等不到账本镜像（与任务镜像同一条纪律，B163 ①）。
@@ -541,7 +543,7 @@ func setupLedger(cfg *config.Config, srv *agentd.Server, taskStore *store.Store,
 	})
 	go lm.Run(ctx)
 	logger.Info("账本镜像子系统已挂载", "holder", host,
-		"machines", len(srv.Pool().Names()), "dsn", ldsn)
+		"machines", len(srv.Pool().Names()), "dsn_configured", ldsn != "")
 	return func() {
 		// 次序硬约束：先停镜像（不再写库）再关账本库。
 		lm.Stop()

@@ -14,13 +14,14 @@ import { addSessionMember, fetchIdentity, sendRoomMessage } from '../../api/room
 import { ApiError } from '../../api/client'
 import { errorMessage } from '../lib/format'
 import { logRoom } from './roomLog'
-import { applyMention, isSelfActor, memberKindLabel, mentionCandidates, segmentBody, signatureText } from './sessionModel'
+import { applyMention, extractSessionMentions, isSelfActor, memberKindLabel, mentionCandidates, segmentBody, signatureText } from './sessionModel'
 
 export interface SessionChatProps {
   sessionId: string
   summary: SessionSummary | null
   events: RoomHistoryItem[]
   historyError: string
+  historyLoading?: boolean
   onSent: () => void
   onJoinCard?: () => void
 }
@@ -70,7 +71,7 @@ function MessageRow({ event, referenced, highlight, archived, selfMember, onJump
   )
 }
 
-export function SessionChat({ sessionId, summary, events, historyError, onSent, onJoinCard }: SessionChatProps) {
+export function SessionChat({ sessionId, summary, events, historyError, historyLoading = false, onSent, onJoinCard }: SessionChatProps) {
   const [draft, setDraft] = useState('')
   const [sending, setSending] = useState(false)
   const [sendError, setSendError] = useState('')
@@ -159,7 +160,7 @@ export function SessionChat({ sessionId, summary, events, historyError, onSent, 
     setSending(true)
     setSendError('')
     setSendErrorStatus(0)
-    const mentions = body.match(/@[^\s]+/g)?.map((token) => token.slice(1)) ?? []
+    const mentions = extractSessionMentions(body)
     logRoom('debug', 'session_send_started', { session: sessionId, mentions: mentions.length })
     try {
       // 缝位（B365）：回复发送半边在此接入 reply_to（消费 replyTarget.seq），
@@ -205,7 +206,7 @@ export function SessionChat({ sessionId, summary, events, historyError, onSent, 
         <div className="shrink-0 border-b bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-700">会话已归档，只读。</div>
       )}
       <div className="min-h-0 flex-1 space-y-2 overflow-y-auto bg-slate-50/60 p-3">
-        {events.length === 0 ? <p className="text-sm text-muted-foreground">（还没有消息）</p>
+        {events.length === 0 ? <p className="text-sm text-muted-foreground">{historyLoading ? '正在读取消息…' : historyError !== '' ? '消息暂时无法读取' : '（还没有消息）'}</p>
           : events.map((item) => {
             const payload = item.payload as { reply_to?: number }
             const replyTo = typeof payload.reply_to === 'number' && payload.reply_to > 0 ? payload.reply_to : null

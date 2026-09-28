@@ -11,8 +11,11 @@
 package collab
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/Xsxdot/handoff/internal/collab/client"
@@ -28,11 +31,29 @@ func (s *Service) CreateSession(title, owner, actor string) (proto.Session, erro
 
 // ListSessions 列全部会话（含归档），member 非空时投影该成员未读数。
 func (s *Service) ListSessions(member string) ([]proto.SessionSummary, error) {
-	sessions, err := s.lc.ListSessions()
+	return s.ListSessionsContext(context.Background(), member)
+}
+
+// ListSessionsContext 用于 HTTP 请求，事件流读取随客户端取消而停止。
+// B409.6：全部路径经 defer 统一收口一次投影日志（关联 id + 账本/装配分段 +
+// 结果分类）。
+func (s *Service) ListSessionsContext(ctx context.Context, member string) (summaries []proto.SessionSummary, err error) {
+	t := &projectionTimer{started: time.Now()}
+	defer func() {
+		attrs := t.finishLogAttrs(ctx, len(summaries), err, "member", member)
+		level := log().Info
+		if err != nil {
+			level = log().Warn
+		}
+		level("会话列表投影完成", attrs...)
+	}()
+	var sessions []proto.Session
+	sessions, err = timedLedger(t, func() ([]proto.Session, error) { return s.lc.ListSessions() })
 	if err != nil {
 		return nil, err
 	}
-	cards, err := s.lc.ListAllCards("")
+	var cards []proto.Card
+	cards, err = timedLedger(t, func() ([]proto.Card, error) { return s.lc.ListAllCards("") })
 	if err != nil {
 		return nil, err
 	}
@@ -40,53 +61,126 @@ func (s *Service) ListSessions(member string) ([]proto.SessionSummary, error) {
 	for _, c := range cards {
 		byCard[c.ID] = c
 	}
-	events, err := room.ReadAllEvents(s.lc, 0)
-	if err != nil {
-		return nil, err
+	cardIDs := make([]string, 0)
+	roomWatermarks := make(map[string]int64, len(sessions))
+	for _, session := range sessions {
+		cardIDs = append(cardIDs, session.Cards...)
+		roomWatermarks[session.ID] = 0
 	}
-	needs := needsHumanByCard(events)
-	var cursors map[string]int64
 	if member != "" {
+		var cursors map[string]int64
 		cursors, err = s.cursor.Snapshot(member)
 		if err != nil {
+			log().Warn("会话列表组装失败：读游标快照", "member", member, "cause", err)
 			return nil, err
 		}
+		for sessionID := range roomWatermarks {
+			roomWatermarks[sessionID] = cursors[sessionID]
+		}
+	}
+	var needsEvents []proto.LedgerEvent
+	needsEvents, err = timedLedger(t, func() ([]proto.LedgerEvent, error) { return s.lc.LatestNeedsEventsContext(ctx, cardIDs) })
+	if err != nil {
+		log().Warn("会话列表组装失败：读成员卡 needs 状态", "sessions", len(sessions), "cards", len(cardIDs), "cause", err)
+		return nil, err
+	}
+	needs := latestNeedsByCard(needsEvents)
+	var roomSnapshots []client.RoomMessageSnapshot
+	roomSnapshots, err = timedLedger(t, func() ([]client.RoomMessageSnapshot, error) {
+		return s.lc.RoomMessageSnapshotsContext(ctx, roomWatermarks)
+	})
+	if err != nil {
+		log().Warn("会话列表组装失败：读房间活动摘要", "sessions", len(sessions), "cause", err)
+		return nil, err
+	}
+	roomByID := make(map[string]client.RoomMessageSnapshot, len(roomSnapshots))
+	for _, snapshot := range roomSnapshots {
+		roomByID[snapshot.RoomID] = snapshot
 	}
 	out := make([]proto.SessionSummary, 0, len(sessions))
 	for _, session := range sessions {
-		summary := s.summarizeSession(session, byCard, events, needs)
+		snapshot, hasSnapshot := roomByID[session.ID]
+		var lastMessage *client.RoomMessageSnapshot
+		if hasSnapshot {
+			lastMessage = &snapshot
+		}
+		// 计入租约读取的账本耗时（summarizeSession 内部经接口读账本）。
+		var summary proto.SessionSummary
+		timedLedgerVoid(t, func() {
+			summary, err = s.summarizeSession(session, byCard, lastMessage, needs)
+		})
+		if err != nil {
+			log().Warn("会话列表组装失败：读取成员租约", "session", session.ID, "cause", err)
+			return nil, err
+		}
 		if member != "" {
-			summary.Unread = unreadByRoom(events, cursors)[session.ID]
+			summary.Unread = int(snapshot.MessagesAfter)
 		}
 		out = append(out, summary)
 	}
-	return out, nil
+	summaries = out
+	return summaries, nil
 }
 
 // SessionDetail 读会话详情页投影：成员与成员状态、协调者派发的任务节点、
 // 会话 timeline。结构信息不进群聊流。
 func (s *Service) SessionDetail(id string) (proto.SessionDetail, error) {
-	session, err := s.lc.GetSession(id)
+	return s.SessionDetailContext(context.Background(), id)
+}
+
+// SessionDetailContext 用于 HTTP 请求，取消详情投影的长事件流扫描。
+// B409.6：全部路径经 defer 统一收口一次投影日志。
+func (s *Service) SessionDetailContext(ctx context.Context, id string) (detail proto.SessionDetail, err error) {
+	t := &projectionTimer{started: time.Now()}
+	defer func() {
+		attrs := t.finishLogAttrs(ctx, len(detail.Timeline), err, "session", id)
+		level := log().Info
+		if err != nil {
+			level = log().Warn
+		}
+		level("会话详情投影完成", attrs...)
+	}()
+	var session proto.Session
+	session, err = timedLedger(t, func() (proto.Session, error) { return s.lc.GetSession(id) })
 	if err != nil {
 		return proto.SessionDetail{}, mapSessionError(err)
 	}
-	cards, err := s.lc.ListAllCards("")
+	var byCard map[string]proto.Card
+	byCard, err = s.sessionCardsByID(ctx, session.Cards)
 	if err != nil {
 		return proto.SessionDetail{}, err
 	}
-	byCard := make(map[string]proto.Card, len(cards))
-	for _, c := range cards {
-		byCard[c.ID] = c
-	}
-	events, err := room.ReadAllEvents(s.lc, 0)
+	var events []proto.LedgerEvent
+	events, err = timedLedger(t, func() ([]proto.LedgerEvent, error) {
+		return s.lc.SessionProjectionEventsContext(ctx, session.ID, session.Cards)
+	})
 	if err != nil {
+		log().Warn("会话详情组装失败：读限域投影事件", "session", session.ID, "cards", len(session.Cards), "cause", err)
 		return proto.SessionDetail{}, err
 	}
 	needs := needsHumanByCard(events)
-	detail := proto.SessionDetail{
-		Summary:  s.summarizeSession(session, byCard, events, needs),
+	var roomSnapshots []client.RoomMessageSnapshot
+	roomSnapshots, err = timedLedger(t, func() ([]client.RoomMessageSnapshot, error) {
+		return s.lc.RoomMessageSnapshotsContext(ctx, map[string]int64{session.ID: 0})
+	})
+	if err != nil {
+		log().Warn("会话详情组装失败：读房间活动摘要", "session", session.ID, "cause", err)
+		return proto.SessionDetail{}, err
+	}
+	var latestMessage *client.RoomMessageSnapshot
+	if len(roomSnapshots) > 0 {
+		latestMessage = &roomSnapshots[0]
+	}
+	detail = proto.SessionDetail{
 		Nodes:    sessionNodes(session, byCard, events),
 		Timeline: sessionTimeline(events, session),
+	}
+	timedLedgerVoid(t, func() {
+		detail.Summary, err = s.summarizeSession(session, byCard, latestMessage, needs)
+	})
+	if err != nil {
+		log().Warn("会话详情组装失败：读取成员租约", "session", session.ID, "cause", err)
+		return proto.SessionDetail{}, err
 	}
 	return detail, nil
 }
@@ -118,26 +212,45 @@ func (s *Service) WakeTargets(ev proto.LedgerEvent) ([]string, error) {
 	if err := room.UnmarshalMessage(ev.Payload, &msg); err != nil {
 		return nil, err
 	}
-	replyAuthor := s.replyAuthorOf(msg)
-	return s.resolveMessageTargets(msg, replyAuthor), nil
+	return s.MessageWakeTargets(msg)
 }
 
 // MessageWakeTargets 是 WakeTargets 的消息级半边（已在手解析好 replyAuthor 的
 // 调用方用它）。唤醒路径只认它——签名里没有成员集合，扇出形状写不出来。
 func (s *Service) MessageWakeTargets(msg proto.RoomMessage) ([]string, error) {
-	return s.resolveMessageTargets(msg, s.replyAuthorOf(msg)), nil
+	if msg.BySystem || msg.Kind == proto.RoomMsgPointer {
+		return nil, nil
+	}
+	replyAuthor, err := s.replyAuthorOf(msg)
+	if err != nil {
+		return nil, err
+	}
+	return s.resolveMessageTargets(msg, replyAuthor)
 }
 
 // resolveMessageTargets 解析消息寻址；@卡号 解析到该卡当前席位。
-func (s *Service) resolveMessageTargets(msg proto.RoomMessage, replyAuthor string) []string {
-	resolveSeat := func(mention string) (string, bool) {
-		card, err := s.lc.GetCard(mention)
-		if err != nil {
-			return "", false
+// 查询错误必须上抛：补拉扫描若误判为未命中，后续命中的持久水位会越过该消息。
+func (s *Service) resolveMessageTargets(msg proto.RoomMessage, replyAuthor string) ([]string, error) {
+	cards := make(map[string]proto.Card, len(msg.Mentions))
+	for _, mention := range msg.Mentions {
+		mention = strings.TrimSpace(mention)
+		if mention == "" {
+			continue
 		}
-		return card.DriverSession, true
+		card, err := s.lc.GetCard(mention)
+		if errors.Is(err, client.ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("解析会话寻址 %q: %w", mention, err)
+		}
+		cards[mention] = card
 	}
-	return room.ResolveDelivery(msg, replyAuthor, resolveSeat)
+	resolveSeat := func(mention string) (string, bool) {
+		card, ok := cards[mention]
+		return card.DriverSession, ok
+	}
+	return room.ResolveDelivery(msg, replyAuthor, resolveSeat), nil
 }
 
 // AddressesCard 判断一条消息的寻址是否命中该卡当前席位（唤醒路径的必要条件）。
@@ -150,7 +263,11 @@ func (s *Service) AddressesCard(msg proto.RoomMessage, cardID string) bool {
 	if err != nil || card.DriverSession == "" {
 		return false
 	}
-	for _, target := range s.resolveMessageTargets(msg, s.replyAuthorOf(msg)) {
+	targets, err := s.MessageWakeTargets(msg)
+	if err != nil {
+		return false
+	}
+	for _, target := range targets {
 		if target == card.DriverSession {
 			return true
 		}
@@ -158,31 +275,56 @@ func (s *Service) AddressesCard(msg proto.RoomMessage, cardID string) bool {
 	return false
 }
 
-// replyAuthorOf 找被回复消息的作者；找不到返回空串。
-func (s *Service) replyAuthorOf(msg proto.RoomMessage) string {
-	if msg.ReplyTo <= 0 {
-		return ""
+// replyEventOf 按全局 seq 点读引用条；不存在、跨房间或非消息都不是有效回复。
+// 单行升序读避免恢复积压时每条 reply 都重扫完整账本。
+func (s *Service) replyEventOf(msg proto.RoomMessage) (*proto.LedgerEvent, error) {
+	if msg.ReplyTo <= 0 || msg.Room == "" {
+		return nil, nil
 	}
-	events, err := room.ReadAllEvents(s.lc, 0)
+	events, err := s.lc.EventsFromAsc(nil, msg.ReplyTo-1, 1)
 	if err != nil {
-		return ""
+		return nil, fmt.Errorf("读取回复事件 %d: %w", msg.ReplyTo, err)
 	}
-	for _, candidate := range events {
-		if candidate.Seq == msg.ReplyTo && candidate.Type == room.RoomEventType {
-			return candidate.Actor
-		}
+	if len(events) == 0 || events[0].Seq != msg.ReplyTo || events[0].Type != room.RoomEventType || !room.SameRoom(events[0], msg.Room) {
+		return nil, nil
 	}
-	return ""
+	return &events[0], nil
+}
+
+// MessageReference 取回复引用摘要；旧消息不受 History 默认 200 条窗口限制。
+func (s *Service) MessageReference(msg proto.RoomMessage) (*proto.SessionCite, error) {
+	event, err := s.replyEventOf(msg)
+	if err != nil || event == nil {
+		return nil, err
+	}
+	var ref proto.RoomMessage
+	if err := room.UnmarshalMessage(event.Payload, &ref); err != nil {
+		return nil, fmt.Errorf("解码回复事件 %d: %w", event.Seq, err)
+	}
+	return &proto.SessionCite{Seq: event.Seq, Room: msg.Room, Actor: event.Actor, Body: ref.Body}, nil
+}
+
+// replyAuthorOf 找同会话被回复消息的作者；找不到返回空串。
+func (s *Service) replyAuthorOf(msg proto.RoomMessage) (string, error) {
+	event, err := s.replyEventOf(msg)
+	if err != nil || event == nil {
+		return "", err
+	}
+	return event.Actor, nil
 }
 
 // summarizeSession 组装会话列表/详情头部的会话摘要。
 func (s *Service) summarizeSession(session proto.Session, byCard map[string]proto.Card,
-	events []proto.LedgerEvent, needs map[string]bool) proto.SessionSummary {
+	latestMessage *client.RoomMessageSnapshot, needs map[string]bool) (proto.SessionSummary, error) {
+	members, err := s.sessionMembers(session, byCard)
+	if err != nil {
+		return proto.SessionSummary{}, err
+	}
 	summary := proto.SessionSummary{
 		ID: session.ID, Kind: proto.SessionKind, Title: session.Title,
 		Owner: session.Owner, Archived: session.Archived,
 		LastActivity: session.UpdatedAt,
-		Members:      s.sessionMembers(session, byCard),
+		Members:      members,
 		Cards:        sessionCards(session, byCard),
 	}
 	for _, cardID := range session.Cards {
@@ -191,26 +333,48 @@ func (s *Service) summarizeSession(session proto.Session, byCard map[string]prot
 			break
 		}
 	}
-	// 活动与预览：扫全流取该会话最新 room_message（升序遍历，后写覆盖）。
-	for _, ev := range events {
-		if ev.Type != room.RoomEventType || !room.SameRoom(ev, session.ID) {
-			continue
-		}
-		if ev.CreatedAt.After(summary.LastActivity) {
-			summary.LastActivity = ev.CreatedAt
+	if latestMessage != nil {
+		if latestMessage.LastActivity.After(summary.LastActivity) {
+			summary.LastActivity = latestMessage.LastActivity
 		}
 		var msg proto.RoomMessage
-		if err := room.UnmarshalMessage(ev.Payload, &msg); err != nil {
-			continue
-		}
-		if summary.Preview != nil && summary.Preview.Seq >= ev.Seq {
-			continue
-		}
-		summary.Preview = &proto.RoomPreview{
-			Body: truncateRoomPreview(msg.Body), Seq: ev.Seq, CreatedAt: ev.CreatedAt,
+		if err := room.UnmarshalMessage(latestMessage.Latest.Payload, &msg); err != nil {
+			log().Warn("会话摘要预览投影跳过：消息载荷无效", "session", session.ID,
+				"seq", latestMessage.Latest.Seq, "cause", err)
+		} else {
+			summary.Preview = &proto.RoomPreview{
+				Body: truncateRoomPreview(msg.Body), Seq: latestMessage.Latest.Seq, CreatedAt: latestMessage.Latest.CreatedAt,
+			}
 		}
 	}
-	return summary
+	return summary, nil
+}
+
+func (s *Service) sessionCardsByID(ctx context.Context, cardIDs []string) (map[string]proto.Card, error) {
+	byCard := make(map[string]proto.Card, len(cardIDs))
+	for _, cardID := range cardIDs {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		card, err := s.lc.GetCard(cardID)
+		if errors.Is(err, client.ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			log().Warn("会话详情组装失败：读成员卡", "card", cardID, "cause", err)
+			return nil, err
+		}
+		byCard[card.ID] = card
+	}
+	return byCard, nil
+}
+
+func latestNeedsByCard(events []proto.LedgerEvent) map[string]bool {
+	needs := make(map[string]bool, len(events))
+	for _, event := range events {
+		needs[event.CardID] = event.Type == "needs_human"
+	}
+	return needs
 }
 
 // sessionMembers 派生会话成员：显式成员（人/主 agent）+ 会话内各卡的当前席位。
@@ -219,7 +383,7 @@ func (s *Service) summarizeSession(session proto.Session, byCard map[string]prot
 //
 // 显式成员 kind 按统一记法前缀判定（B358.9 契约 §5 H 组条 39/40）：user:→human、
 // agent:→agent。历史脏行（旧 web:/cli: 脸）不崩：kind 按最保守的 human 兜底并留痕。
-func (s *Service) sessionMembers(session proto.Session, byCard map[string]proto.Card) []proto.SessionMember {
+func (s *Service) sessionMembers(session proto.Session, byCard map[string]proto.Card) ([]proto.SessionMember, error) {
 	members := make([]proto.SessionMember, 0, len(session.Members)+len(session.Cards))
 	for _, identity := range session.Members {
 		kind := proto.SessionMemberHuman
@@ -231,7 +395,11 @@ func (s *Service) sessionMembers(session proto.Session, byCard map[string]proto.
 		case parsedKind == proto.IdentityKindAgent:
 			kind = proto.SessionMemberAgent
 		}
-		status, lastActive := s.memberStatus(identity)
+		status, lastActive, err := s.memberStatus(identity)
+		if err != nil {
+			log().Warn("会话成员租约读取失败", "session", session.ID, "identity", identity, "cause", err)
+			return nil, fmt.Errorf("读取会话 %s 成员 %s 租约: %w", session.ID, identity, err)
+		}
 		members = append(members, proto.SessionMember{
 			Identity: identity, Kind: kind, Status: status, LastActive: lastActive,
 		})
@@ -248,24 +416,33 @@ func (s *Service) sessionMembers(session proto.Session, byCard map[string]proto.
 			member.Status = proto.SessionMemberEmpty
 		} else {
 			member.Identity = card.DriverSession
-			member.Status, member.LastActive = s.memberStatus(card.DriverSession)
+			status, lastActive, err := s.memberStatus(card.DriverSession)
+			if err != nil {
+				log().Warn("会话席位租约读取失败", "session", session.ID,
+					"card", cardID, "identity", card.DriverSession, "cause", err)
+				return nil, fmt.Errorf("读取会话 %s 卡 %s 席位租约: %w", session.ID, cardID, err)
+			}
+			member.Status, member.LastActive = status, lastActive
 		}
 		members = append(members, member)
 	}
-	return members
+	return members, nil
 }
 
 // memberStatus 判定成员状态：有未过期租约报 working（活跃租约视为可续租），
-// 否则按可证实性报 last_active。绝不报「在线」。
-func (s *Service) memberStatus(identity string) (string, time.Time) {
+// 缺租约或已过期时报 last_active；租约读取失败向摘要组装方返回错误，不能伪装离线。
+func (s *Service) memberStatus(identity string) (string, time.Time, error) {
 	expiresAt, exists, err := s.lc.DriverLease(identity)
-	if err != nil || !exists {
-		return proto.SessionMemberLastActive, time.Time{}
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	if !exists {
+		return proto.SessionMemberLastActive, time.Time{}, nil
 	}
 	if expiresAt.After(nowFn()) {
-		return proto.SessionMemberWorking, expiresAt
+		return proto.SessionMemberWorking, expiresAt, nil
 	}
-	return proto.SessionMemberLastActive, expiresAt
+	return proto.SessionMemberLastActive, expiresAt, nil
 }
 
 // sessionCards 投影会话里的工作项卡（空座卡 Seat 为空串）。

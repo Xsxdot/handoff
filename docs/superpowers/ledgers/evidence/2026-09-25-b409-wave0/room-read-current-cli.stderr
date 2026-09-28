@@ -1,0 +1,3 @@
+2026/09/25 00:55:10 INFO 房间历史账本查询开始 room_id=session:1 before_seq=0 limit=200
+2026/09/25 00:55:10 INFO 房间历史账本查询完成 room_id=session:1 before_seq=0 limit=200 rows_returned=200 payload_bytes=60951 pool_wait_ns=2959 sql_call_ns=1382667 row_read_ns=286416 db_read_ns=1674375 elapsed_ns=1692458
+2026/09/25 00:55:10 INFO 房间历史读取完成 room_id=session:1 before_seq=0 limit=200 rows_returned=200 payload_bytes=60951 ledger_call_ns=2007292

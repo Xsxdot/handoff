@@ -7,7 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"reflect"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -778,6 +780,516 @@ func TestCardWaitSubtreeSnapshotIncludesChildTicket(t *testing.T) {
 	}
 }
 
+func TestB409CardWaitSnapshotFiltersTicketsAndNeedsByMembers(t *testing.T) {
+	dir := t.TempDir()
+	rootID := createCardWaitFixture(t, dir)
+	childOut, _, err := runLedgerCLI(t, dir, "card", "split", rootID, "子卡")
+	if err != nil {
+		t.Fatalf("card split child: %v", err)
+	}
+	var child struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(childOut)), &child); err != nil || child.ID == "" {
+		t.Fatalf("解析子卡: err=%v output=%q", err, childOut)
+	}
+	otherID := createCardWaitFixture(t, dir)
+
+	st, err := ledger.Open(filepath.Join(dir, "ledger.db"))
+	if err != nil {
+		t.Fatalf("open ledger: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	appendMirror := func(cardID, target, taskID string, sourceSeq int64, taskType, payload string) {
+		t.Helper()
+		if _, err := st.AppendMirroredEvent(cardID, ledger.MirroredEvent{
+			Target: target, Task: taskID, SourceSeq: sourceSeq, Type: taskType,
+			Payload: []byte(payload), CreatedAt: time.Now(),
+		}); err != nil {
+			t.Fatalf("append %s/%s %s: %v", cardID, taskID, taskType, err)
+		}
+	}
+	appendMirror(rootID, "root-target", "root-live", 1, "question",
+		`{ "ticket_id": "root-open", "question": "keep raw payload" }`)
+	appendMirror(rootID, "shared-target", "shared-task-a", 1, "question", `{"ticket_id":"shared-ticket"}`)
+	appendMirror(rootID, "shared-target", "shared-task-b", 1, "question", `{"ticket_id":"shared-ticket"}`)
+	appendMirror(rootID, "other-shared-target", "shared-task-a", 1, "question", `{"ticket_id":"shared-ticket"}`)
+	appendMirror(rootID, "shared-target", "shared-task-b", 2, "ticket_answered", `{"ticket_id":"shared-ticket"}`)
+	appendMirror(rootID, "other-shared-target", "shared-task-a", 2, "ticket_answered", `{"ticket_id":"shared-ticket"}`)
+	appendMirror(rootID, "root-target", "root-answered", 1, "permission_request", `{"ticket_id":"root-answered"}`)
+	appendMirror(rootID, "root-target", "root-answered", 2, "ticket_answered", `{"ticket_id":"root-answered"}`)
+	appendMirror(rootID, "root-target", "root-voided", 1, "question", `{"ticket_id":"root-voided"}`)
+	appendMirror(rootID, "root-target", "root-voided", 2, "tickets_voided", `{}`)
+	appendMirror(rootID, "root-target", "root-completed", 1, "question", `{"ticket_id":"root-completed"}`)
+	appendMirror(rootID, "root-target", "root-completed", 2, "completed", `{}`)
+	appendMirror(rootID, "root-target", "root-failed", 1, "question", `{"ticket_id":"root-failed"}`)
+	appendMirror(rootID, "root-target", "root-failed", 2, "failed", `{}`)
+	appendMirror(rootID, "root-target", "root-archived", 1, "question", `{"ticket_id":"root-archived"}`)
+	appendMirror(rootID, "root-target", "root-archived", 2, "archived", `{}`)
+	appendMirror(child.ID, "child-target", "child-live", 1, "permission_request",
+		`{"ticket_id":"child-open","permission":"git push"}`)
+	appendMirror(otherID, "other-target", "other-live", 1, "question", `{"ticket_id":"other-open"}`)
+	for _, need := range []struct{ cardID, reason string }{
+		{rootID, "root needs"}, {child.ID, "child needs"}, {otherID, "other needs"},
+	} {
+		if err := st.MarkNeedsHuman(need.cardID, need.reason, "test"); err != nil {
+			t.Fatalf("MarkNeedsHuman %s: %v", need.cardID, err)
+		}
+	}
+	fromSeq, err := st.MaxSeq()
+	if err != nil {
+		t.Fatalf("MaxSeq: %v", err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("close fixture ledger: %v", err)
+	}
+
+	type expectedTicket struct {
+		cardID, target, taskID, ticketID, taskType string
+	}
+	type ticketIdentity struct {
+		cardID, target, taskID, ticketID string
+	}
+	identity := func(cardID, target, taskID, ticketID string) ticketIdentity {
+		return ticketIdentity{cardID: cardID, target: target, taskID: taskID, ticketID: ticketID}
+	}
+	for _, tc := range []struct {
+		name        string
+		args        []string
+		wantMember  []string
+		wantTickets []expectedTicket
+		wantNeeds   map[string]string
+	}{
+		{
+			name:       "root only",
+			wantMember: []string{rootID},
+			wantTickets: []expectedTicket{
+				{rootID, "root-target", "root-live", "root-open", "question"},
+				{rootID, "shared-target", "shared-task-a", "shared-ticket", "question"},
+			},
+			wantNeeds: map[string]string{rootID: "root needs"},
+		},
+		{
+			name:       "subtree excludes unrelated card",
+			args:       []string{"--subtree"},
+			wantMember: []string{rootID, child.ID},
+			wantTickets: []expectedTicket{
+				{rootID, "root-target", "root-live", "root-open", "question"},
+				{rootID, "shared-target", "shared-task-a", "shared-ticket", "question"},
+				{child.ID, "child-target", "child-live", "child-open", "permission_request"},
+			},
+			wantNeeds: map[string]string{rootID: "root needs", child.ID: "child needs"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			args := append([]string{"card", "wait", rootID}, tc.args...)
+			args = append(args, "--timeout", "30ms")
+			out, _, waitErr := runLedgerCLI(t, dir, args...)
+			var timeoutErr *exitCodeError
+			if !errors.As(waitErr, &timeoutErr) || timeoutErr.code != ExitTimeout {
+				t.Fatalf("等待未完成卡应超时且已输出快照，err=%v output=%q", waitErr, out)
+			}
+			snap := firstJSONLine(t, out)
+			wantKeys := map[string]bool{
+				"type": true, "card_id": true, "subtree": true, "from_seq": true,
+				"members": true, "actionable": true, "needs": true,
+			}
+			if len(snap) != len(wantKeys) {
+				t.Fatalf("card_snapshot 顶层键变化: %+v", snap)
+			}
+			for key := range wantKeys {
+				if _, ok := snap[key]; !ok {
+					t.Fatalf("card_snapshot 缺少 %q: %+v", key, snap)
+				}
+			}
+			if snap["type"] != cardSnapshotType || snap["card_id"] != rootID ||
+				snap["subtree"] != (len(tc.args) != 0) || snap["from_seq"] != float64(fromSeq) {
+				t.Fatalf("快照头字段或 from_seq 错误: %+v", snap)
+			}
+
+			memberRows, ok := snap["members"].([]any)
+			if !ok || memberRows == nil {
+				t.Fatalf("members 必须是数组: %+v", snap["members"])
+			}
+			gotMembers := make(map[string]bool, len(memberRows))
+			for _, member := range memberRows {
+				id, ok := member.(string)
+				if !ok {
+					t.Fatalf("member id 不是字符串: %#v", member)
+				}
+				gotMembers[id] = true
+			}
+			if len(gotMembers) != len(tc.wantMember) {
+				t.Fatalf("成员集合=%v want=%v", gotMembers, tc.wantMember)
+			}
+			for _, id := range tc.wantMember {
+				if !gotMembers[id] {
+					t.Fatalf("成员集合缺少 %s: %v", id, gotMembers)
+				}
+			}
+
+			actionable, ok := snap["actionable"].([]any)
+			if !ok || actionable == nil {
+				t.Fatalf("actionable 必须是数组: %+v", snap["actionable"])
+			}
+			gotTickets := make(map[ticketIdentity]map[string]any, len(actionable))
+			for _, raw := range actionable {
+				row, ok := raw.(map[string]any)
+				if !ok || len(row) != 6 {
+					t.Fatalf("actionable 行形状错误: %#v", raw)
+				}
+				for _, key := range []string{"card_id", "source_target", "source_task", "ticket_id", "task_type", "payload"} {
+					if _, ok := row[key]; !ok {
+						t.Fatalf("actionable 行缺少 %q: %+v", key, row)
+					}
+				}
+				cardID, _ := row["card_id"].(string)
+				target, _ := row["source_target"].(string)
+				taskID, _ := row["source_task"].(string)
+				ticketID, _ := row["ticket_id"].(string)
+				gotTickets[identity(cardID, target, taskID, ticketID)] = row
+			}
+			if len(gotTickets) != len(tc.wantTickets) {
+				t.Fatalf("未决工单身份集合=%v want=%v", gotTickets, tc.wantTickets)
+			}
+			for _, expected := range tc.wantTickets {
+				key := identity(expected.cardID, expected.target, expected.taskID, expected.ticketID)
+				row := gotTickets[key]
+				if row == nil {
+					t.Fatalf("快照缺少未决工单身份 %+v: %+v", key, gotTickets)
+				}
+				if row["task_type"] != expected.taskType {
+					t.Fatalf("工单身份 %+v task_type=%v want=%s", key, row["task_type"], expected.taskType)
+				}
+			}
+			rootRow := gotTickets[identity(rootID, "root-target", "root-live", "root-open")]
+			if rootRow["card_id"] != rootID || rootRow["source_target"] != "root-target" ||
+				rootRow["source_task"] != "root-live" || rootRow["task_type"] != "question" {
+				t.Fatalf("工单 source 身份或 task_type 有误: %+v", rootRow)
+			}
+			payload, ok := rootRow["payload"].(map[string]any)
+			if !ok || payload["ticket_id"] != "root-open" || payload["question"] != "keep raw payload" {
+				t.Fatalf("payload 应保留 JSON 对象内容，不能变成转义字符串: %#v", rootRow["payload"])
+			}
+
+			needRows, ok := snap["needs"].([]any)
+			if !ok || needRows == nil {
+				t.Fatalf("needs 必须是数组: %+v", snap["needs"])
+			}
+			gotNeeds := make(map[string]string, len(needRows))
+			for _, raw := range needRows {
+				row, ok := raw.(map[string]any)
+				if !ok || len(row) != 2 {
+					t.Fatalf("needs 行形状错误: %#v", raw)
+				}
+				cardID, _ := row["card_id"].(string)
+				reason, _ := row["reason"].(string)
+				gotNeeds[cardID] = reason
+			}
+			if len(gotNeeds) != len(tc.wantNeeds) {
+				t.Fatalf("needs 集合=%v want=%v", gotNeeds, tc.wantNeeds)
+			}
+			for id, reason := range tc.wantNeeds {
+				if gotNeeds[id] != reason {
+					t.Fatalf("needs[%s]=%q want=%q; all=%v", id, gotNeeds[id], reason, gotNeeds)
+				}
+			}
+		})
+	}
+}
+
+func TestB409CardWaitSnapshotReadFailureDoesNotEmitEmptySnapshot(t *testing.T) {
+	dir := t.TempDir()
+	cardID := createCardWaitFixture(t, dir)
+	st, err := ledger.Open(filepath.Join(dir, "ledger.db"))
+	if err != nil {
+		t.Fatalf("open ledger: %v", err)
+	}
+	if _, err := st.AppendMirroredEvent(cardID, ledger.MirroredEvent{
+		Target: "test-target", Task: "test-task", SourceSeq: 1, Type: "question",
+		Payload: []byte(`{"ticket_id":"ticket-1"}`), CreatedAt: time.Now(),
+	}); err != nil {
+		_ = st.Close()
+		t.Fatalf("append open ticket: %v", err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("close ledger: %v", err)
+	}
+
+	db, err := sql.Open("sqlite", filepath.Join(dir, "ledger.db")+"?_pragma=busy_timeout(5000)&_pragma=journal_mode=WAL&_pragma=foreign_keys(on)")
+	if err != nil {
+		t.Fatalf("open projection fixture SQL: %v", err)
+	}
+	if _, err := db.Exec(`UPDATE open_ticket_projection_state SET open_count = open_count + 1 WHERE id = 1`); err != nil {
+		_ = db.Close()
+		t.Fatalf("corrupt projection count: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close projection fixture SQL: %v", err)
+	}
+
+	out, _, waitErr := runLedgerCLI(t, dir, "card", "wait", cardID, "--timeout", "1s")
+	if waitErr == nil || !strings.Contains(waitErr.Error(), "未决工单投影行数不一致") {
+		t.Fatalf("损坏的快照读必须显式报错，err=%v output=%q", waitErr, out)
+	}
+	if strings.TrimSpace(out) != "" {
+		t.Fatalf("快照读失败不得输出伪成功的空快照: %q", out)
+	}
+}
+
+func TestB409CardWaitSnapshotPrecedesLiveEvent(t *testing.T) {
+	dir := t.TempDir()
+	cardID := createCardWaitFixture(t, dir)
+	writerErr := make(chan error, 1)
+	go func() {
+		time.Sleep(250 * time.Millisecond)
+		st, err := ledger.Open(filepath.Join(dir, "ledger.db"))
+		if err != nil {
+			writerErr <- err
+			return
+		}
+		defer st.Close()
+		writerErr <- st.MarkNeedsHuman(cardID, "live event after snapshot", "test")
+	}()
+
+	out, _, waitErr := runLedgerCLI(t, dir, "card", "wait", cardID, "--timeout", "5s")
+	if err := <-writerErr; err != nil {
+		t.Fatalf("append live card event: %v", err)
+	}
+	if waitErr != nil {
+		t.Fatalf("card wait should emit the live event and exit: %v; output=%q", waitErr, out)
+	}
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("want exactly snapshot then one live event, got %d lines: %q", len(lines), out)
+	}
+	var snapshot map[string]any
+	if err := json.Unmarshal([]byte(lines[0]), &snapshot); err != nil {
+		t.Fatalf("first line is not snapshot JSON: %v; line=%q", err, lines[0])
+	}
+	if snapshot["type"] != cardSnapshotType || snapshot["card_id"] != cardID {
+		t.Fatalf("first line must be the selected card snapshot: %+v", snapshot)
+	}
+	var event ledger.Event
+	if err := json.Unmarshal([]byte(lines[1]), &event); err != nil {
+		t.Fatalf("second line is not a live ledger event: %v; line=%q", err, lines[1])
+	}
+	if event.Type != ledger.EvNeedsHuman || event.CardID != cardID {
+		t.Fatalf("second line should be the live event for this card: %+v", event)
+	}
+}
+
+func TestB409CardWaitSnapshotBytesStayBoundedAcrossHistoryGrowth(t *testing.T) {
+	dir := t.TempDir()
+	rootID := createCardWaitFixture(t, dir)
+	memberIDs := []string{rootID}
+	for i := 0; i < 3; i++ {
+		out, _, err := runLedgerCLI(t, dir, "card", "split", rootID, fmt.Sprintf("增长矩阵子卡 %d", i+1))
+		if err != nil {
+			t.Fatalf("card split child %d: %v", i+1, err)
+		}
+		var child struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &child); err != nil || child.ID == "" {
+			t.Fatalf("解析子卡 %d: err=%v output=%q", i+1, err, out)
+		}
+		memberIDs = append(memberIDs, child.ID)
+	}
+
+	const growthTarget = "b409-cli-growth-target"
+	st, err := ledger.Open(filepath.Join(dir, "ledger.db"))
+	if err != nil {
+		t.Fatalf("open ledger: %v", err)
+	}
+	for cardIndex, cardID := range memberIDs {
+		for ticketIndex := 1; ticketIndex <= 25; ticketIndex++ {
+			if _, err := st.AppendMirroredEvent(cardID, ledger.MirroredEvent{
+				Target: growthTarget, Task: fmt.Sprintf("ticket-task-%d", cardIndex+1),
+				SourceSeq: int64(ticketIndex), Type: "question",
+				Payload:   []byte(fmt.Sprintf(`{"ticket_id":"%s-%02d"}`, cardID, ticketIndex)),
+				CreatedAt: time.Now(),
+			}); err != nil {
+				_ = st.Close()
+				t.Fatalf("seed fixed open ticket card=%s ticket=%d: %v", cardID, ticketIndex, err)
+			}
+		}
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("close ticket seed store: %v", err)
+	}
+
+	const baselineEvents = 21270
+	const baselineMirrors = 9337
+	const unrelatedEvents = 20000
+	const mirrorPayloadSize = 700
+	mirrorPrefix := `{"task_type":"message","payload":{"padding":"`
+	mirrorSuffix := `"}}`
+	mirrorPayload := mirrorPrefix + strings.Repeat("x", mirrorPayloadSize-len(mirrorPrefix)-len(mirrorSuffix)) + mirrorSuffix
+	if len(mirrorPayload) != mirrorPayloadSize {
+		t.Fatalf("growth mirror payload length=%d want=%d", len(mirrorPayload), mirrorPayloadSize)
+	}
+	statsDB, err := sql.Open("sqlite", filepath.Join(dir, "ledger.db")+"?_pragma=busy_timeout(5000)&_pragma=journal_mode=WAL&_pragma=foreign_keys(on)")
+	if err != nil {
+		t.Fatalf("open growth fixture SQL: %v", err)
+	}
+	t.Cleanup(func() { _ = statsDB.Close() })
+	currentEvents := countB409CardWaitEvents(t, statsDB)
+	noiseMirrors := baselineMirrors - 100
+	if currentEvents+int64(noiseMirrors) >= baselineEvents {
+		t.Fatalf("ticket/card setup too large for baseline: events=%d mirrors=%d", currentEvents, noiseMirrors)
+	}
+	insertB409CardWaitMirrors(t, statsDB, rootID, growthTarget, "unrelated-task", 1, noiseMirrors, mirrorPayload)
+	insertB409CardWaitNoise(t, statsDB, rootID, baselineEvents-currentEvents-int64(noiseMirrors))
+
+	stages := []struct {
+		name        string
+		wantEvents  int64
+		wantMirrors int64
+		addNoise    func()
+	}{
+		{name: "baseline", wantEvents: baselineEvents, wantMirrors: baselineMirrors},
+		{name: "plus-20000-unrelated-events", wantEvents: baselineEvents + unrelatedEvents,
+			wantMirrors: baselineMirrors,
+			addNoise:    func() { insertB409CardWaitNoise(t, statsDB, rootID, unrelatedEvents) }},
+		{name: "doubled-unrelated-mirrors", wantEvents: baselineEvents + unrelatedEvents + baselineMirrors,
+			wantMirrors: baselineMirrors * 2,
+			addNoise: func() {
+				insertB409CardWaitMirrors(t, statsDB, rootID, growthTarget, "unrelated-task",
+					int64(noiseMirrors+1), baselineMirrors, mirrorPayload)
+			}},
+	}
+	var baselineBytes int
+	var baselineMirrorBytes int64
+	var baselineTicketIDs []string
+	for _, stage := range stages {
+		if stage.addNoise != nil {
+			stage.addNoise()
+		}
+		eventCount, mirrorCount, mirrorBytes := countB409CardWaitEventsAndMirrors(t, statsDB)
+		if eventCount != stage.wantEvents || mirrorCount != stage.wantMirrors {
+			t.Fatalf("%s growth seed events=%d mirrors=%d want=%d/%d", stage.name,
+				eventCount, mirrorCount, stage.wantEvents, stage.wantMirrors)
+		}
+		if stage.name == "baseline" {
+			baselineMirrorBytes = mirrorBytes
+		} else if stage.name == "plus-20000-unrelated-events" && mirrorBytes != baselineMirrorBytes {
+			t.Fatalf("unrelated non-mirror events changed mirror payload bytes: got=%d baseline=%d", mirrorBytes, baselineMirrorBytes)
+		} else if stage.name == "doubled-unrelated-mirrors" && mirrorBytes < baselineMirrorBytes*2 {
+			t.Fatalf("third stage mirror payload bytes did not double: got=%d baseline=%d", mirrorBytes, baselineMirrorBytes)
+		}
+
+		// Warm the canonical projection before timing/output measurement for this stage.
+		_, _, warmErr := runLedgerCLI(t, dir, "card", "wait", rootID, "--subtree", "--timeout", "20ms")
+		var timeoutErr *exitCodeError
+		if !errors.As(warmErr, &timeoutErr) || timeoutErr.code != ExitTimeout {
+			t.Fatalf("%s projection warmup should emit snapshot then timeout, err=%v", stage.name, warmErr)
+		}
+		out, _, waitErr := runLedgerCLI(t, dir, "card", "wait", rootID, "--subtree", "--timeout", "20ms")
+		if !errors.As(waitErr, &timeoutErr) || timeoutErr.code != ExitTimeout {
+			t.Fatalf("%s measured card wait should emit snapshot then timeout, err=%v", stage.name, waitErr)
+		}
+		line, _, _ := strings.Cut(strings.TrimSpace(out), "\n")
+		if line == "" || strings.Contains(strings.TrimSpace(out), "\n") {
+			t.Fatalf("%s card wait should return one snapshot line: %q", stage.name, out)
+		}
+		snap := firstJSONLine(t, out)
+		actionable, ok := snap["actionable"].([]any)
+		if !ok || len(actionable) != 100 {
+			t.Fatalf("%s snapshot should retain the same 100 open tickets, got=%#v", stage.name, snap["actionable"])
+		}
+		ticketIDs := make([]string, 0, len(actionable))
+		for _, raw := range actionable {
+			row, ok := raw.(map[string]any)
+			if !ok {
+				t.Fatalf("%s actionable row is not an object: %#v", stage.name, raw)
+			}
+			ticketID, _ := row["ticket_id"].(string)
+			ticketIDs = append(ticketIDs, ticketID)
+		}
+		sort.Strings(ticketIDs)
+		if stage.name == "baseline" {
+			baselineBytes = len(line)
+			baselineTicketIDs = ticketIDs
+		} else if len(line) != baselineBytes || !reflect.DeepEqual(ticketIDs, baselineTicketIDs) {
+			t.Fatalf("%s card wait output grew or business result changed: bytes=%d baseline=%d tickets_equal=%v",
+				stage.name, len(line), baselineBytes, reflect.DeepEqual(ticketIDs, baselineTicketIDs))
+		}
+		t.Logf("stage=%s events=%d mirrors=%d mirror_payload_bytes=%d card_wait_snapshot_bytes=%d tickets=%d",
+			stage.name, eventCount, mirrorCount, mirrorBytes, len(line), len(actionable))
+	}
+}
+
+func insertB409CardWaitMirrors(t *testing.T, db *sql.DB, cardID, target, taskID string, firstSourceSeq int64, count int, payload string) {
+	t.Helper()
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatalf("begin mirror growth insert: %v", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	stmt, err := tx.Prepare(`INSERT INTO card_events
+		(card_id, type, actor, payload, source_target, source_task, source_seq, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+	if err != nil {
+		t.Fatalf("prepare mirror growth insert: %v", err)
+	}
+	defer stmt.Close()
+	for i := 0; i < count; i++ {
+		if _, err := stmt.Exec(cardID, ledger.EvTaskMirrored, "growth-test", payload,
+			target, taskID, firstSourceSeq+int64(i), time.Now()); err != nil {
+			t.Fatalf("insert mirror growth row %d: %v", i, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit mirror growth insert: %v", err)
+	}
+}
+
+func insertB409CardWaitNoise(t *testing.T, db *sql.DB, cardID string, count int64) {
+	t.Helper()
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatalf("begin unrelated event insert: %v", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	stmt, err := tx.Prepare(`INSERT INTO card_events (card_id, type, actor, payload, created_at)
+		VALUES (?, ?, ?, ?, ?)`)
+	if err != nil {
+		t.Fatalf("prepare unrelated event insert: %v", err)
+	}
+	defer stmt.Close()
+	for i := int64(0); i < count; i++ {
+		if _, err := stmt.Exec(cardID, "growth_noise", "growth-test", `{}`, time.Now()); err != nil {
+			t.Fatalf("insert unrelated event %d: %v", i, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit unrelated event insert: %v", err)
+	}
+}
+
+func countB409CardWaitEvents(t *testing.T, db *sql.DB) int64 {
+	t.Helper()
+	var count int64
+	if err := db.QueryRow(`SELECT COUNT(*) FROM card_events`).Scan(&count); err != nil {
+		t.Fatalf("count ledger events: %v", err)
+	}
+	return count
+}
+
+func countB409CardWaitEventsAndMirrors(t *testing.T, db *sql.DB) (int64, int64, int64) {
+	t.Helper()
+	var events, mirrors, mirrorPayloadBytes int64
+	if err := db.QueryRow(`SELECT COUNT(*),
+		SUM(CASE WHEN type = ? THEN 1 ELSE 0 END),
+		COALESCE(SUM(CASE WHEN type = ? THEN length(payload) ELSE 0 END), 0)
+		FROM card_events`, ledger.EvTaskMirrored, ledger.EvTaskMirrored).
+		Scan(&events, &mirrors, &mirrorPayloadBytes); err != nil {
+		t.Fatalf("count ledger and mirror events: %v", err)
+	}
+	return events, mirrors, mirrorPayloadBytes
+}
+
 func TestCardWaitSnapshotEmittedWhenNothingOwed(t *testing.T) {
 	dir := t.TempDir()
 	out, _, _ := runLedgerCLI(t, dir, "card", "add", "空欠单", "--project", "demo", "--workflow", "bug")
@@ -796,6 +1308,10 @@ func TestCardWaitSnapshotEmittedWhenNothingOwed(t *testing.T) {
 	actionable, _ := snap["actionable"].([]any)
 	if len(actionable) != 0 {
 		t.Fatalf("无欠单时 actionable 应为空数组: %+v", snap)
+	}
+	needs, ok := snap["needs"].([]any)
+	if !ok || needs == nil || len(needs) != 0 {
+		t.Fatalf("无等人标记时 needs 也应为空数组而非 null/缺键: %+v", snap)
 	}
 }
 

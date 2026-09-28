@@ -1,0 +1,1 @@
+{"time":"2026-09-26T22:49:19.644287+08:00","level":"WARN","msg":"列卡失败","component":"agentd","error_class":"sql_error","cause":"列卡: FATAL: terminating connection due to administrator command (SQLSTATE 57P01)"}

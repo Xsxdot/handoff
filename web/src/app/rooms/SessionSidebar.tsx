@@ -63,7 +63,7 @@ export function SessionSidebar({ sessions, loading, errorText, needsOnly, onTogg
       </div>
       {errorText !== '' && <p role="alert" className="shrink-0 border-b bg-amber-50 px-3 py-1.5 text-xs text-amber-800">会话列表已断开：{errorText}</p>}
       <div className="min-h-0 flex-1 overflow-y-auto p-1">
-        {!loading && visible.length === 0 ? (
+        {!loading && errorText === '' && visible.length === 0 ? (
           <p className="p-2 text-sm text-muted-foreground">（暂无会话）</p>
         ) : visible.map((session) => (
           <button key={session.id} type="button" data-testid="session-row" aria-label={`会话 ${session.title}`}

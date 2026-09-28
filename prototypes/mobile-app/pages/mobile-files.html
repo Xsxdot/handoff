@@ -1,0 +1,97 @@
+<!doctype html>
+<!--
+  移动端原型屏 6:目录浏览(项目 → 工作树 → 浏览文件)。
+  数据来自 agentd 存量文件树接口;远程位置经 relay 取,断线位置整页不可用(CONTEXT.md)。
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>浏览文件 · 移动端原型</title>
+<link rel="stylesheet" href="../shared/styles.css">
+<style>
+  body { background: #e9e9ec; }
+  .stage { max-width: 1120px; margin: 0 auto; padding: 20px 24px 64px; }
+  .mnav { display: flex; gap: 8px; align-items: center; margin-bottom: 18px; font-size: 13px; flex-wrap: wrap; }
+  .mnav a { padding: 4px 12px; border: 1px solid var(--border); border-radius: 999px; background: #fff; text-decoration: none; color: var(--foreground); }
+  .mnav a.active { background: var(--primary); color: var(--primary-foreground); border-color: var(--primary); }
+  .mnav .sep { color: var(--muted-foreground); }
+  .row { display: flex; gap: 28px; align-items: flex-start; }
+
+  .phone { width: 390px; flex-shrink: 0; background: #111; border-radius: 44px; padding: 10px; box-shadow: 0 18px 50px rgba(0,0,0,.28); }
+  .screen { background: #fff; border-radius: 34px; overflow: hidden; height: 800px; display: flex; flex-direction: column; }
+  .notch { height: 30px; display: flex; align-items: center; justify-content: center; }
+  .notch::after { content: ""; width: 110px; height: 22px; background: #111; border-radius: 999px; }
+
+  .scenehead { display: flex; align-items: center; gap: 10px; padding: 4px 14px 10px; border-bottom: 1px solid var(--border); }
+  .scenehead .back { font-size: 20px; color: var(--foreground); text-decoration: none; }
+  .scenehead .tt { flex: 1; min-width: 0; }
+  .scenehead .tt .a { font-size: 14px; font-weight: 600; }
+  .scenehead .tt .b { font-size: 11px; color: var(--muted-foreground); font-family: var(--font-mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  .search { margin: 10px 14px; border: 1px solid var(--border); border-radius: 10px; padding: 8px 12px; font-size: 13px; color: var(--muted-foreground); background: var(--muted); }
+
+  .feed { flex: 1; overflow-y: auto; }
+  .fi { display: flex; align-items: center; gap: 10px; padding: 11px 16px; border-bottom: 1px solid var(--muted); text-decoration: none; color: inherit; font-size: 13.5px; }
+  .fi .ic { width: 22px; text-align: center; }
+  .fi .nm { flex: 1; font-family: var(--font-mono); font-size: 13px; }
+  .fi .sz { font-size: 11px; color: var(--muted-foreground); }
+  .fi.dir .nm { font-weight: 600; }
+
+  .notes { flex: 1; min-width: 0; }
+  .notes h2 { font-size: 16px; margin: 4px 0 4px; }
+  .notes .sub { font-size: 12.5px; color: var(--muted-foreground); margin: 0 0 14px; }
+  .note { display: flex; gap: 10px; background: #fff; border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; margin-bottom: 8px; font-size: 12.5px; line-height: 1.7; }
+  .note .no { width: 20px; height: 20px; flex-shrink: 0; border-radius: 50%; background: var(--primary); color: var(--primary-foreground); font-size: 11px; display: flex; align-items: center; justify-content: center; margin-top: 1px; }
+  .ref { display: inline-block; width: 16px; height: 16px; border-radius: 50%; background: var(--primary); color: var(--primary-foreground); font-size: 10px; text-align: center; line-height: 16px; vertical-align: 2px; }
+</style>
+</head>
+<body>
+<div class="stage">
+  <div class="mnav">
+    <a href="../index.html">← 工作台</a><span class="sep">|</span>
+    <span style="color:var(--muted-foreground)">移动端原型:</span>
+    <a href="mobile-architecture.html">方案一图流</a>
+    <a href="mobile-home.html">会话</a>
+    <a href="mobile-cards.html">卡</a>
+    <a href="mobile-projects.html" class="active">项目</a>
+    <a href="mobile-pairing.html">设置</a>
+  </div>
+  <div class="row">
+
+    <div class="phone">
+      <div class="screen">
+        <div class="notch"></div>
+        <div class="scenehead">
+          <a class="back" href="mobile-project.html">‹</a>
+          <div class="tt">
+            <div class="a">handoff · main · 本机<span class="ref">②</span></div>
+            <div class="b">/Users/xushixin/workspace/handoff</div>
+          </div>
+        </div>
+        <div class="search">🔍 在这个目录里找…<span class="ref">①</span></div>
+        <div class="feed">
+          <a class="fi dir" href="mobile-files.html"><span class="ic">📁</span><span class="nm">cmd/</span><span class="sz">120+ 文件</span></a>
+          <a class="fi dir" href="mobile-files.html"><span class="ic">📁</span><span class="nm">internal/</span><span class="sz">45 包</span></a>
+          <a class="fi dir" href="mobile-files.html"><span class="ic">📁</span><span class="nm">web/</span></a>
+          <a class="fi dir" href="mobile-files.html"><span class="ic">📁</span><span class="nm">docs/</span></a>
+          <a class="fi dir" href="mobile-files.html"><span class="ic">📁</span><span class="nm">prototypes/</span></a>
+          <a class="fi" href="mobile-file.html"><span class="ic">📄</span><span class="nm">README.md</span><span class="sz">28 KB<span class="ref">③</span></span></a>
+          <a class="fi" href="mobile-file.html"><span class="ic">📄</span><span class="nm">CONTEXT.md</span><span class="sz">6 KB</span></a>
+          <a class="fi" href="mobile-file.html"><span class="ic">📄</span><span class="nm">go.mod</span><span class="sz">2 KB</span></a>
+          <a class="fi" href="mobile-file.html"><span class="ic">📄</span><span class="nm">CHANGELOG.md</span><span class="sz">11 KB</span></a>
+        </div>
+      </div>
+    </div>
+
+    <div class="notes">
+      <h2>目录浏览:文件随项目位置走</h2>
+      <p class="sub">从「项目 → 工作树 → 浏览文件」进来;目录切到 linux-01 位置,同页数据经 relay 取。</p>
+      <div class="note"><div class="no">①</div><div><b>文件树与文件内容都是 agentd 存量接口</b>(桌面端右栏文件树同源),移动端只排小屏版式。</div></div>
+      <div class="note"><div class="no">②</div><div><b>远程位置不可用 = 整页不可用。</b>按 CONTEXT.md:断线的位置不展示缓存快照,标记状态等重连——手机上不发明「上次看到的旧文件」。</div></div>
+      <div class="note"><div class="no">③</div><div><b>编辑不做,查看做足。</b>沿用 08-11 形态评估:编辑器不适合小屏;文件页是只读查看器(语法着色、搜索),改代码去终端里改。</div></div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

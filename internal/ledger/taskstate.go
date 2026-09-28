@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sort"
 )
 
 // TaskStateRow 挂账 task 的实况摘要。LastType 空 = 尚无镜像事件（未知）。
@@ -140,93 +139,6 @@ type OpenTicket struct {
 	TicketID string
 	TaskType string
 	Payload  json.RawMessage
-}
-
-// OpenTickets 全账本未决工单明细：与 OpenTicketCounts 同一把尺，单遍扫描
-// 镜像事件按 ticket_id 回放 创建→答复/作废。
-func (s *Store) OpenTickets() ([]OpenTicket, error) {
-	rows, err := s.db.Query(s.q(`SELECT card_id, source_target, source_task, payload
-		FROM card_events WHERE type = ? AND source_target IS NOT NULL ORDER BY seq ASC`), EvTaskMirrored)
-	if err != nil {
-		return nil, fmt.Errorf("读镜像工单事件: %w", err)
-	}
-	defer rows.Close()
-
-	open := make(map[openTicketKey]OpenTicket)
-	for rows.Next() {
-		var cardID, target, taskID, raw string
-		if err := rows.Scan(&cardID, &target, &taskID, &raw); err != nil {
-			return nil, fmt.Errorf("扫镜像工单事件: %w", err)
-		}
-		var event mirroredTaskPayload
-		if err := json.Unmarshal([]byte(raw), &event); err != nil {
-			return nil, fmt.Errorf("解码镜像工单事件: %w", err)
-		}
-		keyOf := func(ticketID string) openTicketKey {
-			return openTicketKey{cardID: cardID, target: target, taskID: taskID, ticketID: ticketID}
-		}
-		switch event.TaskType {
-		case evTicketCreated, evTicketQuestion:
-			var ticket ticketPayload
-			if err := json.Unmarshal(event.Payload, &ticket); err != nil {
-				return nil, fmt.Errorf("解码镜像工单 payload: %w", err)
-			}
-			if ticket.TicketID != "" {
-				open[keyOf(ticket.TicketID)] = OpenTicket{
-					CardID: cardID, Target: target, TaskID: taskID,
-					TicketID: ticket.TicketID, TaskType: event.TaskType, Payload: event.Payload,
-				}
-			}
-		case evTicketAnswered:
-			var ticket ticketPayload
-			if err := json.Unmarshal(event.Payload, &ticket); err != nil {
-				return nil, fmt.Errorf("解码镜像答复 payload: %w", err)
-			}
-			if ticket.TicketID != "" {
-				delete(open, keyOf(ticket.TicketID))
-			}
-		case evTicketsVoided, "completed", "failed", "archived":
-			// tickets_voided：任务终结时作废其剩余挂起单。
-			//
-			// completed/failed/archived 是终态镜像关单（B380 C-2）：任务一旦进
-			// 终态，名下不可能再有合法未决工单。这既让存量幽灵单随重放自愈，
-			// 也为未来任何漏发关单事件的路径兜底。注意 completed 在订阅视角
-			// 仍算在飞（mirrorTaskTerminal 只收 archived/failed），两者语义不同、
-			// 不得合并。
-			for key := range open {
-				if key.cardID == cardID && key.target == target && key.taskID == taskID {
-					delete(open, key)
-				}
-			}
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("读镜像工单事件: %w", err)
-	}
-	out := make([]OpenTicket, 0, len(open))
-	for _, ticket := range open {
-		out = append(out, ticket)
-	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].CardID != out[j].CardID {
-			return out[i].CardID < out[j].CardID
-		}
-		return out[i].TicketID < out[j].TicketID
-	})
-	return out, nil
-}
-
-// OpenTicketCounts 每张卡的未决工单数：OpenTickets 的计数投影。
-func (s *Store) OpenTicketCounts() (map[string]int, error) {
-	tickets, err := s.OpenTickets()
-	if err != nil {
-		return nil, err
-	}
-	counts := make(map[string]int)
-	for _, ticket := range tickets {
-		counts[ticket.CardID]++
-	}
-	return counts, nil
 }
 
 // CardStepInFlight 报告卡是否存在仍在运行的环节。

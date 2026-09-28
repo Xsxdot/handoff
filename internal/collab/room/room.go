@@ -12,6 +12,7 @@
 package room
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"strings"
@@ -188,10 +189,15 @@ const ConsumedEventType = "message_consumed"
 // 不预先优化、不加类型过滤参数——Pending/Mentions/ListRooms/Unread 的全流
 // 扫描都走这里。
 func ReadAllEvents(lc client.LedgerClient, fromSeq int64) ([]proto.LedgerEvent, error) {
+	return ReadAllEventsContext(context.Background(), lc, fromSeq)
+}
+
+// ReadAllEventsContext 把请求取消信号带过分页边界，避免客户端超时后仍全流扫描。
+func ReadAllEventsContext(ctx context.Context, lc client.LedgerClient, fromSeq int64) ([]proto.LedgerEvent, error) {
 	var out []proto.LedgerEvent
 	seq := fromSeq
 	for {
-		page, err := lc.EventsFromAsc([]string{}, seq, 1000)
+		page, err := lc.EventsFromAscContext(ctx, []string{}, seq, 1000)
 		if err != nil {
 			return nil, err
 		}

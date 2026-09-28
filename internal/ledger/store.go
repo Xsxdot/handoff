@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"fmt"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -79,24 +80,24 @@ func Open(dsn string) (*Store, error) {
 	if s.dialect == dialectSQLite {
 		dialectName = "sqlite"
 	}
-	log().Info("账本库已打开", "dialect", dialectName, "target", redactDSN(dsn, s.dialect))
+	log().Info("账本库已打开", "dialect", dialectName, "database", databaseLabel(dsn, s.dialect))
 	return s, nil
 }
 
-// redactDSN 保留 Open 日志需要的目标定位信息，同时不把 PG URL 中的密码
-// 写进日志；SQLite 路径没有凭据，原样保留。
-func redactDSN(dsn string, d dialect) string {
+// databaseLabel 只保留本地数据库名，不让连接串、主机或凭据进入日志。
+func databaseLabel(dsn string, d dialect) string {
 	if d != dialectPG {
-		return dsn
+		return filepath.Base(dsn)
 	}
 	u, err := url.Parse(dsn)
 	if err != nil {
-		return "<postgres dsn>"
+		return "<postgres>"
 	}
-	if u.User != nil {
-		u.User = url.User(u.User.Username())
+	database := strings.TrimPrefix(u.Path, "/")
+	if database == "" {
+		return "<postgres>"
 	}
-	return u.String()
+	return database
 }
 
 // Close 关闭底层连接。
@@ -240,6 +241,54 @@ func ddlStatements(pg bool) []string {
 				ON card_events(source_target, source_task, source_seq)
 				WHERE source_target IS NOT NULL`,
 			`CREATE INDEX IF NOT EXISTS idx_events_card ON card_events(card_id, seq)`,
+			`CREATE INDEX IF NOT EXISTS idx_events_mirrored_seq ON card_events(seq)
+				WHERE type = 'task_mirrored'`,
+			`CREATE TABLE IF NOT EXISTS open_ticket_projection (
+				card_id TEXT NOT NULL, source_target TEXT NOT NULL, source_task TEXT NOT NULL,
+				ticket_id TEXT NOT NULL, task_type TEXT NOT NULL, payload JSONB NOT NULL,
+				PRIMARY KEY (card_id, source_target, source_task, ticket_id))`,
+			`CREATE TABLE IF NOT EXISTS open_ticket_projection_state (
+				id INT PRIMARY KEY CHECK (id = 1), version INT NOT NULL,
+				ledger_seq BIGINT NOT NULL, open_count BIGINT NOT NULL)`,
+			// Partial expression index makes the contract's card_id-is-null payload room path bounded.
+			`CREATE INDEX IF NOT EXISTS idx_room_messages_room_seq
+				ON card_events((payload->>'room'), seq DESC)
+				WHERE type = 'room_message' AND card_id IS NULL`,
+			`CREATE INDEX IF NOT EXISTS idx_room_messages_card_seq
+				ON card_events(card_id, seq DESC)
+				WHERE type = 'room_message' AND card_id IS NOT NULL`,
+			// B409 U5 有界候选读：@ 寻址与消费链的地址键读面。四条全部局部
+			// 索引（room_message/message_consumed 行），镜像与结构事件不进扫描域。
+			`CREATE INDEX IF NOT EXISTS idx_room_messages_seq
+				ON card_events(seq)
+				WHERE type = 'room_message'`,
+			// 会话候选读的主扫描域：无卡（群级/会话级）房间消息的 seq 范围。
+			// 比 idx_events_card 的 card_id IS NULL 段更紧——镜像/结构等无卡
+			// 事件被索引谓词排除在扫描域外（EQP 证据断言）。
+			`CREATE INDEX IF NOT EXISTS idx_room_messages_cardless_seq
+				ON card_events(seq)
+				WHERE type = 'room_message' AND card_id IS NULL`,
+			`CREATE INDEX IF NOT EXISTS idx_room_messages_actor_seq
+				ON card_events(actor, seq)
+				WHERE type = 'room_message'`,
+			`CREATE INDEX IF NOT EXISTS idx_room_reply_to_seq
+				ON card_events(((payload->>'reply_to')::bigint), seq)
+				WHERE type = 'room_message'`,
+			`CREATE INDEX IF NOT EXISTS idx_consumed_actor_seq
+				ON card_events(actor, seq)
+				WHERE type = 'message_consumed'`,
+			`CREATE INDEX IF NOT EXISTS idx_session_projection_card_seq
+				ON card_events(card_id, seq DESC)
+				WHERE type IN ('task_mirrored','needs_human','needs_cleared','driver_takeover','driver_seat_bound','status_moved')`,
+			`CREATE INDEX IF NOT EXISTS idx_needs_events_card_seq
+				ON card_events(card_id, seq DESC)
+				WHERE type IN ('needs_human','needs_cleared')`,
+			`CREATE INDEX IF NOT EXISTS idx_session_created_id_seq
+				ON card_events((payload->>'id'), seq)
+				WHERE card_id IS NULL AND type = 'session_created'`,
+			`CREATE INDEX IF NOT EXISTS idx_session_structure_session_seq
+				ON card_events((payload->>'session'), seq)
+				WHERE card_id IS NULL AND type IN ('session_archived','session_card_joined','session_card_left')`,
 			`CREATE TABLE IF NOT EXISTS workflows (
 				name TEXT NOT NULL, version INT NOT NULL, definition JSONB NOT NULL,
 				created_at TIMESTAMPTZ NOT NULL, PRIMARY KEY (name, version))`,
@@ -261,6 +310,9 @@ func ddlStatements(pg bool) []string {
 				holder TEXT NOT NULL, lease_until TIMESTAMPTZ NOT NULL)`,
 			`CREATE TABLE IF NOT EXISTS mirror_cursors (
 				target TEXT PRIMARY KEY, last_seq BIGINT NOT NULL,
+				updated_at TIMESTAMPTZ NOT NULL)`,
+			`CREATE TABLE IF NOT EXISTS session_delivery_cursors (
+				member TEXT PRIMARY KEY, last_seq BIGINT NOT NULL,
 				updated_at TIMESTAMPTZ NOT NULL)`,
 			`CREATE TABLE IF NOT EXISTS card_run_locks (
 				card_id TEXT PRIMARY KEY REFERENCES cards(id),
@@ -360,6 +412,53 @@ func ddlStatements(pg bool) []string {
 			`CREATE UNIQUE INDEX IF NOT EXISTS uq_events_mirror
 				ON card_events(source_target, source_task, source_seq)`,
 			`CREATE INDEX IF NOT EXISTS idx_events_card ON card_events(card_id, seq)`,
+			`CREATE INDEX IF NOT EXISTS idx_events_mirrored_seq ON card_events(seq)
+				WHERE type = 'task_mirrored'`,
+			`CREATE TABLE IF NOT EXISTS open_ticket_projection (
+				card_id TEXT NOT NULL, source_target TEXT NOT NULL, source_task TEXT NOT NULL,
+				ticket_id TEXT NOT NULL, task_type TEXT NOT NULL, payload TEXT NOT NULL,
+				PRIMARY KEY (card_id, source_target, source_task, ticket_id))`,
+			`CREATE TABLE IF NOT EXISTS open_ticket_projection_state (
+				id INTEGER PRIMARY KEY CHECK (id = 1), version INTEGER NOT NULL,
+				ledger_seq INTEGER NOT NULL, open_count INTEGER NOT NULL)`,
+			// SQLite mirrors the PG expression index; both are rebuildable from canonical card_events.
+			`CREATE INDEX IF NOT EXISTS idx_room_messages_room_seq
+				ON card_events(json_extract(payload, '$.room'), seq DESC)
+				WHERE type = 'room_message' AND card_id IS NULL`,
+			`CREATE INDEX IF NOT EXISTS idx_room_messages_card_seq
+				ON card_events(card_id, seq DESC)
+				WHERE type = 'room_message' AND card_id IS NOT NULL`,
+			// B409 U5 有界候选读：与 PG 分支同名同谓词的局部索引；SQLite 无
+			// GIN/表达式蕴含，mentions 成员判定按 seq 范围 + 逐行 json_each 过滤
+			// （执行计划由 session_candidates_perf_test 断言不出现全表 SCAN）。
+			`CREATE INDEX IF NOT EXISTS idx_room_messages_seq
+				ON card_events(seq)
+				WHERE type = 'room_message'`,
+			// 会话候选读的主扫描域：与 PG 分支同名同谓词的更紧局部索引。
+			`CREATE INDEX IF NOT EXISTS idx_room_messages_cardless_seq
+				ON card_events(seq)
+				WHERE type = 'room_message' AND card_id IS NULL`,
+			`CREATE INDEX IF NOT EXISTS idx_room_messages_actor_seq
+				ON card_events(actor, seq)
+				WHERE type = 'room_message'`,
+			`CREATE INDEX IF NOT EXISTS idx_room_reply_to_seq
+				ON card_events(json_extract(payload, '$.reply_to'), seq)
+				WHERE type = 'room_message'`,
+			`CREATE INDEX IF NOT EXISTS idx_consumed_actor_seq
+				ON card_events(actor, seq)
+				WHERE type = 'message_consumed'`,
+			`CREATE INDEX IF NOT EXISTS idx_session_projection_card_seq
+				ON card_events(card_id, seq DESC)
+				WHERE type IN ('task_mirrored','needs_human','needs_cleared','driver_takeover','driver_seat_bound','status_moved')`,
+			`CREATE INDEX IF NOT EXISTS idx_needs_events_card_seq
+				ON card_events(card_id, seq DESC)
+				WHERE type IN ('needs_human','needs_cleared')`,
+			`CREATE INDEX IF NOT EXISTS idx_session_created_id_seq
+				ON card_events(json_extract(payload, '$.id'), seq)
+				WHERE card_id IS NULL AND type = 'session_created'`,
+			`CREATE INDEX IF NOT EXISTS idx_session_structure_session_seq
+				ON card_events(json_extract(payload, '$.session'), seq)
+				WHERE card_id IS NULL AND type IN ('session_archived','session_card_joined','session_card_left')`,
 			`CREATE TABLE IF NOT EXISTS workflows (
 				name TEXT NOT NULL, version INTEGER NOT NULL, definition TEXT NOT NULL,
 				created_at TEXT NOT NULL, PRIMARY KEY (name, version))`,
@@ -381,6 +480,9 @@ func ddlStatements(pg bool) []string {
 				holder TEXT NOT NULL, lease_until TEXT NOT NULL)`,
 			`CREATE TABLE IF NOT EXISTS mirror_cursors (
 				target TEXT PRIMARY KEY, last_seq INTEGER NOT NULL,
+				updated_at TEXT NOT NULL)`,
+			`CREATE TABLE IF NOT EXISTS session_delivery_cursors (
+				member TEXT PRIMARY KEY, last_seq INTEGER NOT NULL,
 				updated_at TEXT NOT NULL)`,
 			`CREATE TABLE IF NOT EXISTS card_run_locks (
 				card_id TEXT PRIMARY KEY REFERENCES cards(id),
@@ -480,6 +582,9 @@ func (s *Store) ensureSchema() error {
 		log().Info("cards.driver_source 列已存在，跳过加列")
 	} else {
 		log().Info("账本加列迁移完成", "table", "cards", "column", "driver_source")
+	}
+	if err := s.ensureOpenTicketProjection(); err != nil {
+		return fmt.Errorf("初始化未决工单投影: %w", err)
 	}
 	return nil
 }

@@ -4,10 +4,13 @@
 package ledger
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/Xsxdot/handoff/internal/diag"
 )
 
 // MirroredEvent 一条待镜像的 task 事件（来源三元组 + 原始负载）。
@@ -37,6 +40,11 @@ type MirrorHealthRow struct {
 func (s *Store) AppendMirroredEvent(cardID string, ev MirroredEvent) (bool, error) {
 	log().Debug("镜像事件写入入口", "card", cardID, "target", ev.Target, "task", ev.Task,
 		"node", ev.Node, "attempt", ev.Attempt, "seq", ev.SourceSeq, "type", ev.Type)
+	if err := s.ensureOpenTicketProjection(); err != nil {
+		log().Error("镜像事件写入前投影校验失败", "card", cardID, "target", ev.Target,
+			"task", ev.Task, "source_seq", ev.SourceSeq, "type", ev.Type, "cause", err)
+		return false, fmt.Errorf("校验镜像工单投影: %w", err)
+	}
 	inserted := false
 	err := s.mutate(func(tx *sql.Tx, sink *eventSink) error {
 		var one int
@@ -86,6 +94,16 @@ func (s *Store) AppendMirroredEvent(cardID string, ev MirroredEvent) (bool, erro
 			log().Warn("镜像事件写入失败", "card", cardID, "target", ev.Target, "task", ev.Task,
 				"node", ev.Node, "attempt", ev.Attempt, "seq", ev.SourceSeq, "type", ev.Type, "cause", err)
 			return fmt.Errorf("写镜像事件 %s/%s#%d: %w", ev.Target, ev.Task, ev.SourceSeq, err)
+		}
+		projectionEvent := ev
+		if len(projectionEvent.Payload) == 0 {
+			// The canonical envelope stores an empty caller payload as JSON null.
+			projectionEvent.Payload = []byte("null")
+		}
+		if err := s.applyOpenTicketMirrorTx(tx, cardID, projectionEvent, seq); err != nil {
+			log().Error("镜像事件工单投影更新失败", "card", cardID, "target", ev.Target,
+				"task", ev.Task, "source_seq", ev.SourceSeq, "ledger_seq", seq, "task_type", ev.Type, "cause", err)
+			return fmt.Errorf("同步镜像工单投影: %w", err)
 		}
 		sink.seqs = append(sink.seqs, seq)
 		inserted = true
@@ -199,9 +217,20 @@ func (s *Store) MirrorHealth() ([]MirrorHealthRow, error) {
 
 // MaxSeq 账本单流当前最大 seq（wait 的起点）。
 func (s *Store) MaxSeq() (int64, error) {
+	return s.MaxSeqContext(context.Background())
+}
+
+// MaxSeqContext 是 MaxSeq 的可取消入口（B409.6：session wait 的边界快照随
+// CLI context 取消）。单行点读以 QueryContext 执行并记耗时与关联 id；点读
+// 不单独量池等待，日志不冒充已拆分阶段。
+func (s *Store) MaxSeqContext(ctx context.Context) (int64, error) {
+	started := time.Now()
 	var m sql.NullInt64
-	if err := s.db.QueryRow(`SELECT MAX(seq) FROM card_events`).Scan(&m); err != nil {
+	if err := s.db.QueryRowContext(ctx, `SELECT MAX(seq) FROM card_events`).Scan(&m); err != nil {
+		log().Warn("查最大 seq 失败", append(diag.Attrs(ctx), "error_class", readErrorClass(err, ""), "cause", err)...)
 		return 0, fmt.Errorf("查最大 seq: %w", err)
 	}
+	log().Debug("查最大 seq 完成", append(diag.Attrs(ctx), "max_seq", m.Int64,
+		"elapsed_ns", time.Since(started).Nanoseconds())...)
 	return m.Int64, nil
 }

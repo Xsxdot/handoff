@@ -1,0 +1,18 @@
+2026/09/26 22:49:23 WARN 日志文件打开失败，降级为仅 stderr path=/private/tmp/b409.6-evidence/data-openfail/agentd.log err="open /private/tmp/b409.6-evidence/data-openfail/agentd.log: no such file or directory"
+time=2026-09-26T22:49:23.953+08:00 level=INFO msg="relay egress not configured" component=agentd
+time=2026-09-26T22:49:23.953+08:00 level=INFO msg=进程围栏策略已设定 component=agentd mod=prochost disabled=false reserve_ratio=0.1 task_hard_limit=1200 hard_limit_mode=false
+time=2026-09-26T22:49:23.953+08:00 level=INFO msg="cwd 归属判据可用" component=agentd mod=prochost offset=152
+time=2026-09-26T22:49:23.953+08:00 level=INFO msg=任务标记归属可用，进程归属不依赖采样时机 component=agentd
+time=2026-09-26T22:49:24.824+08:00 level=INFO msg="已补全 PATH" component=agentd login_shell="[/Users/xushixin/.opencode/bin /Users/xushixin/.kimi-code/bin /Users/xushixin/.grok/bin /Users/xushixin/.bun/bin /opt/homebrew/bin /Users/xushixin/.antigravity/antigravity/bin /Users/xushixin/.local/bin /opt/homebrew/opt/openjdk@21/bin /Users/xushixin/workspace/go/depoly /opt/homebrew/opt/rustup/bin /Users/xushixin/.nvm/versions/node/v22.14.0/bin /usr/local/opt/openjdk@8/bin /opt/homebrew/sbin /usr/local/bin /System/Cryptexes/App/usr/bin /usr/bin /bin /usr/sbin /sbin /var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin /var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin /var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin /pkg/env/global/bin /Library/Apple/usr/bin /Users/xushixin/.cargo/bin /Users/xushixin/go/bin /Users/xushixin/Library/Android/sdk/emulator /Users/xushixin/Library/Android/sdk/tools /Users/xushixin/Library/Android/sdk/tools/bin /Users/xushixin/Library/Android/sdk/platform-tools]" extra_dirs=[] known_dirs=[/usr/local/sbin]
+time=2026-09-26T22:49:24.824+08:00 level=INFO msg="executor 探测" component=agentd opencode="就绪  /opt/homebrew/bin/opencode" claude="已安装，登录态未知  /Users/xushixin/.local/bin/claude" grok="就绪  /Users/xushixin/.grok/bin/grok" codex="就绪  /Users/xushixin/.local/bin/codex" agy=没装
+time=2026-09-26T22:49:24.824+08:00 level=INFO msg=已取得数据目录单实例锁 component=agentd data_dir=/private/tmp/b409.6-evidence/data-openfail path=/private/tmp/b409.6-evidence/data-openfail/agentd.lock
+time=2026-09-26T22:49:24.829+08:00 level=INFO msg="SQLite 存储已打开" component=agentd path=/private/tmp/b409.6-evidence/data-openfail/handoff.db
+time=2026-09-26T22:49:24.829+08:00 level=INFO msg=权限判据网关已就绪 component=agentd builtin_rules=8 custom_rules=0
+time=2026-09-26T22:49:24.829+08:00 level=INFO msg=事件帧钩子已注册 component=agentd datadir=/private/tmp/b409.6-evidence/data-openfail
+time=2026-09-26T22:49:24.829+08:00 level=INFO msg="ptyhost 会话已登记" component=agentd count=0
+time=2026-09-26T22:49:24.829+08:00 level=INFO msg="PTY 会话认领完成" component=agentd live=0 cleaned=0 broken=0
+time=2026-09-26T22:49:24.830+08:00 level=INFO msg="能力 Registry 已从 ads 推导" component=agentd n=6 registered="[grok opencode codex claude agy fake]"
+time=2026-09-26T22:49:24.830+08:00 level=INFO msg="manager 已挂接，凭据为编排 client 接口" component=agentd
+time=2026-09-26T22:49:24.837+08:00 level=ERROR msg=打开账本库失败 component=agentd dsn_configured=true cause="连接账本库: failed to connect to `user=handoff database=handoff_b409_u6_evidence`: 127.0.0.1:59849 (127.0.0.1): failed SASL auth: FATAL: password authentication failed for user \"handoff\" (SQLSTATE 28P01)"
+Error: 打开账本库: 连接账本库: failed to connect to `user=handoff database=handoff_b409_u6_evidence`: 127.0.0.1:59849 (127.0.0.1): failed SASL auth: FATAL: password authentication failed for user "handoff" (SQLSTATE 28P01)
+openfail exit=1

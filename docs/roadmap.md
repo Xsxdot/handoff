@@ -8,22 +8,56 @@
 
 ## 队列
 
-1. **完工提交号落账**：账本今天不记任务的完工提交（全仓 `Commit` 只命中 `tx.Commit()`），
+1. **用户可见账本读路径分域与投影性能**：工作项列表和 `card wait` 快照折叠所有镜像工单；
+   会话/房间列表、详情、历史、未读、收件箱、消费清理和 `session wait` 从全局流读出后再
+   过滤。2026-09-24 共享 PG 实测：会话/房间列表约 13.6s，看板 API 8.3–9.7s；完整事件流
+   客户端耗时 12.1s、镜像投影客户端耗时 7.95s，而 PG 对应 SELECT 执行仅约 0.2ms / 20ms、
+   取样无锁等待。已证问题是应用读取/重放超出展示所需的数据；传输与应用处理都在客户端
+   总耗时内，但网络占比、连接池等待未被单独量化。昨晚 20:00–22:00 故障仍缺请求级证据，
+   不能倒推为同一唯一根因。r2 spec 提议在账本边界提供范围/游标读模型、将 target 探测移出
+   首屏同步路径，并覆盖 PG+SQLite、至少 2 万条无关事件及镜像规模增长；p95 ≤2s 已获同意，
+   spec 已由用户批准并进入 L3 重档；陈旧摘要标注观测时间，且不驱动筛选。见
+   `docs/superpowers/specs/2026-09-24-ledger-read-performance.md` 与
+   `docs/superpowers/ledgers/2026-09-24-session-incidents.md`。`room read --after` 方向错误
+   保留独立 CLI 反例/修正要求。来源：本轮新 spec 与排查台账。
+2. **后台自动化唤醒消费读路径**：`internal/agentd/wakeconsumer.go` 从全局账本按单独保存的
+   automation cursor 读取，启动后可能有积压补扫；当前没有证据证明它造成页面慢，先与用户
+   可见查询分开，测清启动积压规模、查询耗时及其对唤醒/认领语义的影响，再单独立 spec。
+   来源：`2026-09-24-ledger-read-performance.md` 的 Out of Scope 与
+   `internal/agentd/wakeconsumer.go`、`internal/agentd/automation_cursor.go`。
+3. **完工提交号落账**：账本今天不记任务的完工提交（全仓 `Commit` 只命中 `tx.Commit()`），
    于是「卡的工作分支现在指向哪个提交」答不出来。补上它之后，节点派发的起点可以传
    提交号而不是分支名，复用既有的 commit 解析路径（本地有就不拉），比分支名形态更
    可靠。来源：`specs/2026-08-23-b192-node-base-continuation.md` 的弃选方案 D。
-2. **派发时自动 push 工作分支到 origin**：能让 charter 流的节点跨机接续（今天跨机
+4. **派发时自动 push 工作分支到 origin**：能让 charter 流的节点跨机接续（今天跨机
    一律拒发并指路）。是外部可见的写动作，且与合并环节的 push 语义重叠，需要单独
    定性。来源：同上 spec 的弃选方案 C 与 Out of Scope。
-3. **派发前校验附件在目标基线上可达**：基线修对之后，这条从「主要修法」降级为
+5. **派发前校验附件在目标基线上可达**：基线修对之后，这条从「主要修法」降级为
    安全网——抓「基线设了、但附件仍不在那条分支上」的剩余情形。先让基线对，再看
    还漏什么。来源：`specs/2026-08-23-card-baseline-at-worktree-creation.md`
    的弃选一与 Out of Scope。
-4. **迁流时也能设卡基线**：`workflow migrate`（领取即跨流）处再开一个写入口。
+6. **迁流时也能设卡基线**：`workflow migrate`（领取即跨流）处再开一个写入口。
    等「开工作树时挂卡」跑一段时间，看人是否真的会先迁流后建树再定。来源：同上
    spec 的弃选三。
-5. **卡与工作树双向可见**：从工作树看「这棵树上挂着哪些卡」。上条 spec 本期只做
+7. **卡与工作树双向可见**：从工作树看「这棵树上挂着哪些卡」。上条 spec 本期只做
    单向（卡知道自己的基线）。来源：同上 spec 的 Out of Scope。
+8. **CLI 配置解析失败时静默退回本地 SQLite**：`loadCLIConfig()` 把解析错误变成空配置，
+   `openLedger()` 随后以相对路径打开 `ledger.db`。`linux-01` 的 `/root/.handoff/config.yaml`
+   含当前解析器不支持的 `approver.models`；用新 CLI 运行时详情报“房间不存在”，wait 在
+   空本地账本上超时。Wave 0 临时配置验证已绕过此环境问题，但正式配置与远端 agentd 均未改；
+   后续应让账本命令对配置错误 fail closed，并单独处理目标机配置兼容。来源：
+   `docs/superpowers/ledgers/2026-09-24-session-incidents.md` 的异机验收记录，
+   `cmd/root.go` 与 `cmd/ledgercli.go`。
+
+## 来自 B397 spec（2026-09-22）
+
+- **OpenCode V2 冷恢复与事件对账**：agentd 重启后重连既有 serve/session、补偿 live-only
+  event stream 的丢失窗口并恢复 Continue；B397 首版只保证显式转 waiting_review 与扫孤儿。
+  来源：`docs/superpowers/specs/2026-09-22-b397-opencode-v2-support-design.md` Out of Scope。
+- **opencode2 能力扩展**：在有独立契约与真机证据后，再评估 Coordination、OneShot approver、
+  Profile、Skills provider；B397 不把 V1 能力按名字复制给 V2。来源：同上。
+- **V2 细粒度用量与 deny 同帧理由**：补齐 Spend/Timing/Usage 映射，并在原生协议稳定支持时
+  送达 deny reason；B397 保持空值诚实与既有带外说明。来源：同上。
 
 ## 来自 B376 spec（2026-09-17）
 
@@ -866,3 +900,19 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 - **首个零文本事件的唤醒抑制与 retry ownership 全局可见性**：B402 不抑制首个 `turn_failed(zero_text)` 的 Publish/唤醒，`wait --follow` 仍可能看到；安全性靠「任何路径不早归档」与 `waiting_review` 状态门，而非隐藏事件。来源：`docs/superpowers/specs/b402.md` §10；`b402-contract.md` §3。
 - **跨 agentd 重启的同一 task 自动续接计数与恢复**：B402 的一次续接不做持久计数，进程重启不重放已消费的失败事件；恢复语义需单独冻结持久化/恢复契约。来源：`docs/superpowers/specs/b402.md` §4.2/§10。
 - **供应商流中断本身的根因治理**：B402 只处理已确认的零文本分类、一次续接与生命周期不早归档，不修供应商断流根因。来源：`docs/superpowers/specs/b402.md` §10。
+
+## 来自 B409.6 acceptance（2026-09-26，本期不做、后续要做）
+
+- **wakeconsumer 唤醒日志打印 mention 目标值**：`internal/agentd/wakeconsumer.go:390` 把 @ token 列表写进日志，违反 B409 脱敏红线（「日志不含 @ token」）；该文件属 U6 禁改清单故未随卡修复，修复前该日志族持续违反红线。修法：改记 targets_count 数值。来源：B409.6 实现者范围外发现 + 独立 review 确认；`docs/superpowers/ledgers/2026-09-26-b409-6-acceptance.md` §5。
+- **诊断包装日志 `cause=err` 家族收敛**：U6 新增包装日志与既有 `derived.go`/`mirror.go` 家族沿用 `cause=err` 直排 driver error 原文，开库失败行含 user/host:port（无密码）；与 plan「不得将任意 driver error 原文当 cause」条文相抵，实测五哨兵零泄漏。建议单独小卡统一收敛为 error_class。来源：B409.6 review Minor#4。
+- **脱敏哨兵注入空转断言**：`internal/agentd/redaction_diag_test.go:20` sentinelDSNPassword 只扫描未注入，该条为空转；DSN 密码类实际由其它夹具覆盖。修法：注入或删条目。来源：B409.6 review Minor#3。
+
+## 来自 B409 finish（2026-09-27，部署实测残余）
+
+- **target 升级 config 兼容**：升级到含 `35e0b6ba`（配置严格解析）的版本时，target 机 config 的遗留未知键会被拒启（linux-01 实测：`approver.models` 触发 exit 1，已清理并备份 `config.yaml.bak-*`）；mac-02 尚在旧版 93770b5d，下次升级前同查 config。`handoff upgrade` 流程可考虑预检 target config 未知键并提示。
+- **darwin 手动部署需 ad-hoc 签名**：本机构建二进制覆盖 `~/.local/bin/handoff` 后 launchd 拉起被 `OS_REASON_CODESIGNING` 杀，需 `codesign -s - --force` 后重启服务（2026-09-27 实测处置）；`handoff upgrade` 的发布渠道二进制不受此影响。
+
+## 来自 B358 finish（2026-09-27，验收残余）
+
+- **rebind --self 用户会话半边真机验证**：协调者 shell 无席位身份源，`card rebind --self` 的真机链需用户会话配合约 10 分钟（解阻步骤见 B358 卡 2026-09-16 真机报告 §二）；身份出示机制本身归 B358.9（已完成）验收，本条只欠真人会话端到端。来源：B358 最终验收（2026-09-27）遗留。
+- **opencode 技能 symlink 落地为拷贝后的同步债**：本机 `~/.config/opencode/skills/` 下 14 个 charter 技能原为指向 `~/workspace/charter/skills/` 的 symlink，被规则源 fail-closed 校验拒绝（本机协调者 launch 自 2026-09-19 起被卡死）；2026-09-27 落地为实体拷贝后恢复，但失去与 charter 仓的自动同步。修法方向：`handoff skill install` 的同步机制覆盖 charter 技能集，或提供一键重拷脚本。来源：B358 最终验收环境修正。

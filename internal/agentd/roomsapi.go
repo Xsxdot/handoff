@@ -22,6 +22,7 @@ import (
 
 	"github.com/Xsxdot/handoff/internal/collab"
 	"github.com/Xsxdot/handoff/internal/collab/room"
+	"github.com/Xsxdot/handoff/internal/diag"
 	"github.com/Xsxdot/handoff/internal/ledger"
 	"github.com/Xsxdot/handoff/internal/orchestration"
 	"github.com/Xsxdot/handoff/internal/proto"
@@ -137,7 +138,7 @@ func (s *Server) handleRoomsList(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusUpgradeRequired, errors.New(roomsListLegacyMessage))
 		return
 	}
-	page, err := s.rooms.ListRoomsPage(project, member, params.Cursor, params.Limit)
+	page, err := s.rooms.ListRoomsPageContext(r.Context(), project, member, params.Cursor, params.Limit)
 	if err != nil {
 		if code := roomsListErrorStatus(err); code == http.StatusBadRequest {
 			s.log.Warn("会话列表游标非法", "project", project, "cause", err)
@@ -149,6 +150,7 @@ func (s *Server) handleRoomsList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.enrichRoomAttachments(r.Context(), page.Rooms)
+	annotateReadRows(r.Context(), len(page.Rooms))
 	s.log.Debug("会话列表响应成功", "project", project, "member", member, "rooms", len(page.Rooms))
 	writeJSON(w, http.StatusOK, page)
 }
@@ -184,11 +186,12 @@ type roomAttachCacheEntry struct {
 // B374 限域（P-4）：仍读**全量** AllTaskLinks 建索引（本机任务索引依赖全量判定），
 // 但只收集入参（本页）rooms 对应的 links 传给 startRoomAttachRefresh——页外房间
 // 不投影、不触发远端 fan-out（F17/F18）。刷新体（workers/TTL/节流）不改。
-func (s *Server) enrichRoomAttachments(_ context.Context, rooms []proto.RoomSummary) {
+func (s *Server) enrichRoomAttachments(ctx context.Context, rooms []proto.RoomSummary) {
 	if s.ledger == nil {
 		return
 	}
-	links, err := s.ledger.AllTaskLinks()
+	// B409.6：挂账读取随请求 context 取消（此前显式丢弃 ctx）。
+	links, err := s.ledger.AllTaskLinksContext(ctx)
 	if err != nil {
 		s.log.Warn("读取房间挂账失败", "cause", err)
 		return
@@ -289,6 +292,12 @@ func (s *Server) startRoomAttachRefresh(links []ledger.TaskLink) {
 	s.roomAttachLastRefresh = now
 	s.roomAttachMu.Unlock()
 
+	// B409.6：每轮刷新有独立 refresh_id；每个 link 的 lookup 收口一行
+	// （outcome/target_call_ns/refresh_id），总 deadline、单台失败与关停取消
+	// 分类可辨。workdir 只在既有投影日志出现，不进收口分类行。
+	refreshID := diag.NewRefreshID()
+	started0 := time.Now()
+	s.log.Debug("房间 attach 后台刷新开始", "refresh_id", refreshID, "links", len(remoteLinks))
 	go func() {
 		defer func() {
 			s.roomAttachMu.Lock()
@@ -305,28 +314,35 @@ func (s *Server) startRoomAttachRefresh(links []ledger.TaskLink) {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
+				started := time.Now()
 				select {
 				case workers <- struct{}{}:
 				case <-ctx.Done():
-					s.log.Warn("房间 attach 后台刷新取消", "target", link.Target,
-						"task", link.TaskID, "cause", ctx.Err())
+					s.log.Warn("房间 attach 后台刷新取消", "refresh_id", refreshID,
+						"target", link.Target, "task", link.TaskID,
+						"outcome", "canceled", "cause", ctx.Err())
 					return
 				}
 				defer func() { <-workers }()
 				attach, err := s.lookupRoomAttach(ctx, link, nil)
+				elapsedNs := time.Since(started).Nanoseconds()
 				if err != nil {
 					s.invalidateRoomAttach(link)
-					s.log.Warn("房间 attach 后台刷新失败", "target", link.Target,
-						"task", link.TaskID, "cause", err)
+					s.log.Warn("房间 attach 后台刷新失败", "refresh_id", refreshID,
+						"target", link.Target, "task", link.TaskID,
+						"outcome", attachOutcome(err), "error_class", attachErrorClass(err),
+						"target_call_ns", elapsedNs, "cause", err)
 					return
 				}
 				s.storeRoomAttach(link, attach)
-				s.log.Debug("房间 attach 后台刷新成功", "target", link.Target,
-					"task", link.TaskID, "workdir", attach.WorkDir)
+				s.log.Debug("房间 attach 后台刷新成功", "refresh_id", refreshID,
+					"target", link.Target, "task", link.TaskID,
+					"outcome", "success", "target_call_ns", elapsedNs)
 			}()
 		}
 		wg.Wait()
-		s.log.Debug("房间 attach 后台刷新完成", "links", len(remoteLinks),
+		s.log.Debug("房间 attach 后台刷新完成", "refresh_id", refreshID,
+			"links", len(remoteLinks), "elapsed_ns", time.Since(started0).Nanoseconds(),
 			"timed_out", ctx.Err() != nil)
 	}()
 }
@@ -415,18 +431,34 @@ func (s *Server) handleRoomMessages(w http.ResponseWriter, r *http.Request) {
 	roomID := r.PathValue("id")
 	before, _ := strconv.ParseInt(r.URL.Query().Get("before"), 10, 64)
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	events, err := s.rooms.History(roomID, before, limit)
+	started := time.Now()
+	s.log.Info("房间历史 HTTP 请求开始", append(diag.Attrs(r.Context()),
+		"room_id", roomID, "before_seq", before, "limit", limit)...)
+	events, err := s.rooms.HistoryContext(r.Context(), roomID, before, limit)
 	if err != nil {
 		if errors.Is(err, collab.ErrNoRoom) {
-			s.log.Warn("房间历史请求命中不存在房间", "room", roomID)
+			s.log.Warn("房间历史请求命中不存在房间", append(diag.Attrs(r.Context()),
+				"room_id", roomID,
+				"elapsed_ns", time.Since(started).Nanoseconds(), "cause", err)...)
 			writeErr(w, http.StatusNotFound, err)
 			return
 		}
-		s.log.Warn("房间历史读取失败", "room", roomID, "cause", err)
+		s.log.Warn("房间历史读取失败", append(diag.Attrs(r.Context()),
+			"room_id", roomID,
+			"elapsed_ns", time.Since(started).Nanoseconds(), "cause", err)...)
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
+	payloadBytes := 0
+	for _, event := range events {
+		payloadBytes += len(event.Payload)
+	}
+	annotateReadRows(r.Context(), len(events))
 	writeJSON(w, http.StatusOK, map[string]any{"messages": events})
+	s.log.Info("房间历史 HTTP 请求完成", append(diag.Attrs(r.Context()),
+		"room_id", roomID,
+		"rows_returned", len(events), "payload_bytes", payloadBytes,
+		"elapsed_ns", time.Since(started).Nanoseconds())...)
 }
 
 // handleRoomSend POST /api/rooms/{id}/messages → 用户发言（kind 服务端固定 user，
@@ -629,4 +661,31 @@ func ticketTitle(tk proto.Ticket) string {
 		return "权限工单待答复"
 	}
 	return "提问工单待答复"
+}
+
+
+// attachOutcome 把一次 attach lookup 的失败归入有限类别（成功路径不调用）：
+// 总 deadline 与关停取消分开，其余按错误处理。
+func attachOutcome(err error) string {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return "deadline"
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	default:
+		return "error"
+	}
+}
+
+// attachErrorClass 与 unlinkedTargetErrorClass 同族：attach lookup 失败行的
+// 有限安全分类。
+func attachErrorClass(err error) string {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return "deadline_exceeded"
+	case errors.Is(err, context.Canceled):
+		return "context_canceled"
+	default:
+		return "target_error"
+	}
 }

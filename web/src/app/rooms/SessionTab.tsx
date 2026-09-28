@@ -17,6 +17,7 @@ import { SessionChat } from './SessionChat'
 import { SessionDetail } from './SessionDetail'
 
 const HISTORY_LIMIT = 200
+const SESSION_READ_TIMEOUT_MS = 15_000
 
 export function SessionTab({ sessionId, title, onOpenCard }: {
   sessionId: string
@@ -32,11 +33,30 @@ export function SessionTab({ sessionId, title, onOpenCard }: {
   const [archiveError, setArchiveError] = useState('')
   const markedReads = useRef<Record<string, number>>({})
 
-  const detailPoll = usePoll(() => fetchSessionDetail(sessionId), COLLAB_POLL_MS)
-  const historyPoll = usePoll(() => fetchRoomMessages(sessionId, { limit: HISTORY_LIMIT }), COLLAB_POLL_MS)
+  const detailPoll = usePoll((signal) => fetchSessionDetail(sessionId, signal), COLLAB_POLL_MS,
+    { timeoutMs: SESSION_READ_TIMEOUT_MS })
+  const historyPoll = usePoll((signal) => {
+    logRoom('debug', 'session_history_fetch_started', { session: sessionId })
+    return fetchRoomMessages(sessionId, { limit: HISTORY_LIMIT, signal })
+      .then((events) => {
+        logRoom('debug', 'session_history_fetch_succeeded', { session: sessionId, count: events.length })
+        return events
+      })
+      .catch((error: unknown) => {
+        logRoom('warn', 'session_history_fetch_failed', { session: sessionId, error: errorMessage(error) })
+        throw error
+      })
+  }, COLLAB_POLL_MS, { timeoutMs: SESSION_READ_TIMEOUT_MS })
   const detail: SessionDetailDTO | null = detailPoll.data
   const history = historyPoll.data ?? []
   const maxSeq = history.reduce((max, item) => Math.max(max, item.seq), 0)
+
+  // 请求本身可能一直不 settle，超时由 usePoll 生成；在视图边界补一条带会话号
+  // 的诊断日志，下一次现场可区分历史失败与真正的空会话。
+  useEffect(() => {
+    if (!historyPoll.disconnected) return
+    logRoom('warn', 'session_history_unavailable', { session: sessionId, error: historyPoll.errorText })
+  }, [sessionId, historyPoll.disconnected, historyPoll.errorText])
 
   // 打开即已读（spec §7）：seq 水位去重，失败从水位表剔除让下一轮重试。
   useEffect(() => {
@@ -105,7 +125,9 @@ export function SessionTab({ sessionId, title, onOpenCard }: {
   return (
     <div className="relative flex h-full min-h-0 flex-col">
       <SessionChat sessionId={sessionId} summary={detail?.summary ?? null} events={history}
-        historyError={historyPoll.disconnected ? historyPoll.errorText : ''} onSent={() => historyPoll.refresh()}
+        historyLoading={historyPoll.data === null && !historyPoll.disconnected && !historyPoll.sessionExpired}
+        historyError={historyPoll.sessionExpired ? '会话失效，请重新打开 handoff console' : historyPoll.disconnected ? historyPoll.errorText : ''}
+        onSent={() => historyPoll.refresh()}
         onJoinCard={() => setJoinOpen(true)} />
       {drawerOpen && (
         <aside data-testid="session-drawer" aria-label="会话详情"
@@ -116,7 +138,7 @@ export function SessionTab({ sessionId, title, onOpenCard }: {
               className="rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-accent">×</button>
           </div>
           {detail === null
-            ? <p className="p-3 text-sm text-muted-foreground">{detailPoll.disconnected ? `详情读取失败：${detailPoll.errorText}` : '正在读取…'}</p>
+            ? <p className="p-3 text-sm text-muted-foreground">{detailPoll.sessionExpired ? '会话失效，请重新打开 handoff console' : detailPoll.disconnected ? `详情读取失败：${detailPoll.errorText}` : '正在读取…'}</p>
             : <SessionDetail detail={detail} onOpenCard={onOpenCard}
                 onArchive={() => setArchiveConfirm(true)} archiveBusy={archiveBusy} archiveError={archiveError} />}
         </aside>

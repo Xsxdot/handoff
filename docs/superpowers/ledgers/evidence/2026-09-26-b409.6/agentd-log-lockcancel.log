@@ -1,0 +1,1 @@
+{"time":"2026-09-26T22:49:18.715461+08:00","level":"INFO","msg":"房间历史账本 SQL 调用失败","component":"agentd","operation_id":"op-64563080","room_id":"session:1","before_seq":0,"limit":10,"error_class":"canceled","failed_stage":"sql","pool_wait_ns":2417,"sql_call_ns":811126166,"elapsed_ns":811152375,"cause":"context canceled"}

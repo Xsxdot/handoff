@@ -163,6 +163,21 @@ type SessionWake struct {
 	Unread     int          `json:"unread"`               // 该成员在该会话的未读数（含命中条）
 }
 
+// SessionBacklog 是监听重挂时单行输出的历史定向消息摘要。
+type SessionBacklog struct {
+	Type    string              `json:"type"`
+	Member  string              `json:"member"`
+	FromSeq int64               `json:"from_seq"`
+	ToSeq   int64               `json:"to_seq"`
+	Hits    []SessionBacklogHit `json:"hits"`
+}
+
+// SessionBacklogHit 保留可跳转的命中条与可选回复引用条。
+type SessionBacklogHit struct {
+	Hit        SessionCite  `json:"hit"`
+	Referenced *SessionCite `json:"referenced,omitempty"`
+}
+
 // SessionCite 是命中条/引用条的最小引用形状（可点跳转的锚点集）。
 type SessionCite struct {
 	Seq   int64  `json:"seq"`   // 账本 seq（跳转与对质锚）

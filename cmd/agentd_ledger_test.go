@@ -3,6 +3,7 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"log/slog"
@@ -85,6 +86,27 @@ func TestSetupLedgerMountsWithRetiredEnabledFlag(t *testing.T) {
 	}
 }
 
+// TestSetupLedgerFailureDoesNotLogDSNCredentials keeps startup diagnostics useful
+// without exposing a PostgreSQL password when the database cannot be opened.
+func TestSetupLedgerFailureDoesNotLogDSNCredentials(t *testing.T) {
+	const password = "b409-test-password-must-not-appear"
+	dsn := "postgres://ledger-user:" + password + "@127.0.0.1:1/ledger-db?sslmode=disable"
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, nil))
+	cfg := &config.Config{Ledger: config.LedgerConfig{DSN: dsn}}
+
+	_, err := setupLedger(cfg, nil, nil, context.Background(), logger)
+	if err == nil {
+		t.Fatal("连接不可用的账本应返回错误")
+	}
+	if strings.Contains(logs.String(), dsn) || strings.Contains(logs.String(), password) {
+		t.Fatalf("账本打开失败日志泄露了 DSN 凭据: %s", logs.String())
+	}
+	if !strings.Contains(logs.String(), "dsn_configured=true") {
+		t.Fatalf("日志应保留 DSN 是否配置的诊断信息: %s", logs.String())
+	}
+}
+
 // TestB23314SetSchedulingBeforeStartAutomation 锁住 setupLedger 内的装配顺序：
 // 编制域具体服务必须先经 SetScheduling 注入，随后才 StartAutomation。
 //
@@ -126,4 +148,38 @@ func goFuncBody(t *testing.T, file, fn string) string {
 		return rest[:next]
 	}
 	return rest
+}
+
+// TestSetupLedgerMountLogsDoNotLogDSNCredentials 扩展 Wave 0 的 DSN 脱敏家族
+// （TestSetupLedgerFailureDoesNotLogDSNCredentials 修的是「开库失败」行；本测
+// 钉住「装配成功」路径）：自动化编排/镜像子系统挂载日志不得携带完整 DSN，
+// 只保留 dsn_configured 布尔（B409.6 脱敏红线：DSN URL/密码不进日志）。
+func TestSetupLedgerMountLogsDoNotLogDSNCredentials(t *testing.T) {
+	dir := t.TempDir()
+	// DSN 哨兵 = 完整连接串本身（临时目录路径全局唯一，出现在日志即泄漏）。
+	dsn := filepath.Join(dir, "sentinel-ledger-dsn.db")
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, nil))
+	cfg := &config.Config{DataDir: dir, Ledger: config.LedgerConfig{DSN: dsn}}
+	taskStore, err := store.Open(filepath.Join(dir, "tasks.db"))
+	if err != nil {
+		t.Fatalf("开任务库: %v", err)
+	}
+	t.Cleanup(func() { taskStore.Close() })
+	srv := agentd.NewServer(cfg, taskStore, discardLogger())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	stop, err := setupLedger(cfg, srv, taskStore, ctx, logger)
+	if err != nil {
+		t.Fatalf("装配应成功: %v", err)
+	}
+	t.Cleanup(stop)
+
+	if strings.Contains(logs.String(), dsn) {
+		t.Fatalf("装配成功路径日志泄漏了 DSN: %s", logs.String())
+	}
+	if !strings.Contains(logs.String(), "dsn_configured=true") {
+		t.Fatalf("挂载日志应保留 dsn_configured 布尔（脱敏不是沉默）: %s", logs.String())
+	}
 }

@@ -8,6 +8,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"time"
 
@@ -31,7 +32,7 @@ var _ client.LedgerClient = (*Facade)(nil)
 func (f *Facade) GetCard(id string) (proto.Card, error) {
 	card, err := f.st.GetCard(id)
 	if err != nil {
-		return proto.Card{}, err
+		return proto.Card{}, translateNotFound(err)
 	}
 	// Store.GetCard 返回裸 Card（单卡读不派生跟随态），包一层视图后
 	// Following 恒空；并入态的取数源是 ListActiveCards/ListAllCards。
@@ -80,7 +81,11 @@ func (f *Facade) RecordMessageConsumed(cardID string, msgSeq int64, consumer str
 }
 
 func (f *Facade) EventsFromAsc(cardIDs []string, fromSeq int64, limit int) ([]proto.LedgerEvent, error) {
-	events, err := f.st.EventsFromAsc(cardIDs, fromSeq, limit)
+	return f.EventsFromAscContext(context.Background(), cardIDs, fromSeq, limit)
+}
+
+func (f *Facade) EventsFromAscContext(ctx context.Context, cardIDs []string, fromSeq int64, limit int) ([]proto.LedgerEvent, error) {
+	events, err := f.st.EventsFromAscContext(ctx, cardIDs, fromSeq, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -89,6 +94,83 @@ func (f *Facade) EventsFromAsc(cardIDs []string, fromSeq int64, limit int) ([]pr
 		out = append(out, eventWire(ev))
 	}
 	return out, nil
+}
+
+// RoomMessagesBeforeContext 直通账本房间历史查询并投影 wire 事件。
+func (f *Facade) RoomMessagesBeforeContext(ctx context.Context, roomID string, beforeSeq int64, limit int) ([]proto.LedgerEvent, error) {
+	events, err := f.st.RoomMessagesBeforeContext(ctx, roomID, beforeSeq, limit)
+	if err != nil {
+		return nil, err
+	}
+	return eventWires(events), nil
+}
+
+// RoomMessageSnapshotsContext 直通账本批量房间消息摘要，并映射最新事件 wire。
+func (f *Facade) RoomMessageSnapshotsContext(ctx context.Context, afterByRoom map[string]int64) ([]client.RoomMessageSnapshot, error) {
+	snapshots, err := f.st.RoomMessageSnapshotsContext(ctx, afterByRoom)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]client.RoomMessageSnapshot, 0, len(snapshots))
+	for _, snapshot := range snapshots {
+		out = append(out, client.RoomMessageSnapshot{
+			RoomID: snapshot.RoomID, Latest: eventWire(snapshot.Latest),
+			LastActivity: snapshot.LastActivity, MessagesAfter: snapshot.MessagesAfter,
+		})
+	}
+	return out, nil
+}
+
+// SessionProjectionEventsContext 直通单会话详情事件范围，不在 facade 解释业务。
+func (f *Facade) SessionProjectionEventsContext(ctx context.Context, sessionID string, cardIDs []string) ([]proto.LedgerEvent, error) {
+	events, err := f.st.SessionProjectionEventsContext(ctx, sessionID, cardIDs)
+	if err != nil {
+		return nil, err
+	}
+	return eventWires(events), nil
+}
+
+// LatestNeedsEventsContext 直通各卡最新 needs 状态事件。
+func (f *Facade) LatestNeedsEventsContext(ctx context.Context, cardIDs []string) ([]proto.LedgerEvent, error) {
+	events, err := f.st.LatestNeedsEventsContext(ctx, cardIDs)
+	if err != nil {
+		return nil, err
+	}
+	return eventWires(events), nil
+}
+
+// --- B409 U5 收件箱限域读直通镜像：逐方法转调 Store，不含业务判断 ---
+
+// MentionCandidatesContext 直通账本提及候选读。
+func (f *Facade) MentionCandidatesContext(ctx context.Context, member, roomID string, cardlessOnly bool, afterSeq int64, limit int) ([]proto.LedgerEvent, error) {
+	events, err := f.st.MentionCandidatesContext(ctx, member, roomID, cardlessOnly, afterSeq, limit)
+	if err != nil {
+		return nil, err
+	}
+	return eventWires(events), nil
+}
+
+// CardRoomUserMessagesContext 直通账本绑定卡用户消息读。
+func (f *Facade) CardRoomUserMessagesContext(ctx context.Context, cardIDs []string, afterSeq int64, limit int) ([]proto.LedgerEvent, error) {
+	events, err := f.st.CardRoomUserMessagesContext(ctx, cardIDs, afterSeq, limit)
+	if err != nil {
+		return nil, err
+	}
+	return eventWires(events), nil
+}
+
+// ConsumedMessageSeqsContext 直通账本消费标记批量读。
+func (f *Facade) ConsumedMessageSeqsContext(ctx context.Context, consumer string, afterSeq int64) ([]int64, error) {
+	return f.st.ConsumedMessageSeqsContext(ctx, consumer, afterSeq)
+}
+
+// EventBySeq 直通账本 seq 点读。
+func (f *Facade) EventBySeq(seq int64) (proto.LedgerEvent, bool, error) {
+	event, ok, err := f.st.EventBySeq(seq)
+	if err != nil || !ok {
+		return proto.LedgerEvent{}, ok, err
+	}
+	return eventWire(event), true, nil
 }
 
 // --- B358 会话（群）域直通镜像：逐方法转调 Store，不含业务判断 ---
@@ -234,4 +316,12 @@ func eventWire(ev ledger.Event) proto.LedgerEvent {
 		SourceSeq:    ev.SourceSeq,
 		CreatedAt:    ev.CreatedAt,
 	}
+}
+
+func eventWires(events []ledger.Event) []proto.LedgerEvent {
+	out := make([]proto.LedgerEvent, 0, len(events))
+	for _, event := range events {
+		out = append(out, eventWire(event))
+	}
+	return out
 }

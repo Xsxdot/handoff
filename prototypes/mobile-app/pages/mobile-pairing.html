@@ -1,0 +1,258 @@
+<!doctype html>
+<!--
+  移动端原型屏 9:设置中心(执行机配对为二级页面)。
+  机器不是一等公民——它没有自己的浏览入口,只在这里(设置)和项目的位置里出现。
+  契约依据:配对载体 = target 登记 + 一次性 ticket(扩展 console --qr);
+  凭据入 Keychain/Keystore;吊销走存量 handoff sessions revoke。
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>设置中心 · 移动端原型</title>
+<link rel="stylesheet" href="../shared/styles.css">
+<style>
+  body { background: #e9e9ec; }
+  .stage { max-width: 1120px; margin: 0 auto; padding: 20px 24px 64px; }
+  .mnav { display: flex; gap: 8px; align-items: center; margin-bottom: 18px; font-size: 13px; flex-wrap: wrap; }
+  .mnav a { padding: 4px 12px; border: 1px solid var(--border); border-radius: 999px; background: #fff; text-decoration: none; color: var(--foreground); }
+  .mnav a.active { background: var(--primary); color: var(--primary-foreground); border-color: var(--primary); }
+  .mnav .sep { color: var(--muted-foreground); }
+  .row { display: flex; gap: 28px; align-items: flex-start; }
+
+  .phone { width: 390px; flex-shrink: 0; background: #111; border-radius: 44px; padding: 10px; box-shadow: 0 18px 50px rgba(0,0,0,.28); }
+  .screen { background: var(--muted); border-radius: 34px; overflow: hidden; height: 800px; display: flex; flex-direction: column; }
+  .notch { height: 30px; display: flex; align-items: center; justify-content: center; }
+  .notch::after { content: ""; width: 110px; height: 22px; background: #111; border-radius: 999px; }
+
+  .apphead { padding: 4px 16px 10px; }
+  .apphead .t { font-size: 24px; font-weight: 700; }
+  .body { flex: 1; overflow-y: auto; padding: 0 14px 14px; }
+  .view[hidden] { display: none; }
+
+  .sect { font-size: 12px; color: var(--muted-foreground); margin: 14px 2px 8px; }
+  .settings-card { background: #fff; border: 1px solid var(--border); border-radius: 14px; overflow: hidden; }
+  .settings-row { width: 100%; display: flex; align-items: center; gap: 10px; padding: 13px 14px; border: 0; border-bottom: 1px solid var(--muted); background: #fff; text-align: left; font: inherit; cursor: pointer; }
+  .settings-row:last-child { border-bottom: 0; }
+  .settings-row .si { width: 30px; height: 30px; border-radius: 9px; background: var(--muted); display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+  .settings-row .copy { flex: 1; min-width: 0; }
+  .settings-row .title { font-size: 13px; font-weight: 600; }
+  .settings-row .desc { font-size: 11.5px; color: var(--muted-foreground); margin-top: 2px; }
+  .settings-row .arr { color: var(--muted-foreground); }
+  .hub-note { margin-top: 12px; font-size: 11.5px; line-height: 1.6; color: var(--muted-foreground); }
+  .linkback { border: 0; background: none; padding: 0; color: var(--primary); font: inherit; font-size: 12px; cursor: pointer; }
+  .mcard { background: #fff; border: 1px solid var(--border); border-radius: 14px; padding: 12px 14px; margin-bottom: 10px; }
+  .mcard .top { display: flex; align-items: center; gap: 12px; }
+  .mcard .ic { width: 38px; height: 38px; border-radius: 10px; background: var(--muted); display: flex; align-items: center; justify-content: center; font-size: 18px; }
+  .mcard .inf { flex: 1; min-width: 0; }
+  .mcard .nm { font-size: 14px; font-weight: 600; }
+  .mcard .ds { font-size: 11.5px; color: var(--muted-foreground); margin-top: 2px; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .mcard .ds code { font-family: var(--font-mono); font-size: 10.5px; background: var(--muted); padding: 1px 5px; border-radius: 4px; }
+  .mcard .revoke { font-size: 11px; color: var(--destructive); margin-top: 8px; }
+  .pill { font-size: 10.5px; font-weight: 600; padding: 2px 8px; border-radius: 999px; }
+  .pill.relay { background: #e0f2fe; color: #0369a1; }
+  .pill.lan { background: #dcfce7; color: var(--green); }
+  .addbtn { width: 100%; padding: 12px; border: 1.5px dashed var(--border); border-radius: 14px; background: none; font-size: 14px; color: var(--muted-foreground); cursor: pointer; }
+
+  .finder { background: #111; border-radius: 16px; height: 380px; position: relative; overflow: hidden; display: flex; align-items: center; justify-content: center; }
+  .finder .frame { width: 210px; height: 210px; position: relative; }
+  .finder .corner { position: absolute; width: 34px; height: 34px; border: 3.5px solid #fff; }
+  .finder .c1 { top: 0; left: 0; border-right: none; border-bottom: none; border-radius: 8px 0 0 0; }
+  .finder .c2 { top: 0; right: 0; border-left: none; border-bottom: none; border-radius: 0 8px 0 0; }
+  .finder .c3 { bottom: 0; left: 0; border-right: none; border-top: none; border-radius: 0 0 0 8px; }
+  .finder .c4 { bottom: 0; right: 0; border-left: none; border-top: none; border-radius: 0 0 8px 0; }
+  .finder .scanline { position: absolute; left: 8%; right: 8%; height: 2px; background: #4ade80; box-shadow: 0 0 12px #4ade80; animation: scan 2.4s ease-in-out infinite; }
+  @keyframes scan { 0%,100% { top: 16%; } 50% { top: 82%; } }
+  .finder .hint { position: absolute; bottom: 18px; left: 0; right: 0; text-align: center; color: #d4d4d4; font-size: 12.5px; }
+  .scanbtn { width: 100%; margin-top: 12px; padding: 12px; border: none; border-radius: 12px; background: var(--primary); color: var(--primary-foreground); font-size: 14px; font-weight: 600; cursor: pointer; }
+  .ghostbtn { width: 100%; margin-top: 8px; padding: 10px; border: none; background: none; font-size: 13px; color: var(--muted-foreground); cursor: pointer; }
+
+  .pairing { background: #fff; border: 1px solid var(--border); border-radius: 16px; padding: 28px 20px; text-align: center; margin-top: 14px; }
+  .pairing .big { font-size: 40px; margin-bottom: 10px; }
+  .pairing .st { font-size: 15px; font-weight: 600; margin-bottom: 6px; }
+  .pairing .dt { font-size: 12.5px; color: var(--muted-foreground); line-height: 1.8; }
+  .spin { display: inline-block; animation: sp 1s linear infinite; }
+  @keyframes sp { to { transform: rotate(360deg); } }
+  .checklist { text-align: left; margin: 14px auto 0; max-width: 260px; font-size: 12.5px; line-height: 2.1; }
+  .checklist .ok { color: var(--green); }
+
+  .tabbar { display: flex; border-top: 1px solid var(--border); background: #fff; padding: 6px 0 14px; }
+  .tabbar .tb { flex: 1; text-align: center; font-size: 11px; color: var(--muted-foreground); padding-top: 4px; text-decoration: none; }
+  .tabbar .tb .ic { font-size: 19px; display: block; position: relative; width: fit-content; margin: 0 auto; }
+  .tabbar .tb.on { color: var(--foreground); font-weight: 600; }
+  .tabbar .tb .ic .bd { position: absolute; top: -4px; right: -14px; background: var(--destructive); color: #fff; font-size: 9px; border-radius: 999px; padding: 0 4px; }
+
+  .notes { flex: 1; min-width: 0; }
+  .notes h2 { font-size: 16px; margin: 4px 0 4px; }
+  .notes .sub { font-size: 12.5px; color: var(--muted-foreground); margin: 0 0 14px; }
+  .note { display: flex; gap: 10px; background: #fff; border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; margin-bottom: 8px; font-size: 12.5px; line-height: 1.7; }
+  .note .no { width: 20px; height: 20px; flex-shrink: 0; border-radius: 50%; background: var(--primary); color: var(--primary-foreground); font-size: 11px; display: flex; align-items: center; justify-content: center; margin-top: 1px; }
+  .ref { display: inline-block; width: 16px; height: 16px; border-radius: 50%; background: var(--primary); color: var(--primary-foreground); font-size: 10px; text-align: center; line-height: 16px; vertical-align: 2px; }
+  .qrbox { background:#fff; border:1px solid var(--border); border-radius:10px; padding:14px; margin-top:14px; display:flex; gap:14px; align-items:center; }
+  .qr { width: 108px; height: 108px; flex-shrink: 0; display: grid; grid-template-columns: repeat(9, 1fr); grid-template-rows: repeat(9, 1fr); gap: 1px; background: #fff; padding: 6px; border: 1px solid var(--border); border-radius: 6px; }
+  .qr i { background: #111; border-radius: 1px; }
+  .qr i.w { background: #fff; }
+  .qrbox .cap { font-size: 12px; color: var(--muted-foreground); line-height: 1.7; }
+  .qrbox .cap code { font-family: var(--font-mono); font-size: 11px; background: var(--muted); padding: 1px 5px; border-radius: 4px; color: var(--foreground); }
+</style>
+</head>
+<body>
+<div class="stage">
+  <div class="mnav">
+    <a href="../index.html">← 工作台</a><span class="sep">|</span>
+    <span style="color:var(--muted-foreground)">移动端原型:</span>
+    <a href="mobile-architecture.html">方案一图流</a>
+    <a href="mobile-home.html">会话</a>
+    <a href="mobile-cards.html">卡</a>
+    <a href="mobile-projects.html">项目</a>
+    <a href="mobile-pairing.html" class="active">设置</a>
+  </div>
+  <div class="row">
+
+    <div class="phone">
+      <div class="screen">
+        <div class="notch"></div>
+        <div class="apphead"><div class="t">设置</div></div>
+        <div class="body">
+
+          <!-- Web 设置中心(默认);原生配对不占据首页 -->
+          <div class="view" id="viewSettings">
+            <div class="sect">工作方式</div>
+            <div class="settings-card">
+              <button class="settings-row" type="button">
+                <span class="si">💬</span><span class="copy"><span class="title">会话打开方式</span><span class="desc">默认回到最近活跃的会话</span></span><span class="arr">›</span>
+              </button>
+              <button class="settings-row" type="button">
+                <span class="si">🔔</span><span class="copy"><span class="title">需要你提醒</span><span class="desc">裁决与答复集中在会话和卡</span></span><span class="arr">›</span>
+              </button>
+              <button class="settings-row" type="button">
+                <span class="si">◐</span><span class="copy"><span class="title">显示与可访问性</span><span class="desc">紧凑布局、字体、减少动态效果</span></span><span class="arr">›</span>
+              </button>
+            </div>
+            <div class="sect">执行机</div>
+            <div class="settings-card">
+              <button class="settings-row" type="button" id="goMachines">
+                <span class="si">🖥</span><span class="copy"><span class="title">执行机与配对</span><span class="desc">已连接 2 台 · 管理位置与扫码</span></span><span class="arr">›</span>
+              </button>
+            </div>
+            <div class="sect">关于</div>
+            <div class="settings-card">
+              <button class="settings-row" type="button">
+                <span class="si">ⓘ</span><span class="copy"><span class="title">关于 handoff</span><span class="desc">版本、诊断与隐私说明</span></span><span class="arr">›</span>
+              </button>
+            </div>
+            <p class="hub-note">原生扫码、Keychain/Keystore 和系统权限属于 Android/iOS 壳阶段；当前移动 Web 先把设置、会话、卡、项目逻辑跑通。</p>
+          </div>
+
+          <!-- 执行机列表视图(二级) -->
+          <div class="view" id="viewList" hidden>
+            <div class="sect"><button class="linkback" type="button" id="backSettings">‹ 设置</button></div>
+            <div class="sect">执行机(手机已配对的)<span class="ref">①</span></div>
+            <div class="mcard">
+              <div class="top">
+                <div class="ic">🖥</div>
+                <div class="inf">
+                  <div class="nm">linux-01</div>
+                  <div class="ds"><span class="pill relay">relay</span> <code>wss://relay.example</code> · 配对于 9 月 10 日</div>
+                </div>
+              </div>
+              <div class="revoke">吊销这台机器的接入…<span class="ref">③</span></div>
+            </div>
+            <div class="mcard">
+              <div class="top">
+                <div class="ic">💻</div>
+                <div class="inf">
+                  <div class="nm">本机 Mac</div>
+                  <div class="ds"><span class="pill lan">局域网直连</span> <code>192.168.1.5:7777</code> · 配对于今天</div>
+                </div>
+              </div>
+            </div>
+            <button class="addbtn" id="goScan">＋ 添加执行机(扫码)</button>
+          </div>
+
+          <!-- 扫码视图 -->
+          <div class="view" id="viewScan" hidden>
+            <div class="sect">添加执行机</div>
+            <div class="finder">
+              <div class="frame">
+                <div class="corner c1"></div><div class="corner c2"></div>
+                <div class="corner c3"></div><div class="corner c4"></div>
+              </div>
+              <div class="scanline"></div>
+              <div class="hint">对准电脑屏幕上的 QR —— <code style="color:#d4d4d4">handoff console --qr</code> <span class="ref">②</span></div>
+            </div>
+            <button class="scanbtn" id="mockScan">模拟扫码成功(mock)</button>
+            <button class="ghostbtn" id="cancelScan">取消</button>
+          </div>
+
+          <!-- 配对中 -->
+          <div class="view" id="viewPairing" hidden>
+            <div class="pairing">
+              <div class="big"><span class="spin">◌</span></div>
+              <div class="st">正在配对 bundle(3 台执行机)…</div>
+              <div class="dt">已识别配对 bundle:relay 端点 + 各机登记 + 每机一次性 ticket</div>
+            </div>
+          </div>
+
+          <!-- 完成 -->
+          <div class="view" id="viewDone" hidden>
+            <div class="pairing">
+              <div class="big">✅</div>
+              <div class="st">已配对 3 台执行机</div>
+              <div class="checklist">
+                <div><span class="ok">✓</span> 3 台隧道凭据已存入 Keychain</div>
+                <div><span class="ok">✓</span> 各机 ticket 已换成登录会话</div>
+                <div><span class="ok">✓</span> 经 relay 试连 agentd 成功(412ms)</div>
+              </div>
+            </div>
+            <button class="scanbtn" id="backToList">完成</button>
+          </div>
+
+        </div>
+        <div class="tabbar">
+          <a class="tb" href="mobile-home.html"><span class="ic">💬<span class="bd">2</span></span>会话</a>
+          <a class="tb" href="mobile-cards.html"><span class="ic">▤<span class="bd">2</span></span>卡</a>
+          <a class="tb" href="mobile-projects.html"><span class="ic">🗂</span>项目</a>
+          <a class="tb on" href="mobile-pairing.html"><span class="ic">⚙</span>设置</a>
+        </div>
+      </div>
+    </div>
+
+    <div class="notes">
+      <h2>设置中心:Web 设置优先,执行机后置</h2>
+      <p class="sub">默认先看到会话、提醒、显示与可访问性；机器仍不是一级入口，只有从「执行机与配对」进入管理。</p>
+      <div class="note"><div class="no">①</div><div><b>执行机与配对是设置里的二级页面。</b>每条标明形态:relay(外出)/ 局域网直连(在家),App 自动选路；项目页仍是查看位置的主入口。</div></div>
+      <div class="note"><div class="no">②</div><div><b>QR 从 CLI 来,一次配全部(bundle):</b><code>handoff console --qr</code> 打印配对 bundle——relay 端点 + 各执行机登记 + 每机一张一次性 ticket,扫一次认识全部机器;只配一台是它的退化形态(本屏演示退化形态)。该命令今天已有设计稿,本期把载荷从「ticket URL」扩成「配对 bundle」。零手输。</div></div>
+      <div class="note"><div class="no">③</div><div><b>吊销与丢失:</b>手机上可解除单台配对;手机丢了,电脑上 <code>handoff sessions revoke</code> 吊销会话,更狠可轮换节点 token(文档化)。隧道凭据只在手机 Keychain/Keystore 里,界面任何角落不再显示。</div></div>
+      <div class="note"><div class="no" style="background:var(--muted-foreground)">※</div><div><b>为什么扫码而不是账号密码(理念注,无对应元素):</b>这个产品没有中心账号体系(README:No central anything)。「你是谁」=「你持有哪台机器的凭据」,扫码转移的就是它。</div></div>
+      <div class="qrbox">
+        <div class="qr" id="qr"></div>
+        <div class="cap">电脑上长这样(mock 图案):<br><code>$ handoff console --qr</code><br> pairing: mac-02 · relay 形态<br> ticket 5 分钟内有效 · 一次性</div>
+      </div>
+    </div>
+  </div>
+</div>
+<script>
+  const views = ['viewSettings','viewList','viewScan','viewPairing','viewDone'].map(id => document.getElementById(id));
+  const show = (id) => views.forEach(v => v.hidden = v.id !== id);
+  document.getElementById('goMachines').addEventListener('click', () => show('viewList'));
+  document.getElementById('backSettings').addEventListener('click', () => show('viewSettings'));
+  document.getElementById('goScan').addEventListener('click', () => show('viewScan'));
+  document.getElementById('cancelScan').addEventListener('click', () => show('viewList'));
+  document.getElementById('mockScan').addEventListener('click', () => {
+    show('viewPairing');
+    setTimeout(() => show('viewDone'), 1200);
+  });
+  document.getElementById('backToList').addEventListener('click', () => show('viewList'));
+  // mock QR 图案(纯装饰)
+  const qr = document.getElementById('qr');
+  let seed = 42;
+  const rnd = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+  for (let i = 0; i < 81; i++) {
+    const cell = document.createElement('i');
+    if (rnd() > 0.52) cell.className = 'w';
+    qr.appendChild(cell);
+  }
+</script>
+</body>
+</html>

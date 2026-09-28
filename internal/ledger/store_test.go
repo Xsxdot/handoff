@@ -23,7 +23,8 @@ func TestOpenCreatesSchema(t *testing.T) {
 	s := newTestStore(t)
 	// 全部表都建出来了：逐表 SELECT 不报错即证明 DDL 幂等执行成功
 	for _, tbl := range []string{"cards", "card_relations", "card_tasks",
-		"card_dispatch_rounds", "card_events", "workflows", "dispatch_templates", "decisions",
+		"card_dispatch_rounds", "card_events", "open_ticket_projection", "open_ticket_projection_state",
+		"workflows", "dispatch_templates", "decisions",
 		"mirror_lease", "mirror_cursors", "ledger_meta", "card_prefixes"} {
 		if _, err := s.db.Exec("SELECT * FROM " + tbl + " LIMIT 0"); err != nil {
 			t.Fatalf("表 %s 不存在: %v", tbl, err)
@@ -36,6 +37,22 @@ func TestOpenCreatesSchema(t *testing.T) {
 	}
 	if indexName != "idx_card_dispatch_rounds_card_purpose" {
 		t.Fatalf("B351 失败轮次索引名 = %q", indexName)
+	}
+	if err := s.db.QueryRow(`SELECT name FROM sqlite_master
+		WHERE type = 'index' AND name = 'idx_room_messages_room_seq'`).Scan(&indexName); err != nil {
+		t.Fatalf("房间历史表达式索引不存在: %v", err)
+	}
+	if err := s.db.QueryRow(`SELECT name FROM sqlite_master
+		WHERE type = 'index' AND name = 'idx_events_mirrored_seq'`).Scan(&indexName); err != nil {
+		t.Fatalf("镜像事件投影水位索引不存在: %v", err)
+	}
+	for _, index := range []string{
+		"idx_room_messages_card_seq", "idx_session_projection_card_seq", "idx_needs_events_card_seq",
+		"idx_session_created_id_seq", "idx_session_structure_session_seq",
+	} {
+		if err := s.db.QueryRow(`SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?`, index).Scan(&indexName); err != nil {
+			t.Fatalf("B409 范围读取索引 %s 不存在: %v", index, err)
+		}
 	}
 	rows, err := s.db.Query(`PRAGMA table_info(card_dispatch_rounds)`)
 	if err != nil {
@@ -81,13 +98,13 @@ func TestQRebind(t *testing.T) {
 	}
 }
 
-func TestRedactDSN(t *testing.T) {
-	got := redactDSN("postgres://user:secret@example.test:5432/handoff", dialectPG)
-	if got != "postgres://user@example.test:5432/handoff" {
-		t.Fatalf("DSN 脱敏: %q", got)
+func TestDatabaseLabelExcludesConnectionString(t *testing.T) {
+	got := databaseLabel("postgres://user:secret@example.test:5432/handoff?sslmode=disable", dialectPG)
+	if got != "handoff" {
+		t.Fatalf("PG 日志标签应只保留数据库名: %q", got)
 	}
-	if got := redactDSN("/tmp/ledger.db", dialectSQLite); got != "/tmp/ledger.db" {
-		t.Fatalf("SQLite 路径不应改写: %q", got)
+	if got := databaseLabel("/tmp/ledger.db", dialectSQLite); got != "ledger.db" {
+		t.Fatalf("SQLite 日志标签应只保留文件名: %q", got)
 	}
 }
 

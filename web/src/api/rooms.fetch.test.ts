@@ -113,6 +113,14 @@ describe('fetchRooms', () => {
 })
 
 describe('fetchRoomMessages', () => {
+  it('把取消信号传到会话历史 HTTP 请求', async () => {
+    const controller = new AbortController()
+    const fetchMock = vi.fn().mockResolvedValue(jsonResp({ messages: [] }))
+    vi.stubGlobal('fetch', fetchMock)
+    await fetchRoomMessages('session:7', { signal: controller.signal })
+    expect(fetchMock.mock.calls[0][1].signal).toBe(controller.signal)
+  })
+
   it('GET /api/rooms/{id}/messages，before/limit 走查询串', async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResp({ messages: [] }))
     vi.stubGlobal('fetch', fetchMock)
@@ -180,6 +188,13 @@ describe('fetchInbox', () => {
 // 并对同一 fixture 做解码断言（序列化边界穿真实 fetch stub → request() 解析）。——
 
 describe('fetchSessions (B358.6)', () => {
+  it('透传取消信号给会话列表请求', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResp({ sessions: [] }))
+    vi.stubGlobal('fetch', fetchMock)
+    const controller = new AbortController()
+    await fetchSessions(controller.signal)
+    expect(fetchMock.mock.calls[0][1].signal).toBe(controller.signal)
+  })
   it('GET /api/sessions 恰此 URL（无 member 参数——身份服务端注入），解包 sessions 数组', async () => {
     const summary = cases.find((c) => c.case === 'session-summary-golden')!.summary
     const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResp({ sessions: [summary] })))

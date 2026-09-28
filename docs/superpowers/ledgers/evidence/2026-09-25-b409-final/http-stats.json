@@ -1,0 +1,218 @@
+[
+  {
+    "phase": "1",
+    "scenario": "cards",
+    "first": {
+      "ms": 10.381,
+      "status": 200,
+      "bytes": 953
+    },
+    "warmups": 5,
+    "n_samples": 100,
+    "p50_ms": 14.781,
+    "p95_ms": 20.896,
+    "max_ms": 26.422,
+    "errors": 0,
+    "response_bytes_min": 951,
+    "response_bytes_max": 953,
+    "p95_within_2s": true
+  },
+  {
+    "phase": "1",
+    "scenario": "messages",
+    "first": {
+      "ms": 11.325999999999999,
+      "status": 200,
+      "bytes": 41407
+    },
+    "warmups": 5,
+    "n_samples": 100,
+    "p50_ms": 11.026,
+    "p95_ms": 14.351,
+    "max_ms": 17.148,
+    "errors": 0,
+    "response_bytes_min": 41407,
+    "response_bytes_max": 41407,
+    "p95_within_2s": true
+  },
+  {
+    "phase": "1",
+    "scenario": "rooms",
+    "first": {
+      "ms": 11.592,
+      "status": 200,
+      "bytes": 751
+    },
+    "warmups": 5,
+    "n_samples": 100,
+    "p50_ms": 14.842,
+    "p95_ms": 20.385,
+    "max_ms": 46.168,
+    "errors": 0,
+    "response_bytes_min": 751,
+    "response_bytes_max": 751,
+    "p95_within_2s": true
+  },
+  {
+    "phase": "1",
+    "scenario": "sessions",
+    "first": {
+      "ms": 14.997,
+      "status": 200,
+      "bytes": 984
+    },
+    "warmups": 5,
+    "n_samples": 100,
+    "p50_ms": 15.949,
+    "p95_ms": 20.307,
+    "max_ms": 23.806,
+    "errors": 0,
+    "response_bytes_min": 984,
+    "response_bytes_max": 984,
+    "p95_within_2s": true
+  },
+  {
+    "phase": "2",
+    "scenario": "cards",
+    "first": {
+      "ms": 13.098,
+      "status": 200,
+      "bytes": 953
+    },
+    "warmups": 5,
+    "n_samples": 100,
+    "p50_ms": 15.329,
+    "p95_ms": 18.69,
+    "max_ms": 19.835,
+    "errors": 0,
+    "response_bytes_min": 949,
+    "response_bytes_max": 953,
+    "p95_within_2s": true
+  },
+  {
+    "phase": "2",
+    "scenario": "messages",
+    "first": {
+      "ms": 11.679,
+      "status": 200,
+      "bytes": 41407
+    },
+    "warmups": 5,
+    "n_samples": 100,
+    "p50_ms": 11.546,
+    "p95_ms": 16.322,
+    "max_ms": 18.957,
+    "errors": 0,
+    "response_bytes_min": 41407,
+    "response_bytes_max": 41407,
+    "p95_within_2s": true
+  },
+  {
+    "phase": "2",
+    "scenario": "rooms",
+    "first": {
+      "ms": 13.903,
+      "status": 200,
+      "bytes": 751
+    },
+    "warmups": 5,
+    "n_samples": 100,
+    "p50_ms": 14.282,
+    "p95_ms": 20.262,
+    "max_ms": 22.467,
+    "errors": 0,
+    "response_bytes_min": 751,
+    "response_bytes_max": 751,
+    "p95_within_2s": true
+  },
+  {
+    "phase": "2",
+    "scenario": "sessions",
+    "first": {
+      "ms": 16.726000000000003,
+      "status": 200,
+      "bytes": 984
+    },
+    "warmups": 5,
+    "n_samples": 100,
+    "p50_ms": 16.53,
+    "p95_ms": 25.288,
+    "max_ms": 28.169,
+    "errors": 0,
+    "response_bytes_min": 984,
+    "response_bytes_max": 984,
+    "p95_within_2s": true
+  },
+  {
+    "phase": "3",
+    "scenario": "cards",
+    "first": {
+      "ms": 14.283000000000001,
+      "status": 200,
+      "bytes": 953
+    },
+    "warmups": 5,
+    "n_samples": 100,
+    "p50_ms": 14.619,
+    "p95_ms": 21.949,
+    "max_ms": 28.948,
+    "errors": 0,
+    "response_bytes_min": 952,
+    "response_bytes_max": 953,
+    "p95_within_2s": true
+  },
+  {
+    "phase": "3",
+    "scenario": "messages",
+    "first": {
+      "ms": 15.072000000000001,
+      "status": 200,
+      "bytes": 41407
+    },
+    "warmups": 5,
+    "n_samples": 100,
+    "p50_ms": 9.728,
+    "p95_ms": 13.716,
+    "max_ms": 16.778,
+    "errors": 0,
+    "response_bytes_min": 41407,
+    "response_bytes_max": 41407,
+    "p95_within_2s": true
+  },
+  {
+    "phase": "3",
+    "scenario": "rooms",
+    "first": {
+      "ms": 16.212,
+      "status": 200,
+      "bytes": 751
+    },
+    "warmups": 5,
+    "n_samples": 100,
+    "p50_ms": 13.849,
+    "p95_ms": 19.588,
+    "max_ms": 42.221,
+    "errors": 0,
+    "response_bytes_min": 751,
+    "response_bytes_max": 751,
+    "p95_within_2s": true
+  },
+  {
+    "phase": "3",
+    "scenario": "sessions",
+    "first": {
+      "ms": 12.917,
+      "status": 200,
+      "bytes": 984
+    },
+    "warmups": 5,
+    "n_samples": 100,
+    "p50_ms": 16.287,
+    "p95_ms": 20.321,
+    "max_ms": 25.342,
+    "errors": 0,
+    "response_bytes_min": 984,
+    "response_bytes_max": 984,
+    "p95_within_2s": true
+  }
+]

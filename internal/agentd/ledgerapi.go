@@ -16,9 +16,11 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Xsxdot/handoff/internal/config"
+	"github.com/Xsxdot/handoff/internal/diag"
 	"github.com/Xsxdot/handoff/internal/ledger"
 	"github.com/Xsxdot/handoff/internal/ledgerstep"
 	"github.com/Xsxdot/handoff/internal/proto"
@@ -28,7 +30,9 @@ import (
 func (s *Server) SetLedger(st *ledger.Store) { s.ledger = st }
 
 func (s *Server) registerLedgerRoutes(api *http.ServeMux) {
-	api.HandleFunc("GET /api/cards", s.withLedger(s.handleCardsList))
+	// B409.6 S4：五条读路由套 observeRead（路线限定观测包装），生成贯穿
+	// collab/ledger 日志的 operation_id；写路径与其余端点不套。
+	api.HandleFunc("GET /api/cards", s.observeRead("cards_list", s.withLedger(s.handleCardsList)))
 	api.HandleFunc("GET /api/cards/{id}", s.withLedger(s.handleCardDetail))
 	api.HandleFunc("POST /api/cards", s.withLedger(s.handleCardCreate))
 	api.HandleFunc("PATCH /api/cards/{id}", s.withLedger(s.handleCardPatch))
@@ -46,16 +50,16 @@ func (s *Server) registerLedgerRoutes(api *http.ServeMux) {
 	api.HandleFunc("GET /api/flows/{name}", s.withLedger(s.handleFlowGet))
 	api.HandleFunc("PUT /api/flows/{name}", s.withLedger(s.handleFlowPut))
 	api.HandleFunc("GET /api/disciplines", s.withLedger(s.handleDisciplineNames))
-	api.HandleFunc("GET /api/rooms", s.withRooms(s.handleRoomsList))
-	api.HandleFunc("GET /api/rooms/{id}/messages", s.withRooms(s.handleRoomMessages))
+	api.HandleFunc("GET /api/rooms", s.observeRead("rooms_list", s.withRooms(s.handleRoomsList)))
+	api.HandleFunc("GET /api/rooms/{id}/messages", s.observeRead("room_messages", s.withRooms(s.handleRoomMessages)))
 	api.HandleFunc("POST /api/rooms/{id}/messages", s.withRooms(s.handleRoomSend))
 	api.HandleFunc("POST /api/rooms/{id}/read", s.withRooms(s.handleRoomRead))
 	api.HandleFunc("GET /api/inbox", s.withRooms(s.handleInbox))
 	// B358.4 会话（群）六端点：全部经 withRooms 守卫（未装配 503，与 rooms 同款）；
 	// 发言/已读/历史复用上方 /api/rooms 端点（会话房间以 session:<n> 作 {id}）。
 	api.HandleFunc("POST /api/sessions", s.withRooms(s.handleSessionCreate))
-	api.HandleFunc("GET /api/sessions", s.withRooms(s.handleSessionsList))
-	api.HandleFunc("GET /api/sessions/{id}", s.withRooms(s.handleSessionDetail))
+	api.HandleFunc("GET /api/sessions", s.observeRead("sessions_list", s.withRooms(s.handleSessionsList)))
+	api.HandleFunc("GET /api/sessions/{id}", s.observeRead("session_detail", s.withRooms(s.handleSessionDetail)))
 	api.HandleFunc("POST /api/sessions/{id}/archive", s.withRooms(s.handleSessionArchive))
 	api.HandleFunc("POST /api/sessions/{id}/cards", s.withRooms(s.handleSessionJoinCard))
 	api.HandleFunc("DELETE /api/sessions/{id}/cards/{cardID}", s.withRooms(s.handleSessionLeaveCard))
@@ -183,7 +187,10 @@ func ledgerDecisionWire(decision ledger.Decision) proto.Decision {
 
 func (s *Server) handleCardsList(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	views, err := s.ledger.ListCards(ledger.CardFilter{
+	// B409.6 review Important-1：cards 读路径接通 Context 入口——请求取消传播
+	// 到 ledger SQL 阶段，列卡/聚合日志与外围收口行共享同一 operation_id
+	//（与 enrichRoomAttachments 的 roomsapi.go 接线同款）。
+	views, err := s.ledger.ListCardsContext(r.Context(), ledger.CardFilter{
 		Project:         q.Get("project"),
 		Status:          q.Get("status"),
 		BaseBranch:      q.Get("base_branch"),
@@ -195,7 +202,7 @@ func (s *Server) handleCardsList(w http.ResponseWriter, r *http.Request) {
 		ledgerErr(w, err)
 		return
 	}
-	tickets, err := s.ledger.OpenTicketCounts()
+	tickets, err := s.ledger.OpenTicketCountsContext(r.Context())
 	if err != nil {
 		s.log.Warn("未决工单推导失败（徽标退化为不显示，不阻塞列表）", "err", err)
 		tickets = nil
@@ -228,9 +235,16 @@ func (s *Server) handleCardsList(w http.ResponseWriter, r *http.Request) {
 		}
 		out = append(out, ledgerCardViewWire(view, conflict, tickets[view.ID]))
 	}
+	// B409.6：本地主数据行数与远端摘要状态分开注记，外围收口分两条事实记。
+	unlinked := s.unlinkedSummary()
+	annotateReadRows(r.Context(), len(out))
+	if status, ok := unlinked["status"].(string); ok {
+		count, _ := unlinked["count"].(int)
+		annotateReadRemote(r.Context(), status, count)
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"cards":    out,
-		"unlinked": s.unlinkedSummary(),
+		"unlinked": unlinked,
 	})
 }
 
@@ -240,54 +254,278 @@ func (s *Server) cfgTargets() map[string]config.Target {
 	return s.conf().Targets
 }
 
-// unlinkedSummary 「未挂账」摘要：登记 target 上存在、card_tasks 里没有、
-// **且还没走到终态**的 task。拨号失败进入 unknown_targets，而不是假装为零。
-//
-// 为什么排除终态（见 unlinkedRowsFor）：这个摘要的用途是「账目对不上，需要
-// 补挂卡」的兜底提醒——已 completed/failed 的历史任务补挂已无意义，把它们
-// 算进来只会让角标常年停在三位数（实测本机 164 条全是终态），提醒退化成噪声。
-func (s *Server) unlinkedSummary() map[string]any {
-	s.unlinkedMu.Lock()
-	defer s.unlinkedMu.Unlock()
-	if time.Since(s.unlinkedAt) < 30*time.Second && s.unlinkedCache != nil {
-		return s.unlinkedCache
-	}
+const (
+	unlinkedSummaryTTL       = 30 * time.Second
+	unlinkedSummaryDeadline  = 2 * time.Second
+	unlinkedTargetDeadline   = 2 * time.Second
+	unlinkedSummaryFanoutMax = 8
+)
 
-	linked := map[string]bool{}
-	if links, err := s.ledger.AllTaskLinks(); err == nil {
-		for _, link := range links {
-			linked[link.Target+"/"+link.TaskID] = true
+type unlinkedSummarySnapshot struct {
+	Tasks            []map[string]any
+	TargetConfigs    map[string]config.Target
+	SuccessfulTarget map[string]struct{}
+	ObservedAt       time.Time
+}
+
+type unlinkedTargetResult struct {
+	name string
+	rows []map[string]any
+	err  error
+	// B409.6 逐台记账：本次 target 调用耗时与结果分类。
+	elapsedNs int64
+	outcome   string
+}
+
+// unlinkedTargetErrorClass 给失败 target 收口行一个有限安全分类（原始错误
+// 文案不可视为安全，不进分类行）。
+func unlinkedTargetErrorClass(err error) string {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return "deadline_exceeded"
+	case errors.Is(err, context.Canceled):
+		return "context_canceled"
+	default:
+		return "target_error"
+	}
+}
+
+// unlinkedTargetOutcome 把一台 target 的调用结果归入有限类别：success/empty/
+// error/deadline/canceled。总 deadline 与单台 timeout、关停取消分开可辨。
+func unlinkedTargetOutcome(err error, rows []map[string]any) string {
+	if err == nil {
+		if len(rows) == 0 {
+			return "empty"
 		}
-	} else {
-		s.log.Warn("读取挂账 task 失败，未挂账摘要可能不完整", "err", err)
+		return "success"
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "deadline"
+	}
+	if errors.Is(err, context.Canceled) {
+		return "canceled"
+	}
+	return "error"
+}
+
+// unlinkedSummary 只投影缓存。target 网络请求与限域关联键查询由单飞 worker
+// 完成，因此卡片主列表不会等待远端摘要；缺失或陈旧状态由 Web 明确呈现。
+func (s *Server) unlinkedSummary() map[string]any {
+	cfg := s.conf()
+	targets := cloneTargetConfigs(cfg.Targets)
+	names := configuredTargetNames(targets)
+	now := time.Now()
+	if len(targets) == 0 {
+		return map[string]any{
+			"status": "latest", "observed_at": now.UTC().Format(time.RFC3339Nano),
+			"count": 0, "tasks": make([]map[string]any, 0), "unknown_targets": make([]string, 0),
+		}
+	}
+	s.unlinkedMu.Lock()
+	snapshot := s.unlinkedCache
+	needsRefresh := snapshot == nil || now.Sub(snapshot.ObservedAt) > unlinkedSummaryTTL ||
+		!sameTargetConfigs(snapshot.TargetConfigs, targets)
+	recentAttempt := !s.unlinkedLastAttemptAt.IsZero() &&
+		now.Sub(s.unlinkedLastAttemptAt) <= unlinkedSummaryTTL &&
+		s.unlinkedLastAttemptCfg == cfg &&
+		sameTargetConfigs(s.unlinkedLastAttemptFor, targets)
+	if needsRefresh && !recentAttempt && !s.unlinkedStopped && !s.unlinkedRefreshing {
+		s.unlinkedRefreshing = true
+		s.unlinkedRefreshWG.Add(1)
+		go s.refreshUnlinkedSummary(cfg, targets)
+	}
+	s.unlinkedMu.Unlock()
+
+	if snapshot == nil {
+		return map[string]any{
+			"status": "unavailable", "observed_at": nil,
+			"count": 0, "tasks": make([]map[string]any, 0),
+			"unknown_targets": names,
+		}
 	}
 
-	rows := make([]map[string]any, 0)
-	unknown := make([]string, 0)
-	targets := s.cfgTargets()
+	status, observedAt, rows, unknown := projectUnlinkedSnapshot(snapshot, targets, now)
+	if status == "unavailable" {
+		return map[string]any{
+			"status": status, "observed_at": nil,
+			"count": 0, "tasks": make([]map[string]any, 0),
+			"unknown_targets": unknown,
+		}
+	}
+	return map[string]any{
+		"status": status, "observed_at": observedAt.UTC().Format(time.RFC3339Nano),
+		"count": len(rows), "tasks": rows, "unknown_targets": unknown,
+	}
+}
+
+func projectUnlinkedSnapshot(snapshot *unlinkedSummarySnapshot, targets map[string]config.Target, now time.Time) (string, time.Time, []map[string]any, []string) {
+	unknownSet := make(map[string]struct{}, len(targets))
+	matched := make(map[string]struct{}, len(targets))
+	for name, target := range targets {
+		cachedTarget, cached := snapshot.TargetConfigs[name]
+		if !cached || cachedTarget != target {
+			unknownSet[name] = struct{}{}
+			continue
+		}
+		if _, ok := snapshot.SuccessfulTarget[name]; !ok {
+			unknownSet[name] = struct{}{}
+			continue
+		}
+		matched[name] = struct{}{}
+	}
+	unknown := make([]string, 0, len(unknownSet))
+	for name := range unknownSet {
+		unknown = append(unknown, name)
+	}
+	sort.Strings(unknown)
+
+	// A cached row is current only for the exact target configuration that
+	// successfully produced it. If every current target is new or failed, old
+	// rows cannot describe the current target set and must not look like zero.
+	if len(targets) > 0 && len(matched) == 0 {
+		return "unavailable", time.Time{}, []map[string]any{}, unknown
+	}
+	rows := make([]map[string]any, 0, len(snapshot.Tasks))
+	for _, row := range snapshot.Tasks {
+		name, _ := row["target"].(string)
+		if _, ok := matched[name]; ok {
+			rows = append(rows, row)
+		}
+	}
+	status := unlinkedSnapshotStatus(snapshot.ObservedAt, now, len(unknown) > 0)
+	return status, snapshot.ObservedAt, rows, unknown
+}
+
+func unlinkedSnapshotStatus(observedAt, now time.Time, hasUnknown bool) string {
+	if now.Sub(observedAt) > unlinkedSummaryTTL {
+		return "stale"
+	}
+	if hasUnknown {
+		return "partial"
+	}
+	return "latest"
+}
+
+// configuredTargetNames makes a stable projection order without logging target secrets.
+func configuredTargetNames(targets map[string]config.Target) []string {
 	names := make([]string, 0, len(targets))
 	for name := range targets {
 		names = append(names, name)
 	}
 	sort.Strings(names)
-	for _, name := range names {
-		// 走 target 客户端池：relay 形态的机器没有 addr，直连构造对它们恒失败
-		// （见 internal/targetclient 与 nodirectclient_test）。取不到客户端与
-		// 拿不到任务列表同归「未知」——本区块的语义就是「这台机器对不上账」。
-		cl, err := s.pool.For(name)
-		if err != nil {
-			s.log.Warn("取 target 客户端失败，该机器计入未对账", "target", name, "cause", err)
+	return names
+}
+
+func cloneTargetConfigs(targets map[string]config.Target) map[string]config.Target {
+	copy := make(map[string]config.Target, len(targets))
+	for name, target := range targets {
+		copy[name] = target
+	}
+	return copy
+}
+
+func sameTargetConfigs(left, right map[string]config.Target) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for name, target := range left {
+		if right[name] != target {
+			return false
+		}
+	}
+	return true
+}
+
+// refreshUnlinkedSummary owns the single background refresh. The lock protects
+// only admission and publication; SQL and target I/O always run outside it.
+func (s *Server) refreshUnlinkedSummary(cfg *config.Config, targets map[string]config.Target) {
+	names := configuredTargetNames(targets)
+	defer s.unlinkedRefreshWG.Done()
+	defer func() {
+		s.unlinkedMu.Lock()
+		s.unlinkedRefreshing = false
+		s.unlinkedLastAttemptAt = time.Now()
+		s.unlinkedLastAttemptFor = cloneTargetConfigs(targets)
+		s.unlinkedLastAttemptCfg = cfg
+		s.unlinkedMu.Unlock()
+	}()
+
+	started := time.Now()
+	refreshID := diag.NewRefreshID()
+	refreshCtx := diag.With(s.unlinkedRefreshCtx, diag.Info{RefreshID: refreshID})
+	s.log.Info("未挂账摘要后台刷新开始", "refresh_id", refreshID,
+		"target_count", len(names), "deadline_ms", unlinkedSummaryDeadline.Milliseconds())
+	ctx, cancel := context.WithTimeout(refreshCtx, unlinkedSummaryDeadline)
+	defer cancel()
+	keys, err := s.ledger.AllTaskLinkKeysContext(ctx)
+	if err != nil {
+		s.log.Warn("未挂账摘要关联键读取失败，保留上次观测", "cause", err)
+		return
+	}
+	linked := make(map[ledger.TaskLinkKey]struct{}, len(keys))
+	for _, key := range keys {
+		linked[key] = struct{}{}
+	}
+
+	results := make([]unlinkedTargetResult, len(names))
+	if len(names) > 0 {
+		workerCount := min(len(names), unlinkedSummaryFanoutMax)
+		jobs := make(chan int)
+		var workers sync.WaitGroup
+		workers.Add(workerCount)
+		for worker := 0; worker < workerCount; worker++ {
+			go func() {
+				defer workers.Done()
+				for index := range jobs {
+					name := names[index]
+					results[index] = s.readUnlinkedTarget(ctx, cfg, name, targets[name], linked)
+				}
+			}()
+		}
+	feed:
+		for index := range names {
+			select {
+			case jobs <- index:
+			case <-ctx.Done():
+				break feed
+			}
+		}
+		close(jobs)
+		workers.Wait()
+	}
+	if err := ctx.Err(); err != nil {
+		s.log.Warn("未挂账摘要刷新达到总时限或关停取消", "refresh_id", refreshID,
+			"target_count", len(names), "cause", err)
+	}
+	if s.conf() != cfg {
+		s.log.Info("target 配置在未挂账摘要刷新期间变更，丢弃旧配置观测", "target_count", len(names))
+		return
+	}
+
+	rows := make([]map[string]any, 0)
+	unknown := make([]string, 0)
+	successful := make(map[string]struct{}, len(names))
+	successes := 0
+	for index, name := range names {
+		result := results[index]
+		if result.name == "" {
+			result.err = ctx.Err()
+			if result.err == nil {
+				result.err = errors.New("target refresh did not start")
+			}
+		}
+		if result.err != nil {
 			unknown = append(unknown, name)
 			continue
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		tasks, err := cl.ListTasks(ctx)
-		cancel()
-		if err != nil {
-			unknown = append(unknown, name)
-			continue
-		}
-		rows = append(rows, unlinkedRowsFor(name, tasks, linked)...)
+		successes++
+		successful[name] = struct{}{}
+		rows = append(rows, result.rows...)
+	}
+	if len(names) > 0 && successes == 0 {
+		s.log.Warn("未挂账摘要没有成功 target 观测，保留上次观测", "refresh_id", refreshID,
+			"target_count", len(names), "unknown_count", len(unknown))
+		return
 	}
 	sort.Slice(rows, func(i, j int) bool {
 		leftTarget, _ := rows[i]["target"].(string)
@@ -300,11 +538,86 @@ func (s *Server) unlinkedSummary() map[string]any {
 		return leftTask < rightTask
 	})
 	sort.Strings(unknown)
-	s.unlinkedCache = map[string]any{
-		"count": len(rows), "tasks": rows, "unknown_targets": unknown,
+	snapshot := &unlinkedSummarySnapshot{
+		Tasks: rows, TargetConfigs: cloneTargetConfigs(targets),
+		SuccessfulTarget: successful, ObservedAt: time.Now().UTC(),
 	}
-	s.unlinkedAt = time.Now()
-	return s.unlinkedCache
+	allowDeadlinePartial := errors.Is(ctx.Err(), context.DeadlineExceeded) && successes > 0
+	s.unlinkedMu.Lock()
+	published := false
+	if !s.unlinkedStopped && s.unlinkedRefreshCtx.Err() == nil && (ctx.Err() == nil || allowDeadlinePartial) {
+		s.unlinkedCache = snapshot
+		published = true
+	}
+	s.unlinkedMu.Unlock()
+	if published {
+		s.log.Info("未挂账摘要后台刷新完成", "refresh_id", refreshID,
+			"target_count", len(names), "success_count", successes,
+			"unknown_count", len(unknown), "task_count", len(rows),
+			"elapsed_ns", time.Since(started).Nanoseconds())
+	}
+}
+
+// readUnlinkedTarget 读取一台 target 的未挂账任务。B409.6：无论成败，每台
+// target 收口一行记账（outcome/target_call_ns/task_count/refresh_id）；原始
+// 错误文案不进收口行（不可视为安全的字符串），只进分类。
+func (s *Server) readUnlinkedTarget(ctx context.Context, cfg *config.Config, name string, target config.Target, linked map[ledger.TaskLinkKey]struct{}) (result unlinkedTargetResult) {
+	started := time.Now()
+	targetCtx, cancel := context.WithTimeout(ctx, unlinkedTargetDeadline)
+	defer cancel()
+	defer func() {
+		result.elapsedNs = time.Since(started).Nanoseconds()
+		result.outcome = unlinkedTargetOutcome(result.err, result.rows)
+		level := s.log.Debug
+		if result.outcome == "error" || result.outcome == "deadline" {
+			level = s.log.Warn
+		}
+		attrs := append(diag.Attrs(ctx), "target", name,
+			"outcome", result.outcome, "target_call_ns", result.elapsedNs,
+			"task_count", len(result.rows))
+		if result.outcome != "success" && result.outcome != "empty" {
+			// 失败行带安全分类；原始错误文案只进既有 cause 行，不进分类行。
+			attrs = append(attrs, "error_class", unlinkedTargetErrorClass(result.err))
+		}
+		level("未挂账 target 读取结束", attrs...)
+	}()
+	result.name = name
+	result.rows = make([]map[string]any, 0)
+	if err := targetCtx.Err(); err != nil {
+		result.err = err
+		return result
+	}
+	if s.conf() != cfg {
+		result.err = errors.New("target configuration changed during summary refresh")
+		return result
+	}
+	if configured, ok := cfg.Targets[name]; !ok || configured != target {
+		result.err = errors.New("target configuration changed before summary target read")
+		return result
+	}
+	s.log.Debug("读取未挂账 target 开始", "target", name)
+	client, err := s.pool.For(name)
+	if err != nil {
+		result.err = err
+		s.log.Warn("读取未挂账 target 客户端失败", "target", name, "cause", err)
+		return result
+	}
+	if s.conf() != cfg {
+		result.err = errors.New("target configuration changed during summary refresh")
+		return result
+	}
+	tasks, err := client.ListTasks(targetCtx)
+	if err != nil {
+		result.err = err
+		s.log.Warn("读取未挂账 target 任务失败", "target", name, "cause", err)
+		return result
+	}
+	if s.conf() != cfg {
+		result.err = errors.New("target configuration changed during summary refresh")
+		return result
+	}
+	result.rows = unlinkedRowsForKeys(name, tasks, linked)
+	return result
 }
 
 // unlinkedRowsFor 从一台 target 的任务列表里挑出该计入「未挂账」的行。
@@ -318,9 +631,22 @@ func (s *Server) unlinkedSummary() map[string]any {
 //   - 终态（completed / failed）的跳过——终态任务不再有 executor 持有工作区，
 //     事后补挂卡改变不了任何事实；它们是历史残留而非待办
 func unlinkedRowsFor(target string, tasks []proto.TaskView, linked map[string]bool) []map[string]any {
+	return unlinkedRowsForPredicate(target, tasks, func(taskID string) bool {
+		return linked[target+"/"+taskID]
+	})
+}
+
+func unlinkedRowsForKeys(target string, tasks []proto.TaskView, linked map[ledger.TaskLinkKey]struct{}) []map[string]any {
+	return unlinkedRowsForPredicate(target, tasks, func(taskID string) bool {
+		_, exists := linked[ledger.TaskLinkKey{Target: target, TaskID: taskID}]
+		return exists
+	})
+}
+
+func unlinkedRowsForPredicate(target string, tasks []proto.TaskView, isLinked func(string) bool) []map[string]any {
 	rows := make([]map[string]any, 0, len(tasks))
 	for _, task := range tasks {
-		if linked[target+"/"+task.ID] {
+		if isLinked(task.ID) {
 			continue
 		}
 		if task.State.IsTerminal() {

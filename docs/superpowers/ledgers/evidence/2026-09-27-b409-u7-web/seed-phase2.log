@@ -1,0 +1,9 @@
+=== RUN   TestB409U7PGSeedPhase
+2026/09/27 13:43:27 INFO cards.driver_carrier 列已存在，跳过加列
+2026/09/27 13:43:27 INFO cards.driver_source 列已存在，跳过加列
+2026/09/27 13:43:27 INFO 账本库已打开 dialect=postgres database=handoff_b409_test
+    rooms_history_perf_test.go:720: B409_U7_STAGE phase=2-plus-unrelated total_events=41021 mirror_rows=9342 mirror_payload_bytes=7086196 total_payload_bytes=9313007 types=card_created=2,room_message=253,session_created=2,task_mirrored=9342,unrelated_event=31422
+    rooms_history_perf_test.go:735: B409_U7_FIXTURE run_id=b409-u7-web-1790485889 card_a=B911790485889 card_b=C911790485889 session_main=session:1 session_empty=session:2 wait_member=agent:u7-wait-1790485889 idle_member=agent:u7-idle-1790485889 mirror_target=u7-mirror-1790485889 project=u7-matrix-1790485889 room_messages=250
+--- PASS: TestB409U7PGSeedPhase (0.30s)
+PASS
+ok  	github.com/Xsxdot/handoff/internal/ledger	0.863s

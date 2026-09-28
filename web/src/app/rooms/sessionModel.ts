@@ -44,6 +44,25 @@ export function timelineKindLabel(kind: string): string {
 
 export interface BodySegment { text: string; mention: boolean }
 
+// Go strings.Fields / unicode.IsSpace 的空白集；JS \s 少了 U+0085，
+// 多了 U+FEFF，不能用作跨端寻址的 token 边界。
+// eslint-disable-next-line no-control-regex -- 必须包含 Go unicode.IsSpace 的 ASCII 控制空白。
+const goSpace = /[\u0009-\u000d\u0020\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]/
+// eslint-disable-next-line no-control-regex -- 与 goSpace 使用同一套 Go 空白字符。
+const goSpaceRun = /[\u0009-\u000d\u0020\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+/
+
+// extractSessionMentions 与 CLI 的完整 @token 金样本一致：只收空白分隔且
+// 合法的统一身份或卡号，避免正文里的邮箱和残缺 @ 无意寻址。
+export function extractSessionMentions(body: string): string[] {
+  const seen = new Set<string>()
+  for (const field of body.split(goSpaceRun)) {
+    if (!field.startsWith('@')) continue
+    const token = field.slice(1)
+    if ((/^(?:user|agent):[^:]+$/.test(token) && !goSpace.test(token)) || /^[A-Z]{1,4}[0-9]+(?:\.[0-9]+)*$/.test(token)) seen.add(token)
+  }
+  return [...seen]
+}
+
 // segmentBody 按空白切 @token，与 mentions 逐字比对（token 去 @ 前缀）。
 export function segmentBody(body: string, mentions?: string[]): BodySegment[] {
   const set = new Set(mentions ?? [])

@@ -26,11 +26,12 @@ export interface PollState<T> {
 }
 
 export function usePoll<T>(
-  fetcher: () => Promise<T>,
+  fetcher: (signal: AbortSignal) => Promise<T>,
   intervalMs: number,
-  opts?: { enabled?: boolean },
+  opts?: { enabled?: boolean; timeoutMs?: number },
 ): PollState<T> {
   const enabled = opts?.enabled ?? true
+  const timeoutMs = opts?.timeoutMs ?? 0
   const [data, setData] = useState<T | null>(null)
   const [disconnected, setDisconnected] = useState(false)
   const [sessionExpired, setSessionExpired] = useState(false)
@@ -62,7 +63,20 @@ export function usePoll<T>(
       if (request && inFlightNonceRef.current !== nonce) request = null
       try {
         if (!request) {
-          request = fetcherRef.current()
+          const controller = new AbortController()
+          const pending = fetcherRef.current(controller.signal)
+          // 无上限的在飞请求会让后续每轮直接跳过；到点释放轮询槽，并取消支持
+          // AbortSignal 的 HTTP 请求。即使旧 fetcher 忽略取消，也不能阻塞恢复。
+          request = timeoutMs > 0 ? new Promise<T>((resolve, reject) => {
+            const deadline = window.setTimeout(() => {
+              controller.abort()
+              reject(new ApiError(0, `请求超过 ${timeoutMs}ms 未返回`))
+            }, timeoutMs)
+            void pending.then(
+              (value) => { window.clearTimeout(deadline); resolve(value) },
+              (error: unknown) => { window.clearTimeout(deadline); reject(error) },
+            )
+          }) : pending
           inFlightRef.current = request
           inFlightNonceRef.current = nonce
         }
@@ -100,7 +114,7 @@ export function usePoll<T>(
       stopTimer()
       document.removeEventListener('visibilitychange', onVisibility)
     }
-  }, [enabled, intervalMs, nonce])
+  }, [enabled, intervalMs, nonce, timeoutMs])
 
   return { data, disconnected, sessionExpired, errorText, refresh }
 }

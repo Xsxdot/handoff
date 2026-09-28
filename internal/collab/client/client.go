@@ -9,6 +9,7 @@
 package client
 
 import (
+	"context"
 	"errors"
 	"time"
 
@@ -20,6 +21,15 @@ import (
 // 它；门面据它映射 collab.ErrNoRoom。接口不 import ledger，故哨兵只能定义
 // 在使用方一侧——否则把账本错误类型泄进接口。
 var ErrNotFound = errors.New("collab: 账本对象不存在")
+
+// RoomMessageSnapshot 是账本按 room 与调用方 seq 水位汇总后的消息事实。
+// MessagesAfter 仅表示 seq > caller watermark 的行数，不代表授权或 member unread。
+type RoomMessageSnapshot struct {
+	RoomID        string
+	Latest        proto.LedgerEvent
+	LastActivity  time.Time
+	MessagesAfter int64
+}
 
 // LedgerClient 会话子系统消费账本能力的唯一通道。方法集与契约文档
 // §3.4 一一对应；扩方法先回 contract 节点。
@@ -41,6 +51,35 @@ type LedgerClient interface {
 	RecordMessageConsumed(cardID string, msgSeq int64, consumer string) error
 	// EventsFromAsc 升序游标读事件（cardIDs 空 = 全流含群级无卡事件）。
 	EventsFromAsc(cardIDs []string, fromSeq int64, limit int) ([]proto.LedgerEvent, error)
+	// EventsFromAscContext 供 HTTP 会话读取在客户端断开时取消事件流查询。
+	EventsFromAscContext(ctx context.Context, cardIDs []string, fromSeq int64, limit int) ([]proto.LedgerEvent, error)
+	// RoomMessagesBeforeContext 只读指定房间最近消息；beforeSeq 为排他上界，limit 必须为正。
+	RoomMessagesBeforeContext(ctx context.Context, roomID string, beforeSeq int64, limit int) ([]proto.LedgerEvent, error)
+	// RoomMessageSnapshotsContext 批量返回目标 room 最新消息、最大 created_at 与给定 seq 水位之后的消息行数。
+	// 房间身份按 RoomIDOf 语义解析：card_id 优先，无卡事件才取 payload.room；不解释 member/unread。
+	RoomMessageSnapshotsContext(ctx context.Context, afterByRoom map[string]int64) ([]RoomMessageSnapshot, error)
+	// SessionProjectionEventsContext 返回单会话结构事件及调用方给定当前成员卡上的投影事件。
+	SessionProjectionEventsContext(ctx context.Context, sessionID string, cardIDs []string) ([]proto.LedgerEvent, error)
+	// LatestNeedsEventsContext 返回每张指定卡最新一条 needs_human/needs_cleared 事实。
+	LatestNeedsEventsContext(ctx context.Context, cardIDs []string) ([]proto.LedgerEvent, error)
+	// --- B409 U5 收件箱限域读（recipient-address 候选；U4/U5 seam 清点见
+	// internal/ledger/message_candidates.go 文件头——与 U4 的范围投影读无共同方法）---
+	// MentionCandidatesContext 读一页 mentions 精确含 member 的 room_message 候选
+	// 超集。roomID 非空时限房间（SameRoom 的 SQL 超集：挂卡行按 card_id、无卡行
+	// 按 payload.room——SameRoom 权威判定仍由调用方执行）；cardlessOnly 只取无卡
+	// 行（Pending 群级源）；afterSeq 排他；limit 必须 >0。kind/by_system 不在账本
+	// 过滤——裁决在 collab。
+	MentionCandidatesContext(ctx context.Context, member, roomID string, cardlessOnly bool, afterSeq int64, limit int) ([]proto.LedgerEvent, error)
+	// CardRoomUserMessagesContext 读给定卡集合上 kind=user 的房间消息行（Pending
+	// 第二源）。cardIDs 空返回空集；块间各自升序，跨源归并排序由调用方负责。
+	CardRoomUserMessagesContext(ctx context.Context, cardIDs []string, afterSeq int64, limit int) ([]proto.LedgerEvent, error)
+	// ConsumedMessageSeqsContext 读 consumer 已消费的 message_seq 集合（载荷
+	// message_seq/consumer 精确匹配为权威）。afterSeq 是安全上界：标记事件 seq
+	// 必大于被标记消息 seq，故不会漏掉 message_seq>afterSeq 的相关标记。
+	ConsumedMessageSeqsContext(ctx context.Context, consumer string, afterSeq int64) ([]int64, error)
+	// EventBySeq 按全局 seq 点读单条事件（Consume 定位消息所属卡的限域替身）；
+	// ok=false 表示 seq 不存在。
+	EventBySeq(seq int64) (proto.LedgerEvent, bool, error)
 	// --- B358 会话（群）域账本能力 ---
 	// CreateSession 建一场会话（群），返回带分配 id 的会话本体。
 	CreateSession(title, owner, actor string) (proto.Session, error)

@@ -23,6 +23,18 @@ const defaultProps = {
 }
 
 describe('SessionSidebar', () => {
+  it('读取失败时显示错误而非“暂无会话”', () => {
+    render(<SessionSidebar sessions={[]} {...defaultProps} errorText="请求超时" />)
+    expect(screen.getByRole('alert')).toHaveTextContent('请求超时')
+    expect(screen.queryByText('（暂无会话）')).not.toBeInTheDocument()
+  })
+  it('查询失败时保留上次成功缓存的会话行并显示断连提示', () => {
+    const golden = cases.find((c) => c.case === 'session-summary-golden')!.summary!
+    render(<SessionSidebar sessions={[golden]} {...defaultProps} errorText="连接数据库超时" />)
+    expect(screen.getByRole('alert')).toHaveTextContent('连接数据库超时')
+    expect(screen.getByTestId('session-row')).toHaveTextContent(golden.title)
+    expect(screen.queryByText('（暂无会话）')).not.toBeInTheDocument()
+  })
   it('fixture 行渲染未读角标与需要你标签，点击行回调会话', async () => {
     const onOpen = vi.fn()
     const user = userEvent.setup()

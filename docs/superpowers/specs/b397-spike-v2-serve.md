@@ -1,5 +1,11 @@
 # OpenCode v2.0.12 `serve` HTTP/SSE 契约探测报告（spike）
 
+> **历史原始探针，非当前设计裁决。** 2026-09-22 的隔离补探针进一步核实了双宿主
+> plugin object、原生 auth list 与依赖倒置边界；关于“双源码是否必要”和“凭证文件能否
+> 作为 Ready 判据”等推论已被
+> `2026-09-22-b397-opencode-v2-support-design.md` 与配套 evidence ledger 取代。
+> 本文保留原始 HTTP/SSE 样本，不应单独作为实现依据。
+
 - 二进制：`/Users/xushixin/.opencode/bin/opencode`（`opencode2` / `opencode` 同一二进制），`opencode v2.0.12`
 - 探测时间：2026-09-22，端口 45996-45999，全部 serve 已 kill，端口已释放
 - 未改动 `~/.config/opencode`，未触碰任何既有 opencode 进程

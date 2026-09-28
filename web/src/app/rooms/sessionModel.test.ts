@@ -5,9 +5,19 @@ import { describe, expect, it } from 'vitest'
 import type { SessionMember, SessionSummary } from '../../api/rooms'
 import {
   MEMBER_KIND_LABEL, MEMBER_STATUS_LABEL, TIMELINE_KIND_LABEL,
-  applyMention, filterSessionsByProject, isSelfActor, memberKindLabel, memberStatusLabel, memberStatusText,
+  applyMention, extractSessionMentions, filterSessionsByProject, isSelfActor, memberKindLabel, memberStatusLabel, memberStatusText,
   mentionCandidates, segmentBody, signatureText, timelineKindLabel, totalUnread,
 } from './sessionModel'
+
+describe('CLI/桌面共用的 @ 金样本', () => {
+  it('只提取完整有效身份和卡号，去重且保持顺序', () => {
+    expect(extractSessionMentions('@agent:main @user:sy @B233.16 @agent:main')).toEqual(['agent:main', 'user:sy', 'B233.16'])
+    expect(extractSessionMentions('@agent: @B23x @unknown email@agent:main')).toEqual([])
+  })
+  it('按 Go Unicode 空白分隔，避免桌面与 CLI 寻址分歧', () => {
+    expect(extractSessionMentions('@agent:a\u0085b')).toEqual(['agent:a'])
+  })
+})
 
 describe('成员状态渲染词表（看板不说谎的前端半边）', () => {
   it('标签表恰四值，任何标签不含在线字样（反例断言）', () => {

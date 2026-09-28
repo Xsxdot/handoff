@@ -1,0 +1,4 @@
+    rooms_history_perf_test.go:732: B409_U7_STAGE phase=3-doubled-mirrors total_events=50363 mirror_rows=18684 mirror_payload_bytes=14100947 total_payload_bytes=16201050 types=card_created=2,room_message=253,session_created=2,task_mirrored=18684,unrelated_event=31422
+    rooms_history_perf_test.go:735: B409_U7_FIXTURE run_id=b409-u7-1790484019 card_a=B911790484019 card_b=C911790484019 session_main=session:1 session_empty=session:2 wait_member=agent:u7-wait-1790484019 idle_member=agent:u7-idle-1790484019 mirror_target=u7-mirror-1790484019 project=u7-matrix-1790484019 room_messages=250
+--- PASS: TestB409U7PGSeedPhase (0.27s)
+ok  	github.com/Xsxdot/handoff/internal/ledger	0.610s

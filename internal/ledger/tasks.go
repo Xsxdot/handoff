@@ -4,11 +4,14 @@
 package ledger
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/Xsxdot/handoff/internal/diag"
 )
 
 // TaskLink card_tasks 一行。JSON tag 服务直接编码账本结构的 CLI；HTTP 详情使用
@@ -23,6 +26,47 @@ type TaskLink struct {
 	TaskID    string    `json:"task_id"`
 	Purpose   string    `json:"purpose"`
 	CreatedAt time.Time `json:"created_at"`
+}
+
+// TaskLinkKey is the minimal target/task identity needed to compare the local
+// ledger with remote task inventories. It intentionally omits card workflow
+// projections that this read path does not consume.
+type TaskLinkKey struct {
+	Target string
+	TaskID string
+}
+
+// AllTaskLinkKeysContext returns only target/task keys and honors cancellation.
+// The method exists to keep card-list refreshes independent of unrelated
+// dispatched-event history; unlike AllTaskLinks it does not project workflow
+// Node/Attempt fields.
+// B409.6：查询经 timedReadQuery 分离阶段，日志带 refresh_id/operation_id 关联。
+func (s *Store) AllTaskLinkKeysContext(ctx context.Context) ([]TaskLinkKey, error) {
+	log().Info("读取未挂账关联键开始", append(diag.Attrs(ctx), "query", "task_link_keys")...)
+	keys := make([]TaskLinkKey, 0)
+	stage, err := s.timedReadQuery(ctx, `SELECT target, task_id FROM card_tasks ORDER BY target, task_id`, nil,
+		func(rows *sql.Rows) (int, int64, error) {
+			var keyBytes int64
+			for rows.Next() {
+				var key TaskLinkKey
+				if err := rows.Scan(&key.Target, &key.TaskID); err != nil {
+					return len(keys), keyBytes, fmt.Errorf("扫描未挂账关联键: %w", err)
+				}
+				keyBytes += int64(len(key.Target) + len(key.TaskID))
+				keys = append(keys, key)
+			}
+			return len(keys), keyBytes, rows.Err()
+		})
+	if err != nil {
+		log().Error("读取未挂账关联键失败", append(diag.Attrs(ctx), "query", "task_link_keys",
+			"error_class", readErrorClass(err, stage.failedStage), "failed_stage", stage.failedStage,
+			"rows_read", stage.rowsRead, "key_bytes", stage.resultBytes, "cause", err)...)
+		return nil, fmt.Errorf("读未挂账关联键: %w", err)
+	}
+	// key_bytes 保留既有字段名（PG 增长证据测试按它取数）；与 result_bytes 同值。
+	log().Info("读取未挂账关联键完成", append(append(diag.Attrs(ctx), "query", "task_link_keys",
+		"rows_read", len(keys), "key_bytes", stage.resultBytes), stage.logAttrs()...)...)
+	return keys, nil
 }
 
 // LinkTask 把 (target, task) 挂到卡上。purpose ∈ {implement, review, merge}
@@ -74,6 +118,26 @@ func (s *Store) TasksOf(cardID string) ([]TaskLink, error) {
 // AllTaskLinks 全部挂账行（镜像对账用），并投影每行所属卡的最新
 // dispatched 快照中的 workflow Node/Attempt。
 func (s *Store) AllTaskLinks() ([]TaskLink, error) {
+	return s.AllTaskLinksContext(context.Background())
+}
+
+// AllTaskLinksContext 是 AllTaskLinks 的可取消入口（B409.6：房间列表 attach
+// 投影的 HTTP context 取消传播）。带总耗时与行数日志；投影子查询保持原样，
+// 不在日志里冒充已拆分阶段。
+func (s *Store) AllTaskLinksContext(ctx context.Context) ([]TaskLink, error) {
+	started := time.Now()
+	links, err := s.allTaskLinks(ctx)
+	if err != nil {
+		log().Warn("读全部挂账失败", append(diag.Attrs(ctx),
+			"error_class", readErrorClass(err, ""), "cause", err)...)
+		return nil, err
+	}
+	log().Debug("读全部挂账完成", append(diag.Attrs(ctx), "rows_returned", len(links),
+		"elapsed_ns", time.Since(started).Nanoseconds())...)
+	return links, nil
+}
+
+func (s *Store) allTaskLinks(ctx context.Context) ([]TaskLink, error) {
 	rows, err := s.db.Query(`SELECT card_id, target, task_id, purpose, created_at
 		FROM card_tasks ORDER BY target, task_id`)
 	if err != nil {

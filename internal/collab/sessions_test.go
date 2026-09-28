@@ -8,6 +8,7 @@
 package collab
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"path/filepath"
@@ -22,6 +23,252 @@ import (
 	ledgerapi "github.com/Xsxdot/handoff/internal/ledger/api"
 	"github.com/Xsxdot/handoff/internal/proto"
 )
+
+// failingAddressLC 在出站账本缝注入瞬时读错，确保补拉寻址不会将其当作未命中。
+type failingAddressLC struct {
+	client.LedgerClient
+	cardErr  error
+	eventErr error
+}
+
+func (f failingAddressLC) GetCard(id string) (proto.Card, error) {
+	if f.cardErr != nil {
+		return proto.Card{}, f.cardErr
+	}
+	return f.LedgerClient.GetCard(id)
+}
+
+func (f failingAddressLC) EventsFromAsc(ids []string, from int64, limit int) ([]proto.LedgerEvent, error) {
+	if f.eventErr != nil {
+		return nil, f.eventErr
+	}
+	return f.LedgerClient.EventsFromAsc(ids, from, limit)
+}
+
+func TestMessageWakeTargetsReadFailureFailsClosed(t *testing.T) {
+	_, _, lc := newSessionFixture(t)
+	readErr := errors.New("transient ledger read")
+	cardReader := New(failingAddressLC{LedgerClient: lc, cardErr: readErr})
+	if _, err := cardReader.MessageWakeTargets(proto.RoomMessage{Kind: proto.RoomMsgUser, Mentions: []string{"B1"}}); !errors.Is(err, readErr) {
+		t.Fatalf("卡读取失败必须上抛，得到 %v", err)
+	}
+	replyReader := New(failingAddressLC{LedgerClient: lc, eventErr: readErr})
+	if _, err := replyReader.MessageWakeTargets(proto.RoomMessage{Room: "session:1", Kind: proto.RoomMsgUser, ReplyTo: 1}); !errors.Is(err, readErr) {
+		t.Fatalf("回复原作者读取失败必须上抛，得到 %v", err)
+	}
+}
+
+func TestMessageReferenceUsesExactSameRoomSeqBeyondHistoryWindow(t *testing.T) {
+	svc, _, _ := newSessionFixture(t)
+	first, err := svc.CreateSession("原会话", "user:sy", "user:sy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := svc.CreateSession("另一会话", "user:sy", "user:sy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seq, err := svc.Send(first.ID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "旧引用原文"}, "user:sy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 205; i++ {
+		if _, err := svc.Send(first.ID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "后续消息"}, "user:sy"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ref, err := svc.MessageReference(proto.RoomMessage{Room: first.ID, ReplyTo: seq})
+	if err != nil || ref == nil || ref.Seq != seq || ref.Body != "旧引用原文" {
+		t.Fatalf("200 条窗口外的引用应可按 seq 解析: %+v err=%v", ref, err)
+	}
+	foreign := proto.RoomMessage{Room: other.ID, Kind: proto.RoomMsgUser, ReplyTo: seq}
+	if targets, err := svc.MessageWakeTargets(foreign); err != nil || len(targets) != 0 {
+		t.Fatalf("跨会话回复不得寻址原作者: %v err=%v", targets, err)
+	}
+	if ref, err := svc.MessageReference(foreign); err != nil || ref != nil {
+		t.Fatalf("跨会话回复不得带引用: %+v err=%v", ref, err)
+	}
+}
+
+func TestSessionReadsHonorCanceledRequest(t *testing.T) {
+	svc, _, _ := newSessionFixture(t)
+	session, err := svc.CreateSession("取消读取", "user:sy", "user:sy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := svc.HistoryContext(ctx, session.ID, 0, 200); !errors.Is(err, context.Canceled) {
+		t.Fatalf("历史读取未取消: %v", err)
+	}
+	if _, err := svc.SessionDetailContext(ctx, session.ID); !errors.Is(err, context.Canceled) {
+		t.Fatalf("详情读取未取消: %v", err)
+	}
+	if _, err := svc.ListSessionsContext(ctx, "user:sy"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("列表读取未取消: %v", err)
+	}
+}
+
+type sessionProjectionProbe struct {
+	client.LedgerClient
+	fullReads        int
+	roomReads        int
+	needsReads       int
+	detailEventReads int
+}
+
+func (p *sessionProjectionProbe) EventsFromAsc(cardIDs []string, fromSeq int64, limit int) ([]proto.LedgerEvent, error) {
+	p.fullReads++
+	return nil, errors.New("session projection must not read the event stream")
+}
+
+func (p *sessionProjectionProbe) EventsFromAscContext(ctx context.Context, cardIDs []string, fromSeq int64, limit int) ([]proto.LedgerEvent, error) {
+	p.fullReads++
+	return nil, errors.New("session projection must not read the event stream")
+}
+
+func (p *sessionProjectionProbe) RoomMessageSnapshotsContext(ctx context.Context, after map[string]int64) ([]client.RoomMessageSnapshot, error) {
+	p.roomReads++
+	return p.LedgerClient.RoomMessageSnapshotsContext(ctx, after)
+}
+
+func (p *sessionProjectionProbe) LatestNeedsEventsContext(ctx context.Context, cardIDs []string) ([]proto.LedgerEvent, error) {
+	p.needsReads++
+	return p.LedgerClient.LatestNeedsEventsContext(ctx, cardIDs)
+}
+
+func (p *sessionProjectionProbe) SessionProjectionEventsContext(ctx context.Context, sessionID string, cardIDs []string) ([]proto.LedgerEvent, error) {
+	p.detailEventReads++
+	return p.LedgerClient.SessionProjectionEventsContext(ctx, sessionID, cardIDs)
+}
+
+func TestB409SessionListAndDetailUseBoundedLedgerProjections(t *testing.T) {
+	svc, st, lc := newSessionFixture(t)
+	memberCard := sessionCard(t, st, "当前会话卡")
+	foreignCard := sessionCard(t, st, "另一会话卡")
+	first, err := svc.CreateSession("目标会话", "user:sy", "user:sy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := svc.CreateSession("相邻会话", "user:sy", "user:sy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.JoinCard(first.ID, memberCard.ID, "user:sy"); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.JoinCard(second.ID, foreignCard.ID, "user:sy"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.MarkNeedsHuman(memberCard.ID, "当前会话待处理", "user:sy"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.MarkNeedsHuman(foreignCard.ID, "另一会话待处理", "user:sy"); err != nil {
+		t.Fatal(err)
+	}
+	firstSeq, err := svc.Send(first.ID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "已读基线"}, "user:sy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.MarkRead("user:sy", first.ID, firstSeq); err != nil {
+		t.Fatal(err)
+	}
+	latestSeq, err := svc.Send(first.ID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "目标预览"}, "user:sy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Send(second.ID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "相邻预览"}, "user:sy"); err != nil {
+		t.Fatal(err)
+	}
+
+	probe := &sessionProjectionProbe{LedgerClient: lc}
+	svc.lc = probe
+	summaries, err := svc.ListSessionsContext(context.Background(), "user:sy")
+	if err != nil {
+		t.Fatalf("ListSessionsContext: %v", err)
+	}
+	var firstSummary, secondSummary *proto.SessionSummary
+	for i := range summaries {
+		switch summaries[i].ID {
+		case first.ID:
+			firstSummary = &summaries[i]
+		case second.ID:
+			secondSummary = &summaries[i]
+		}
+	}
+	if firstSummary == nil || secondSummary == nil {
+		t.Fatalf("会话列表缺行: %+v", summaries)
+	}
+	if firstSummary.Unread != 1 || firstSummary.Preview == nil || firstSummary.Preview.Seq != latestSeq || firstSummary.Preview.Body != "目标预览" || !firstSummary.NeedsHuman {
+		t.Fatalf("目标会话摘要与游标/预览/needs 金样不符: %+v", firstSummary)
+	}
+	if secondSummary.Unread != 1 || secondSummary.Preview == nil || secondSummary.Preview.Body != "相邻预览" || !secondSummary.NeedsHuman {
+		t.Fatalf("相邻会话摘要与游标/预览/needs 金样不符: %+v", secondSummary)
+	}
+	if probe.fullReads != 0 || probe.roomReads != 1 || probe.needsReads != 1 {
+		t.Fatalf("会话列表必须一次批量读 room 摘要与 needs 最新态，且不扫全流: %+v", probe)
+	}
+
+	detail, err := svc.SessionDetailContext(context.Background(), first.ID)
+	if err != nil {
+		t.Fatalf("SessionDetailContext: %v", err)
+	}
+	if detail.Summary.ID != first.ID || detail.Summary.Preview == nil || detail.Summary.Preview.Body != "目标预览" || len(detail.Summary.Cards) != 1 || detail.Summary.Cards[0].CardID != memberCard.ID {
+		t.Fatalf("详情头部必须保持 session 与当前成员卡投影: %+v", detail.Summary)
+	}
+	for _, event := range detail.Timeline {
+		if event.CardID != "" && event.CardID != memberCard.ID {
+			t.Fatalf("详情 timeline 泄露另一会话卡: %+v", event)
+		}
+	}
+	if probe.fullReads != 0 || probe.roomReads != 2 || probe.needsReads != 1 || probe.detailEventReads != 1 {
+		t.Fatalf("会话详情必须按目标 session/card 查询且不扫全流: %+v", probe)
+	}
+}
+
+type roomHistoryProbe struct {
+	client.LedgerClient
+	roomID      string
+	beforeSeq   int64
+	limit       int
+	called      bool
+	fullScanHit bool
+	result      []proto.LedgerEvent
+}
+
+func (p *roomHistoryProbe) RoomMessagesBeforeContext(ctx context.Context, roomID string, beforeSeq int64, limit int) ([]proto.LedgerEvent, error) {
+	p.called = true
+	p.roomID, p.beforeSeq, p.limit = roomID, beforeSeq, limit
+	return p.result, nil
+}
+
+func (p *roomHistoryProbe) EventsFromAscContext(ctx context.Context, cardIDs []string, fromSeq int64, limit int) ([]proto.LedgerEvent, error) {
+	p.fullScanHit = true
+	return nil, errors.New("房间历史不应调用全流事件读取")
+}
+
+func TestRoomHistoryContextUsesBoundedLedgerRead(t *testing.T) {
+	svc, _, lc := newSessionFixture(t)
+	probe := &roomHistoryProbe{
+		LedgerClient: lc,
+		result:       []proto.LedgerEvent{{Seq: 7, Type: room.RoomEventType}},
+	}
+	svc.lc = probe
+
+	got, err := svc.HistoryContext(context.Background(), "session:bounded", 42, 0)
+	if err != nil {
+		t.Fatalf("HistoryContext: %v", err)
+	}
+	if !probe.called || probe.fullScanHit {
+		t.Fatalf("HistoryContext 必须调用限域读取且不得扫全流: %+v", probe)
+	}
+	if probe.roomID != "session:bounded" || probe.beforeSeq != 42 || probe.limit != historyDefaultLimit {
+		t.Fatalf("历史参数未按契约传递: room=%q before=%d limit=%d", probe.roomID, probe.beforeSeq, probe.limit)
+	}
+	if len(got) != 1 || got[0].Seq != 7 {
+		t.Fatalf("HistoryContext 应直通账本窗口: %+v", got)
+	}
+}
 
 // newSessionFixture 起真 SQLite 账本并挂 collab.Service；同时返回出站接口
 // （Facade）以断言接口直接能力。
@@ -41,6 +288,55 @@ func newSessionFixture(t *testing.T) (*Service, *ledger.Store, client.LedgerClie
 	}
 	lc := ledgerapi.New(st)
 	return New(lc), st, lc
+}
+
+type failingDriverLeaseClient struct {
+	client.LedgerClient
+	target string
+	err    error
+}
+
+func (f failingDriverLeaseClient) DriverLease(identity string) (time.Time, bool, error) {
+	if identity == f.target {
+		return time.Time{}, false, f.err
+	}
+	return f.LedgerClient.DriverLease(identity)
+}
+
+func TestSessionSummariesPropagateDriverLeaseReadErrors(t *testing.T) {
+	for _, memberPath := range []struct {
+		name     string
+		identity string
+	}{
+		{name: "explicit member", identity: "user:sy"},
+		{name: "card seat", identity: "cli:agent#one"},
+	} {
+		t.Run(memberPath.name, func(t *testing.T) {
+			svc, st, lc := newSessionFixture(t)
+			session, err := svc.CreateSession("租约读取错误", "user:sy", "user:sy")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if memberPath.name == "card seat" {
+				card := sessionCard(t, st, "租约读取错误席位")
+				if err := st.BindSeat(card.ID, memberPath.identity, proto.SeatSourceBind, ledger.SeatBearing{}); err != nil {
+					t.Fatal(err)
+				}
+				if err := svc.JoinCard(session.ID, card.ID, "user:sy"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			leaseErr := errors.New("driver lease database unavailable")
+			svc.lc = failingDriverLeaseClient{LedgerClient: lc, target: memberPath.identity, err: leaseErr}
+
+			if _, err := svc.ListSessionsContext(context.Background(), ""); !errors.Is(err, leaseErr) {
+				t.Errorf("ListSessionsContext 必须传播 DriverLease 错误: %v", err)
+			}
+			if _, err := svc.SessionDetailContext(context.Background(), session.ID); !errors.Is(err, leaseErr) {
+				t.Errorf("SessionDetailContext 必须传播 DriverLease 错误: %v", err)
+			}
+		})
+	}
 }
 
 func sessionCard(t *testing.T, st *ledger.Store, title string) ledger.Card {

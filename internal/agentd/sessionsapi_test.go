@@ -10,13 +10,26 @@ package agentd
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/Xsxdot/handoff/internal/collab"
+	"github.com/Xsxdot/handoff/internal/collab/client"
 	"github.com/Xsxdot/handoff/internal/ledger"
 	"github.com/Xsxdot/handoff/internal/proto"
 )
+
+type failingDriverLeaseHTTPClient struct {
+	client.LedgerClient
+	err error
+}
+
+func (f failingDriverLeaseHTTPClient) DriverLease(string) (time.Time, bool, error) {
+	return time.Time{}, false, f.err
+}
 
 // sessionFixtureOwner 是会话夹具的群主身份（P4 统一记法，拍板①：owner 取
 // 请求体、校验 user:/agent: 前缀；先例 wakeconsumer_b358_test.go#mustWakeSessionFixture
@@ -175,6 +188,46 @@ func TestSessionsListUnreadAndMemberForgery(t *testing.T) {
 	for _, s := range out.Sessions {
 		if s.ID == session.ID && s.Unread != 0 {
 			t.Fatalf("已读后未读应为 0（伪造 member 参数不得带回他人未读）: %+v", s)
+		}
+	}
+}
+
+func TestB409SessionReadFailuresRemainHTTPFailures(t *testing.T) {
+	env := newRoomsEnv(t)
+	session := mustConsoleSession(t, env, "数据库错误不可显示为空")
+	if err := env.ledger.Close(); err != nil {
+		t.Fatalf("关闭隔离 SQLite fixture: %v", err)
+	}
+	for _, path := range []string{"/api/sessions", "/api/sessions/" + session.ID, "/api/rooms?limit=50"} {
+		code, body := ledgerGet(t, env.testAgentdEnv, path)
+		var response struct {
+			Error string `json:"error"`
+		}
+		if err := json.Unmarshal([]byte(body), &response); err != nil {
+			t.Fatalf("%s 错误响应不是 JSON: %v (%s)", path, err, body)
+		}
+		if code != 500 || response.Error == "" || strings.Contains(body, `"sessions":[]`) || strings.Contains(body, `"rooms":[]`) {
+			t.Fatalf("%s 数据库读取失败必须可观察且不得伪装空结果: status=%d body=%s", path, code, body)
+		}
+	}
+}
+
+func TestSessionEndpointsReturnErrorWhenDriverLeaseReadFails(t *testing.T) {
+	env := newRoomsEnv(t)
+	session := mustConsoleSession(t, env, "租约错误 API")
+	leaseErr := errors.New("driver lease database unavailable")
+	env.srv.rooms = collab.New(failingDriverLeaseHTTPClient{LedgerClient: env.srv.autoLedger, err: leaseErr})
+
+	for _, path := range []string{"/api/sessions", "/api/sessions/" + session.ID} {
+		code, body := ledgerGet(t, env.testAgentdEnv, path)
+		var response struct {
+			Error string `json:"error"`
+		}
+		if err := json.Unmarshal([]byte(body), &response); err != nil {
+			t.Fatalf("%s 错误响应不是 JSON: %v (%s)", path, err, body)
+		}
+		if code != 500 || !strings.Contains(response.Error, leaseErr.Error()) {
+			t.Fatalf("%s DriverLease 失败必须显式作为 HTTP 500 返回: status=%d body=%s", path, code, body)
 		}
 	}
 }

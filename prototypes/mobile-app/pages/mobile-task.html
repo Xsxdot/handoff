@@ -1,0 +1,189 @@
+<!doctype html>
+<!--
+  移动端原型屏 3:任务现场(会话 → 任务卡 → 现场)。
+  横幅裁决钉顶;「对话 / 终端 / 文件」三段;终端一等公民(特殊键条 + IME)。
+  任务现场由卡详情的明确动作进入,from 参数决定返回卡详情或会话。
+  依据:用户 2026-09-13 拍板终端必须能用;CONTEXT.md——完整审批/回答在任务现场完成。
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>任务现场 · 移动端原型</title>
+<link rel="stylesheet" href="../shared/styles.css">
+<style>
+  body { background: #e9e9ec; }
+  .stage { max-width: 1120px; margin: 0 auto; padding: 20px 24px 64px; }
+  .mnav { display: flex; gap: 8px; align-items: center; margin-bottom: 18px; font-size: 13px; flex-wrap: wrap; }
+  .mnav a { padding: 4px 12px; border: 1px solid var(--border); border-radius: 999px; background: #fff; text-decoration: none; color: var(--foreground); }
+  .mnav a.active { background: var(--primary); color: var(--primary-foreground); border-color: var(--primary); }
+  .mnav .sep { color: var(--muted-foreground); }
+  .row { display: flex; gap: 28px; align-items: flex-start; }
+
+  .phone { width: 390px; flex-shrink: 0; background: #111; border-radius: 44px; padding: 10px; box-shadow: 0 18px 50px rgba(0,0,0,.28); }
+  .screen { background: #fff; border-radius: 34px; overflow: hidden; height: 800px; display: flex; flex-direction: column; }
+  .notch { height: 30px; display: flex; align-items: center; justify-content: center; background: #fff; }
+  .notch::after { content: ""; width: 110px; height: 22px; background: #111; border-radius: 999px; }
+
+  .scenehead { display: flex; align-items: center; gap: 10px; padding: 4px 14px 8px; border-bottom: 1px solid var(--border); }
+  .scenehead .back { font-size: 20px; color: var(--foreground); text-decoration: none; }
+  .scenehead .tt { flex: 1; min-width: 0; }
+  .scenehead .tt .a { font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .scenehead .tt .b { font-size: 11px; color: var(--muted-foreground); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .scenehead .stop { font-size: 12px; color: var(--destructive); border: 1px solid #fecaca; border-radius: 999px; padding: 3px 10px; }
+
+  .segtabs { display: flex; gap: 2px; padding: 8px 14px 0; border-bottom: 1px solid var(--border); }
+  .segtabs .st { font: inherit; font-size: 12.5px; padding: 6px 12px; min-height: 36px; border: 0; border-radius: 8px 8px 0 0; color: var(--muted-foreground); background: transparent; cursor: pointer; }
+  .segtabs .st.on { background: var(--muted); color: var(--foreground); font-weight: 600; }
+
+  .banner { background: #fffbeb; border-bottom: 1px solid #fde68a; padding: 10px 14px; }
+  .banner .q { font-size: 12.5px; line-height: 1.6; }
+  .banner .q code { font-family: var(--font-mono); font-size: 11px; background: #fef3c7; padding: 1px 5px; border-radius: 4px; }
+  .banner .acts { display: flex; gap: 8px; margin-top: 8px; }
+  .banner .acts button { flex: 1; font-size: 12.5px; padding: 7px 0; border-radius: 8px; border: 1px solid var(--border); background: #fff; cursor: pointer; }
+  .banner .acts .ok { background: var(--primary); color: var(--primary-foreground); border-color: var(--primary); font-weight: 600; }
+  .banner .done { font-size: 12.5px; color: var(--green); font-weight: 600; padding: 4px 0; }
+
+  .pane { flex: 1; overflow-y: auto; display: flex; flex-direction: column; }
+  .pane[hidden] { display: none; }
+  .chatpad { padding: 14px; font-size: 13px; line-height: 1.7; }
+  .chatpad .meta-line { margin: 5px 0; font-size: 12px; color: var(--muted-foreground); display: flex; gap: 8px; }
+  .chatpad .meta-line .glyph { width: 14px; text-align: center; flex-shrink: 0; }
+  .chatpad .meta-line .name { font-weight: 500; color: var(--foreground); }
+  .files { padding: 14px; font-size: 13px; line-height: 2; }
+
+  .term { flex: 1; background: #0c0c0c; color: #d4d4d4; font-family: var(--font-mono); font-size: 11.5px; line-height: 1.65; padding: 10px 12px; overflow-y: auto; }
+  .term .g { color: #4ade80; } .term .y { color: #facc15; } .term .b { color: #60a5fa; } .term .dim { color: #737373; }
+  .term .cursor { display: inline-block; width: 7px; height: 13px; background: #d4d4d4; vertical-align: -2px; animation: blink 1s steps(1) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  .keybar { background: #1c1c1e; display: flex; gap: 6px; padding: 7px 8px; border-top: 1px solid #2c2c2e; overflow-x: auto; }
+  .keybar .k { flex-shrink: 0; min-width: 40px; text-align: center; font-family: var(--font-mono); font-size: 12px; color: #e5e5e5; background: #3a3a3c; border-radius: 6px; padding: 6px 10px; cursor: pointer; }
+  .keybar .k.on { background: #636366; }
+  .kbdhint { background: #2c2c2e; color: #8e8e93; text-align: center; font-size: 12px; padding: 42px 0; }
+
+  .notes { flex: 1; min-width: 0; }
+  .notes h2 { font-size: 16px; margin: 4px 0 4px; }
+  .notes .sub { font-size: 12.5px; color: var(--muted-foreground); margin: 0 0 14px; }
+  .note { display: flex; gap: 10px; background: #fff; border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; margin-bottom: 8px; font-size: 12.5px; line-height: 1.7; }
+  .note .no { width: 20px; height: 20px; flex-shrink: 0; border-radius: 50%; background: var(--primary); color: var(--primary-foreground); font-size: 11px; display: flex; align-items: center; justify-content: center; margin-top: 1px; }
+  .ref { display: inline-block; width: 16px; height: 16px; border-radius: 50%; background: var(--primary); color: var(--primary-foreground); font-size: 10px; text-align: center; line-height: 16px; vertical-align: 2px; }
+  .fold { background:#fff; border:1px solid var(--border); border-radius:10px; padding:12px 14px; font-size:12.5px; line-height:1.7; margin-top:14px; }
+</style>
+</head>
+<body>
+<div class="stage">
+  <div class="mnav">
+    <a href="../index.html">← 工作台</a><span class="sep">|</span>
+    <span style="color:var(--muted-foreground)">移动端原型:</span>
+    <a href="mobile-architecture.html">方案一图流</a>
+    <a href="mobile-home.html" class="active">会话</a>
+    <a href="mobile-cards.html">卡</a>
+    <a href="mobile-projects.html">项目</a>
+    <a href="mobile-pairing.html">设置</a>
+  </div>
+  <div class="row">
+
+    <div class="phone">
+      <div class="screen">
+        <div class="notch"></div>
+        <div class="scenehead">
+          <a class="back" id="backLink" href="mobile-session.html" aria-label="返回">‹</a>
+          <div class="tt">
+            <div class="a">B233.17 · 契约节点</div>
+            <div class="b">会话「架构物理化」· 本机 · handoff · cards/B233.17 · claude</div>
+          </div>
+          <div class="stop" id="stopBtn">停止<span class="ref">③</span></div>
+        </div>
+        <div class="segtabs">
+          <button class="st" type="button" data-tab="chat" aria-selected="false">对话</button>
+          <button class="st on" type="button" data-tab="term" aria-selected="true">终端</button>
+          <button class="st" type="button" data-tab="files" aria-selected="false">文件</button>
+        </div>
+
+        <div class="banner" id="banner">
+          <div class="q"><span class="ref">①</span> <b>等你裁决</b> · 组装点冲突:<code>cli→orchestration</code> 现状 15 条 / 预算 13。执行者给了两条写法——</div>
+          <div class="acts">
+            <button id="optA">A:预算抬到 15,记债</button>
+            <button id="optB" class="ok">B:先消 2 条直调再冻</button>
+          </div>
+        </div>
+
+        <div class="pane" data-pane="chat">
+          <div class="chatpad">
+            <div class="meta-line"><span class="glyph">●</span><span class="name">dispatched</span><span>契约节点 → 本机 claude · 11:40</span></div>
+            <div class="meta-line"><span class="glyph">⚑</span><span class="name">needs_human</span><span>组装点冲突,等裁决 · 11:58</span></div>
+            <div class="meta-line"><span class="glyph">✉</span><span class="name">你</span><span>「把冲突两条贴出来看看」 · 12:04</span></div>
+            <p style="margin:10px 0 0">执行者:两条候选写法已附在裁决横幅上。A 是承认现状先把契约冻住、债记 roadmap;B 是我再花一轮把 <code style="font-family:var(--font-mono);font-size:12px;background:var(--muted);padding:1px 4px;border-radius:4px">cmd/card_dispatch.go</code> 里两条直调收回门面再冻。终端里可以查证这 15 条都是谁。</p>
+          </div>
+        </div>
+
+        <div class="pane" data-pane="term">
+          <div class="term">
+            <div><span class="g">➜</span> <span class="b">handoff</span> <span class="dim">git:(</span><span class="y">cards/B233.17</span><span class="dim">)</span> codegraph check 2>&1 | head -8</div>
+            <div class="dim">fails=1  over-budget: cli → orchestration 15/13</div>
+            <div>&nbsp;</div>
+            <div><span class="g">➜</span> <span class="b">handoff</span> <span class="dim">git:(</span><span class="y">cards/B233.17</span><span class="dim">)</span> git log --oneline -3</div>
+            <div>53bbce50 ratchet: B233.17 预算棘轮</div>
+            <div>d8931e96 B233.14 finish(absorb 9d785ae5)</div>
+            <div>f74c347d B233.13 finish</div>
+            <div>&nbsp;</div>
+            <div><span class="g">➜</span> <span class="b">handoff</span> <span class="dim">git:(</span><span class="y">cards/B233.17</span><span class="dim">)</span> <span class="cursor"></span></div>
+          </div>
+          <div class="keybar">
+            <span class="k">Esc</span><span class="k" id="ctrlKey">Ctrl</span><span class="k" id="ctrlCKey">Ctrl-C</span><span class="k">Tab</span><span class="k">Shift-Tab</span><span class="k">←</span><span class="k">↑</span><span class="k">↓</span><span class="k">→</span><span class="k">|</span><span class="k">~</span><span class="k">⌫</span><span class="ref" style="align-self:center">②</span>
+          </div>
+          <div class="kbdhint">( 系统键盘区域 )</div>
+        </div>
+
+        <div class="pane" data-pane="files" hidden>
+          <div class="files">
+            <div>📄 codegraph/target.json <span style="color:var(--muted-foreground)">— 冲突现场</span></div>
+            <div>📄 cmd/card_dispatch.go <span style="color:var(--muted-foreground)">— B 方案要动的两条直调</span></div>
+            <div>📄 docs/superpowers/specs/b233.17.md</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="notes">
+      <h2>任务现场:裁决 + 查证同一屏</h2>
+      <p class="sub">从「会话 → 本会话的卡」点进来。这一屏回答:手机上怎么把「等你裁决」真正办掉。</p>
+      <div class="note"><div class="no">①</div><div><b>裁决横幅钉在顶部</b>,切「对话/终端/文件」都不丢。可以点了直接答(两个选项就是执行者给的候选),也可以——</div></div>
+      <div class="note"><div class="no">②</div><div><b>先到终端里查证再答。</b>特殊键条(Esc/Ctrl/Ctrl-C/Tab/Shift-Tab/方向键/管道符)让系统键盘打不出的控制键可点;输入法组合状态确认后才进 xterm。终端会话挂服务端,App 杀掉重开现场还在。</div></div>
+      <div class="note"><div class="no">③</div><div><b>「停止」二次确认</b>(点一下试试):横幅裁决、停止、回答——写动作全在任务现场完成,与 CONTEXT.md 语义一致。</div></div>
+      <div class="fold">
+        <b>pad / 折叠屏展开态(同一页响应式,不是另一页):</b>过断点后「对话」与「终端」左右分栏,键条仍在终端下;接蓝牙键盘时键条自动收起。本屏只演示竖屏,展开态由同一套断点规则推导。
+      </div>
+    </div>
+  </div>
+</div>
+<script>
+  // 三段切换
+  document.querySelectorAll('.segtabs .st').forEach(tab => {
+    tab.addEventListener('click', () => {
+      document.querySelectorAll('.segtabs .st').forEach(t => t.classList.remove('on'));
+      document.querySelectorAll('.pane').forEach(p => p.hidden = true);
+      tab.classList.add('on');
+      document.querySelectorAll('.segtabs .st').forEach(t => t.setAttribute('aria-selected', String(t === tab)));
+      document.querySelector(`.pane[data-pane="${tab.dataset.tab}"]`).hidden = false;
+    });
+  });
+  // Ctrl 粘滞键(mock:按一下高亮)
+  document.getElementById('ctrlKey').addEventListener('click', (e) => e.target.classList.toggle('on'));
+  document.getElementById('ctrlCKey').addEventListener('click', (e) => e.classList.toggle('on'));
+  const taskParams = new URLSearchParams(location.search);
+  document.getElementById('backLink').href = taskParams.get('from') === 'card' ? `mobile-card.html?card=${encodeURIComponent(taskParams.get('card') || 'B93')}` : 'mobile-session.html';
+  // 裁决动作(mock)
+  const banner = document.getElementById('banner');
+  const settle = (txt) => { banner.innerHTML = `<div class="done">✓ ${txt}(mock)—— 裁决已回传执行者,任务继续。</div>`; };
+  document.getElementById('optA').addEventListener('click', () => settle('已选 A:预算抬到 15,记债'));
+  document.getElementById('optB').addEventListener('click', () => settle('已选 B:先消 2 条直调再冻'));
+  // 停止二次确认(mock)
+  document.getElementById('stopBtn').addEventListener('click', (e) => {
+    if (e.target.dataset.arm) { e.target.textContent = '已停止(mock)'; delete e.target.dataset.arm; }
+    else { e.target.dataset.arm = '1'; e.target.textContent = '确认停止?'; setTimeout(() => { if (e.target.dataset.arm) { e.target.textContent = '停止'; delete e.target.dataset.arm; } }, 3000); }
+  });
+</script>
+</body>
+</html>

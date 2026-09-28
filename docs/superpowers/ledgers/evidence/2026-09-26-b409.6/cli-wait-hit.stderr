@@ -1,0 +1,10 @@
+time=2026-09-26T22:49:22.813+08:00 level=INFO msg="session wait 入口" component=cli operation_id=op-ae68cb00 member=user:evidence since=0 since_set=true timeout=0s follow=false
+time=2026-09-26T22:49:22.841+08:00 level=INFO msg="cards.driver_carrier 列已存在，跳过加列" component=cli
+time=2026-09-26T22:49:22.841+08:00 level=INFO msg="cards.driver_source 列已存在，跳过加列" component=cli
+time=2026-09-26T22:49:22.843+08:00 level=INFO msg=账本库已打开 component=cli dialect=postgres database=handoff_b409_u6_evidence
+time=2026-09-26T22:49:22.846+08:00 level=INFO msg=会话候选读完成 component=cli operation_id=op-ae68cb00 member=user:evidence from_seq=0 to_seq=6 rows_returned=1 pool_wait_ns=2042 sql_call_ns=1575792 row_read_ns=11250 db_read_ns=1587292 rows_read=1 result_bytes=112 elapsed_ns=1597000
+time=2026-09-26T22:49:22.853+08:00 level=INFO msg=列卡完成 component=cli rows_returned=1 elapsed_ns=4278542
+time=2026-09-26T22:49:22.854+08:00 level=INFO msg=房间消息摘要读取完成 component=cli rooms_requested=2 rows_returned=1 pool_wait_ns=417 sql_call_ns=1142375 row_read_ns=5916 db_read_ns=1148541 rows_read=1 result_bytes=103 elapsed_ns=1151500
+time=2026-09-26T22:49:22.855+08:00 level=INFO msg=会话列表投影完成 component=cli ledger_call_ns=8014416 ledger_calls=6 projection_ns=15876 rows_returned=2 outcome=success_nonempty elapsed_ns=8030292 member=user:evidence
+time=2026-09-26T22:49:22.855+08:00 level=INFO msg="session wait 命中并输出" component=cli operation_id=op-ae68cb00 member=user:evidence session=session:1 seq=4 follow=false elapsed_ns=11977250
+time=2026-09-26T22:49:22.855+08:00 level=INFO msg="session wait 完成" component=cli operation_id=op-ae68cb00 command=session_wait member=user:evidence follow=false open_ns=30162333 stdout_bytes=132 elapsed_ns=42310375 outcome=success_nonempty

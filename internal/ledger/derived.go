@@ -4,14 +4,39 @@
 package ledger
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"sort"
+	"time"
+
+	"github.com/Xsxdot/handoff/internal/diag"
 )
 
 // ListCards 过滤 + 派生。排序：待人处理的在前（needs/blocked），其余按
 // id 升序——CLI 领活与看板共用此序。
 func (s *Store) ListCards(filter CardFilter) ([]CardView, error) {
+	return s.ListCardsContext(context.Background(), filter)
+}
+
+// ListCardsContext 是 ListCards 的可取消入口（B409.6：cards 列表读路径的
+// HTTP context 取消传播与阶段诊断）。主 SELECT 经 timedReadQuery 分离阶段；
+// 事件派生子查询（relations/statuses/needs 等）计入派生耗时，不冒充已拆分。
+func (s *Store) ListCardsContext(ctx context.Context, filter CardFilter) ([]CardView, error) {
+	started := time.Now()
+	views, err := s.listCards(ctx, filter)
+	if err != nil {
+		log().Warn("列卡失败", append(diag.Attrs(ctx), "error_class", readErrorClass(err, ""),
+			"cause", err)...)
+		return nil, err
+	}
+	log().Info("列卡完成", append(diag.Attrs(ctx), "rows_returned", len(views),
+		"elapsed_ns", time.Since(started).Nanoseconds())...)
+	return views, nil
+}
+
+// listCards 是 ListCardsContext 的实现体（B409.6 前的既有派生逻辑）。
+func (s *Store) listCards(ctx context.Context, filter CardFilter) ([]CardView, error) {
 	query := `SELECT ` + cardColumns + ` FROM cards WHERE 1=1`
 	var args []any
 	if filter.Project != "" {
@@ -26,24 +51,24 @@ func (s *Store) ListCards(filter CardFilter) ([]CardView, error) {
 		query += ` AND status NOT IN (?, ?)`
 		args = append(args, StatusDone, StatusClosed)
 	}
-	rows, err := s.db.Query(s.q(query), args...)
-	if err != nil {
-		return nil, fmt.Errorf("列卡: %w", err)
-	}
 	var cards []Card
-	for rows.Next() {
-		card, err := scanCard(rows)
-		if err != nil {
-			rows.Close()
-			return nil, fmt.Errorf("扫卡行: %w", err)
+	cardStage, err := s.timedReadQuery(ctx, query, args, func(rows *sql.Rows) (int, int64, error) {
+		for rows.Next() {
+			card, err := scanCard(rows)
+			if err != nil {
+				return len(cards), 0, fmt.Errorf("扫卡行: %w", err)
+			}
+			cards = append(cards, card)
 		}
-		cards = append(cards, card)
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
+		return len(cards), 0, rows.Err()
+	})
+	log().Debug("列卡主查询阶段", append(diag.Attrs(ctx), cardStage.logAttrs()...)...)
+	if err != nil {
+		if cardStage.failedStage == stageFailedSQL {
+			err = fmt.Errorf("列卡: %w", err)
+		}
 		return nil, err
 	}
-	rows.Close()
 
 	relations, err := s.allRelations()
 	if err != nil {

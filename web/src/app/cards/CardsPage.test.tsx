@@ -62,6 +62,91 @@ describe('项目级请示横幅', () => {
   })
 })
 
+describe('未挂账观测状态', () => {
+  it('未拿到观测时明确显示未知，不伪装成当前零值', async () => {
+    const ledger = await import('../../api/ledger')
+    vi.mocked(ledger.fetchCards).mockResolvedValue({
+      cards: [],
+      unlinked: { status: 'unavailable', observed_at: null, count: 0, tasks: [], unknown_targets: ['linux-01'] },
+    })
+    renderPage()
+    const row = await screen.findByTestId('unlinked-summary-row')
+    expect(row).toHaveAttribute('data-status', 'unavailable')
+    expect(row).toHaveTextContent('摘要暂无可用观测')
+    expect(row).toHaveTextContent('不能判断当前是否为零')
+    expect(row).toHaveTextContent('linux-01')
+  })
+
+  it('部分结果标明子集和未知目标', async () => {
+    const ledger = await import('../../api/ledger')
+    vi.mocked(ledger.fetchCards).mockResolvedValue({
+      cards: [],
+      unlinked: {
+        status: 'partial', observed_at: new Date().toISOString(), count: 1,
+        tasks: [{ target: 'mac-02', task_id: 'T1', title: '待挂账任务', state: 'running' }],
+        unknown_targets: ['linux-01'],
+      },
+    })
+    renderPage()
+    const row = await screen.findByTestId('unlinked-summary-row')
+    expect(row).toHaveAttribute('data-status', 'partial')
+    expect(row).toHaveTextContent('部分观测')
+    expect(row).toHaveTextContent('未知目标: linux-01')
+    expect(row).toHaveTextContent('待挂账任务')
+  })
+
+  it('超过五分钟的历史结果仍显示时间并注明不是当前数量', async () => {
+    const ledger = await import('../../api/ledger')
+    vi.mocked(ledger.fetchCards).mockResolvedValue({
+      cards: [],
+      unlinked: {
+        status: 'stale', observed_at: '2020-01-01T00:00:00Z', count: 1,
+        tasks: [{ target: 'mac-02', task_id: 'T1', title: '旧观测任务', state: 'running' }],
+        unknown_targets: [],
+      },
+    })
+    renderPage()
+    const row = await screen.findByTestId('unlinked-summary-row')
+    expect(row).toHaveAttribute('data-status', 'stale')
+    expect(row).toHaveTextContent('上次观测：')
+    expect(row).toHaveTextContent('当前数量尚未确认')
+    expect(row).toHaveTextContent('2020-01-01 00:00:00 UTC')
+    expect(row).toHaveTextContent('已过')
+    expect(row).toHaveTextContent('旧观测任务')
+  })
+
+  it('缺失或无效的观测时间不会把 latest 当成当前数值', async () => {
+    const ledger = await import('../../api/ledger')
+    for (const observed_at of [undefined, 'not-a-time']) {
+      vi.mocked(ledger.fetchCards).mockResolvedValue({
+        cards: [],
+        unlinked: {
+          status: 'latest', observed_at, count: 1,
+          tasks: [{ target: 'mac-02', task_id: 'T1', title: '无法确认任务', state: 'running' }],
+          unknown_targets: [],
+        },
+      })
+      const { unmount } = renderPage()
+      const row = await screen.findByTestId('unlinked-summary-row')
+      expect(row).toHaveAttribute('data-status', 'unavailable')
+      expect(row).toHaveTextContent('不能判断当前是否为零')
+      expect(row).not.toHaveTextContent('无法确认任务')
+      unmount()
+    }
+  })
+
+  it('最新合法空结果不占用横幅', async () => {
+    const ledger = await import('../../api/ledger')
+    vi.mocked(ledger.fetchCards).mockResolvedValue({
+      cards: [],
+      unlinked: { status: 'latest', observed_at: new Date().toISOString(), count: 0, tasks: [], unknown_targets: [] },
+    })
+    renderPage()
+    await waitFor(() => expect(ledger.fetchCards).toHaveBeenCalled())
+    expect(screen.queryByTestId('unlinked-summary-row')).not.toBeInTheDocument()
+  })
+})
+
 describe('看板排队工具条', () => {
   it('挂载独立队列轮询并按服务端快照显示数量', async () => {
     const scheduling = await import('../../api/scheduling')

@@ -73,9 +73,78 @@ export interface TaskStateRow {
 }
 
 export interface UnlinkedSummary {
+  // Missing or unknown fields remain readable for old servers but are normalized to unavailable.
+  status?: 'latest' | 'partial' | 'stale' | 'unavailable'
+  observed_at?: string | null
   count: number
   tasks: { target: string; task_id: string; title: string; state: string }[] | null
   unknown_targets: string[] | null
+}
+
+export const UNLINKED_SUMMARY_TTL_MS = 30_000
+
+export type EffectiveUnlinkedStatus = 'latest' | 'partial' | 'stale' | 'unavailable'
+
+export interface EffectiveUnlinkedSummary {
+  status: EffectiveUnlinkedStatus
+  observedAt: string | null
+  count: number
+  tasks: NonNullable<UnlinkedSummary['tasks']>
+  unknownTargets: string[]
+}
+
+// Validate the wire shape once for every consumer. A malformed, old, or expired
+// response stays visible as historical/unavailable data, never as a live filter.
+export function effectiveUnlinkedSummary(
+  summary: UnlinkedSummary | null | undefined,
+  now = Date.now(),
+): EffectiveUnlinkedSummary {
+  const unavailable = (unknownTargets: string[] = []): EffectiveUnlinkedSummary => ({
+    status: 'unavailable', observedAt: null, count: 0, tasks: [], unknownTargets,
+  })
+  const allowed = ['latest', 'partial', 'stale', 'unavailable']
+  if (!summary || !allowed.includes(summary.status ?? '') ||
+      !Number.isInteger(summary.count) || summary.count < 0 ||
+      !Array.isArray(summary.tasks) || !summary.tasks.every((task) =>
+        task && typeof task.target === 'string' && typeof task.task_id === 'string' &&
+        typeof task.title === 'string' && typeof task.state === 'string') ||
+      !Array.isArray(summary.unknown_targets) ||
+      !summary.unknown_targets.every((target) => typeof target === 'string') ||
+      summary.count !== summary.tasks.length) {
+    return unavailable(Array.isArray(summary?.unknown_targets)
+      ? summary.unknown_targets.filter((target): target is string => typeof target === 'string')
+      : [])
+  }
+  if (summary.status === 'unavailable') return unavailable(summary.unknown_targets)
+  if (typeof summary.observed_at !== 'string' || !Number.isFinite(Date.parse(summary.observed_at))) {
+    return unavailable(summary.unknown_targets)
+  }
+  const ageMs = now - Date.parse(summary.observed_at)
+  // Reject implausibly future observations as malformed rather than letting a
+  // clock-skewed timestamp keep a current filter alive indefinitely.
+  if (ageMs < -UNLINKED_SUMMARY_TTL_MS) return unavailable(summary.unknown_targets)
+  let status: EffectiveUnlinkedStatus
+  if (summary.status === 'stale' || ageMs > UNLINKED_SUMMARY_TTL_MS) status = 'stale'
+  else if (summary.status === 'latest' && summary.unknown_targets.length > 0) status = 'partial'
+  else if (summary.status === 'latest' || summary.status === 'partial') status = summary.status
+  else return unavailable(summary.unknown_targets)
+  return {
+    status,
+    observedAt: summary.observed_at,
+    count: summary.count,
+    tasks: summary.tasks,
+    unknownTargets: summary.unknown_targets,
+  }
+}
+
+// Only a fresh, complete observation may hide tasks from the fallback board.
+export function currentUnlinkedTaskIds(
+  summary: UnlinkedSummary | null | undefined,
+  now = Date.now(),
+): Set<string> | null {
+  const effective = effectiveUnlinkedSummary(summary, now)
+  if (effective.status !== 'latest') return null
+  return new Set(effective.tasks.map((task) => task.task_id))
 }
 
 // CardBrief 是子任务区一行的最小三元组，字段名与 Go 侧 ledger.CardBrief 一字不差。

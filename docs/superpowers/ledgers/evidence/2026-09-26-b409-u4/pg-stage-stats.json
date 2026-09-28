@@ -1,0 +1,58 @@
+{
+  "fixture": "b409-u4-growth-20260926-a",
+  "database": {
+    "name": "handoff_b409_test",
+    "server": "127.0.0.1:59849",
+    "version": "PostgreSQL 16.15",
+    "isolation": "Dedicated disposable local Docker container; synthetic acceptance data only",
+    "payload_bytes": "SUM(octet_length(payload::text)); JSONB rendered-text bytes, not wire bytes"
+  },
+  "primary_api_and_refresh_matrix": [
+    {
+      "stage": "baseline",
+      "card_events_rows": 21275,
+      "card_events_payload_bytes": 7164705,
+      "tagged_fixture_rows": 21270,
+      "tagged_fixture_payload_bytes": 7164290,
+      "task_mirrored_rows": 9337,
+      "task_mirrored_payload_bytes": 6282694,
+      "unrelated_event_rows": 11683,
+      "target_session_room_message_rows": 251
+    },
+    {
+      "stage": "plus-20000-unrelated-events",
+      "card_events_rows": 41275,
+      "card_events_payload_bytes": 8673599,
+      "tagged_fixture_rows": 41270,
+      "tagged_fixture_payload_bytes": 8673184,
+      "task_mirrored_rows": 9337,
+      "task_mirrored_payload_bytes": 6282694,
+      "unrelated_event_rows": 31683,
+      "unrelated_rows_added": 20000,
+      "growth_payload_bytes_added": 1508894,
+      "target_session_room_message_rows": 251
+    }
+  ],
+  "supplemental_empty_vs_populated_session_switch": {
+    "note": "A second synthetic empty session was created after the primary single-session API/refresh matrix. It adds one untagged session_created row; switch results are supplemental.",
+    "baseline_card_events_rows": 21276,
+    "plus_growth_card_events_rows": 41276,
+    "plus_growth_card_events_payload_bytes": 8673681,
+    "plus_growth_tagged_fixture_rows": 41270,
+    "plus_growth_tagged_fixture_payload_bytes": 8673184
+  },
+  "room_snapshot_query_regression": {
+    "rooms_requested": 3,
+    "rows_returned_baseline": 3,
+    "payload_bytes_baseline": 339,
+    "rows_returned_after_20000_unrelated_events": 3,
+    "payload_bytes_after_20000_unrelated_events": 339,
+    "source": "Fresh TestRoomMessageSnapshotsPostgresUsesBigintWatermarks output; same scoped fixture queried before and after unrelated growth"
+  },
+  "api_history_response": {
+    "endpoint": "/api/rooms/session%3A1/messages?limit=200",
+    "rows": 200,
+    "http_json_bytes": 83766,
+    "database_payload_bytes": 59951
+  }
+}

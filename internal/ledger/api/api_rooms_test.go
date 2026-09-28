@@ -9,6 +9,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"path/filepath"
@@ -47,6 +48,90 @@ func mustCardFor(t *testing.T, st *ledger.Store, title string) ledger.Card {
 		t.Fatalf("建卡: %v", err)
 	}
 	return card
+}
+
+func TestRoomHistoryThroughLedgerClientSeam(t *testing.T) {
+	f, _ := newFixture(t)
+	const roomID = "session:api-history"
+	for i := 0; i < 3; i++ {
+		if _, err := f.RecordRoomMessage("", proto.RoomMessage{
+			Room: roomID, Kind: proto.RoomMsgUser, Body: string(rune('a' + i)),
+		}, "test"); err != nil {
+			t.Fatalf("写入房间消息: %v", err)
+		}
+	}
+	if _, err := f.RecordRoomMessage("", proto.RoomMessage{
+		Room: "session:api-other", Kind: proto.RoomMsgUser, Body: "other",
+	}, "test"); err != nil {
+		t.Fatalf("写入无关房间消息: %v", err)
+	}
+
+	got, err := f.RoomMessagesBeforeContext(context.Background(), roomID, 0, 2)
+	if err != nil {
+		t.Fatalf("经 LedgerClient 读房间历史: %v", err)
+	}
+	if len(got) != 2 || got[0].Seq >= got[1].Seq || got[0].Type != ledger.EvRoomMessage {
+		t.Fatalf("门面应只返回升序目标房间 room_message：%+v", got)
+	}
+	if got[0].CardID != "" || len(got[0].Payload) == 0 {
+		t.Fatalf("事件 wire 映射丢失字段: %+v", got[0])
+	}
+}
+
+func TestB409ReadProjectionsThroughLedgerClientSeam(t *testing.T) {
+	f, st := newFixture(t)
+	card := mustCardFor(t, st, "会话投影卡")
+	session, err := st.CreateSession("范围投影", "user:sy", "user:sy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.JoinCardToSession(session.ID, card.ID, "user:sy"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.MarkNeedsHuman(card.ID, "等待人工", "test"); err != nil {
+		t.Fatal(err)
+	}
+	cardSeq, err := f.RecordRoomMessage(card.ID, proto.RoomMessage{Room: "misleading-payload-room", Kind: proto.RoomMsgUser, Body: "卡房间消息"}, "user:sy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	groupSeq, err := f.RecordRoomMessage("", proto.RoomMessage{Room: session.ID, Kind: proto.RoomMsgUser, Body: "群消息"}, "user:sy")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	snapshots, err := f.RoomMessageSnapshotsContext(context.Background(), map[string]int64{card.ID: cardSeq - 1, session.ID: groupSeq - 1})
+	if err != nil {
+		t.Fatalf("批量消息摘要经 LedgerClient: %v", err)
+	}
+	if len(snapshots) != 2 {
+		t.Fatalf("Facade 应映射两个目标房间: %+v", snapshots)
+	}
+	byRoom := map[string]client.RoomMessageSnapshot{}
+	for _, snapshot := range snapshots {
+		byRoom[snapshot.RoomID] = snapshot
+	}
+	if got := byRoom[card.ID]; got.Latest.Seq != cardSeq || got.MessagesAfter != 1 {
+		t.Fatalf("卡房间 wire 映射/水位错: %+v", got)
+	}
+	if got := byRoom[session.ID]; got.Latest.Seq != groupSeq || got.MessagesAfter != 1 {
+		t.Fatalf("群房间 wire 映射/水位错: %+v", got)
+	}
+
+	projections, err := f.SessionProjectionEventsContext(context.Background(), session.ID, []string{card.ID})
+	if err != nil {
+		t.Fatalf("详情投影经 LedgerClient: %v", err)
+	}
+	if len(projections) < 3 {
+		t.Fatalf("需含会话结构、进群与成员卡状态事实: %+v", projections)
+	}
+	needs, err := f.LatestNeedsEventsContext(context.Background(), []string{card.ID})
+	if err != nil {
+		t.Fatalf("needs 投影经 LedgerClient: %v", err)
+	}
+	if len(needs) != 1 || needs[0].Type != ledger.EvNeedsHuman || needs[0].CardID != card.ID {
+		t.Fatalf("需保留 latest needs wire 字段: %+v", needs)
+	}
 }
 
 // markersOf 数全流上的 message_consumed 事件并解出载荷键集。直查库：
