@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  最小明文放行（P6甲）：默认禁明文；仅对回环 127.0.0.1 放行，
+  供 webview 加载 Go 核的 http://127.0.0.1:<port> 回环控制台。
+  边界：不放行任意明文域、base-config 不放行。
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false" />
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">127.0.0.1</domain>
+    </domain-config>
+</network-security-config>

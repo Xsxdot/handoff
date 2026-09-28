@@ -59,6 +59,12 @@
 - **V2 细粒度用量与 deny 同帧理由**：补齐 Spend/Timing/Usage 映射，并在原生协议稳定支持时
   送达 deny reason；B397 保持空值诚实与既有带外说明。来源：同上。
 
+## 来自 B392 spec（2026-09-24）
+
+- **mobilecore 图覆盖债**：当前 baseline 未收录 `Core.Pair`、`Core.Activate`、`Core.Session` 等 S2 新符号；另走图债卡重扫或视图 absorb，不在 B392 偷带全图刷新。来源：`docs/superpowers/specs/b392.md` §11。
+- **切机时是否服务端吊销旧 session**：当前冻结语义只清核内单槽与 webview 旧 cookie；若产品/安全要把旧会话立即吊销，需另开卡定义跨端会话状态与失败补偿。来源：`docs/superpowers/specs/b392.md` Out of Scope。
+- **配对后的默认机器选择策略**：B392 不发明自动选择；壳仍显式选择目标机。若产品需要“默认激活第一台在线机器”或别的规则，另开卡定义多机选择、可发现性与失败反馈。来源：`docs/superpowers/specs/b392.md` 非目标。
+
 ## 来自 B376 spec（2026-09-17）
 
 - **`go run github.com/…/codegraph` 认成 codegraph 查询**：会编译，不是只读查询。来源：`docs/superpowers/specs/b376.md` Out of Scope。

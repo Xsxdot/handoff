@@ -1,0 +1,355 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		A1B2C3D4000000000000BF02 /* Handoff-Mobile.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = A1B2C3D4000000000000FR12 /* Handoff-Mobile.xcframework */; };
+		A1B2C3D4000000000000BF03 /* Handoff-Mobile.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = A1B2C3D4000000000000FR12 /* Handoff-Mobile.xcframework */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		A1B2C3D4000000000000CP01 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A1B2C3D4000000000000PJ01 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A1B2C3D4000000000000TG01;
+			remoteInfo = HandoffMobile;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		A1B2C3D4000000000000PH04 /* Embed Frameworks */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 10;
+			files = (
+				A1B2C3D4000000000000BF03 /* Handoff-Mobile.xcframework in Embed Frameworks */,
+			);
+			name = "Embed Frameworks";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFileReference section */
+		A1B2C3D4000000000000FR12 /* Handoff-Mobile.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = "Handoff-Mobile.xcframework"; path = "../../dist/mobile/handoff-mobile.xcframework"; sourceTree = "<group>"; };
+		A1B2C3D4000000000000FR14 /* HandoffMobile.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = HandoffMobile.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A1B2C3D4000000000000FR16 /* HandoffMobileTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = HandoffMobileTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		A1B2C3D4000000000000SG01 /* HandoffMobile */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = HandoffMobile;
+			sourceTree = "<group>";
+		};
+		A1B2C3D4000000000000SG02 /* HandoffMobileTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = HandoffMobileTests;
+			sourceTree = "<group>";
+		};
+/* End PBXFileSystemSynchronizedRootGroup section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		A1B2C3D4000000000000PH02 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A1B2C3D4000000000000BF02 /* Handoff-Mobile.xcframework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A1B2C3D4000000000000PH06 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		A1B2C3D4000000000000GR01 = {
+			isa = PBXGroup;
+			children = (
+				A1B2C3D4000000000000SG01 /* HandoffMobile */,
+				A1B2C3D4000000000000SG02 /* HandoffMobileTests */,
+				A1B2C3D4000000000000GR04 /* Frameworks */,
+				A1B2C3D4000000000000GR03 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		A1B2C3D4000000000000GR03 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				A1B2C3D4000000000000FR14 /* HandoffMobile.app */,
+				A1B2C3D4000000000000FR16 /* HandoffMobileTests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		A1B2C3D4000000000000GR04 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				A1B2C3D4000000000000FR12 /* Handoff-Mobile.xcframework */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		A1B2C3D4000000000000TG01 /* HandoffMobile */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A1B2C3D4000000000000CL02 /* Build configuration list for PBXNativeTarget "HandoffMobile" */;
+			buildPhases = (
+				A1B2C3D4000000000000PH01 /* Sources */,
+				A1B2C3D4000000000000PH02 /* Frameworks */,
+				A1B2C3D4000000000000PH03 /* Resources */,
+				A1B2C3D4000000000000PH04 /* Embed Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				A1B2C3D4000000000000SG01 /* HandoffMobile */,
+			);
+			name = HandoffMobile;
+			productName = HandoffMobile;
+			productReference = A1B2C3D4000000000000FR14 /* HandoffMobile.app */;
+			productType = "com.apple.product-type.application";
+		};
+		A1B2C3D4000000000000TG02 /* HandoffMobileTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A1B2C3D4000000000000CL03 /* Build configuration list for PBXNativeTarget "HandoffMobileTests" */;
+			buildPhases = (
+				A1B2C3D4000000000000PH05 /* Sources */,
+				A1B2C3D4000000000000PH06 /* Frameworks */,
+				A1B2C3D4000000000000PH07 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				A1B2C3D4000000000000DP01 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				A1B2C3D4000000000000SG02 /* HandoffMobileTests */,
+			);
+			name = HandoffMobileTests;
+			productName = HandoffMobileTests;
+			productReference = A1B2C3D4000000000000FR16 /* HandoffMobileTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		A1B2C3D4000000000000PJ01 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 2700;
+				LastUpgradeCheck = 2700;
+				TargetAttributes = {
+					A1B2C3D4000000000000TG01 = {
+						CreatedOnToolsVersion = 27.0;
+					};
+					A1B2C3D4000000000000TG02 = {
+						CreatedOnToolsVersion = 27.0;
+						TestTargetID = A1B2C3D4000000000000TG01;
+					};
+				};
+			};
+			buildConfigurationList = A1B2C3D4000000000000CL01 /* Build configuration list for PBXProject "HandoffMobile" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = A1B2C3D4000000000000GR01;
+			productRefGroup = A1B2C3D4000000000000GR03 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				A1B2C3D4000000000000TG01 /* HandoffMobile */,
+				A1B2C3D4000000000000TG02 /* HandoffMobileTests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		A1B2C3D4000000000000PH03 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A1B2C3D4000000000000PH07 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		A1B2C3D4000000000000PH01 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A1B2C3D4000000000000PH05 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		A1B2C3D4000000000000DP01 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = A1B2C3D4000000000000TG01 /* HandoffMobile */;
+			targetProxy = A1B2C3D4000000000000CP01 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		A1B2C3D4000000000000CF01 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		A1B2C3D4000000000000CF02 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		A1B2C3D4000000000000CF03 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGNING_ALLOWED = NO;
+				ENABLE_TESTABILITY = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Support/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "dev.handoff.HandoffMobile";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_ENABLE_EXPLICIT_MODULES = NO;
+				SWIFT_OBJC_BRIDGING_HEADER = "HandoffMobile/Bridging-Header.h";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		A1B2C3D4000000000000CF04 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGNING_ALLOWED = NO;
+				ENABLE_TESTABILITY = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Support/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "dev.handoff.HandoffMobile";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_ENABLE_EXPLICIT_MODULES = NO;
+				SWIFT_OBJC_BRIDGING_HEADER = "HandoffMobile/Bridging-Header.h";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		A1B2C3D4000000000000CF05 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGNING_ALLOWED = NO;
+				GENERATE_INFOPLIST_FILE = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = "dev.handoff.HandoffMobileTests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_ENABLE_EXPLICIT_MODULES = NO;
+				SWIFT_OBJC_BRIDGING_HEADER = "HandoffMobile/Bridging-Header.h";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/HandoffMobile.app/HandoffMobile";
+			};
+			name = Debug;
+		};
+		A1B2C3D4000000000000CF06 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGNING_ALLOWED = NO;
+				GENERATE_INFOPLIST_FILE = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = "dev.handoff.HandoffMobileTests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_ENABLE_EXPLICIT_MODULES = NO;
+				SWIFT_OBJC_BRIDGING_HEADER = "HandoffMobile/Bridging-Header.h";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/HandoffMobile.app/HandoffMobile";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		A1B2C3D4000000000000CL01 /* Build configuration list for PBXProject "HandoffMobile" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A1B2C3D4000000000000CF01 /* Debug */,
+				A1B2C3D4000000000000CF02 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		A1B2C3D4000000000000CL02 /* Build configuration list for PBXNativeTarget "HandoffMobile" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A1B2C3D4000000000000CF03 /* Debug */,
+				A1B2C3D4000000000000CF04 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		A1B2C3D4000000000000CL03 /* Build configuration list for PBXNativeTarget "HandoffMobileTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A1B2C3D4000000000000CF05 /* Debug */,
+				A1B2C3D4000000000000CF06 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = A1B2C3D4000000000000PJ01 /* Project object */;
+}
