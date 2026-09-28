@@ -1584,16 +1584,22 @@ describe('B369.8 设置两级（compact）', () => {
     __resetWebPrefsForTest()
   })
 
-  it('设置中心缺省四分区 + 六入口行；点「执行机」→ sub 落 URL + MachinesPage 在场', async () => {
+  it('设置中心缺省三节 + 五入口行（pairing 出列）；点「执行机与配对」→ sub 落 URL + MachinesPage 在场', async () => {
     Object.defineProperty(window, 'innerWidth', { value: 375, configurable: true, writable: true })
     renderShell('/?tab=settings')
     await screen.findByTestId('pref-session-open-mode')
     expect(screen.getByTestId('pref-badges')).toBeInTheDocument()
     expect(screen.getByTestId('settings-about')).toBeInTheDocument()
     expect(screen.getByText('显示与可访问性')).toBeInTheDocument()
-    for (const key of ['machines', 'pairing', 'discipline', 'automation', 'env', 'update']) {
+    // B369.10 T10：三节骨架 + 五入口行；pairing 行从 hub 出列（合一入口承接），
+    // 词表项与 sub=pairing 深链在 SettingsPage.test 另锁
+    for (const id of ['settings-section-work', 'settings-section-machine', 'settings-section-about']) {
+      expect(screen.getByTestId(id)).toBeInTheDocument()
+    }
+    for (const key of ['machines', 'discipline', 'automation', 'env', 'update']) {
       expect(screen.getByTestId(`settings-sub-${key}`)).toBeInTheDocument()
     }
+    expect(screen.queryByTestId('settings-sub-pairing')).toBeNull()
     fireEvent.click(screen.getByTestId('settings-sub-machines'))
     await waitFor(() => expect(locationRef()).toBe('/?tab=settings&sub=machines'))
     expect(await screen.findByTestId('settings-sub-back')).toBeInTheDocument()
