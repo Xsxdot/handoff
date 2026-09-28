@@ -838,8 +838,11 @@ export function Shell() {
         </div>
         {ledgerEnabled && (
           <div className={`flex min-h-0 flex-1 flex-col ${sidebarTab !== 'sessions' ? 'hidden' : ''}`}>
-            <SessionSidebar sessions={sessions} loading={sessionsState.data === null && !sessionsState.disconnected}
+            {/* B406：401 终止态不算 loading（否则永转圈），过期面交由 expired 渲染 */}
+            <SessionSidebar sessions={sessions}
+              loading={sessionsState.data === null && !sessionsState.disconnected && !sessionsState.sessionExpired}
               errorText={sessionsState.disconnected ? sessionsState.errorText : ''}
+              expired={sessionsState.sessionExpired}
               needsOnly={needsOnly}
               onToggleNeeds={() => setNeedsOnly((current) => !current)}
               projectFilter={projectFilter}
@@ -996,8 +999,9 @@ export function Shell() {
                   ledgerEnabled ? (
                     <SessionSidebar
                       sessions={sessions}
-                      loading={sessionsState.data === null && !sessionsState.disconnected}
+                      loading={sessionsState.data === null && !sessionsState.disconnected && !sessionsState.sessionExpired}
                       errorText={sessionsState.disconnected ? sessionsState.errorText : ''}
+                      expired={sessionsState.sessionExpired}
                       needsOnly={needsOnly}
                       onToggleNeeds={() => setNeedsOnly((current) => !current)}
                       projectFilter={projectFilter}

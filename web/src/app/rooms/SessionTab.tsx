@@ -7,6 +7,7 @@ import { useEffect, useRef, useState } from 'react'
 import { archiveSession, fetchRoomMessages, fetchSessionDetail, joinSessionCard, markRoomRead } from '../../api/rooms'
 import type { SessionDetail as SessionDetailDTO } from '../../api/rooms'
 import { errorMessage } from '../lib/format'
+import { SessionExpiredBanner } from '../lib/Banners'
 import { ConfirmDialog } from '../lib/ConfirmDialog'
 import { usePoll } from '../data/usePoll'
 import { COLLAB_POLL_MS } from './constants'
@@ -104,8 +105,12 @@ export function SessionTab({ sessionId, title, onOpenCard }: {
 
   return (
     <div className="relative flex h-full min-h-0 flex-col">
+      {/* B406：401 是终止态要单独成面；historyError 挂 !sessionExpired——先断线
+          后 401 时 disconnected 有残留，过期优先，断线文案不与过期横幅混排 */}
       <SessionChat sessionId={sessionId} summary={detail?.summary ?? null} events={history}
-        historyError={historyPoll.disconnected ? historyPoll.errorText : ''} onSent={() => historyPoll.refresh()}
+        historyExpired={historyPoll.sessionExpired}
+        historyError={historyPoll.disconnected && !historyPoll.sessionExpired ? historyPoll.errorText : ''}
+        onSent={() => historyPoll.refresh()}
         onJoinCard={() => setJoinOpen(true)} />
       {drawerOpen && (
         <aside data-testid="session-drawer" aria-label="会话详情"
@@ -116,7 +121,11 @@ export function SessionTab({ sessionId, title, onOpenCard }: {
               className="rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-accent">×</button>
           </div>
           {detail === null
-            ? <p className="p-3 text-sm text-muted-foreground">{detailPoll.disconnected ? `详情读取失败：${detailPoll.errorText}` : '正在读取…'}</p>
+            ? detailPoll.sessionExpired
+              ? <div className="p-3"><SessionExpiredBanner /></div>
+              : detailPoll.disconnected
+                ? <p className="p-3 text-sm text-muted-foreground">详情读取失败：{detailPoll.errorText}</p>
+                : <p className="p-3 text-sm text-muted-foreground">正在读取…</p>
             : <SessionDetail detail={detail} onOpenCard={onOpenCard}
                 onArchive={() => setArchiveConfirm(true)} archiveBusy={archiveBusy} archiveError={archiveError} />}
         </aside>

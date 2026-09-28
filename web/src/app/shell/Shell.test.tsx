@@ -1152,6 +1152,19 @@ describe('B361 会话 IA', () => {
     fireEvent.click(within(screen.getByRole('tablist', { name: '标签组' })).getByRole('button', { name: /关闭 会话 · 架构物理化/ }))
     await waitFor(() => expect(within(screen.getByRole('tablist', { name: '标签组' })).queryByRole('tab', { name: /架构物理化/ })).toBeNull())
   })
+
+  // B406：sessions 流 401 是终止态——左栏要落过期横幅，不能把「读取中」挂成
+  // 永久转圈、也不能让位成「暂无会话」假读数。
+  it('会话流 401：左栏渲染过期横幅，不永转圈、不落「暂无会话」假读数', async () => {
+    vi.mocked(fetchSessions).mockRejectedValue(
+      new ApiError(401, '未授权：浏览器会话已失效，请重新执行 handoff console 兑换 cookie'))
+    renderShell()
+    const sidebar = await screen.findByTestId('session-list')
+    // 401 拒绝经 usePoll 异步落地：等横幅出现再断言假读数被抑制（全量并发下同步断言会抢跑）
+    await within(sidebar).findByText(/会话已失效/)
+    expect(within(sidebar).queryByText('（暂无会话）')).not.toBeInTheDocument()
+    expect(within(sidebar).getByTestId('session-total')).not.toHaveTextContent('读取中')
+  })
 })
 
 // —— B369.6 移动断点谱系：紧凑视口底栏四 tab、桌面零漂移、下钻往返 ——

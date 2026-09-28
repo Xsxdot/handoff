@@ -98,4 +98,14 @@ describe('SessionSidebar', () => {
     // 纯文字项：筛选项无边框表单控件样式（原型 .im-filter 无 border）
     expect(screen.getByTestId('session-project-filter').className).not.toMatch(/border/)
   })
+
+  // B406：expired 是 401 终止态——断线行与「暂无会话」空态都是假读数，一律让位
+  // 给过期横幅；读取中也不再出现（轮询已停表，不存在"还在读"）。
+  it('expired：过期横幅替代断线行与「暂无会话」空态，读取中一并抑制', () => {
+    render(<SessionSidebar sessions={[]} {...defaultProps} loading errorText="无法连接 agentd（反代失败？）" expired />)
+    expect(screen.getByText(/会话已失效/)).toBeInTheDocument()
+    expect(screen.queryByText('（暂无会话）')).not.toBeInTheDocument()
+    expect(screen.queryByText(/会话列表已断开/)).not.toBeInTheDocument()
+    expect(screen.getByTestId('session-total')).not.toHaveTextContent('读取中')
+  })
 })
