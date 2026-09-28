@@ -183,7 +183,7 @@ spec 测试决定 3/4 指定的两个具名缝（壳内实现，但**必须有�
 | path | `/` | `internal/agentd/authroutes.go:349` |
 | domain/host | `127.0.0.1`（host-only，不设 `Domain`） | 回环源 `127.0.0.1`，`mobile/README.md:47` |
 | Secure | `false`（明文回环） | `authroutes.go:353`（`Secure=r.TLS!=nil`） |
-| HttpOnly | `true` | `authroutes.go:350` |
+| HttpOnly | 服务端签发 `true`；**壳客户端注入不可置**（iOS 平台限制，见文末修订记录 2026-09-28） | `authroutes.go:350` |
 | SameSite | `Lax` | `authroutes.go:351` |
 | Max-Age/Expires | 不设（进程内会话 cookie） | `mobile/README.md:47` |
 
@@ -253,7 +253,7 @@ cd mobile/ios     && xcodebuild -scheme … -sdk iphonesimulator build   # → *
 24. 注入 cookie 的 path == `/`。
 25. 注入 cookie 为 host-only，domain == `127.0.0.1`（不设 `Domain` 通配）。
 26. 注入 cookie 的 `Secure` == `false`（明文回环）。
-27. 注入 cookie 的 `HttpOnly` == `true`。
+27. 注入 cookie 的 `HttpOnly`：**服务端签发面**为 `true`（`authroutes.go:350`）；**壳客户端注入不可置**——iOS `HTTPCookie` 的 `HttpOnly` 只读、`NSHTTPCookiePropertyKey` 无对应键，Android 若平台接受则置。记为**已知限制**（不判 pass）：客户端注入的会话 cookie 非 HttpOnly，影响面限于 webview 内 JS 读取，**不削弱 agentd 回环 cookie 闸**（闸只校验 cookie 名/值有效性，与 HttpOnly 无关）。裁决见文末修订记录（2026-09-28）。
 28. 注入 cookie 的 `SameSite` == `Lax`。
 29. 注入 cookie 不设持久 `Max-Age`/`Expires`（进程内会话 cookie）。
 30. 注入 cookie 的 value 逐字来自 `SessionCookie` 返回值；**负向**：壳不构造/不伪造 value，不用 origin/token 冒充。
@@ -388,3 +388,24 @@ macOS 集成轮（不得由并行壳子卡各自伪造——它跨两端与 agen
 - 可执行金样本：生成面签名冻结（§7.2）；无新哈希/密钥派生命中。
 - 三重闸门：§6 记两条命中 + 三条不立判据，非空着。
 - 图覆盖债：§1.4 记 `mobile/` 图外与 `mobilecore` 会话符号未入图（既存）。
+
+---
+
+## 11. 修订记录
+
+### 修订 1（2026-09-28，B417.2 iOS 实现轮；协调者裁决）
+
+- **受影响冻结项**：§3.4 cookie 属性表 `HttpOnly` 行、§4.5 条 27。
+- **原因**：B417.2 plan 出稿时经平台核验发现——iOS `HTTPCookie` 的 `HttpOnly` 为只读属性，
+  `NSHTTPCookiePropertyKey` 无对应键，**客户端注入的 cookie 无法置 HttpOnly**。原冻结值
+  `HttpOnly == true` 在 iOS 平台不可达成。属「计划阶段发现冻结物与平台现实冲突」。
+- **裁决**：接受平台限制，记为已知限制（不判 pass）。理由：①HttpOnly 只约束 webview 内 JS
+  读取 `document.cookie`，**不参与 agentd 的回环 cookie 闸**（闸只看 cookie 名/值与有效性），
+  放松它不削弱门禁；②webview 只加载受信 agentd 控制台同源内容；③替代方案（改由服务端
+  `Set-Cookie` 路径注入）要动 B369 冻结的「核程序化兑换 + 壳注入」设计，代价远超收益。
+- **影响面**：iOS 壳注入的会话 cookie 非 HttpOnly（页面 JS 可读）；风险前提是控制台存在 XSS，
+  当前控制台为受信同源内容。Android 若 `CookieManager` 接受则仍置 HttpOnly。
+- **回写内容**：§3.4 表 `HttpOnly` 行、§4.5 条 27 已按此修订；子卡测试不得为条 27 判 pass。
+- **另附**：条 13（Keychain 不设 `kSecAttrSynchronizable=true`）的测试断言在实现轮被细化为
+  「不存在 `Synchronizable == true` 的条目」（模拟器把未设值回读为 `0` 而非 `nil`）；契约文字
+  「不设 `=true`」语义未变，无需修订契约，记此备查。
