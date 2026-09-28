@@ -333,3 +333,49 @@ describe('FileTab 草稿存 localStorage', () => {
     await waitFor(() => expect(loadDraft(key)).toBeNull())
   })
 })
+
+// —— B369.10 T9：compact 只读档（无编辑交互、草稿不静默丢）——
+describe('B369.10 FileTab compact 只读', () => {
+  it('「只读」徽标在场：无保存钮、无 textarea、正文恒走只读 pre', async () => {
+    vi.mocked(fetchWorkspaceFile).mockResolvedValue({ content: 'module handoff\n', size: 15, sha256: 's1' })
+    render(<FileTab base={base} rel="go.mod" compact />)
+    await screen.findByTestId('file-readonly-pre')
+    expect(screen.getByTestId('file-readonly-badge')).toHaveTextContent('只读')
+    expect(screen.queryByRole('textbox')).toBeNull()
+    expect(screen.queryByRole('button', { name: '保存' })).toBeNull()
+    expect(screen.getByTestId('file-readonly-pre').textContent).toContain('module handoff')
+    // 无草稿：提示行不在场
+    expect(screen.queryByTestId('file-draft-hint')).toBeNull()
+  })
+
+  it('草稿不静默丢：dirty 时头部下一行提示去终端（只提示不提供编辑）', async () => {
+    vi.mocked(fetchWorkspaceFile).mockResolvedValue({ content: 'module handoff\n', size: 15, sha256: 's1' })
+    render(<FileTab base={base} rel="go.mod" compact initial={{ draft: 'module handoff\n// 改过\n', baseSha: 's1' }} />)
+    await screen.findByTestId('file-draft-hint')
+    expect(screen.getByTestId('file-draft-hint').textContent).toContain('桌面端有未保存的草稿，改代码请去终端')
+    expect(screen.queryByRole('textbox')).toBeNull()
+    expect(screen.getByTestId('file-readonly-pre').textContent).toContain('module handoff')
+  })
+
+  it('⌘S 在 compact 不接管（编辑交互摘除的守卫，不把只读档的草稿直接写盘）', async () => {
+    vi.mocked(fetchWorkspaceFile).mockResolvedValue({ content: 'module handoff\n', size: 15, sha256: 's1' })
+    render(<FileTab base={base} rel="go.mod" compact initial={{ draft: 'module handoff\n// 改过\n', baseSha: 's1' }} />)
+    await screen.findByTestId('file-readonly-pre')
+    fireEvent.keyDown(screen.getByTestId('file-readonly-pre'), { key: 's', metaKey: true })
+    expect(writeWorkspaceFile).not.toHaveBeenCalled()
+  })
+
+  it('跨档草稿不丢锁：375 只读档带草稿渲染 → 切回桌面档 textarea 在场且草稿仍在（结构分支双形态切换不丢 state）', async () => {
+    vi.mocked(fetchWorkspaceFile).mockResolvedValue({ content: 'module handoff\n', size: 15, sha256: 's1' })
+    const initial = { draft: 'module handoff\n// 移动端切走前改的\n', baseSha: 's1' }
+    const view = render(<FileTab base={base} rel="go.mod" compact initial={initial} />)
+    await screen.findByTestId('file-draft-hint')
+    // 覆写视口 → 桌面档：Shell 传的 compact 随档翻转，同组件实例重渲染
+    view.rerender(<FileTab base={base} rel="go.mod" initial={initial} />)
+    expect(await screen.findByRole('textbox')).toHaveValue('module handoff\n// 移动端切走前改的\n')
+    expect(screen.getByRole('button', { name: '保存' })).toBeEnabled()
+    // 切回只读档：提示行回来，草稿仍不丢
+    view.rerender(<FileTab base={base} rel="go.mod" compact initial={initial} />)
+    expect(await screen.findByTestId('file-draft-hint')).toBeInTheDocument()
+  })
+})

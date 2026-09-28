@@ -92,10 +92,13 @@ export interface CardsPageProps {
   // ②内容区单列 CardItem 纵堆（看板横滚与八列表格在 compact 不作为扫描面）；
   // ③main 根挂触点基线类（24px 次级底线，主动作仍逐枚 min-h-11）。
   compact?: boolean
+  // B369.10 T8 seam：卡 → 驾驶会话双跳（Shell 会话流反查，零新端点）。缺席 =
+  // 抽屉双跳行第二跳不渲染（桌面原样）。
+  onOpenSessionForCard?: (cardId: string) => void
 }
 
 /** 参数：协调者终端回调与紧凑 seam；返回：工作项看板/列表与抽屉。 */
-export function CardsPage({ onOpenCoordinatorTerminal, onDrawerCardChange, taskJumpHref, compact = false }: CardsPageProps = {}) {
+export function CardsPage({ onOpenCoordinatorTerminal, onDrawerCardChange, taskJumpHref, compact = false, onOpenSessionForCard }: CardsPageProps = {}) {
   const [searchParams] = useSearchParams()
   const projectFromUrl = searchParams.get('project') ?? ''
   const [view, setView] = useState<'board' | 'list'>('board')
@@ -459,7 +462,7 @@ export function CardsPage({ onOpenCoordinatorTerminal, onDrawerCardChange, taskJ
           {surfaceContent}
         </>
       )}
-      {selected && <CardDrawer id={selected} onClose={closeDrawer} onOpenCard={(id) => openDrawer(id)} workflowStates={selectedPinnedWorkflow?.states ?? (selectedWorkflowVersion !== undefined && selectedWorkflowVersion > 0 ? workflowStates : undefined)} boardLayout={selectedPinnedWorkflow ? normalizeBoardLayout(selectedPinnedWorkflow.board, selectedPinnedWorkflow.states) : selectedWorkflowVersion !== undefined && selectedWorkflowVersion > 0 ? boardLayout : undefined} initialSection={drawerFocus} nodes={drawerNodes} tasks={tasksPoll.data ?? undefined} onJumpToTask={jumpToTask} onOpenCoordinatorTerminal={onOpenCoordinatorTerminal} compact={compact} />}
+      {selected && <CardDrawer id={selected} onClose={closeDrawer} onOpenCard={(id) => openDrawer(id)} workflowStates={selectedPinnedWorkflow?.states ?? (selectedWorkflowVersion !== undefined && selectedWorkflowVersion > 0 ? workflowStates : undefined)} boardLayout={selectedPinnedWorkflow ? normalizeBoardLayout(selectedPinnedWorkflow.board, selectedPinnedWorkflow.states) : selectedWorkflowVersion !== undefined && selectedWorkflowVersion > 0 ? boardLayout : undefined} initialSection={drawerFocus} nodes={drawerNodes} tasks={tasksPoll.data ?? undefined} onJumpToTask={jumpToTask} onOpenCoordinatorTerminal={onOpenCoordinatorTerminal} compact={compact} onOpenDriverSession={onOpenSessionForCard ? () => onOpenSessionForCard(selected) : undefined} />}
       <NewCardDialog
         open={newCardOpen} project={project} cardProjects={projectOptions} workflows={newCardWorkflows}
         onClose={() => setNewCardOpen(false)}

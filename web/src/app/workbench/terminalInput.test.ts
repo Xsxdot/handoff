@@ -10,7 +10,7 @@
 // 为真也没人看得出来——它们断言的恰恰是「xterm 自己会漏」。
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Terminal } from '@xterm/xterm'
-import { installTerminalInputFix, type TerminalInputFix } from './terminalInput'
+import { installTerminalInputFix, type TerminalInputFix, type TerminalInputHooks } from './terminalInput'
 
 beforeAll(() => {
   // xterm 的 CoreBrowserService 要读 devicePixelRatio，jsdom 没有 matchMedia。
@@ -37,7 +37,8 @@ interface Rig {
 }
 
 // makeRig 起一个终端。withFix=false 用来立对照组，证明缺口确实存在。
-function makeRig(withFix: boolean): Rig {
+// hooks 直通安装的第 4 参（B369.10 粘滞 Ctrl 用例需要）。
+function makeRig(withFix: boolean, hooks?: TerminalInputHooks): Rig {
   const host = document.createElement('div')
   document.body.appendChild(host)
   const term = new Terminal({ cols: 80, rows: 24 })
@@ -45,7 +46,7 @@ function makeRig(withFix: boolean): Rig {
   const ta = term.textarea as HTMLTextAreaElement
   const data: string[] = []
   term.onData((d) => data.push(d))
-  const fix = withFix ? installTerminalInputFix(term, host, 'test') : null
+  const fix = withFix ? installTerminalInputFix(term, host, 'test', hooks) : null
   return {
     term,
     ta,
@@ -438,5 +439,89 @@ describe('③ 移动 IME 组合输入（B369.6）', () => {
     rig.ta.focus()
     await composeAndSettle(rig, '世界')
     expect(rig.data).toEqual(['世界'])
+  })
+})
+
+// —— B369.10：粘滞 Ctrl（独占槽位的转发消费者）——
+// armed 期间的无修饰单字母键由本模块经 term.input 合成控制字符（Ctrl+A=行首、
+// Ctrl-D=EOF…），大写按小写；非字母键与 Option/meta 组合一律不拦走 xterm 原路径
+//（Option Meta 优先级不变）；consume 在合成后必被调、armed 复位后字母不再被拦。
+describe('B369.10 粘滞 Ctrl：armed 期间字母键合成控制字符', () => {
+  // makeArmedRig 起一个 armed=true 的靶子；consume 翻转 armed（模拟宿主 state）。
+  function makeArmedRig() {
+    let armed = true
+    const consume = vi.fn(() => {
+      armed = false
+    })
+    const r = makeRig(true, { stickyCtrl: { armed: () => armed, consume } })
+    return { r, consume }
+  }
+
+  it('armed + 字母 a → \\x01、consume 被调、不双发', () => {
+    const { r, consume } = makeArmedRig()
+    r.ta.dispatchEvent(key('keydown', { key: 'a', keyCode: 65 }))
+    expect(r.data).toEqual(['\x01'])
+    expect(consume).toHaveBeenCalledTimes(1)
+  })
+
+  it('armed + 大写 A → 同 \\x01（大写按小写合成）', () => {
+    const { r, consume } = makeArmedRig()
+    r.ta.dispatchEvent(key('keydown', { key: 'A', keyCode: 65 }))
+    expect(r.data).toEqual(['\x01'])
+    expect(consume).toHaveBeenCalledTimes(1)
+  })
+
+  it('armed + Enter → 不拦（xterm 原路径 CR），consume 不被调', () => {
+    const { r, consume } = makeArmedRig()
+    r.ta.dispatchEvent(key('keydown', { key: 'Enter', keyCode: 13 }))
+    expect(r.data).toEqual(['\r'])
+    expect(consume).not.toHaveBeenCalled()
+  })
+
+  it('armed + 方向 → 不拦（xterm 原路径 CSI），consume 不被调', () => {
+    const { r, consume } = makeArmedRig()
+    r.ta.dispatchEvent(key('keydown', { key: 'ArrowUp', keyCode: 38 }))
+    expect(r.data).toEqual(['\x1b[A'])
+    expect(consume).not.toHaveBeenCalled()
+  })
+
+  it('未 armed 字母 → 不拦（xterm 原路径）', () => {
+    let armed = false
+    const consume = vi.fn(() => {
+      armed = false
+    })
+    const r = makeRig(true, { stickyCtrl: { armed: () => armed, consume } })
+    r.ta.dispatchEvent(key('keydown', { key: 'a', keyCode: 65 }))
+    expect(r.data).toEqual(['a'])
+    expect(consume).not.toHaveBeenCalled()
+  })
+
+  it('armed + Option 组合 → Option Meta 优先（发 ESC+b），粘滞不接管', () => {
+    const { r, consume } = makeArmedRig()
+    r.ta.dispatchEvent(key('keydown', { key: 'b', keyCode: 66, altKey: true, code: 'KeyB' }))
+    expect(r.data).toEqual(['\x1bb'])
+    expect(consume).not.toHaveBeenCalled()
+  })
+
+  it('armed + meta 组合 → 不拦（⌘← 行首语义不变）', () => {
+    const { r, consume } = makeArmedRig()
+    r.ta.dispatchEvent(key('keydown', { key: 'a', keyCode: 65, metaKey: true }))
+    expect(r.data).not.toContain('\x01')
+    expect(consume).not.toHaveBeenCalled()
+  })
+
+  it('consume 之后（armed 复位）字母不再被拦', () => {
+    const { r } = makeArmedRig()
+    r.ta.dispatchEvent(key('keydown', { key: 'a', keyCode: 65 }))
+    expect(r.data).toEqual(['\x01'])
+    r.data.length = 0
+    r.ta.dispatchEvent(key('keydown', { key: 'b', keyCode: 66 }))
+    expect(r.data).toEqual(['b'])
+  })
+
+  it('不传 hooks 的既有安装路径不受影响（第 4 参缺席 = 纯补漏）', () => {
+    const r = makeRig(true)
+    r.ta.dispatchEvent(key('keydown', { key: 'a', keyCode: 65 }))
+    expect(r.data).toEqual(['a'])
   })
 })

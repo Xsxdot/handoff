@@ -13,7 +13,9 @@
 //   - 不直接往 WS 写字节。补发一律走 `term.input()`，让补发的字符与用户
 //     手敲的字符走同一条 onData —— 上层的取证日志、尺寸逻辑因此不必知道本模块存在
 //   - 独占 `attachCustomKeyEventHandler`（xterm 只有一个槽位）。将来若有别处
-//     要用这个钩子，必须改成本模块转发，而不是各挂各的
+//     要用这个钩子，必须改成本模块转发，而不是各挂各的。粘滞 Ctrl（B369.10
+//     岔口 3）就是这条处方的第一个落地：hooks.stickyCtrl 经本槽位转发，armed
+//     期间的无修饰字母键由本模块合成控制字符，归宿主持有 armed 状态
 //
 // ── 为什么需要它（两条都有 WKWebView 实测轨迹佐证，不是推断）──
 //
@@ -64,6 +66,17 @@ export interface TerminalInputFix {
   dispose: () => void
 }
 
+// TerminalInputHooks 是独占槽位的转发接口（B369.10 岔口 3）：别处要用 xterm 的
+// 键事件钩子，一律在本模块的 custom handler 里转发，不开第二路监听。
+// stickyCtrl：armed() 读宿主的粘滞态；consume() 在合成完成后解除。状态归宿主
+//（TerminalTab 的每终端 state），本模块只读/只解除，不拥有它。
+export interface TerminalInputHooks {
+  stickyCtrl?: {
+    armed(): boolean
+    consume(): void
+  }
+}
+
 // NAMED_KEYPRESS_KEYS 是少数「名字比一个字符长、但确实会触发 keypress」的按键。
 // 它们不是注入文本，绝不能当多字符串处理。
 const NAMED_KEYPRESS_KEYS = new Set(['Enter', 'Tab', 'Escape'])
@@ -109,7 +122,12 @@ function optionMetaLetter(ev: KeyboardEvent): string | null {
 // 监听会连同闭包一起把已 dispose 的终端留在内存里。
 //
 // 注意：本函数会占用 `term.attachCustomKeyEventHandler`。
-export function installTerminalInputFix(term: Terminal, host: HTMLElement, label: string): TerminalInputFix {
+export function installTerminalInputFix(
+  term: Terminal,
+  host: HTMLElement,
+  label: string,
+  hooks?: TerminalInputHooks,
+): TerminalInputFix {
   const ta = term.textarea
   if (!ta) {
     console.warn('终端输入补漏未安装：textarea 尚不存在，说明 term.open() 还没调用', label)
@@ -226,6 +244,27 @@ export function installTerminalInputFix(term: Terminal, host: HTMLElement, label
       }
     }
     if (ev.type === 'keydown') {
+      // 粘滞 Ctrl 合成（B369.10 岔口 3，挂在本模块独占槽位的转发面上）：armed
+      // 期间的无修饰单字母键按 Ctrl+字母合成控制字符（Ctrl-A=行首、Ctrl-D=EOF、
+      // Ctrl-R=反搜…），大写按小写。armed 期间非字母键（Enter/方向/物理组合）
+      // 一律不拦走 xterm 原路径——「不误伤真按键」的保守方向与注入判据同款。
+      // 合成只走 term.input（合流纪律），完成后 consume() 解除粘滞态。
+      const sticky = hooks?.stickyCtrl
+      if (
+        sticky?.armed() &&
+        ev.key.length === 1 &&
+        /[a-z]/i.test(ev.key) &&
+        !ev.altKey &&
+        !ev.metaKey
+      ) {
+        ev.preventDefault()
+        ev.stopPropagation()
+        const code = ev.key.toLowerCase().codePointAt(0)! - 0x60
+        logTermFix(label, '粘滞 Ctrl', `\\x${code.toString(16).padStart(2, '0')}`)
+        term.input(String.fromCharCode(code))
+        sticky.consume()
+        return false
+      }
       if (
         ev.key === 'Enter' &&
         ev.shiftKey &&

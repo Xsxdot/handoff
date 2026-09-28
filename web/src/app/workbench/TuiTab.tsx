@@ -21,7 +21,8 @@ import { Composer } from '../task/Composer'
 import { DebugDrawer } from '../task/DebugDrawer'
 
 // TuiTab 渲染一个任务的对话式 TUI；对外签名保持不变，Shell 无需知道内部重排。
-export function TuiTab({ taskId }: { taskId: string }) {
+// compact（B369.10）仅透传给 ReviewSidePanel 切全宽抽屉形态；桌面零感知。
+export function TuiTab({ taskId, compact = false }: { taskId: string; compact?: boolean }) {
   const s = useTaskSession(taskId)
   const { frames, badLines, startOffset, sizeUnknown, error, active, atCap, loadingEarlier, loadEarlier, retry } =
     useFramesStream(taskId)
@@ -91,7 +92,7 @@ export function TuiTab({ taskId }: { taskId: string }) {
             active={active}
           />
         </div>
-        {inReview && reviewOpen && <ReviewSidePanel taskId={taskId} onClose={closeReview} />}
+        {inReview && reviewOpen && <ReviewSidePanel taskId={taskId} onClose={closeReview} compact={compact} />}
       </div>
 
       <Composer task={s.detail.task} disabled={s.disconnected} onChanged={s.refresh} />

@@ -27,6 +27,9 @@ export interface SessionChatProps {
   // compact（B369.8 T5）：回复钮常驻（岔口 3 #1，键盘 focus 现身路径保留）、
   // 发送钮主动作触控档（min-h-11）。缺省 false = 桌面类串逐字节不动。
   compact?: boolean
+  // B369.10 T7：compact 群聊顶部「本会话的卡」chiprow 的点击回调（SessionTab
+  // 的 onOpenCard seam，Shell 已通 nav.openCard）。缺省 undefined = 桌面不渲染。
+  onOpenCard?: (cardId: string) => void
 }
 
 function MessageRow({ event, referenced, highlight, archived, onJump, onReply, compact = false }: {
@@ -79,7 +82,7 @@ function MessageRow({ event, referenced, highlight, archived, onJump, onReply, c
   )
 }
 
-export function SessionChat({ sessionId, summary, events, historyError, onSent, onJoinCard, compact = false }: SessionChatProps) {
+export function SessionChat({ sessionId, summary, events, historyError, onSent, onJoinCard, compact = false, onOpenCard }: SessionChatProps) {
   const [draft, setDraft] = useState('')
   const [sending, setSending] = useState(false)
   const [sendError, setSendError] = useState('')
@@ -200,6 +203,30 @@ export function SessionChat({ sessionId, summary, events, historyError, onSent, 
         <div className="shrink-0 border-b bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-700">会话已归档，只读。</div>
       )}
       <div className="min-h-0 flex-1 space-y-2 overflow-y-auto bg-slate-50/60 p-3">
+        {/* B369.10 T7：群聊顶部「本会话的卡」chiprow（compact 且未归档且有卡）。
+            琥珀判定如实降级：wire 无逐卡 needs 位（SessionCard 只有 id/title/
+            status/seat，会话级 needs_human 是「任意一张卡」的合取），可证实的
+            归因只有「needs 且唯一卡」——多卡一律中性，aria-label 如实带状态，
+            不可证实的归因不伪造（原型 note ③ 纪律；偏离记台账）。桌面与归档
+            不渲染；chiprow 是消息容器的首子元素，随内容滚动（原型同形态）。 */}
+        {compact && !archived && (summary?.cards?.length ?? 0) > 0 && onOpenCard !== undefined && (
+          <div className="flex flex-wrap items-center gap-1.5" data-testid="session-card-chips">
+            <span className="shrink-0 text-[11px] text-muted-foreground">本会话的卡：</span>
+            {summary!.cards!.map((card) => {
+              const amber = summary!.needs_human && summary!.cards!.length === 1
+              return (
+                <button key={card.card_id} type="button" data-testid="session-card-chip" data-card-id={card.card_id}
+                  aria-label={card.status ? `查看卡 ${card.card_id}，${card.status}` : `查看卡 ${card.card_id}`}
+                  onClick={() => onOpenCard(card.card_id)}
+                  className={amber
+                    ? 'rounded-full border border-amber-200 bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-700'
+                    : 'rounded-full border px-2 py-0.5 text-[11px] text-muted-foreground hover:bg-accent/60'}>
+                  {amber && '⚑ '}{card.card_id} · 查看卡
+                </button>
+              )
+            })}
+          </div>
+        )}
         {events.length === 0 ? <p className="text-sm text-muted-foreground">（还没有消息）</p>
           : events.map((item) => {
             const payload = item.payload as { reply_to?: number }

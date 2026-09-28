@@ -35,7 +35,8 @@ import {
 import type { DirEntry, SearchHit } from '../../api/types'
 import type { BaseDir } from '../workbench/useWorkbench'
 import { copyToClipboard } from '../lib/clipboard'
-import { errorMessage } from '../lib/format'
+import { errorMessage, formatSize } from '../lib/format'
+import { TOUCH_BASELINE } from '@/lib/touch'
 import { ContextMenu, type ContextMenuEntry } from '../shared/ContextMenu'
 import { useChangedFiles, type ChangeStatus } from './changedFiles'
 import { useDirEntries, type DirEntriesApi } from './useDirEntries'
@@ -57,9 +58,14 @@ const IGNORED_TITLE = '被 .gitignore 排除（git check-ignore 判定，不归 
 
 // IgnoredMark 是行尾那个 ⊘。title 挂在外层 span 而不是图标上——lucide 的
 // 组件不接受 title 属性，而 tooltip 是这个符号唯一的解释来源，不能省。
-function IgnoredMark() {
+// compact 只对文件行传：那时行尾的 ml-auto 归尺寸列持有（B369.10 T9），⊘ 缀在
+// 其后。目录行没有尺寸列，不传——⊘ 仍是行尾那个，行间不容两段空隙。
+function IgnoredMark({ compact = false }: { compact?: boolean }) {
   return (
-    <span title={IGNORED_TITLE} className="ml-auto flex shrink-0 items-center">
+    <span
+      title={IGNORED_TITLE}
+      className={compact ? 'flex shrink-0 items-center' : 'ml-auto flex shrink-0 items-center'}
+    >
       <CircleSlash className="size-3 text-muted-foreground/60" />
     </span>
   )
@@ -105,6 +111,10 @@ export interface FileTreeProps {
   refreshKey?: number
   // 抽屉模式的关闭入口；默认右栏不传，保持旧的固定右栏形态。
   onClose?: () => void
+  // B369.10 T9：compact 行式触点档——根挂 TOUCH_BASELINE、行高加档、文件行尾
+  // 只读尺寸列。右键菜单/新建等桌面能力原样保留（原型只排小屏版式，不裁能力
+  // 可达性）。缺省 false = 桌面右栏逐字节不动。
+  compact?: boolean
 }
 
 // MenuEntry 是被右键的条目：菜单项按它算 dirOf 与可用的操作集合。
@@ -176,7 +186,7 @@ function logOperationError(operation: string, base: BaseDir, rel: string | undef
   return message
 }
 
-export function FileTree({ base, taskId, onOpenFile, onOpenTerminal, revealSupported, refreshKey, onClose }: FileTreeProps) {
+export function FileTree({ base, taskId, onOpenFile, onOpenTerminal, revealSupported, refreshKey, onClose, compact = false }: FileTreeProps) {
   const dirs = useDirEntries(base)
   const changed = useChangedFiles(taskId)
   const firstRef = useRef(true)
@@ -393,7 +403,7 @@ export function FileTree({ base, taskId, onOpenFile, onOpenTerminal, revealSuppo
   }
 
   return (
-    <aside className="flex h-full min-h-0 flex-col border-l bg-background">
+    <aside className={cn('flex h-full min-h-0 flex-col border-l bg-background', compact && TOUCH_BASELINE)}>
       <div className="flex items-center gap-1 border-b px-3 py-2">
         <span className="text-sm font-medium">文件</span>
         <button
@@ -529,6 +539,7 @@ export function FileTree({ base, taskId, onOpenFile, onOpenTerminal, revealSuppo
             onContextMenu={onRowContextMenu}
             changed={changed}
             query={query.trim().toLowerCase()}
+            compact={compact}
           />
         </div>
       )}
@@ -580,6 +591,8 @@ interface LevelProps {
   onContextMenu: (e: React.MouseEvent, entry: DirEntry, rel: string) => void
   changed: Map<string, ChangeStatus>
   query: string
+  // B369.10 T9：compact 行式触点档（行高加档 + 文件行尾尺寸列）。
+  compact: boolean
 }
 
 // ENTRY_ROW 是文件行与目录行共用的一套排版。
@@ -631,9 +644,11 @@ function DirLevel(props: LevelProps) {
 // Row 渲染一个条目。目录行负责拼接子层的相对路径并递归渲染 DirLevel；
 // 文件行与目录行都能右键呼出菜单。
 function Row({ entry, pad, ...rest }: LevelProps & { entry: DirEntry; pad: { paddingLeft: string } }) {
-  const { rel: parentRel, depth, expanded, onToggle, onOpenFile, onContextMenu, changed } = rest
+  const { rel: parentRel, depth, expanded, onToggle, onOpenFile, onContextMenu, changed, compact } = rest
   const rel = parentRel ? `${parentRel}/${entry.name}` : entry.name
   const open = expanded.has(rel)
+  // B369.10 T9：compact 行高加档（触点行式版式），桌面行串逐字节不动。
+  const rowClass = compact ? cn(ENTRY_ROW, 'min-h-11') : ENTRY_ROW
 
   if (entry.is_dir) {
     return (
@@ -642,7 +657,7 @@ function Row({ entry, pad, ...rest }: LevelProps & { entry: DirEntry; pad: { pad
           type="button"
           onClick={() => onToggle(rel)}
           onContextMenu={(e) => onContextMenu(e, entry, rel)}
-          className={ENTRY_ROW}
+          className={rowClass}
           style={pad}
         >
           {/* 箭头装在固定宽的格子里，文件行用同宽的空格子占位——两者的图标因此
@@ -676,7 +691,7 @@ function Row({ entry, pad, ...rest }: LevelProps & { entry: DirEntry; pad: { pad
         type="button"
         onClick={() => onOpenFile(rel)}
         onContextMenu={(e) => onContextMenu(e, entry, rel)}
-        className={ENTRY_ROW}
+        className={rowClass}
         style={pad}
       >
         <span className="size-4 shrink-0" />
@@ -688,14 +703,27 @@ function Row({ entry, pad, ...rest }: LevelProps & { entry: DirEntry; pad: { pad
           className={cn('size-4 shrink-0', style ? style.name : 'text-muted-foreground')}
         />
         <span className={cn('truncate', style?.name, ignored && IGNORED_NAME)}>{entry.name}</span>
+        {/* B369.10 T9：compact 文件行尾只读尺寸列（DirEntry.size 已有承载，
+            formatSize 既有口径）。它是这一行唯一的 ml-auto 持有者（角标与 ⊘
+            在 compact 下让出 ml-auto 缀在其后）——自由空间因此落在名字与尺寸
+            之间，尺寸钉在行尾成列；反过来把 ml-auto 给角标时，尺寸会被顶回名字
+            边上跟着名字长度飘（原型 .fi .nm{flex:1} / .sz 的右端列同款语义）。 */}
+        {compact && entry.size !== undefined && (
+          <span data-testid="file-size" className="ml-auto shrink-0 text-[11px] text-muted-foreground">
+            {formatSize(entry.size)}
+          </span>
+        )}
         {style && (
-          <span title={style.title} className={cn('ml-auto shrink-0 text-[10px] font-semibold', style.badge)}>
+          <span
+            title={style.title}
+            className={cn(compact ? 'shrink-0' : 'ml-auto shrink-0', 'text-[10px] font-semibold', style.badge)}
+          >
             {style.letter}
           </span>
         )}
         {/* 被忽略的文件不可能同时有 diff 状态（git 不跟踪它），所以这两个角标
             不会打架，各自都能用 ml-auto 占右端 */}
-        {ignored && <IgnoredMark />}
+        {ignored && <IgnoredMark compact={compact} />}
       </button>
     </li>
   )

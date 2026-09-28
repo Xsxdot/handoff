@@ -14,7 +14,9 @@
 //       /：tab ∈ sessions|cards|projects|settings（缺省 sessions）、detail=1（下钻态）、
 //         dir=<baseKey>（目录覆盖层）、from=…（任务现场返回来源，仅 detail=1 时
 //         有消费者——返回条；/cards 上的 from 由任务跳转 seam 消费）、
-//         sub=<SettingsSub>（B369.8：设置二级页，仅 tab=settings 时有消费者）
+//         sub=<SettingsSub>（B369.8：设置二级页，仅 tab=settings 时有消费者）、
+//         project=<id>（B369.10：移动项目详情，仅 tab=projects 时有消费者——
+//         与 /cards 宿主的 project=<name> 看板筛选是两个语汇，互不跟随）
 //     派生规则：pathname==='/cards' ⇒ tab='cards'；否则读 tab 参数。任务现场终态
 //     形如 /?tab=<tab>&detail=1&from=<来源>；「/ 上 tab=cards 且无 detail」是残留
 //     形状，由 normalize ② replace 成 /cards，不留第二形状。
@@ -75,9 +77,14 @@ export interface MobileNav {
   // sub（B369.8）：compact 设置二级页，仅 tab=settings 时有消费者；桌面恒 null
   //（compact 设置二级 IA 不存在，桌面深链走 /settings?section= 原机制）。
   sub: SettingsSub | null
+  // project（B369.10）：移动项目详情（project_id），仅 tab=projects 时有消费者；
+  // 桌面恒 null。/cards 宿主上的 project 是看板筛选（另一语汇），消费点只认
+  // tab=projects，派生层不做宿主区分（残参归 normalize ③ 清理）。
+  projectId: string | null
   // 写（compact 下写 URL；桌面下写内部 state、URL 一字不动）
   setTab(t: MobileTab): void
   setSub(key: string | null): void
+  setProject(key: string | null): void
   // ctx 值放宽为 string|null：调用方（TaskDeepLink/openTaskTui）从 URL 参数原样
   // 透传，非法值按「未指定」处理——from 未指定时保留当前 URL 的 from（同一任务
   // 现场里经看板换任务不丢来源链），tab 未指定时用派生 tab。
@@ -105,6 +112,7 @@ export function useMobileNav({ compact }: { compact: boolean }): MobileNav {
   const rawFrom = params.get('from')
   const from = compact && isMobileFrom(rawFrom) ? rawFrom : null
   const sub = compact ? normalizeSettingsSub(params.get('sub')) : null
+  const projectId = compact ? params.get('project') : null
 
   // here 是当前完整 URL，所有写动作先比对它再 navigate（幂等写，plan §7.2）：
   // 同址不写，避免往历史里塞无意义的同址条目。
@@ -145,6 +153,29 @@ export function useMobileNav({ compact }: { compact: boolean }): MobileNav {
     navigate(to)
   }, [compact, params, here, navigate])
 
+  // setProject（B369.10 岔口 1）：项目列表 ↔ 项目详情的唯一写口。
+  // 开（有值）push fresh URL（只带 tab+project）：projects tab 上无其他可预设的
+  // 合法参数（dir 覆盖层与详情层可同持，但开详情的入口只来自列表行，此刻 URL
+  // 上不会有 dir），fresh URL 即幂等形态。关（null）replace strip project 留其余
+  // 参数（与 setDir(null)/setSub(null) 同形）。桌面直通 no-op：compact 详情面不存在。
+  const setProject = useCallback((key: string | null) => {
+    if (!compact) return
+    if (key === null) {
+      const p = new URLSearchParams(params)
+      p.delete('project')
+      const qs = p.toString()
+      const to = `/${qs ? `?${qs}` : ''}`
+      if (to === here) return
+      console.debug('shell.mobile_nav.project_close', {})
+      navigate(to, { replace: true })
+      return
+    }
+    const to = `/?tab=projects&project=${encodeURIComponent(key)}`
+    if (to === here) return
+    console.debug('shell.mobile_nav.project_open', { project: key })
+    navigate(to)
+  }, [compact, params, here, navigate])
+
   const enterDetail = useCallback((ctx?: { from?: string | null; tab?: string | null }) => {
     if (!compact) {
       setDesktopDetail(true)
@@ -163,6 +194,9 @@ export function useMobileNav({ compact }: { compact: boolean }): MobileNav {
     // dir 随行：目录覆盖层里下钻（文件/终端）后返回条要能回到目录（逐级返回）。
     const dir = params.get('dir')
     if (dir) p.set('dir', dir)
+    // project 随行（B369.10）：项目详情里下钻（终端/任务）后返回条要能回到详情。
+    const project = params.get('project')
+    if (project) p.set('project', project)
     const to = `/?${p.toString()}`
     if (to === here) return
     console.debug('shell.mobile_nav.detail_enter', { tab: nextTab, from: src ?? null })
@@ -176,11 +210,13 @@ export function useMobileNav({ compact }: { compact: boolean }): MobileNav {
       setDesktopDetail(false)
       return
     }
-    // 清 detail+from，留 tab/dir（无 from 兜底返回）。replace：返回类不留历史格。
+    // 清 detail+from，留 tab/dir/project（无 from 兜底返回）。replace：返回类不留历史格。
     const p = new URLSearchParams()
     p.set('tab', tab)
     const dir = params.get('dir')
     if (dir) p.set('dir', dir)
+    const project = params.get('project')
+    if (project) p.set('project', project)
     const to = `/?${p.toString()}`
     if (to === here) return
     console.debug('shell.mobile_nav.detail_back', { tab })
@@ -202,7 +238,15 @@ export function useMobileNav({ compact }: { compact: boolean }): MobileNav {
       navigate(to, { replace: true })
       return
     }
-    const to = `/?tab=projects&dir=${encodeURIComponent(key)}`
+    // 开侧 fresh URL 携带现 URL 的 project（B369.10）：dir 覆盖层可从项目详情的
+    // 「浏览文件」进入，dir 与 project 同属 projects tab 不互斥；关侧 strip 天然
+    // 保留 project（逐级返回：浏览文件 → 返回 → 回详情）。
+    const p = new URLSearchParams()
+    p.set('tab', 'projects')
+    p.set('dir', key)
+    const project = params.get('project')
+    if (project) p.set('project', project)
+    const to = `/?${p.toString()}`
     if (to === here) return
     console.debug('shell.mobile_nav.dir_open', { dir: key })
     navigate(to)
@@ -220,15 +264,17 @@ export function useMobileNav({ compact }: { compact: boolean }): MobileNav {
     p.delete('card')
     p.delete('from')
     p.delete('sub')
-    // project 过滤保留：从带 project 参数的看板点开卡，丢参数会把用户已选的
-    // 项目筛选静默清掉（CardsPage 的 URL→state effect 会跟着置空）。
+    // project 只在 /cards 宿主保留（B369.10 收紧）：保留条款的语义是「从带 project
+    // 参数的看板点开卡」——/cards 宿主；'/' 宿主的 project 是项目详情参数（另一
+    // 语汇），无条件带进 /cards 会静默改写用户的看板筛选，一律删。
+    if (location.pathname !== '/cards') p.delete('project')
     p.set('card', cardId)
     if (src) p.set('from', src)
     const to = `/cards?${p.toString()}`
     if (to === here) return
     console.debug('shell.mobile_nav.card_open', { card: cardId, from: src ?? null })
     navigate(to)
-  }, [compact, params, here, navigate])
+  }, [compact, params, here, location.pathname, navigate])
 
   const closeCard = useCallback(() => {
     if (!compact) return
@@ -284,6 +330,12 @@ export function useMobileNav({ compact }: { compact: boolean }): MobileNav {
       p.delete('sub')
       dirty = true
     }
+    // project（B369.10）只在 tab=projects 有消费者；/cards 宿主上的 project 是
+    // 看板筛选、合法消费中，不在此列（多一道 !isCards 前置）。
+    if (!isCards && p.has('project') && p.get('tab') !== 'projects') {
+      p.delete('project')
+      dirty = true
+    }
     if (p.has('sub') && !normalizeSettingsSub(p.get('sub'))) {
       p.delete('sub')
       dirty = true
@@ -297,7 +349,7 @@ export function useMobileNav({ compact }: { compact: boolean }): MobileNav {
   }, [compact, location.pathname, location.search, derivedTab, here, navigate])
 
   return useMemo(() => ({
-    tab, detail, dirKey, from, sub,
-    setTab, setSub, enterDetail, exitDetail, setDir, openCard, closeCard, normalize,
-  }), [tab, detail, dirKey, from, sub, setTab, setSub, enterDetail, exitDetail, setDir, openCard, closeCard, normalize])
+    tab, detail, dirKey, from, sub, projectId,
+    setTab, setSub, setProject, enterDetail, exitDetail, setDir, openCard, closeCard, normalize,
+  }), [tab, detail, dirKey, from, sub, projectId, setTab, setSub, setProject, enterDetail, exitDetail, setDir, openCard, closeCard, normalize])
 }

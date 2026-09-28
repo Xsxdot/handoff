@@ -280,11 +280,13 @@ function locationRef(): string | null {
   return screen.getByTestId('test-location').getAttribute('data-ref')
 }
 
-// B369.8 T6：compact 项目行缺省折叠——要先点行展开，机器行/工作树子行才在。
-// expanded:false 定位到项目行按钮（行内其他钮不带 aria-expanded）。
+// B369.8 T6：compact 项目行缺省折叠——要先点开，机器行/工作树子行才在。
+// B369.10 T3：折叠入口从行 button 收窄到行内 Arrow——行 button 现在是「进详情」
+// 主点击，不再挂 aria-expanded（原来靠 expanded:false 定位行按钮，改走 Arrow 的
+// aria-label「展开」/「收起」）。
 async function expandCompactProject() {
   const project = await screen.findByTestId('project-node-p1')
-  fireEvent.click(within(project).getByRole('button', { expanded: false }))
+  fireEvent.click(within(project).getByLabelText('展开'))
 }
 
 // renderShellWithHistory 与 renderShell 同构，但把 memory history 句柄交出来。
@@ -1275,9 +1277,15 @@ describe('B369.6 移动断点谱系', () => {
     })
     renderShell()
     fireEvent.click(await screen.findByTestId('mobile-tab-projects'))
-    // B369.8 T6：compact 项目行缺省折叠，先展开项目；位置摘要应报 1 处断开。
+    // B369.8 T6：compact 项目行缺省折叠，先展开项目。
+    // B369.10 T3：位置摘要升格为逐位置芯片——两枚位置各一枚，断开的那个报「离线」。
     await expandCompactProject()
-    expect(screen.getByTestId('project-loc-summary')).toHaveTextContent('2 处位置 · 1 处断开')
+    const chips = screen.getAllByTestId('project-loc-chip')
+    expect(chips).toHaveLength(2)
+    expect(chips[0]).toHaveTextContent(/本机 · \d+ 活跃/)
+    expect(chips[1]).toHaveTextContent('devbox · 离线')
+    // 离线位 tone 随之（只标记状态，不隐藏这台机器）
+    expect(chips[1].querySelector('.bg-state-failed')).not.toBeNull()
     // 离线机器行保持可见并标「已断开」——不静默少一台（CONTEXT「项目位置不可用」）。
     expect(await screen.findByText('已断开')).toBeInTheDocument()
     // 反例锁：离线位置的目录内容一格都不渲染（不降级只读、不摆缓存快照）。
@@ -1584,16 +1592,22 @@ describe('B369.8 设置两级（compact）', () => {
     __resetWebPrefsForTest()
   })
 
-  it('设置中心缺省四分区 + 六入口行；点「执行机」→ sub 落 URL + MachinesPage 在场', async () => {
+  it('设置中心缺省三节 + 五入口行（pairing 出列）；点「执行机与配对」→ sub 落 URL + MachinesPage 在场', async () => {
     Object.defineProperty(window, 'innerWidth', { value: 375, configurable: true, writable: true })
     renderShell('/?tab=settings')
     await screen.findByTestId('pref-session-open-mode')
     expect(screen.getByTestId('pref-badges')).toBeInTheDocument()
     expect(screen.getByTestId('settings-about')).toBeInTheDocument()
     expect(screen.getByText('显示与可访问性')).toBeInTheDocument()
-    for (const key of ['machines', 'pairing', 'discipline', 'automation', 'env', 'update']) {
+    // B369.10 T10：三节骨架 + 五入口行；pairing 行从 hub 出列（合一入口承接），
+    // 词表项与 sub=pairing 深链在 SettingsPage.test 另锁
+    for (const id of ['settings-section-work', 'settings-section-machine', 'settings-section-about']) {
+      expect(screen.getByTestId(id)).toBeInTheDocument()
+    }
+    for (const key of ['machines', 'discipline', 'automation', 'env', 'update']) {
       expect(screen.getByTestId(`settings-sub-${key}`)).toBeInTheDocument()
     }
+    expect(screen.queryByTestId('settings-sub-pairing')).toBeNull()
     fireEvent.click(screen.getByTestId('settings-sub-machines'))
     await waitFor(() => expect(locationRef()).toBe('/?tab=settings&sub=machines'))
     expect(await screen.findByTestId('settings-sub-back')).toBeInTheDocument()
@@ -1750,9 +1764,18 @@ describe('B369.8 覆盖层硬闸', () => {
     expect(screen.getByTestId('session-view-detail')).toHaveAttribute('aria-selected', 'true')
     fireEvent.click(screen.getByTestId('session-view-chat'))
     expect(screen.getByTestId('session-view-chat')).toHaveAttribute('aria-selected', 'true')
-    // ④ 项目折叠展开
+    // ④ 项目：行主点击进详情（B369.10 T3 翻案后的主通道）→ 返回列表 →
+    //    行内 Arrow 折叠展开（折叠语义收窄到 Arrow，不再吞掉对树的访问）
     fireEvent.click(screen.getByTestId('mobile-detail-back'))
     fireEvent.click(await screen.findByTestId('mobile-tab-projects'))
+    const projectRow = within(await screen.findByTestId('project-node-p1')).getByRole('button', { name: /^handoff/ })
+    expect(projectRow).not.toHaveAttribute('aria-expanded')
+    fireEvent.click(projectRow)
+    await waitFor(() => expect(locationRef()).toBe('/?tab=projects&project=p1'))
+    expect(await screen.findByTestId('mobile-project-detail')).toBeInTheDocument()
+    fireEvent.click(screen.getByTestId('project-detail-back'))
+    await waitFor(() => expect(locationRef()).toBe('/?tab=projects'))
+    expect(screen.queryByTestId('mobile-project-detail')).toBeNull()
     await expandCompactProject()
     expect(await screen.findByTestId('machine-row')).toBeInTheDocument()
     expect(screen.getByTestId('workbench-underlay').hasAttribute('inert')).toBe(true)
@@ -1966,5 +1989,210 @@ describe('B369.9 单焦点投影', () => {
     fireEvent.click(tabByLabel('主目录'))
     await waitFor(() => expect(reachableSwitchers()).toHaveLength(1))
     expect(reachableSwitchers()[0].value).toBe(zhuOption.value)
+  })
+})
+
+// —— B369.10 T4：移动项目详情（深链入层、双动作、逐级返回、bogus 自愈）——
+// 列表行主点击进详情的入口由 T3 接线（onOpenProjectDetail），本 describe 用深链
+// 直达详情层，锁挂载形状与返回链；pty-host keep-alive 锁（B270/B369.9）在此不动。
+describe('B369.10 项目详情', () => {
+  function setCompact() {
+    Object.defineProperty(window, 'innerWidth', { value: 375, configurable: true, writable: true })
+  }
+
+  it('深链 /?tab=projects&project=p1 直达详情层：列表仍在下层、URL 保持', async () => {
+    setCompact()
+    renderShell('/?tab=projects&project=p1')
+    await screen.findByTestId('mobile-project-detail')
+    expect(screen.getByTestId('mobile-project-detail').textContent).toContain('handoff')
+    // ProjectTree 常驻下层（覆盖层保挂载，折叠集/搜索词不因进出详情丢失）
+    expect(screen.getByTestId('project-node-p1')).toBeInTheDocument()
+    expect(locationRef()).toBe('/?tab=projects&project=p1')
+  })
+
+  it('详情「浏览文件」→ project+dir 叠加，mobile-dir 盖上；dir 返回 → 详情；详情返回 → 列表', async () => {
+    setCompact()
+    renderShell('/?tab=projects&project=p1')
+    await screen.findByTestId('mobile-project-detail')
+    fireEvent.click(screen.getAllByTestId('project-wt-files')[0])
+    await waitFor(() => expect(locationRef()).toBe('/?tab=projects&dir=%2Fr%2Fhandoff&project=p1'))
+    await screen.findByTestId('mobile-dir')
+    // 逐级返回第一级：目录层 → 详情层
+    fireEvent.click(screen.getByTestId('mobile-dir-back'))
+    await screen.findByTestId('mobile-project-detail')
+    expect(locationRef()).toBe('/?tab=projects&project=p1')
+    // 第二级：详情层 → 列表
+    fireEvent.click(screen.getByTestId('project-detail-back'))
+    await waitFor(() => expect(locationRef()).toBe('/?tab=projects'))
+    expect(screen.queryByTestId('mobile-project-detail')).toBeNull()
+  })
+
+  it('详情「打开终端」→ URL 带 project+detail 下钻；返回条回列表后详情仍在场', async () => {
+    setCompact()
+    renderShell('/?tab=projects&project=p1')
+    await screen.findByTestId('mobile-project-detail')
+    fireEvent.click(screen.getAllByTestId('project-wt-terminal')[0])
+    await waitFor(() => expect(locationRef()).toBe('/?tab=projects&detail=1&project=p1'))
+    await screen.findByTestId('pty-host')
+    // 逐级返回：任务现场 → 详情（project 随行保留）
+    fireEvent.click(screen.getByTestId('mobile-detail-back'))
+    await screen.findByTestId('mobile-project-detail')
+    expect(locationRef()).toBe('/?tab=projects&project=p1')
+  })
+
+  it('project=<bogus> 深链自愈：详情层不渲染、列表照常', async () => {
+    setCompact()
+    renderShell('/?tab=projects&project=bogus')
+    await screen.findByTestId('mobile-home')
+    expect(screen.queryByTestId('mobile-project-detail')).toBeNull()
+    expect(await screen.findByTestId('project-node-p1')).toBeInTheDocument()
+  })
+})
+
+// —— B369.10 T5：Shell 裁决横幅（组级判据、切段不丢、去查证）——
+// 判据落点=焦点**组**扫描（bannerTask memo），不是焦点窗格——原型 note ①
+// 「钉在顶部，切对话/终端/文件都不丢」的法定语义锁在第二个用例。横幅在 Shell
+// 层 absolute 容器内，不进 WorkbenchPage 窗格树（B369.9 两把锁不需要新增）。
+describe('B369.10 裁决横幅', () => {
+  const setViewport = (width: number) =>
+    Object.defineProperty(window, 'innerWidth', { value: width, configurable: true, writable: true })
+  const reachable = (el: HTMLElement) =>
+    el.closest('[inert]') === null && el.closest('[aria-hidden="true"]') === null
+  const reachablePanes = () => screen.getAllByTestId('workbench-pane').filter(reachable)
+
+  // 横幅用例的夹具基取 t2（等你批）：判据语义就是「等你」任务，TuiHeader/中央
+  // tab 条渲染 task.name，断言（/等你批/）跟着夹具走；state 由参数覆写。
+  function mockTaskState(state: string, pendingTickets: number = 0) {
+    const task = { ...t2, state }
+    vi.mocked(fetchTasks).mockResolvedValue([task])
+    vi.mocked(fetchTaskDetail).mockResolvedValue({
+      task,
+      pending_tickets: Array.from({ length: pendingTickets }, (_, i) => ({
+        id: `tk-${i}`, task_id: task.id, kind: 'question', request: {}, created_at: '',
+      })),
+      recent_events: [],
+    })
+  }
+
+  // 下钻任务现场：compact 展开项目 → 点任务组第一行（openTaskTui → detail=1）。
+  async function openTaskScene() {
+    await expandCompactProject()
+    fireEvent.click(screen.getAllByTestId('task-row')[0])
+    await screen.findByTestId('mobile-detail-bar')
+    await screen.findByRole('tab', { name: /等你批/ })
+  }
+
+  // dropDirOntoPane：把目录拖进焦点窗格右半 → 同组新列终端窗格并夺焦（place
+  // 语义，B369.9 describe 同款手法）。由此焦点窗格不再是 tui，但组内仍有 tui
+  // ——组级判据的分界样本。clientX/clientY 必须显式给：jsdom 的 drop 事件不带
+  // 坐标，NaN 会投影成 center 落点、把 tui 窗格整个替换掉（切段不丢语义就没了）。
+  async function dropDirOntoPane() {
+    const values = new Map<string, string>()
+    const dataTransfer = {
+      types: [DRAG_DIR_MIME, DRAG_BASE_MIME],
+      setData: (type: string, value: string) => {
+        values.set(type, value)
+        if (!dataTransfer.types.includes(type)) dataTransfer.types.push(type)
+      },
+      getData: (type: string) => values.get(type) ?? '',
+      effectAllowed: '',
+      dropEffect: '',
+    }
+    const dirBase = { key: '/w/b2-b3', kind: 'workspace', path: '/w/b2-b3', label: 'integration/b2-b3', projectName: 'handoff', machine: '' }
+    values.set(DRAG_DIR_MIME, JSON.stringify(dirBase))
+    values.set(DRAG_BASE_MIME, JSON.stringify(dirBase))
+    const pane = reachablePanes()[0]
+    setPaneRect(pane!, 800, 600)
+    const event = createEvent.drop(pane!, { dataTransfer: dataTransfer as unknown as DataTransfer })
+    Object.defineProperty(event, 'clientX', { value: 720 })
+    Object.defineProperty(event, 'clientY', { value: 300 })
+    fireEvent(pane!, event)
+    await screen.findAllByTestId('workbench-pane')
+  }
+
+  it('waiting_review 任务下钻 → 横幅在场（等你裁决文案 + 去查证钮）', async () => {
+    setViewport(375)
+    mockTaskState('waiting_review')
+    renderShell('/?tab=projects')
+    await openTaskScene()
+    const banner = screen.getByTestId('task-verdict-banner')
+    expect(banner).toBeInTheDocument()
+    expect(banner.textContent).toContain('等你裁决 · 交付与作答在对话段')
+    expect(screen.getByTestId('task-verdict-activate')).toBeInTheDocument()
+    // review 建议修（M1）：新面根节点挂触点基线，去查证抬到 24×24 底线
+    expect(banner.className).toContain('[&_button:not(.min-h-11)]:min-h-6')
+    expect(banner.className).toContain('[&_button]:min-w-6')
+    // review 建议修（M2）：横幅是提示面、不承载作答——内里只有一枚「去查证」，
+    // 原型 mock 的 A/B 两个选项钮在实现里没有落点（spec §2.3 已定，记台账）
+    expect(within(banner).getAllByRole('button')).toHaveLength(1)
+    expect(within(banner).queryByText(/选项|方案 A|方案 B/)).toBeNull()
+  })
+
+  it('组级判据：焦点切到同组终端窗格后横幅仍在场（切段不丢）', async () => {
+    setViewport(375)
+    mockTaskState('waiting_review')
+    renderShell('/?tab=projects')
+    await openTaskScene()
+    await dropDirOntoPane()
+    // 拖放后焦点窗格是终端段——若判据字面取「焦点窗格是 tui」，此刻横幅已消失
+    expect(screen.getByTestId('task-verdict-banner')).toBeInTheDocument()
+  })
+
+  it('去查证 → 焦点回 tui 窗格（审阅面由 TuiTab 既有 effect 自动展开）', async () => {
+    setViewport(375)
+    mockTaskState('waiting_review')
+    renderShell('/?tab=projects')
+    await openTaskScene()
+    await dropDirOntoPane()
+    fireEvent.click(screen.getByTestId('task-verdict-activate'))
+    await waitFor(() => expect(reachablePanes()[0].textContent).toContain('等你批'))
+  })
+
+  it('waiting_answer + 挂起工单 → 工单文案横幅（N 张工单等你答复）', async () => {
+    setViewport(375)
+    mockTaskState('waiting_answer', 2)
+    renderShell('/?tab=projects')
+    await openTaskScene()
+    await waitFor(() => expect(screen.getByTestId('task-verdict-banner')).toBeInTheDocument())
+    expect(screen.getByTestId('task-verdict-banner').textContent).toContain('2 张工单等你答复')
+  })
+
+  it('running 任务 → 横幅不在场', async () => {
+    setViewport(375)
+    mockTaskState('running')
+    renderShell('/?tab=projects')
+    await openTaskScene()
+    expect(screen.queryByTestId('task-verdict-banner')).toBeNull()
+  })
+
+  it('桌面档不渲染横幅（compact 判据）', async () => {
+    setViewport(1024)
+    mockTaskState('waiting_review')
+    renderShell('/')
+    await screen.findByTestId('task-row')
+    fireEvent.click(screen.getAllByTestId('task-row')[0])
+    await screen.findByRole('tab', { name: /等你批/ })
+    expect(screen.queryByTestId('task-verdict-banner')).toBeNull()
+  })
+})
+
+// —— B369.10 T8 seam 冒烟：卡抽屉「驾驶会话」→ Shell 会话流反查开群聊 ——
+describe('B369.10 卡到会话双跳 seam', () => {
+  it('compact 抽屉「驾驶会话」行 → openSession：session tab 在场 + 下钻任务层', async () => {
+    Object.defineProperty(window, 'innerWidth', { value: 375, configurable: true, writable: true })
+    const rooms = vi.mocked(await import('../../api/rooms'))
+    rooms.fetchSessions.mockResolvedValue([sessionSummary({ cards: [{ card_id: 'B1' }] })] as never)
+    await mockCardLedger()
+    // 夹具补 driver_session（mockCardLedger 的 b1CardView 无此字段）
+    const ledger = vi.mocked(await import('../../api/ledger'))
+    ledger.fetchCardDetail.mockResolvedValue({
+      ...b1CardDetail(), card: { ...b1CardView, driver_session: 'session:1' },
+    } as never)
+    renderShell('/cards?card=B1')
+    expect(await screen.findByRole('dialog', { name: '工作项详情' })).toBeInTheDocument()
+    fireEvent.click(await screen.findByTestId('card-jump-session'))
+    // 会话流反查命中 session:1 → 群聊 tab 开在中央区 + 下钻（返回条在场）
+    expect(await screen.findByRole('tab', { name: /架构物理化/ })).toBeInTheDocument()
+    expect(await screen.findByTestId('mobile-detail-bar')).toBeInTheDocument()
   })
 })

@@ -1,7 +1,8 @@
-// SettingsHub —— compact 设置中心（B369.8 §2 岔口 1 / §3.4）。
+// SettingsHub —— compact 设置中心（B369.8 §2 岔口 1 / §3.4；B369.10 §2 岔口 6 三节行文）。
 //
-// 职责：sub=null 时四分区就地呈现（会话打开方式 / 提醒 / 显示与可访问性 / 关于）+
-// 六个二级入口行；sub=<key> 时对应二级页全宽承载 + 「‹ 设置中心」返回行。
+// 职责：sub=null 时三节就地呈现（工作方式：会话打开方式 / 需要你提醒 / 显示与可访问性；
+// 执行机：合一入口行 + 其余四项；关于：版本）+ hub-note；sub=<key> 时对应二级页全宽
+// 承载 + 「‹ 设置中心」返回行。
 //
 // 边界：
 //   - **只做编排不做内容**：二级页组件单一来源（MachinesPage 等原样复用），
@@ -24,16 +25,34 @@ import { SchedulingPage } from './SchedulingPage'
 import { EnvPage } from './EnvPage'
 import { UpdatePage } from './UpdatePage'
 
-// SUB_LABELS 二级入口行文案。machines 用「执行机」、pairing 用「扫码配对」：
-// compact 语境的叫法（plan §11 实走第 1 步口径），桌面「开发机」双栏不动。
+// SUB_LABELS 二级入口行文案。machines 用「执行机与配对」（B369.10 §2 岔口 6.3：
+// 与 pairing 合一，原型 mobile-pairing:135 同词）；pairing 项保留在词表里是因为
+// 词表是 URL 契约不是 UI 清单——hub 不渲染该行，sub=pairing 深链照旧可达。
 // 其余四项与桌面 SECTIONS 同词——两处标签不一致会让人以为是两套设置。
 const SUB_LABELS: Record<SettingsSub, string> = {
-  machines: '执行机',
+  machines: '执行机与配对',
   pairing: '扫码配对',
   discipline: '执行纪律',
   automation: '自动化',
   env: 'Env 文件',
   update: '检查更新',
+}
+
+// HUB_SUB_KEYS 是 hub 首屏的入口行清单：pairing 出列（合一入口承接），其余五行
+// 原样——「执行纪律/自动化/Env 文件/检查更新」是原型未覆盖的真实能力，保留并
+// 归在「执行机」节内同组（B369.10 §2 岔口 6.3）。
+const HUB_SUB_KEYS = SETTINGS_SUB_KEYS.filter((key) => key !== 'pairing')
+
+// SECTION_HEAD 是节标题类（B369.10 §2 岔口 6.1 的三节骨架）：对齐原型 .sect
+// （mobile-pairing.html:34，12px 次级色），比块标题轻一档——节是分组标签，块标题
+// 才是给人读的名字。
+const SECTION_HEAD = 'px-4 pt-4 text-xs text-muted-foreground'
+
+// machineDesc 是「执行机与配对」行的副题（原型 mobile-pairing:135）。树没到时
+// 只留后半句：还没问过 与 问过且一台没连上 是两件事，不报「0 台」。
+function machineDesc(tree: ProjectTreeResp | null): string {
+  const ok = tree?.machines?.filter((m) => m.ok).length
+  return ok === undefined ? '管理位置与扫码' : `已连接 ${ok} 台 · 管理位置与扫码`
 }
 
 export function SettingsHub({
@@ -80,10 +99,15 @@ export function SettingsHub({
 
   return (
     <div className={TOUCH_BASELINE}>
+      {/* 三节骨架（B369.10 §2 岔口 6.1）：工作方式 / 执行机 / 关于。节标题对齐原型
+          .sect、块标题对齐原型 row title；就地呈现（控件可交互）保留——原型的
+          行式+› 无落点，不采纳（协调者裁决 seq 22120），偏离记卡台账。 */}
+      <h3 data-testid="settings-section-work" className={SECTION_HEAD}>工作方式</h3>
+
       {/* ① 会话打开方式（B369.8 §3.4）：compact 打开会话行的落点偏好。
           scene 档是尽力解析不是承诺，解析不到静默回落群聊（Shell.openSession）。 */}
       <section data-testid="pref-session-open-mode" className="border-b p-4">
-        <h3 className="text-xs font-medium text-muted-foreground">会话打开方式</h3>
+        <h3 className="text-sm font-semibold">会话打开方式</h3>
         <div className="mt-2 flex flex-col gap-1.5">
           <label className="flex items-center gap-2 text-sm">
             <input
@@ -109,10 +133,10 @@ export function SettingsHub({
         </p>
       </section>
 
-      {/* ② 提醒（B369.8 §3.4）：门控底栏角标（需要你/未读双双归 0），
-          会话列表行内未读点不受影响。 */}
+      {/* ② 需要你提醒（B369.10 §2 岔口 6.2 行文对齐原型 mobile-pairing:126）：
+          门控底栏角标（需要你/未读双双归 0），会话列表行内未读点不受影响。 */}
       <section data-testid="pref-badges" className="border-b p-4">
-        <h3 className="text-xs font-medium text-muted-foreground">提醒</h3>
+        <h3 className="text-sm font-semibold">需要你提醒</h3>
         <label className="mt-2 flex items-center gap-2 text-sm">
           <input
             type="checkbox"
@@ -129,9 +153,39 @@ export function SettingsHub({
         <GeneralPage title="显示与可访问性" tree={tree} />
       </section>
 
-      {/* ④ 关于：版本信息只读呈现（此前只藏在桌面「更新」分区里）。 */}
+      {/* ④ 执行机：合一入口行（machines+pairing，B369.10 §2 岔口 6.3）+ 原型未
+          覆盖的其余四项既有能力，同组保留（与岔口 5 同一条纪律：原型未覆盖不是
+          否定）。行 min-h-11 是主动作触控档（plan §3.3）。 */}
+      <h3 data-testid="settings-section-machine" className={SECTION_HEAD}>执行机</h3>
+      <nav aria-label="更多设置" className="p-2 pb-4">
+        {HUB_SUB_KEYS.map((key) => (
+          <button
+            key={key}
+            type="button"
+            data-testid={`settings-sub-${key}`}
+            onClick={() => onSubChange(key)}
+            className="flex min-h-11 w-full flex-col justify-center rounded-md px-2 py-1 text-left text-sm hover:bg-accent"
+          >
+            <span className="flex items-center gap-2">
+              {SUB_LABELS[key]}
+              {key === 'update' && updateAvailable && (
+                <span aria-label="有可用更新" data-testid="update-available-dot" className="inline-block size-1.5 rounded-full bg-amber-500 align-middle" />
+              )}
+            </span>
+            {key === 'machines' && (
+              <span data-testid="settings-sub-machines-desc" className="mt-0.5 text-xs text-muted-foreground">
+                {machineDesc(tree)}
+              </span>
+            )}
+          </button>
+        ))}
+      </nav>
+
+      {/* ⑤ 关于：版本信息只读呈现（此前只藏在桌面「更新」分区里）。块标题对齐
+          原型 row title「关于 handoff」（hub 就地呈现，故它同时是本节唯一内容）。 */}
+      <h3 data-testid="settings-section-about" className={SECTION_HEAD}>关于</h3>
       <section data-testid="settings-about" className="p-4">
-        <h3 className="text-xs font-medium text-muted-foreground">关于</h3>
+        <h3 className="text-sm font-semibold">关于 handoff</h3>
         <p className="mt-2 text-sm">handoff 控制台</p>
         <p className="mt-1 text-xs text-muted-foreground">
           版本：{desktopState?.app_version !== undefined && desktopState?.app_version !== ''
@@ -140,24 +194,11 @@ export function SettingsHub({
         </p>
       </section>
 
-      {/* 二级入口行 ×6：min-h-11 触控（plan §3.3 主动作档）；update 行带
-          updateAvailable 红点，对齐桌面 SettingsPage:88-90 的同一计算。 */}
-      <nav aria-label="更多设置" className="border-t p-2 pb-4">
-        {SETTINGS_SUB_KEYS.map((key) => (
-          <button
-            key={key}
-            type="button"
-            data-testid={`settings-sub-${key}`}
-            onClick={() => onSubChange(key)}
-            className="flex min-h-11 w-full items-center gap-2 rounded-md px-2 text-left text-sm hover:bg-accent"
-          >
-            {SUB_LABELS[key]}
-            {key === 'update' && updateAvailable && (
-              <span aria-label="有可用更新" data-testid="update-available-dot" className="inline-block size-1.5 rounded-full bg-amber-500 align-middle" />
-            )}
-          </button>
-        ))}
-      </nav>
+      {/* hub-note（B369.10 §2 岔口 6.4）：语义对齐原型 mobile-pairing:144——壳
+          阶段的活不在这里假装有落点。 */}
+      <p data-testid="settings-hub-note" className="px-4 pb-6 text-xs leading-relaxed text-muted-foreground">
+        原生扫码、Keychain/Keystore 和系统权限属于壳阶段；当前移动 Web 先把设置、会话、卡、项目逻辑跑通。
+      </p>
     </div>
   )
 }
