@@ -904,6 +904,9 @@ export function Shell() {
       onOpenBoard={() => setOverlay('board')}
       onOpenCards={openCardsSurface}
       onOpenProjectCards={ledgerEnabled ? openProjectCards : undefined}
+      // B369.10 T3：compact 项目行的主点击落点 = 移动项目详情面（nav 的 project
+      // 参数，岔口 1）。桌面不传：行点击维持折叠 toggle，nav.projectId 桌面恒 null。
+      onOpenProjectDetail={compact ? (p) => nav.setProject(p.project_id) : undefined}
       // B369.7 死入口处置：/flows、/codegraph 整页路由只在桌面注册，紧凑下不注入
       // 回调（ProjectTree 据此隐藏按钮并渲染解释文案）；桌面分支原样。
       onOpenFlows={compact ? undefined : () => navigate('/flows')}

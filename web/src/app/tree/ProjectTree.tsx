@@ -140,6 +140,10 @@ export interface ProjectTreeProps {
   onAddProject?: () => void
   onUnregister?: (name: string, machine: string) => Promise<void> | void
   onEdit?: (project: ProjectNode) => void
+  // onOpenProjectDetail（B369.10 T3）：compact 下项目行**主点击**的落点——进移动
+  // 项目详情面（Shell 接 nav.setProject）。它缺席时主点击维持折叠 toggle（桌面
+  // 与「直渲染树」的既有语义逐字节不变）。
+  onOpenProjectDetail?: (project: ProjectNode) => void
   // onWorktreeCreated 建完树后回调，由 Shell 刷新树并把新目录选为当前基准目录。
   // 与 onUnregister / onEdit 同一条规矩：没传就不给这个入口。
   onWorktreeCreated?: (project: ProjectNode, machine: string, ws: Workspace) => void
@@ -252,6 +256,24 @@ export function tasksOfWorkspace(
   })
 }
 
+// locationActiveCount 数一个位置下沉睡的活跃任务（running + waiting_answer +
+// waiting_review）——B369.10 T3 的项目行位置芯片上那个「N 活跃」。
+//
+// 口径与 wsMetrics.tasks（目录行排序键）逐字同源：逐个工作树走 tasksOfWorkspace
+// 再按同样三态过滤。为什么不用 countsForProject 的 running+waiting：那个是项目级
+// 计数（含 pending/previews 的展示口径），位置芯片问的是「这台机器上有没有在跑
+// 的活」，同一棵树两处报不同的数才叫分叉。
+function locationActiveCount(tasks: Task[], project: ProjectNode, loc: ProjectLocationNode): number {
+  return loc.workspaces.reduce(
+    (n, ws) =>
+      n +
+      tasksOfWorkspace(tasks, project, loc.machine, ws).filter(
+        (t) => t.state === 'running' || t.state === 'waiting_answer' || t.state === 'waiting_review',
+      ).length,
+    0,
+  )
+}
+
 // findBaseOfTask 在树上反查任务所在的目录。
 //
 // 返回 null 的两种情形都是真实的，不要当异常处理：任务未归属（项目不在树上），
@@ -319,7 +341,7 @@ function TaskIconSlot({ kind }: { kind: 'tui' | 'terminal' | 'file' | 'preview' 
   )
 }
 
-export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDir, openItems, focusedTaskId, onFocusOpenItem, onCloseOpenItem, onOpenTerminalAt, onOpenDirectory, onOpenTask, onOpenBoard, onOpenCards, onOpenProjectCards, ledgerEnabled = false, onOpenFlows, cardNeedsCount = 0, unlinkedCount = 0, onOpenTickets, onOpenSettings, onOpenCodegraph, onOpenProjectCodegraph, compact = false, onAddProject, onUnregister, onEdit, onWorktreeCreated, previews = [], previewMachines = [], previewOpenKeys = new Set<string>(), previewOpeningKeys = new Set<string>(), onOpenPreview = () => {} }: ProjectTreeProps) {
+export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDir, openItems, focusedTaskId, onFocusOpenItem, onCloseOpenItem, onOpenTerminalAt, onOpenDirectory, onOpenTask, onOpenBoard, onOpenCards, onOpenProjectCards, ledgerEnabled = false, onOpenFlows, cardNeedsCount = 0, unlinkedCount = 0, onOpenTickets, onOpenSettings, onOpenCodegraph, onOpenProjectCodegraph, compact = false, onAddProject, onUnregister, onEdit, onOpenProjectDetail, onWorktreeCreated, previews = [], previewMachines = [], previewOpenKeys = new Set<string>(), previewOpeningKeys = new Set<string>(), onOpenPreview = () => {} }: ProjectTreeProps) {
   // collapsed：空集 = 全展开。为什么用「收起集合」而不是「展开集合」：默认全展开
   // 意味着初值空集，渲染时 `!collapsed.has(key)` 天然为真，不用为每个节点预填。
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
@@ -579,6 +601,9 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
       {orderedProjects.map((project, projectIndex) => {
         const pKey = 'p:' + project.project_id
         const pOpen = expanded(pKey)
+        // B369.10 T3：这个项目行的「主点击」落点。compact 下注入方给了详情入口
+        // 就进详情（折叠改走行内 Arrow），否则维持折叠 toggle——桌面恒走后者。
+        const openDetail = compact ? onOpenProjectDetail : undefined
         const pCounts = countsForProject(tasks, project, previews)
         const projectHit = searching && project.name.toLowerCase().includes(filtered.query)
         const projectPreviews = previews.filter((session) => previewBelongsToProject(session, project))
@@ -666,8 +691,11 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
             <div className="group relative">
               <button
                 type="button"
-                aria-expanded={project.locations.length > 0 ? pOpen : undefined}
-                onClick={() => toggle(pKey)}
+                // B369.10 T3：compact 且能进详情时，行 button 不再是折叠开关——
+                // aria-expanded 不再挂它（折叠语义收窄到行内 Arrow 的 aria-label），
+                // 否则读屏会把它报成「可展开的按钮」而点下去是跳页面。
+                aria-expanded={project.locations.length > 0 && openDetail === undefined ? pOpen : undefined}
+                onClick={() => (openDetail ? openDetail(project) : toggle(pKey))}
                 className="flex min-h-[31px] w-full items-center justify-between gap-2.5 rounded-lg px-0 text-left text-[18px] font-normal hover:bg-[#fafafa]"
               >
                 <span className="flex min-w-0 items-center gap-2.5">
@@ -681,12 +709,39 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
                       明细点 Arrow 展开逐台看。放在名旁而不是右侧簇：右簇还要给
                       B369.7 的「工作项」绝对定位钮（right-20）让位，摘要在簇内
                       会伸进钮区（390 目检项 1 的挤压）；名旁随 min-w-0 收缩，
-                      超长时项目名先截断。桌面不渲染（铺开面自答这个问题）。 */}
+                      超长时项目名先截断。桌面不渲染（铺开面自答这个问题）。
+                      B369.10 T3：能进详情时升格为**逐位置芯片**（原型
+                      mobile-projects ②「活跃数 = 该位置在跑任务数」）——列表层就
+                      说清哪个位置、几台在跑、断没断，读者不必为了看一眼状态而
+                      展开整棵树。onOpenProjectDetail 缺席（桌面/直渲染树）时维持
+                      摘要形态。 */}
                   {compact && project.locations.length > 0 && (
-                    <span data-testid="project-loc-summary" className="flex shrink-0 items-center gap-1 text-[13px] text-muted-foreground">
-                      <StateDot tone={locationProblemCount > 0 ? 'failed' : 'active'} />
-                      <span>{project.locations.length} 处位置{locationProblemCount > 0 ? ` · ${locationProblemCount} 处断开` : ''}</span>
-                    </span>
+                    openDetail === undefined ? (
+                      <span data-testid="project-loc-summary" className="flex shrink-0 items-center gap-1 text-[13px] text-muted-foreground">
+                        <StateDot tone={locationProblemCount > 0 ? 'failed' : 'active'} />
+                        <span>{project.locations.length} 处位置{locationProblemCount > 0 ? ` · ${locationProblemCount} 处断开` : ''}</span>
+                      </span>
+                    ) : (
+                      <span data-testid="project-loc-chips" className="flex min-w-0 flex-wrap items-center gap-1 text-[13px] text-muted-foreground">
+                        {project.locations.map((loc) => {
+                          const offline = locationProblem(loc, tree.machines) !== ''
+                          return (
+                            <span
+                              key={loc.machine}
+                              data-testid="project-loc-chip"
+                              className="flex shrink-0 items-center gap-1 rounded-full border px-1.5 py-px"
+                            >
+                              <StateDot tone={offline ? 'failed' : 'active'} />
+                              <span>
+                                {offline
+                                  ? `${machineLabel(loc.machine)} · 离线`
+                                  : `${machineLabel(loc.machine)} · ${locationActiveCount(tasks, project, loc)} 活跃`}
+                              </span>
+                            </span>
+                          )
+                        })}
+                      </span>
+                    )
                   )}
                 </span>
                 <span className="flex shrink-0 items-center gap-[7px] text-[15px] font-medium text-muted-foreground">

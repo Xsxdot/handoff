@@ -280,11 +280,13 @@ function locationRef(): string | null {
   return screen.getByTestId('test-location').getAttribute('data-ref')
 }
 
-// B369.8 T6：compact 项目行缺省折叠——要先点行展开，机器行/工作树子行才在。
-// expanded:false 定位到项目行按钮（行内其他钮不带 aria-expanded）。
+// B369.8 T6：compact 项目行缺省折叠——要先点开，机器行/工作树子行才在。
+// B369.10 T3：折叠入口从行 button 收窄到行内 Arrow——行 button 现在是「进详情」
+// 主点击，不再挂 aria-expanded（原来靠 expanded:false 定位行按钮，改走 Arrow 的
+// aria-label「展开」/「收起」）。
 async function expandCompactProject() {
   const project = await screen.findByTestId('project-node-p1')
-  fireEvent.click(within(project).getByRole('button', { expanded: false }))
+  fireEvent.click(within(project).getByLabelText('展开'))
 }
 
 // renderShellWithHistory 与 renderShell 同构，但把 memory history 句柄交出来。
@@ -1275,9 +1277,15 @@ describe('B369.6 移动断点谱系', () => {
     })
     renderShell()
     fireEvent.click(await screen.findByTestId('mobile-tab-projects'))
-    // B369.8 T6：compact 项目行缺省折叠，先展开项目；位置摘要应报 1 处断开。
+    // B369.8 T6：compact 项目行缺省折叠，先展开项目。
+    // B369.10 T3：位置摘要升格为逐位置芯片——两枚位置各一枚，断开的那个报「离线」。
     await expandCompactProject()
-    expect(screen.getByTestId('project-loc-summary')).toHaveTextContent('2 处位置 · 1 处断开')
+    const chips = screen.getAllByTestId('project-loc-chip')
+    expect(chips).toHaveLength(2)
+    expect(chips[0]).toHaveTextContent(/本机 · \d+ 活跃/)
+    expect(chips[1]).toHaveTextContent('devbox · 离线')
+    // 离线位 tone 随之（只标记状态，不隐藏这台机器）
+    expect(chips[1].querySelector('.bg-state-failed')).not.toBeNull()
     // 离线机器行保持可见并标「已断开」——不静默少一台（CONTEXT「项目位置不可用」）。
     expect(await screen.findByText('已断开')).toBeInTheDocument()
     // 反例锁：离线位置的目录内容一格都不渲染（不降级只读、不摆缓存快照）。
@@ -1756,9 +1764,18 @@ describe('B369.8 覆盖层硬闸', () => {
     expect(screen.getByTestId('session-view-detail')).toHaveAttribute('aria-selected', 'true')
     fireEvent.click(screen.getByTestId('session-view-chat'))
     expect(screen.getByTestId('session-view-chat')).toHaveAttribute('aria-selected', 'true')
-    // ④ 项目折叠展开
+    // ④ 项目：行主点击进详情（B369.10 T3 翻案后的主通道）→ 返回列表 →
+    //    行内 Arrow 折叠展开（折叠语义收窄到 Arrow，不再吞掉对树的访问）
     fireEvent.click(screen.getByTestId('mobile-detail-back'))
     fireEvent.click(await screen.findByTestId('mobile-tab-projects'))
+    const projectRow = within(await screen.findByTestId('project-node-p1')).getByRole('button', { name: /^handoff/ })
+    expect(projectRow).not.toHaveAttribute('aria-expanded')
+    fireEvent.click(projectRow)
+    await waitFor(() => expect(locationRef()).toBe('/?tab=projects&project=p1'))
+    expect(await screen.findByTestId('mobile-project-detail')).toBeInTheDocument()
+    fireEvent.click(screen.getByTestId('project-detail-back'))
+    await waitFor(() => expect(locationRef()).toBe('/?tab=projects'))
+    expect(screen.queryByTestId('mobile-project-detail')).toBeNull()
     await expandCompactProject()
     expect(await screen.findByTestId('machine-row')).toBeInTheDocument()
     expect(screen.getByTestId('workbench-underlay').hasAttribute('inert')).toBe(true)
