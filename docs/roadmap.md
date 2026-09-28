@@ -920,3 +920,7 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 ## 来自 B413 spec（2026-09-28，本期不做、后续要做）
 
 - **agentd 扇出对不可达机器快速失败 / 降 deadline**：`/api/pty/sessions?scope=all` 对离线机器（如 macbook-pro 100.91.173.63）实测拖到 ~3s（agentd.log deadline_exceeded target_call_ns≈2s），拉慢全部消费该扇出的前端轮询流。延迟卫生项：对探活已判离线的机器快速失败或单独降 deadline。注意：它只是缩短触发窗口，B413 修复的机制类（前端 sync 续帧打断 transition）不依赖它。来源：B413 spec §3.3 弃选裁决；证据见 B413 卡 note 2026-09-27。
+
+## 来自 B413 implement（2026-09-28，先于本卡的用例隔离缺陷）
+
+- **Shell.test.tsx「工作项钮」用例 mock 泄漏依赖**：该用例体内不调 `mockCardLedger()`，其数据依赖同文件前序用例残留的 `fetchCards` mock（文件级默认空卡集；全局 beforeEach 不重置 fetchCards；vite 配置无 restoreMocks）——过滤单跑（`vitest -t 工作项`）无论断言怎么写必红，全量跑才绿。修法：用例内显式 `mockCardLedger()`。B413 只修了它的竞态半边（waitFor），泄漏半边在此立账。来源：B413 implement 裁决执行回报（commit 91a69a02 期间发现）。
