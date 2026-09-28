@@ -1,0 +1,15 @@
+<resources>
+    <string name="app_name">Handoff</string>
+    <string name="pair_title">配对机器</string>
+    <string name="pair_scan">扫码</string>
+    <string name="pair_paste_hint">粘贴配对串（handoff console --bundle）</string>
+    <string name="pair_submit">配对</string>
+    <string name="machine_title">机器</string>
+    <string name="machine_online">在线</string>
+    <string name="machine_offline">离线</string>
+    <string name="error_pairing">配对失败：配对串无法识别</string>
+    <string name="error_offline">该机器当前离线</string>
+    <string name="error_exchange">换取会话失败，请重试</string>
+    <string name="error_expired">会话已过期，请重试</string>
+    <string name="retry">重试</string>
+</resources>
