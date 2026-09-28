@@ -922,3 +922,11 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 
 - **rebind --self 用户会话半边真机验证**：协调者 shell 无席位身份源，`card rebind --self` 的真机链需用户会话配合约 10 分钟（解阻步骤见 B358 卡 2026-09-16 真机报告 §二）；身份出示机制本身归 B358.9（已完成）验收，本条只欠真人会话端到端。来源：B358 最终验收（2026-09-27）遗留。
 - **opencode 技能 symlink 落地为拷贝后的同步债**：本机 `~/.config/opencode/skills/` 下 14 个 charter 技能原为指向 `~/workspace/charter/skills/` 的 symlink，被规则源 fail-closed 校验拒绝（本机协调者 launch 自 2026-09-19 起被卡死）；2026-09-27 落地为实体拷贝后恢复，但失去与 charter 仓的自动同步。修法方向：`handoff skill install` 的同步机制覆盖 charter 技能集，或提供一键重拷脚本。来源：B358 最终验收环境修正。
+
+## 来自 B413 spec（2026-09-28，本期不做、后续要做）
+
+- **agentd 扇出对不可达机器快速失败 / 降 deadline**：`/api/pty/sessions?scope=all` 对离线机器（如 macbook-pro 100.91.173.63）实测拖到 ~3s（agentd.log deadline_exceeded target_call_ns≈2s），拉慢全部消费该扇出的前端轮询流。延迟卫生项：对探活已判离线的机器快速失败或单独降 deadline。注意：它只是缩短触发窗口，B413 修复的机制类（前端 sync 续帧打断 transition）不依赖它。来源：B413 spec §3.3 弃选裁决；证据见 B413 卡 note 2026-09-27。
+
+## 来自 B413 implement（2026-09-28，先于本卡的用例隔离缺陷）
+
+- **Shell.test.tsx「工作项钮」用例 mock 泄漏依赖**：该用例体内不调 `mockCardLedger()`，其数据依赖同文件前序用例残留的 `fetchCards` mock（文件级默认空卡集；全局 beforeEach 不重置 fetchCards；vite 配置无 restoreMocks）——过滤单跑（`vitest -t 工作项`）无论断言怎么写必红，全量跑才绿。修法：用例内显式 `mockCardLedger()`。B413 只修了它的竞态半边（waitFor），泄漏半边在此立账。来源：B413 implement 裁决执行回报（commit 91a69a02 期间发现）。

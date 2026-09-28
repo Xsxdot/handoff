@@ -206,7 +206,10 @@ describe('建卡入口接线', () => {
       unlinked: { count: 0, tasks: [], unknown_targets: [] },
     })
     renderPage('/cards?project=benchmarking')
-    expect(await screen.findByRole('combobox', { name: '项目' })).toHaveValue('benchmarking')
+    // B413：轮询数据改经 startTransition 提交后晚一帧落 DOM——值断言改重试等待
+    // （React 会在 options 后到的提交里重放 select value，协调者裁决 2026-09-28）
+    const combobox = await screen.findByRole('combobox', { name: '项目' })
+    await waitFor(() => expect(combobox).toHaveValue('benchmarking'))
   })
 })
 

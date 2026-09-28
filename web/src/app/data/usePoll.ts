@@ -4,6 +4,8 @@
 //   - 立即首拉 + 定时续拉，返回 { data, disconnected, sessionExpired, errorText, refresh }
 //   - 复刻 W2 在 BoardPage 里验证过的三条实时性纪律：document.hidden 停表、
 //     断线保留最后数据、401 落终止态不再重试
+//   - 轮询续帧（await 之后）的全部状态写入包 startTransition（非紧急 lane，B413）；
+//     用户主动 refresh 的 setNonce 保持 sync（事件处理器是紧急更新）
 //
 // 边界：
 //   - 不关心具体接口，fetcher 由调用方给
@@ -13,7 +15,7 @@
 //
 // 为什么把 W2 BoardPage 里的循环提取出来：W3b 有三条节奏不同的流，
 // 复制三份轮询逻辑意味着三份各自会跑偏的 document.hidden 处理。
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, startTransition } from 'react'
 import { ApiError } from '../../api/client'
 import { errorMessage } from '../lib/format'
 
@@ -82,19 +84,27 @@ export function usePoll<T>(
         }
         const v = await request
         if (stopped) return
-        setData(v)
-        setDisconnected(false)
+        // 轮询续帧是非紧急数据（B413）：写入包 startTransition 进 transition lane，
+        // 与导航 transition 合帧提交，拆掉「sync 续帧在让出窗口打断重启 transition
+        // 渲染」的下钻饥饿回路。成功对两写同回调，data 与断线标志同帧一致。
+        startTransition(() => {
+          setData(v)
+          setDisconnected(false)
+        })
       } catch (err) {
         if (stopped) return
         if (err instanceof ApiError && err.status === 401) {
-          // 会话失效是终止态：继续轮询只会刷 401
+          // 会话失效是终止态：继续轮询只会刷 401。stopTimer 是定时器控制、
+          // 非 React 状态写入，留在 transition 外。
           stopTimer()
-          setSessionExpired(true)
+          startTransition(() => { setSessionExpired(true) })
           return
         }
         // 断线保留 data 不清空——空看板比旧看板更误导
-        setDisconnected(true)
-        setErrorText(errorMessage(err))
+        startTransition(() => {
+          setDisconnected(true)
+          setErrorText(errorMessage(err))
+        })
       } finally {
         if (request && inFlightRef.current === request) inFlightRef.current = null
       }
