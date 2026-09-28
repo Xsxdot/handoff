@@ -15,6 +15,7 @@
 package mobilecore
 
 import (
+	"sort"
 	"context"
 	"errors"
 	"fmt"
@@ -347,6 +348,8 @@ func (c *Core) Origin(machine string) (string, error) {
 }
 
 // MachineNames 返回已登记机器名（含离线机，供设置页配对清单）。
+// 排序输出：map 迭代序随机，绑定面「计数+按索引取」契约隐含索引稳定语义
+// （B420：不排序则跨调用快照不一致，消费端条目重复/缺失）。
 func (c *Core) MachineNames() []string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -354,6 +357,7 @@ func (c *Core) MachineNames() []string {
 	for n := range c.machines {
 		names = append(names, n)
 	}
+	sort.Strings(names)
 	return names
 }
 
