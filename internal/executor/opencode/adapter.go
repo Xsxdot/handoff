@@ -819,13 +819,35 @@ func (a *Adapter) RespondPermission(ctx context.Context, taskID, permID, decisio
 			"part", timing.part)
 		entries := r.seg.Resume(timing.part)
 		if len(entries) == 0 {
-			a.log.Warn("opencode 权限应答成功但未找到工具等待窗口",
-				"task", taskID, "perm", permID, "part", timing.part)
+			// H1（B383 S1）应答侧同判：子会话权限的等待在请求侧已声明「不承载
+			// 计时」（见 mapPermissionAsked 的 permSess != r.session 分支），Resume
+			// 落空是设计内结局而非异常——spec §S1 要求每次等待只留一条不承载
+			// Info，应答侧再发一条说明就是重复同一事实，降为 Debug 保留可观测性。
+			// 父会话权限的落空没有请求侧声明兜着，仍是真异常，保 WARN。
+			if r.permFromChildSession(permID) {
+				a.log.Debug("子 agent 权限等待结束（等待未承载计时，无窗口可恢复）",
+					"task", taskID, "perm", permID, "part", timing.part)
+			} else {
+				a.log.Warn("opencode 权限应答成功但未找到工具等待窗口",
+					"task", taskID, "perm", permID, "part", timing.part)
+			}
 		} else {
 			a.reportTiming(r, entries)
 		}
 	}
 	return nil
+}
+
+// permFromChildSession 判定一次权限请求是否来自子会话（B52 的 permSession 归属，
+// B383 S1 的应答侧收口复用）。
+//
+// 查不到归属时按父会话处置：无归属说明映射已丢（agentd 重启后进程内表为空），
+// 此时等待窗口落空是真异常，WARN 才是诚实的。
+func (r *runState) permFromChildSession(permID string) bool {
+	r.sessMu.RLock()
+	defer r.sessMu.RUnlock()
+	sess, ok := r.permSession[permID]
+	return ok && sess != r.session
 }
 
 // markRejectPending 在发 API 前登记一次拒绝意向（B383 Wave 0，替代旧 noteRejected
@@ -1715,10 +1737,36 @@ func (a *Adapter) mapPermissionAsked(r *runState, props json.RawMessage) {
 		if duplicate {
 			a.log.Debug("重复 permission.asked 不重复暂停工具窗口",
 				"task", r.taskID, "perm", pa.ID, "part", pa.Tool.CallID)
+		} else if permSess != r.session {
+			// 子 agent 权限的等待「显式不承载计时」（B383 S1 H1）：acceptForeign
+			// 丢弃子会话的工具 part（回合记账围绕单一会话的消息序列构建，放开会
+			// 污染水位与空闲判定，见该处注释），段切分器里永远不会有子会话的段
+			// ——等待没有工具段可挂，也不能去碰父回合的段（callID 属于子会话，
+			// 挂上去就是错归属）。级别用 Info 而非 WARN：WARN 档留给「本该静默
+			// 通过却被拦」的事件，而这是设计内的必然结局；spec §S1 要求每次等待
+			// 只留一条说明不承载的 Info。应答侧按 permSession 的同一归属收口
+			// （见 RespondPermission），不再发第二条不承载说明。
+			a.log.Info("子 agent 权限等待不承载计时（子会话工具 part 不进回合记账，无工具段可挂）",
+				"task", r.taskID, "perm", pa.ID, "part", pa.Tool.CallID, "session", permSess)
 		} else {
 			a.log.Info("opencode 权限等待开始", "task", r.taskID,
 				"perm", pa.ID, "part", pa.Tool.CallID, "session", permSess)
 			entries := r.seg.PauseWaiting(pa.Tool.CallID)
+			if len(entries) == 0 {
+				// H2（B383 S1）：permission.asked 先于带非空入参的工具 part 到达
+				//（卡事件 16677 证实的双 WARN 事件序），段还没开——补一个「迟到
+				// 段」把等待挂上去：工具调用在 opencode 侧已经成立（part 稍后必到
+				// ，拒绝时也留 error 状态 part，见 mapIdle 注释），等待因此进
+				// other 桶而不是被吞进 api/tool。真实 part 到达时同键 ToolStart
+				// 被段切分器去重，段的起点与归属不被第二次 start 改写；spike3/5
+				// 序 A（part 先于权限）的 PauseWaiting 命中，根本走不到这里。
+				// detail 取命令、无命令时取路径（与随后 part 的 input 同源）。
+				detail := pa.Metadata.Command
+				if detail == "" {
+					detail = pa.Metadata.FilePath
+				}
+				entries = a.lateOpenPermissionWait(r, pa.ID, pa.Tool.CallID, pa.Permission, detail)
+			}
 			if len(entries) == 0 {
 				a.log.Warn("opencode 权限请求未找到对应工具等待窗口",
 					"task", r.taskID, "perm", pa.ID, "part", pa.Tool.CallID)
@@ -1771,6 +1819,35 @@ func (a *Adapter) mapPermissionAsked(r *runState, props json.RawMessage) {
 		Text: turn.TruncateMarked(text, permTextHardLimit),
 		Perm: req,
 	})
+}
+
+// lateOpenPermissionWait 补开一个「迟到段」并把权限等待挂上去（B383 S1 H2）。
+//
+// 为什么允许在权限时刻占段：permission.asked 先于带非空入参的 tool part 到达时，
+// PauseWaiting 找不到已开段，等待要么成对 WARN 要么被静默吞进 api/tool 桶。而
+// 权限门挡住的工具调用在 opencode 侧已经成立——part 稍后必然到达（批准后是
+// running/completed，拒绝后是 error，两种终局都会 ToolEnd 收段），在权限时刻
+// 占段没有制造空段，只是把「等待审批」如实记为该工具段内被扣除的窗口。
+//
+// 参数取自权限事件自身：工具名用 permission 字段（与 part.tool 同源——真机实测
+// 取值 bash/edit/external_directory 就是 opencode 的工具类别原文），detail 用
+// metadata 的命令/路径，与随后 part 的 input.command 同值。真实 part 到达时同键
+// ToolStart 被段切分器去重（见 Segmenter.ToolStart 的重复 start 防线），迟到段
+// 的起点与归属不被改写。
+//
+// 返回值与 PauseWaiting 同形：占段+挂起成功返回回合条目；失败（工具名缺失、
+// 回合外）返回 nil，由调用方维持原有的落空 WARN（那才是「本该静默通过却被拦」
+// 的异常）。
+func (a *Adapter) lateOpenPermissionWait(r *runState, permID, callID, tool, detail string) []proto.TimingEntry {
+	if strings.TrimSpace(tool) == "" {
+		// 提取不出工具名就无法诚实标注段归属，不占段
+		return nil
+	}
+	a.log.Info("opencode 权限早于工具 part 到达，先占工具段承载等待",
+		"task", r.taskID, "perm", permID, "part", callID, "tool", tool,
+		"detail", turn.TruncateRunes(detail, 80))
+	a.reportTiming(r, r.seg.ToolStart(callID, tool, detail))
+	return r.seg.PauseWaiting(callID)
 }
 
 // mapQuestionAsked 处理 question.asked：opencode 原生 question 工具的提问请求。
