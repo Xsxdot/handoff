@@ -769,7 +769,9 @@ describe('Shell 三栏外框', () => {
   it('/settings 整页替换中央，左栏仍在', async () => {
     renderShell('/settings')
     await waitFor(() => expect(screen.getByRole('heading', { name: '设置' })).toBeInTheDocument())
-    expect(screen.getByText('handoff')).toBeInTheDocument()
+    // B413：左栏树行随轮询数据改经 startTransition 提交，晚一帧落 DOM——
+    // 同步断言改 findByText 重试等待（与同文件其他树行用例同形态）
+    expect(await screen.findByText('handoff')).toBeInTheDocument()
   })
 
   it('/machines 重定向到 /settings', async () => {
@@ -1589,7 +1591,10 @@ describe('B369.7 紧凑导航统一', () => {
     fireEvent.click(within(project).getByRole('button', { name: '打开 handoff 工作项' }))
     await waitFor(() => expect(locationRef()).toBe('/cards?project=handoff'))
     expect(screen.getByTestId('mobile-tab-cards')).toHaveAttribute('aria-selected', 'true')
-    expect(await screen.findByRole('combobox', { name: '项目' })).toHaveValue('handoff')
+    // B413：项目过滤值随轮询数据改经 startTransition 提交，晚一帧落 DOM——值断言改重试等待
+    // （与 CardsPage「从 URL 初始化项目筛选」同型同修法，扩展裁决 2026-09-28）
+    await screen.findByRole('combobox', { name: '项目' })
+    await waitFor(() => expect(screen.getByRole('combobox', { name: '项目' })).toHaveValue('handoff'))
   })
 
   it('桌面视口零漂移：行钮仍 hover-only，流程/代码图钮在场', async () => {

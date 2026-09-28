@@ -29,3 +29,9 @@
 - 2026-09-28 implement 升级回协调者（plan §7：T3 消费方套件红不得自决）：待裁决项=两支消费方用例的隐式 sync-lane 假设如何适配。候选方向（供裁决参考，未执行）：CardsPage 用例值断言改 waitFor 重试形态（`await waitFor(() => expect(combobox).toHaveValue('benchmarking'))`）；Shell /settings 用例 `getByText('handoff')` 改 `await screen.findByText('handoff')`。产品侧无回归证据（探针②）。
 - 2026-09-28 implement 环境观察：期间 origin/main 前进至 `ff6d6a59`（fix(ci): gofmt 收口，纯 Go 格式化），本分支基于其父 a86e6c35，本卡零 Go 改动、无冲突面；合并/变基裁决归 finish 节点。
 - 2026-09-28 implement 提交：T1 回归锁 + T2 实现 + 台账同批提交于 fix/B413-poll-transition-starve；提交信息如实标注 T3 两支红待裁决，不称全绿。
+- 2026-09-28 协调者裁决一（升级项处置）：两支红裁定为断言时序伪差异，放行白名单扩展（仅测试断言）——①CardsPage.test.tsx「从 URL 初始化项目筛选」值断言改 waitFor 重试形态；②Shell.test.tsx「/settings 整页替换中央」getByText 改 await findByText；边界=只改断言形态不改锁的语义，其余用例与产品代码不碰。
+- 2026-09-28 裁决一执行：两处按最小改动落地（各带 B413 裁决出处注释）。两文件隔离复跑 144/144 绿、`npm run typecheck` 绿。
+- 2026-09-28 升级项二（第三处同型红）：T3 全量（改后首跑）1704/1705——Shell.test.tsx:1594（B369.7「compact 项目行工作项钮 → /cards?project 且项目过滤生效」）红。同型定性：combobox 挂载即存在、值依赖轮询数据、findByRole 解析后同步 toHaveValue 一次不重试；过滤隔离（`vitest -t 工作项`）5/5 稳定红。不在裁决一边界内，回协调者获批扩展（同步修法）。
+- 2026-09-28 升级项二执行中的发现（先于本卡的用例隔离缺陷，非本卡回归，未修、报协调者）：1594 用例体内不调 `mockCardLedger()`，其数据依赖**同文件前序用例（:1485/1502/1512/1522/1536）调用 mockCardLedger 后残留的 `fetchCards` mock 实现**（文件级默认 :52 为空卡集；全局 beforeEach :242 重置众多 mock 但不含 fetchCards；vite.config.ts 无 restoreMocks/resetMocks）。后果：全文件/全量跑数据在场可绿；`vitest -t 工作项` 过滤跑泄漏源不在场，卡列表恒空、项目选项恒无 handoff，无论断言形态必红。即：该用例在本卡改动前就不是独立可跑的；transition 化只是让全量跑里的落数据时机从「确定及时」变「边缘竞态」，重试形态修掉竞态半边，泄漏依赖半边留待后续。全仓同型扫描：awaited 元素挂载即存在 + 断言属性依赖轮询数据的组合全仓仅 CardsPage:209 与 Shell:1594 两处；其余 findBy* 用法等待目标即数据落地本身，FileTab/EnvPage 等 textbox 值来自一次性 fetch（spec §8 本卡不收口），不受影响。
+- 2026-09-28 升级项二执行：Shell.test.tsx:1594 改 waitFor 重试形态（variant：waitFor 内 `screen.getByRole` 实时重查而非断言捕获节点——更稳健且规避节点替换风险，语义同为「项目过滤生效」）。整文件复跑 111/111 绿。
+- 2026-09-28 T3 终局：`npm run typecheck` exit 0；`npx vitest run` **140 文件 / 1705 用例全绿**（27.50s）。基线 1701 + 本卡新增 4（usePoll 捕获组），两支裁决修正 + 一支扩展修正全部收敛。
