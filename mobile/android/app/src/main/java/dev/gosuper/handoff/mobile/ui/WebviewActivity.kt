@@ -5,6 +5,7 @@
 package dev.gosuper.handoff.mobile.ui
 
 import android.os.Bundle
+import android.util.Log
 import android.view.View
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
@@ -25,6 +26,7 @@ import dev.gosuper.handoff.mobile.web.WebviewSessionBinder
 class WebviewActivity : AppCompatActivity() {
 
     private lateinit var webView: WebView
+    private lateinit var navigator: AndroidWebviewNavigator
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -34,9 +36,21 @@ class WebviewActivity : AppCompatActivity() {
         val online = intent.getBooleanExtra(EXTRA_ONLINE, false)
 
         webView = findViewById(R.id.webview)
-        webView.settings.javaScriptEnabled = true
+        // 安全：JS 默认关闭；仅当导航目标是绑定面回环源时才开启（见 shouldOverrideUrlLoading 与导航器）。
+        webView.settings.javaScriptEnabled = false
         // 安全：绝不对回环源暴露 JS 桥；不注入任何原生对象接口（源码 guard 词法禁止该 API 名）。
         webView.webViewClient = object : WebViewClient() {
+            // 导航白名单：非回环源一律拦截（API24+ 走 WebResourceRequest 重载）。
+            override fun shouldOverrideUrlLoading(
+                view: WebView?,
+                request: WebResourceRequest?,
+            ): Boolean = interceptIfNonLoopback(view, request?.url?.toString())
+
+            // API21–23 只有 String 重载；不覆写则这些版本上白名单形同虚设。
+            @Suppress("OVERRIDE_DEPRECATION", "DEPRECATION")
+            override fun shouldOverrideUrlLoading(view: WebView?, url: String?): Boolean =
+                interceptIfNonLoopback(view, url)
+
             override fun onReceivedHttpError(
                 view: WebView?,
                 request: WebResourceRequest?,
@@ -46,20 +60,34 @@ class WebviewActivity : AppCompatActivity() {
                 ErrorClassifier.fromHttpStatus(code)?.let { showError(it) }
             }
 
+            // API23+：按错误码归类，连接/DNS/超时等 → 兑换类，绝不报过期。
             override fun onReceivedError(
                 view: WebView?,
                 request: WebResourceRequest?,
                 error: WebResourceError?,
             ) {
-                if (request?.isForMainFrame == true) showError(ShellError.EXPIRED)
+                if (request?.isForMainFrame != true) return
+                ErrorClassifier.fromWebResourceError(error?.errorCode ?: 0)?.let { showError(it) }
+            }
+
+            // API21–22 只有旧重载；主框错误同样按错误码归类。
+            @Suppress("OVERRIDE_DEPRECATION", "DEPRECATION")
+            override fun onReceivedError(
+                view: WebView?,
+                errorCode: Int,
+                description: String?,
+                failingUrl: String?,
+            ) {
+                ErrorClassifier.fromWebResourceError(errorCode)?.let { showError(it) }
             }
         }
 
         val graph = (application as HandoffApp).graph
+        navigator = AndroidWebviewNavigator(webView)
         val binder = WebviewSessionBinder(
             session = graph.core,
             cookies = AndroidCookieStore(),
-            navigator = AndroidWebviewNavigator(webView),
+            navigator = navigator,
         )
         val coordinator = EnterCoordinator(binder, lifecycleScope) { result, error ->
             if (result.isSuccess) hideError() else showError(error ?: ShellError.EXCHANGE)
@@ -73,8 +101,20 @@ class WebviewActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        navigator.markDestroyed()
         webView.destroy()
         super.onDestroy()
+    }
+
+    /**
+     * 导航白名单决策：非回环源拦截（返回 true）并关闭 JS；回环源放行并开启 JS。
+     * 决策落在 [LoopbackNavigation]（纯函数、JVM 可测），此处只做 JS 开关与日志。
+     */
+    private fun interceptIfNonLoopback(view: WebView?, url: String?): Boolean {
+        val allowed = !LoopbackNavigation.shouldIntercept(url)
+        view?.settings?.javaScriptEnabled = allowed
+        if (!allowed) Log.w(TAG, "拦截非回环导航")
+        return !allowed
     }
 
     private fun showError(error: ShellError) {
@@ -94,6 +134,7 @@ class WebviewActivity : AppCompatActivity() {
     }
 
     companion object {
+        private const val TAG = "WebviewActivity"
         const val EXTRA_MACHINE = "machine"
         const val EXTRA_ONLINE = "online"
     }

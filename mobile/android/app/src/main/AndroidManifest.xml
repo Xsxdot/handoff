@@ -2,7 +2,9 @@
 <!--
   B417.1 Android 壳清单（T7 加入 Application 与三条 Activity）。
   职责：显式关闭 allowBackup（配对 bundle = 主令牌集，禁云备份外泄）；
-        以最小 network-security-config 仅对明文回环 127.0.0.1 放行；不开 usesCleartextTraffic 全局放行；
+        以最小 network-security-config 仅对明文回环 127.0.0.1 放行；
+        不设 usesCleartextTraffic——该属性自 API23 生效，而 networkSecurityConfig 自 API24 才被读，
+        若显式置 false 会把 API23 的回环明文一并阻断；API21–27 走平台默认，API28+ 由 NSC 约束；
         以 .HandoffApp 持有进程级 AppGraph（Go 核单例的唯一入口），入口屏为 PairingActivity。
   边界：不声明后台服务/内容提供者；仅 WebviewActivity 声明 configChanges（旋转不重建核/不重复清罐）。
 -->
@@ -15,7 +17,6 @@
     <application
         android:name=".HandoffApp"
         android:allowBackup="false"
-        android:usesCleartextTraffic="false"
         android:networkSecurityConfig="@xml/network_security_config"
         android:label="@string/app_name"
         android:supportsRtl="true"

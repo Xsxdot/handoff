@@ -68,18 +68,23 @@ class SourceGuardTest {
 
     @Test
     fun 日志不插值凭据变量() {
-        // 禁止在 Log 调用里插值凭据变量（value/bundleJSON/setCookieHeader/raw/bundle/token/cookie）。
-        // 必须覆盖两种形态：`Log.<m>(TAG, "...")` 与 `Log.<m>("...")`——真正的日志写法是前者
-        // （方法名后紧跟 TAG，而非字符串字面量），此前正则要求紧跟字面量故恒不命中（盲区）。
+        // 禁止在 Log 调用里泄漏凭据变量（value/bundleJSON/setCookieHeader/raw/bundle/token/cookie）。
+        // 三种形态都要拦（此前只拦 `$var` 内插值，`+ var` 与 String.format 均可逃逸）：
+        //   1) 内插值：Log.i(TAG, "... ${bundleJSON}") / "... $value"
+        //   2) 字符串拼接：Log.i(TAG, "probe " + bundle)
+        //   3) 格式化参数：Log.i(TAG, String.format("%s", value))
         // `[^;\n]*` 限定在单条语句/单行内，避免跨语句误命中；`(?!\s*\.length)` 放行「只记长度」
-        // 的合法写法（如 `${bundleJSON.length}`），只拦「内插值本身」。
-        val re = Regex("""Log\.[a-zA-Z]+\([^;\n]*\$\{?([a-zA-Z_][a-zA-Z0-9_]*)\b(?!\s*\.length)""")
+        // 的合法写法（如 `${bundleJSON.length}` / `+ value.length`），只拦凭据值本身。
         val creds = setOf("value", "bundleJSON", "setCookieHeader", "raw", "bundle", "token", "cookie")
-        val hits = re.findAll(readAllKotlin())
-            .filter { it.groupValues[1] in creds }
-            .map { it.value }
-            .toList()
-        assertTrue("日志插值了凭据变量: $hits", hits.isEmpty())
+        val patterns = listOf(
+            Regex("""Log\.[a-zA-Z]+\([^;\n]*\$\{?([a-zA-Z_][a-zA-Z0-9_]*)\b(?!\s*\.length)"""),
+            Regex("""Log\.[a-zA-Z]+\([^;\n]*\+\s*([a-zA-Z_][a-zA-Z0-9_]*)\b(?!\s*\.length)"""),
+            Regex("""String\.format\([^;\n]*\b([a-zA-Z_][a-zA-Z0-9_]*)\b"""),
+        )
+        val src = readAllKotlin()
+        val hits = patterns
+            .flatMap { re -> re.findAll(src).filter { it.groupValues[1] in creds }.map { it.value }.toList() }
+        assertTrue("日志泄漏了凭据变量: $hits", hits.isEmpty())
     }
 
     @Test
@@ -87,7 +92,9 @@ class SourceGuardTest {
         val manifest = File(srcMain, "AndroidManifest.xml").readText()
         assertTrue(manifest.contains("android:allowBackup=\"false\""))
         assertTrue(manifest.contains("android:networkSecurityConfig=\"@xml/network_security_config\""))
-        assertFalse("不得全局放行明文", manifest.contains("android:usesCleartextTraffic=\"true\""))
+        // 不得显式声明 usesCleartextTraffic：该属性 API23 生效、NSC 却 API24 才读，
+        // 显式 false 会把 API23 的回环明文一并阻断；放行范围只由 NSC 表达。
+        assertFalse("不得声明 usesCleartextTraffic", manifest.contains("android:usesCleartextTraffic"))
 
         val nsc = File(srcMain, "res/xml/network_security_config.xml").readText()
         assertTrue(nsc.contains("cleartextTrafficPermitted=\"false\""))
