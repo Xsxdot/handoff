@@ -6,6 +6,7 @@ package dev.gosuper.handoff.mobile
 
 import dev.gosuper.handoff.mobile.core.CoreGateway
 import dev.gosuper.handoff.mobile.core.MachineView
+import dev.gosuper.handoff.mobile.core.SecretStore
 import dev.gosuper.handoff.mobile.core.SessionCore
 
 /** 记录全局调用序的假绑定面（同一 order 列表可跨设备共享）。 */
@@ -46,4 +47,16 @@ class FakeCore(
         if (cookieShouldThrow) throw RuntimeException("cookie failed")
         return cookieValue
     }
+}
+
+/** 内存 SecretStore（锁字节往返）。 */
+class FakeSecretStore(private var value: String? = null) : SecretStore {
+    val writes = mutableListOf<String>()
+    override fun writeBundle(bundleJSON: String) {
+        value = bundleJSON
+        writes.add(bundleJSON)
+    }
+
+    override fun readBundle(): String? = value
+    override fun clear() { value = null }
 }
