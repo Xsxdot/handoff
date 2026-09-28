@@ -73,6 +73,8 @@ import { Breadcrumb } from './Breadcrumb'
 import { DesktopTitleBar } from './DesktopTitleBar'
 import { ResizableSidebar } from './ResizableSidebar'
 import { MobileTabBar } from './MobileTabBar'
+import { TOUCH_BASELINE } from '@/lib/touch'
+import { cn } from '@/lib/utils'
 import { useMobileNav } from './useMobileNav'
 import { isCompactViewport, useShellViewport } from './useShellViewport'
 
@@ -1242,7 +1244,15 @@ export function Shell() {
               {bannerTask !== null && (
                 <div
                   data-testid="task-verdict-banner"
-                  className="flex items-center gap-2 border-b border-amber-200 bg-amber-50 px-2 py-1.5 text-xs text-amber-900"
+                  // B369.10 review 建议修：新面根节点挂触点基线（spec §3.2「compact 新
+                  // 面根节点挂 TOUCH_BASELINE」），把「去查证」抬到 24×24 底线。
+                  // 不给它 min-h-11：原型 .banner .acts button（mobile-task.html:43）
+                  // 是 ~30px 的窄条主动作，44px 会与原型形态相左——两档分工里这是
+                  // 次级档，形态权威仍是原型。padding 对齐原型（py-1.5≈28px）。
+                  className={cn(
+                    'flex items-center gap-2 border-b border-amber-200 bg-amber-50 px-2 py-1.5 text-xs text-amber-900',
+                    TOUCH_BASELINE,
+                  )}
                 >
                   <span className="min-w-0 flex-1 truncate">
                     {bannerTask.inReview
@@ -1255,7 +1265,7 @@ export function Shell() {
                     type="button"
                     data-testid="task-verdict-activate"
                     onClick={() => wb.activate(wb.wb.activeGroupId, bannerTask.tabId)}
-                    className="shrink-0 rounded border border-amber-300 px-2 py-0.5 font-medium text-amber-900 hover:bg-amber-100"
+                    className="shrink-0 rounded border border-amber-300 px-2 py-1.5 font-medium text-amber-900 hover:bg-amber-100"
                   >
                     去查证
                   </button>

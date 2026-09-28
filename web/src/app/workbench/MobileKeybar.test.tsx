@@ -77,4 +77,15 @@ describe('MobileKeybar', () => {
     expect(screen.getByTestId('mobile-keybar').className).toContain('bg-[#1c1c1e]')
     expect(screen.getByTestId('keybar-esc').className).toContain('bg-[#3a3a3c]')
   })
+
+  // review 建议修（M2）：岔口 7 的「kbdhint 不渲染」此前只有 plan 文字，没有断言。
+  // 原型 .kbdhint（mobile-task.html:63,136「( 系统键盘区域 )」）是 mock 对「系统
+  // 键盘将出现在这里」的占位指认——真机键盘由 OS 唤起，页内没有对应区域可指，
+  // 渲染它白占 844 高度里的 40+px。这里把「不渲染」钉成负断言。
+  it('不渲染 kbdhint 占位（无「系统键盘区域」文案与对应节点）', () => {
+    const { container } = render(<MobileKeybar onKey={vi.fn()} />)
+    expect(screen.queryByText(/系统键盘区域/)).toBeNull()
+    expect(container.querySelector('.kbdhint')).toBeNull()
+    expect(screen.getByTestId('mobile-keybar').textContent).not.toContain('系统键盘')
+  })
 })

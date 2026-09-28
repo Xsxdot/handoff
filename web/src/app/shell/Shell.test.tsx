@@ -2115,9 +2115,17 @@ describe('B369.10 裁决横幅', () => {
     mockTaskState('waiting_review')
     renderShell('/?tab=projects')
     await openTaskScene()
-    expect(screen.getByTestId('task-verdict-banner')).toBeInTheDocument()
-    expect(screen.getByTestId('task-verdict-banner').textContent).toContain('等你裁决 · 交付与作答在对话段')
+    const banner = screen.getByTestId('task-verdict-banner')
+    expect(banner).toBeInTheDocument()
+    expect(banner.textContent).toContain('等你裁决 · 交付与作答在对话段')
     expect(screen.getByTestId('task-verdict-activate')).toBeInTheDocument()
+    // review 建议修（M1）：新面根节点挂触点基线，去查证抬到 24×24 底线
+    expect(banner.className).toContain('[&_button:not(.min-h-11)]:min-h-6')
+    expect(banner.className).toContain('[&_button]:min-w-6')
+    // review 建议修（M2）：横幅是提示面、不承载作答——内里只有一枚「去查证」，
+    // 原型 mock 的 A/B 两个选项钮在实现里没有落点（spec §2.3 已定，记台账）
+    expect(within(banner).getAllByRole('button')).toHaveLength(1)
+    expect(within(banner).queryByText(/选项|方案 A|方案 B/)).toBeNull()
   })
 
   it('组级判据：焦点切到同组终端窗格后横幅仍在场（切段不丢）', async () => {
