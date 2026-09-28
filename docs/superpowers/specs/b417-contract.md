@@ -105,7 +105,7 @@ public static native void   close() throws Exception;
 | 常量/机制 | 真正生产者 | 真正消费者 | 结论 |
 | --- | --- | --- | --- |
 | `handoff_session` | agentd `sessionCookie`（`authroutes.go:343`） | 浏览器 / **webview cookie jar**（本轮新增消费方）；`sessionFromRequest` 读回 | 活跃；壳注入的 cookie 名必须与之一致（§4.5 条 23） |
-| `Path="/"`、`HttpOnly=true`、`SameSite=Lax`、`Secure=false`（loopback） | 同上（`authroutes.go:343-354`） | webview cookie jar | 活跃；壳按此硬编码（§3.4） |
+| `Path="/"`、`HttpOnly=true`、`SameSite=Lax`、`Secure=false`（loopback） | 同上（`authroutes.go:343-354`） | webview cookie jar | 活跃；壳按 §3.4 硬编码（**HttpOnly 除外**，客户端注入不可置，见 §11 修订 1） |
 | `sessionLifetime=30d` | `auth.go:32` | `handleConsole` 设 `MaxAge`；核 `expiryFrom` 换算 | 活跃；壳注入**进程内会话 cookie**（不带 `Max-Age`），服务端到期仍是权威 |
 | 回环源 `http://127.0.0.1:<port>` | `Core.startLoopback`（`core.go:393`） | 壳 `load(origin)` | 活跃；壳**只加载绑定面返回值** |
 | `proto.PairVersion=1` 与 bundle JSON | `console --qr/--bundle`（`cmd/console.go`） | 壳扫码/粘贴 → `Pair()` | 活跃；壳整体透传，不解析 |
@@ -308,7 +308,7 @@ cd mobile/ios     && xcodebuild -scheme … -sdk iphonesimulator build   # → *
 
 **命中两条：**
 
-1. **cookie 属性（name/path/domain/Secure/HttpOnly/SameSite）由壳侧硬编码，绑定面继续只导出 value。**
+1. **cookie 属性（name/path/domain/Secure/SameSite；HttpOnly 除外，客户端注入不可置，见 §11 修订 1）由壳侧硬编码，绑定面继续只导出 value。**
    难逆转——日后要改由核导出完整 cookie，需同时动 Go 绑定面、gomobile 生成面与两端壳；
    无上下文会惊讶——「核内明明有完整 `mobilecore.SessionCookie` DTO，壳为什么手拼属性」是最自然的直觉；
    真取舍——被否方案 = 让绑定面导出完整 cookie（`SessionCookie` 返回 `*Cookie`）。立。
