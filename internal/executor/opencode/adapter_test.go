@@ -138,6 +138,7 @@ type fakeServer struct {
 	sessionGets      []string                // 收到的 GET /session/{id} 顺序
 	sessionGetStatus map[string]int          // 一次性故障注入：子会话 id -> 要返回的状态码
 	permissionStatus int                     // 非零时权限回传使用该 HTTP 状态码
+	permHold         chan struct{}           // 非 nil 时权限应答挂起直至通道关闭（模拟 API 在飞，B383 T2/T3/T4）
 }
 
 // newFakeServer 启动假服务端；SSE 事件经 push 注入（可先入队、连接后送达）。
@@ -163,7 +164,13 @@ func newFakeServer(t *testing.T) *fakeServer {
 			fs.mu.Lock()
 			fs.permCalls = append(fs.permCalls, permCall{path: r.URL.Path, body: string(body)})
 			status := fs.permissionStatus
+			hold := fs.permHold
 			fs.mu.Unlock()
+			// 先挂住再回包：permHold 模拟「应答已到 server 但 API 未返回」的在飞窗口，
+			// 驱动 idle 与应答结算的交错（B383 T2/T3/T4）。放行后才按 status 回包
+			if hold != nil {
+				<-hold
+			}
 			if status != 0 {
 				w.WriteHeader(status)
 				_, _ = w.Write([]byte("permission delivery failed"))
@@ -238,6 +245,60 @@ func (fs *fakeServer) failPermissionResponses(code int) {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
 	fs.permissionStatus = code
+}
+
+// holdPermissionResponses 让后续权限应答挂住不回（模拟 API 在飞），由
+// releasePermissionResponses 放行。挂起期间应答请求本身已到达 server——
+// 用于驱动「idle 先到、应答后结算」的交错（B383 T2/T3/T4）。
+func (fs *fakeServer) holdPermissionResponses() {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	fs.permHold = make(chan struct{})
+}
+
+// releasePermissionResponses 放行挂起的权限应答（幂等）：回包状态取
+// failPermissionResponses 的预设（0=成功）。测试结束前必须放行，否则挂起的
+// handler 会让 httptest.Close 死等。
+func (fs *fakeServer) releasePermissionResponses() {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	if fs.permHold != nil {
+		close(fs.permHold)
+		fs.permHold = nil
+	}
+}
+
+// waitPermCalls 等到 fake server 收到 n 次权限应答请求（应答在飞检测的同步点）。
+func waitPermCalls(t *testing.T, fs *fakeServer, n int) {
+	t.Helper()
+	deadline := time.After(2 * time.Second)
+	for {
+		if len(fs.perms()) >= n {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("等待权限应答请求超时：到达 %d/%d", len(fs.perms()), n)
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+}
+
+// assertNoResultWithin 断言 d 内事件通道不产出 result 事件（usage/progress 等
+// 噪音允许出现）。「应答在飞时不得提前分类」用。
+func assertNoResultWithin(t *testing.T, ch <-chan executor.AdapterEvent, d time.Duration) {
+	t.Helper()
+	deadline := time.After(d)
+	for {
+		select {
+		case ev := <-ch:
+			if ev.Type == "result" {
+				t.Fatalf("不应产出 result，实得 %+v", ev.Result)
+			}
+		case <-deadline:
+			return
+		}
+	}
 }
 
 // addChild 登记一个子会话，供 GET /session/{id} 应答。
@@ -709,16 +770,15 @@ resultReceived:
 	}
 }
 
-// TestRejectedPermissionEndsTurnWakesReviewer 验证「权限被拒 → 回合静默终止」
-// 不再让任务挂死（2026-08-08 真实派发实测的 P0）：
+// TestRejectedPermissionEndsTurnEmitsDeniedResult（B383 Wave 0 T1）验证「权限被拒 →
+// 回合静默终止」的实时终局改为失败结果（旧实现发合成 question，manager 会再建一张
+// ask 工单）：
 //
 // opencode 收到 reject 后**直接终结整个回合**——最后一条 assistant 消息只有一个
-// error 状态的 tool part（"The user rejected permission to use this specific tool
-// call."），零文本 part。于是 idle 到来时回合文本为空，旧实现只打一条 Warn 就
-// return，不产出任何事件：manager 收不到东西、任务永远停在 running，直到 2 小时
-// 看门狗才报 stalled。修复后这种回合必须转 question 唤醒协调者，并在文本里点明
-// 是哪条权限被拒导致的终止，协调者据此续发指令（换方式/跳过/收尾）。
-func TestRejectedPermissionEndsTurnWakesReviewer(t *testing.T) {
+// error 状态的 tool part，零文本 part。API 结算（成功）先于 idle 到达时，idle 必须
+// 产出**恰一条** result{OK:false, VoidReason=权限被拒}，FailReason 点明被拒的权限，
+// 让协调者在 waiting_review 里用 continue 续接（换方式/跳过/收尾）。
+func TestRejectedPermissionEndsTurnEmitsDeniedResult(t *testing.T) {
 	quietLog(t)
 	fs := newFakeServer(t)
 	fs.push(permissionAskedEvent("per-rej-1", "bash", "git push --dry-run origin main"))
@@ -734,13 +794,178 @@ func TestRejectedPermissionEndsTurnWakesReviewer(t *testing.T) {
 	}
 	fs.push(statusIdleEvent())
 
-	got := waitEventType(t, ch, "question")
-	// 文本必须让协调者一眼看懂「为什么停了」：点明权限被拒 + 原始命令
-	if !strings.Contains(got.Text, "权限被拒") {
-		t.Errorf("question 文本应说明回合因权限被拒终止，实际=%q", got.Text)
+	got := waitEventType(t, ch, "result")
+	if got.Result == nil || got.Result.OK {
+		t.Fatalf("被拒终止的空回合应产出失败结果，实际 %+v", got)
 	}
-	if !strings.Contains(got.Text, "git push --dry-run origin main") {
-		t.Errorf("question 文本应含被拒的权限描述，实际=%q", got.Text)
+	// 文本必须让协调者一眼看懂「为什么停了」：点明权限被拒 + 原始命令
+	if !strings.Contains(got.Result.FailReason, "权限被拒") {
+		t.Errorf("FailReason 应说明回合因权限被拒终止，实际=%q", got.Result.FailReason)
+	}
+	if !strings.Contains(got.Result.FailReason, "git push --dry-run origin main") {
+		t.Errorf("FailReason 应含被拒的权限描述，实际=%q", got.Result.FailReason)
+	}
+	if got.Result.VoidReason != executor.VoidReasonPermissionDenied {
+		t.Errorf("VoidReason=%q，期望 %q（executor 仍在线，审计必须说真话）",
+			got.Result.VoidReason, executor.VoidReasonPermissionDenied)
+	}
+	// 恰一次：回合已终结，冗余 idle 信号不得再发第二条终局
+	fs.push(sessionIdleEvent())
+	assertNoResultWithin(t, ch, 300*time.Millisecond)
+}
+
+// TestRejectSettleAfterIdleEmitsDeniedResultOnce（B383 Wave 0 T2）：idle 先到、
+// 应答界内结算成功。
+//
+// 交错现场：reject 的 HTTP 转发还没返回，SSE idle 已把空回合送进分类。此刻不得
+// 提前判（应答成功=被拒终局，失败=普通空回合，两种结局都在后面）——必须复用
+// idle 去抖机制延迟到应答结算后判；结算成功后产出恰一条被拒 result。
+func TestRejectSettleAfterIdleEmitsDeniedResultOnce(t *testing.T) {
+	quietLog(t)
+	fs := newFakeServer(t)
+	taskID := "task-reject-t2"
+	fs.push(permissionAskedEvent("perm-t2", "bash", "echo t2"))
+	ad, ch := startFakeRun(t, fs, taskID, t.TempDir(), t.TempDir())
+	// 重武装宽限注入毫秒级（模式同 idleGrace）：500ms ≫ 结算延迟，到期时必已结算
+	ad.rejectSettleGrace = 500 * time.Millisecond
+	waitEventType(t, ch, "permission")
+
+	fs.holdPermissionResponses()
+	t.Cleanup(fs.releasePermissionResponses)
+	done := make(chan error, 1)
+	go func() { done <- ad.RespondPermission(context.Background(), taskID, "perm-t2", "reject", "") }()
+	waitPermCalls(t, fs, 1) // 应答请求已到达 server，回包挂起（在飞）
+
+	// idle 先到：应答在飞，不得凭「登记了拒绝意向」提前宣判
+	fs.push(statusIdleEvent())
+	assertNoResultWithin(t, ch, 100*time.Millisecond)
+
+	// 界内结算成功 → 延迟分类产出被拒 result 恰一次
+	fs.releasePermissionResponses()
+	if err := <-done; err != nil {
+		t.Fatalf("RespondPermission: %v", err)
+	}
+	got := waitEventType(t, ch, "result")
+	if got.Result == nil || got.Result.OK {
+		t.Fatalf("结算成功后应产出被拒失败结果，实际 %+v", got)
+	}
+	if got.Result.VoidReason != executor.VoidReasonPermissionDenied {
+		t.Errorf("VoidReason=%q，期望 %q", got.Result.VoidReason, executor.VoidReasonPermissionDenied)
+	}
+	if !strings.Contains(got.Result.FailReason, "echo t2") {
+		t.Errorf("FailReason 应含被拒描述，实际=%q", got.Result.FailReason)
+	}
+	// 重复 idle（冗余信号）不重发
+	fs.push(sessionIdleEvent())
+	assertNoResultWithin(t, ch, 300*time.Millisecond)
+}
+
+// TestRejectDeliveryFailureAfterIdleFallsToZeroText（B383 Wave 0 T3）：idle 先到、
+// 应答失败（含超时）。没送达的拒绝不会终结 executor 的回合，标记必须摘除——
+// 延迟分类到期时按普通零文本回合（B21）收口，绝不冒充被拒终局。
+func TestRejectDeliveryFailureAfterIdleFallsToZeroText(t *testing.T) {
+	quietLog(t)
+	fs := newFakeServer(t)
+	taskID := "task-reject-t3"
+	fs.push(permissionAskedEvent("perm-t3", "bash", "echo t3"))
+	ad, ch := startFakeRun(t, fs, taskID, t.TempDir(), t.TempDir())
+	ad.rejectSettleGrace = 500 * time.Millisecond
+	waitEventType(t, ch, "permission")
+
+	fs.failPermissionResponses(http.StatusBadGateway)
+	fs.holdPermissionResponses()
+	t.Cleanup(fs.releasePermissionResponses)
+	done := make(chan error, 1)
+	go func() { done <- ad.RespondPermission(context.Background(), taskID, "perm-t3", "reject", "") }()
+	waitPermCalls(t, fs, 1)
+
+	fs.push(statusIdleEvent())
+	assertNoResultWithin(t, ch, 100*time.Millisecond)
+
+	fs.releasePermissionResponses() // 放行后按预设回 502 → 失败结算
+	if err := <-done; err == nil {
+		t.Fatal("API 失败应返回错误")
+	}
+	got := waitEventType(t, ch, "result")
+	if got.Result == nil || got.Result.OK {
+		t.Fatalf("零文本回合应产出失败结果（B21），实际 %+v", got)
+	}
+	if got.Result.VoidReason == executor.VoidReasonPermissionDenied {
+		t.Fatalf("投递失败的拒绝不得按被拒归因: %+v", got.Result)
+	}
+	if !strings.Contains(got.Result.FailReason, "零文本") {
+		t.Fatalf("应落到 B21 零文本形态: %q", got.Result.FailReason)
+	}
+}
+
+// TestRejectDeliveryTimeoutFailsAndLateSettleLeaksNothing（B383 Wave 0 T4）：
+// 应答转发挂死（httptest 挂起 + 注入短超时）→ 硬截止生效走失败路径；
+// 迟到的真实结算（发生在标记摘除之后）零泄漏——绝不凭迟到回包重新登记已拒。
+func TestRejectDeliveryTimeoutFailsAndLateSettleLeaksNothing(t *testing.T) {
+	quietLog(t)
+	fs := newFakeServer(t)
+	taskID := "task-reject-t4"
+	fs.push(permissionAskedEvent("perm-t4", "bash", "echo t4"))
+	ad, ch := startFakeRun(t, fs, taskID, t.TempDir(), t.TempDir())
+	ad.respondTimeout = 100 * time.Millisecond    // 注入短超时（生产为 30s 常量）
+	ad.rejectSettleGrace = 500 * time.Millisecond // 宽限 > 超时：到期时必已结算
+	waitEventType(t, ch, "permission")
+
+	fs.holdPermissionResponses()
+	t.Cleanup(fs.releasePermissionResponses)
+	done := make(chan error, 1)
+	go func() { done <- ad.RespondPermission(context.Background(), taskID, "perm-t4", "reject", "") }()
+	waitPermCalls(t, fs, 1)
+
+	fs.push(statusIdleEvent())
+	got := waitEventType(t, ch, "result")
+	if got.Result == nil || got.Result.OK {
+		t.Fatalf("超时后应按零文本失败收口，实际 %+v", got)
+	}
+	if got.Result.VoidReason == executor.VoidReasonPermissionDenied {
+		t.Fatalf("超时不是送达，不得按被拒归因: %+v", got.Result)
+	}
+	if err := <-done; err == nil {
+		t.Fatal("应答转发超时应返回错误")
+	}
+	// 下一回合零泄漏：拒绝标记已随失败结算摘除，冗余 idle 静默
+	fs.push(sessionIdleEvent())
+	assertNoResultWithin(t, ch, 300*time.Millisecond)
+}
+
+// TestChildSessionRejectParentEmptyTurnEmitsDeniedResult（B383 Wave 0 T6）：
+// 子会话权限被拒 + 父回合空文本终结 → 被拒 result。
+//
+// 拒绝标记是任务级的（子会话的 reject 同样由父任务的回合收口）：子会话 idle 被
+// acceptForeign 丢弃不终结父回合，父会话空文本 idle 才是终局点，此刻必须按被拒
+// 收口而不是 B21 零文本。
+func TestChildSessionRejectParentEmptyTurnEmitsDeniedResult(t *testing.T) {
+	quietLog(t)
+	fs := newFakeServer(t)
+	fs.addChild("sess-child", "sess-1", "子任务")
+	taskID := "task-reject-t6"
+	fs.push(permissionAskedEventFrom("sess-child", "perm-t6", "bash", "curl https://example.com"))
+	ad, ch := startFakeRun(t, fs, taskID, t.TempDir(), t.TempDir())
+
+	ev := waitEventType(t, ch, "permission")
+	if ev.PermissionID != "perm-t6" {
+		t.Fatalf("PermissionID=%q，期望 perm-t6", ev.PermissionID)
+	}
+	if err := ad.RespondPermission(context.Background(), taskID, "perm-t6", "reject", ""); err != nil {
+		t.Fatalf("RespondPermission: %v", err)
+	}
+	// 父会话空文本 idle 终结回合（子会话的 idle 事件即使到达也被丢弃）
+	fs.push(statusIdleEvent())
+
+	got := waitEventType(t, ch, "result")
+	if got.Result == nil || got.Result.OK {
+		t.Fatalf("子会话拒绝+父空文本终结应产出被拒失败结果，实际 %+v", got)
+	}
+	if got.Result.VoidReason != executor.VoidReasonPermissionDenied {
+		t.Errorf("VoidReason=%q，期望 %q", got.Result.VoidReason, executor.VoidReasonPermissionDenied)
+	}
+	if !strings.Contains(got.Result.FailReason, "curl https://example.com") {
+		t.Errorf("FailReason 应含被拒的权限描述，实际=%q", got.Result.FailReason)
 	}
 }
 
@@ -1609,22 +1834,161 @@ func TestMapIdleEmptyTurnEmitsFailedResult(t *testing.T) {
 	}
 }
 
-// TestMapIdleRejectedTurnStillAsks 回归：被拒终止的空回合仍走 question，不受本改动影响。
-// 那个现场有内容可问（「我拒了这些权限，接下来怎么办」），零文本回合没有。
-func TestMapIdleRejectedTurnStillAsks(t *testing.T) {
+// TestMapIdleRejectedTurnEmitsDeniedResult（B383 Wave 0 改写，旧名
+// TestMapIdleRejectedTurnStillAsks 期望 question）——被拒终止的空回合必须产出
+// 带 VoidReasonPermissionDenied 的失败结果，不再合成 question（那会让 manager
+// 再建一张 ask 工单；被拒终局沿 handleResult 作废挂起工单、落 waiting_review，
+// 协调者用 continue 续接）。
+func TestMapIdleRejectedTurnEmitsDeniedResult(t *testing.T) {
 	a := New(quietLogger())
 	r := a.newRun("t1", t.TempDir(), t.TempDir())
-	r.noteRejected("perm-1")
+	r.permText["perm-1"] = "bash: git push"
+	r.markRejectPending("perm-1")
+	r.settleReject("perm-1", true) // API 成功结算：标记保留为「已确认已拒」
 	a.mapIdle(r, json.RawMessage(`{"type":"session.idle"}`))
 
 	select {
 	case ev := <-r.evCh:
-		if ev.Type != "question" {
-			t.Fatalf("被拒终止的空回合应仍走 question，实际 %s", ev.Type)
+		if ev.Type != "result" {
+			t.Fatalf("被拒终止的空回合应产出 result，实际 %s", ev.Type)
+		}
+		if ev.Result == nil || ev.Result.OK {
+			t.Fatalf("应是失败结果: %+v", ev.Result)
+		}
+		if ev.Result.VoidReason != executor.VoidReasonPermissionDenied {
+			t.Fatalf("VoidReason=%q，期望 %q", ev.Result.VoidReason, executor.VoidReasonPermissionDenied)
+		}
+		if !strings.Contains(ev.Result.FailReason, "bash: git push") {
+			t.Fatalf("FailReason 应含被拒描述: %q", ev.Result.FailReason)
 		}
 	default:
 		t.Fatalf("被拒终止的空回合应产出事件")
 	}
+}
+
+// TestTextTurnAfterRejectClassifiesTrailerAndClearsMarkers（B383 Wave 0 T5）：
+// 拒绝标记在场时父回合产出了文本 → 走正常 trailer 分类（不冒充被拒终局），
+// 回合终结时标记随 clearTurn 清掉，下一回合零泄漏。
+func TestTextTurnAfterRejectClassifiesTrailerAndClearsMarkers(t *testing.T) {
+	quietLog(t)
+	fs := newFakeServer(t)
+	taskID := "task-reject-t5"
+	fs.push(permissionAskedEvent("perm-t5", "bash", "echo t5"))
+	ad, ch := startFakeRun(t, fs, taskID, t.TempDir(), t.TempDir())
+	waitEventType(t, ch, "permission")
+	if err := ad.RespondPermission(context.Background(), taskID, "perm-t5", "reject", ""); err != nil {
+		t.Fatalf("RespondPermission: %v", err)
+	}
+	// 父回合后续产出文本（模型换方式继续干）：标记在场但回合有正文
+	fs.push(userMsgEvent("msg-t5-u1"))
+	fs.push(partUpdatedEvent("msg-t5-a1", "prt-t5-a1", "继续用别的方式\n{\"ask\":\"改用脚本方式可以吗？\"}"))
+	fs.push(statusIdleEvent())
+
+	got := waitEventType(t, ch, "question")
+	if !strings.Contains(got.Text, "改用脚本方式可以吗？") {
+		t.Fatalf("有文本时应走正常 trailer 分类，实得 %+v", got)
+	}
+	// 标记已随回合终结清掉（白盒）
+	r := ad.lookup(taskID)
+	r.turnMu.Lock()
+	if len(r.turnRejected) != 0 || r.rejectInFlight != 0 {
+		r.turnMu.Unlock()
+		t.Fatalf("回合终结应清拒绝标记与计数器: map=%v inFlight=%d", r.turnRejected, r.rejectInFlight)
+	}
+	r.turnMu.Unlock()
+	// 下一回合零泄漏：正常 finish 分类不受残留标记影响
+	fs.push(userMsgEvent("msg-t5-u2"))
+	fs.push(partUpdatedEvent("msg-t5-a2", "prt-t5-a2",
+		"干完了\n{\"branch\":\"handoff/T1\",\"commit\":\"abc12345\",\"summary\":\"完成功能\"}"))
+	fs.push(statusIdleEvent())
+	fin := waitEventType(t, ch, "result")
+	if fin.Result == nil || !fin.Result.OK {
+		t.Fatalf("下一回合应正常完成分类，实得 %+v", fin)
+	}
+	if fin.Result.VoidReason == executor.VoidReasonPermissionDenied {
+		t.Fatalf("下一回合不得带被拒归因: %+v", fin.Result)
+	}
+}
+
+// TestClearTurnClearsRejectionMarkers（B383 Wave 0 T7）：clearTurn 三清——
+// 拒绝标记表置空、在飞计数归零、重武装代次复位；下一回合零泄漏（空文本 idle
+// 走 B21 而不是被拒 result）。
+func TestClearTurnClearsRejectionMarkers(t *testing.T) {
+	a := New(quietLogger())
+	r := a.newRun("t7", t.TempDir(), t.TempDir())
+	r.permText["perm-t7"] = "bash: echo t7"
+	r.markRejectPending("perm-t7")
+	r.settleReject("perm-t7", true)
+	r.turnMu.Lock()
+	if len(r.turnRejected) != 1 || r.rejectInFlight != 0 {
+		r.turnMu.Unlock()
+		t.Fatalf("结算后应恰留一条已确认标记且计数归零: map=%v inFlight=%d",
+			r.turnRejected, r.rejectInFlight)
+	}
+	r.turnMu.Unlock()
+
+	r.clearTurn()
+	r.turnMu.Lock()
+	dirty := len(r.turnRejected) != 0 || r.rejectInFlight != 0 || r.rejectRearmGen != 0
+	r.turnMu.Unlock()
+	if dirty {
+		t.Fatalf("clearTurn 必须清拒绝标记、归零计数器并复位重武装代次")
+	}
+
+	// 下一回合零泄漏：空文本 idle 走 B21，绝不按被拒归因
+	a.mapIdle(r, json.RawMessage(`{"type":"session.idle"}`))
+	select {
+	case ev := <-r.evCh:
+		if ev.Type != "result" || ev.Result == nil || ev.Result.OK {
+			t.Fatalf("空回合应产出失败结果（B21）: %+v", ev)
+		}
+		if ev.Result.VoidReason == executor.VoidReasonPermissionDenied {
+			t.Fatalf("标记已清，不得按被拒归因: %+v", ev.Result)
+		}
+	default:
+		t.Fatal("空回合静默")
+	}
+}
+
+// TestRejectInFlightRearmDefensiveFallback（B383 Wave 0 防御分支）：重武装到期
+// 仍不可判（应答仍未结算——生产上不可达：应答截止 30s < 宽限 31s）→ 按 B21
+// 零文本收口 + 诊断文案，且至多重武装一次、绝不循环武装。
+func TestRejectInFlightRearmDefensiveFallback(t *testing.T) {
+	quietLog(t)
+	fs := newFakeServer(t)
+	taskID := "task-reject-def"
+	fs.push(permissionAskedEvent("perm-def", "bash", "echo def"))
+	ad, ch := startFakeRun(t, fs, taskID, t.TempDir(), t.TempDir())
+	ad.rejectSettleGrace = 60 * time.Millisecond // 宽限 < 应答截止（注入 300ms）：到期时必仍在飞
+	ad.respondTimeout = 300 * time.Millisecond
+	waitEventType(t, ch, "permission")
+
+	fs.holdPermissionResponses()
+	t.Cleanup(fs.releasePermissionResponses)
+	done := make(chan error, 1)
+	go func() { done <- ad.RespondPermission(context.Background(), taskID, "perm-def", "reject", "") }()
+	waitPermCalls(t, fs, 1)
+
+	fs.push(statusIdleEvent())
+	got := waitEventType(t, ch, "result")
+	if got.Result == nil || got.Result.OK {
+		t.Fatalf("防御分支应按零文本失败收口，实际 %+v", got)
+	}
+	if got.Result.VoidReason == executor.VoidReasonPermissionDenied {
+		t.Fatalf("应答未结算时不得按被拒归因: %+v", got.Result)
+	}
+	if !strings.Contains(got.Result.FailReason, "仍未结算") {
+		t.Fatalf("防御分支应带诊断文案点明现场: %q", got.Result.FailReason)
+	}
+	// 恰一次：防御收口后不得循环重武装再发第二条
+	fs.push(sessionIdleEvent())
+	assertNoResultWithin(t, ch, 200*time.Millisecond)
+	// 硬截止先到（hold 未放行）：应答转发按超时失败结算；放行只为了归还
+	// handler goroutine，此时客户端早已断开
+	if err := <-done; err == nil {
+		t.Fatal("应答转发最终应因超时失败")
+	}
+	fs.releasePermissionResponses()
 }
 
 // TestChildSessionPermissionProducesTicket 覆盖 B52 的核心修复：子会话发来的

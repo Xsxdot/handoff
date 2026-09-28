@@ -1,0 +1,92 @@
+[
+ {
+  "info": {
+   "id": "msg_0e86438ee001ktr0a56P4kceTQ",
+   "sessionID": "ses_f179bc7f8ffeUo68HM5W5FKPwn",
+   "role": "assistant",
+   "time": {
+    "created": 1790605277422,
+    "completed": 1790605302207
+   },
+   "parentID": "msg_0e864385c0013FMygkD9Z5vmWZ",
+   "modelID": "mimo-v2.6-flash-free",
+   "providerID": "opencode",
+   "mode": "build",
+   "agent": "build",
+   "path": {
+    "cwd": "/private/tmp/b383-capture.Qpj8/probe",
+    "root": "/private/tmp/b383-capture.Qpj8/probe"
+   },
+   "cost": 0,
+   "tokens": {
+    "total": 13423,
+    "input": 13386,
+    "output": 23,
+    "reasoning": 14,
+    "cache": {
+     "read": 0,
+     "write": 0
+    }
+   },
+   "finish": "tool-calls"
+  },
+  "parts": [
+   {
+    "id": "prt_0e8645d07001BVENwiyM4PPieE",
+    "sessionID": "ses_f179bc7f8ffeUo68HM5W5FKPwn",
+    "messageID": "msg_0e86438ee001ktr0a56P4kceTQ",
+    "type": "step-start",
+    "snapshot": "6ebdf10996745230599fba97540093cc08c205ff"
+   },
+   {
+    "id": "prt_0e8645d0d001oYqjTfsI8Nykkx",
+    "sessionID": "ses_f179bc7f8ffeUo68HM5W5FKPwn",
+    "messageID": "msg_0e86438ee001ktr0a56P4kceTQ",
+    "type": "reasoning",
+    "text": "User wants me to run touch probe-perm.txt and stop.",
+    "time": {
+     "start": 1790605286669,
+     "end": 1790605286894
+    }
+   },
+   {
+    "id": "prt_0e8645df200143zx1UQmYBpHll",
+    "sessionID": "ses_f179bc7f8ffeUo68HM5W5FKPwn",
+    "messageID": "msg_0e86438ee001ktr0a56P4kceTQ",
+    "type": "tool",
+    "callID": "call_37750e2b82fa4521a258eab0",
+    "tool": "bash",
+    "state": {
+     "status": "error",
+     "input": {
+      "command": "touch probe-perm.txt"
+     },
+     "error": "The user rejected permission to use this specific tool call.",
+     "time": {
+      "start": 1790605287042,
+      "end": 1790605302157
+     }
+    }
+   },
+   {
+    "id": "prt_0e86499a7001oV0Rj33P2EEYXj",
+    "sessionID": "ses_f179bc7f8ffeUo68HM5W5FKPwn",
+    "messageID": "msg_0e86438ee001ktr0a56P4kceTQ",
+    "type": "step-finish",
+    "reason": "tool-calls",
+    "snapshot": "6ebdf10996745230599fba97540093cc08c205ff",
+    "cost": 0,
+    "tokens": {
+     "total": 13423,
+     "input": 13386,
+     "output": 23,
+     "reasoning": 14,
+     "cache": {
+      "read": 0,
+      "write": 0
+     }
+    }
+   }
+  ]
+ }
+]
