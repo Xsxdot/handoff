@@ -604,6 +604,12 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
         // B369.10 T3：这个项目行的「主点击」落点。compact 下注入方给了详情入口
         // 就进详情（折叠改走行内 Arrow），否则维持折叠 toggle——桌面恒走后者。
         const openDetail = compact ? onOpenProjectDetail : undefined
+        // B369.10 验收实走修正：有位置芯片时行分两段（上段名+右簇、下段芯片整行），
+        // 见行 button 上的长注释——390 实走实测的挤压/压字由此而起。
+        const chipsLine = openDetail !== undefined && project.locations.length > 0
+        // 「工作项」绝对定位钮在 compact 常驻（right-20，宽约 26px）：芯片行要给它
+        // 预留行尾 54~80px 那段，否则芯片文字被图标压住。钮的条件与下方渲染同源。
+        const rowActionZone = compact && (onOpenProjectCards !== undefined || onOpenProjectCodegraph !== undefined)
         const pCounts = countsForProject(tasks, project, previews)
         const projectHit = searching && project.name.toLowerCase().includes(filtered.query)
         const projectPreviews = previews.filter((session) => previewBelongsToProject(session, project))
@@ -696,7 +702,15 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
                 // 否则读屏会把它报成「可展开的按钮」而点下去是跳页面。
                 aria-expanded={project.locations.length > 0 && openDetail === undefined ? pOpen : undefined}
                 onClick={() => (openDetail ? openDetail(project) : toggle(pKey))}
-                className="flex min-h-[31px] w-full items-center justify-between gap-2.5 rounded-lg px-0 text-left text-[18px] font-normal hover:bg-[#fafafa]"
+                className={cn(
+                  'flex min-h-[31px] w-full items-center justify-between gap-2.5 rounded-lg px-0 text-left text-[18px] font-normal hover:bg-[#fafafa]',
+                  // B369.10 验收实走修正（390 真机实测）：有位置芯片时行升为两段——
+                  // 上段名+右簇、下段芯片整行（原型 mobile-projects 的 .pcard .top /
+                  // .locs 两段形态，chips 本就自带一行）。原先把芯片塞在名旁，长名下
+                  // 容器被挤到 95px 而单枚芯片 151px，溢出后伸进「工作项」绝对定位钮的
+                  // right-20 区被图标压字（实测 chip right=361 vs 钮 284..310）。
+                  chipsLine && 'flex-wrap gap-y-1',
+                )}
               >
                 <span className="flex min-w-0 items-center gap-2.5">
                   <FolderGit2
@@ -711,37 +725,14 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
                       会伸进钮区（390 目检项 1 的挤压）；名旁随 min-w-0 收缩，
                       超长时项目名先截断。桌面不渲染（铺开面自答这个问题）。
                       B369.10 T3：能进详情时升格为**逐位置芯片**（原型
-                      mobile-projects ②「活跃数 = 该位置在跑任务数」）——列表层就
-                      说清哪个位置、几台在跑、断没断，读者不必为了看一眼状态而
-                      展开整棵树。onOpenProjectDetail 缺席（桌面/直渲染树）时维持
-                      摘要形态。 */}
-                  {compact && project.locations.length > 0 && (
-                    openDetail === undefined ? (
-                      <span data-testid="project-loc-summary" className="flex shrink-0 items-center gap-1 text-[13px] text-muted-foreground">
-                        <StateDot tone={locationProblemCount > 0 ? 'failed' : 'active'} />
-                        <span>{project.locations.length} 处位置{locationProblemCount > 0 ? ` · ${locationProblemCount} 处断开` : ''}</span>
-                      </span>
-                    ) : (
-                      <span data-testid="project-loc-chips" className="flex min-w-0 flex-wrap items-center gap-1 text-[13px] text-muted-foreground">
-                        {project.locations.map((loc) => {
-                          const offline = locationProblem(loc, tree.machines) !== ''
-                          return (
-                            <span
-                              key={loc.machine}
-                              data-testid="project-loc-chip"
-                              className="flex shrink-0 items-center gap-1 rounded-full border px-1.5 py-px"
-                            >
-                              <StateDot tone={offline ? 'failed' : 'active'} />
-                              <span>
-                                {offline
-                                  ? `${machineLabel(loc.machine)} · 离线`
-                                  : `${machineLabel(loc.machine)} · ${locationActiveCount(tasks, project, loc)} 活跃`}
-                              </span>
-                            </span>
-                          )
-                        })}
-                      </span>
-                    )
+                      mobile-projects ②「活跃数 = 该位置在跑任务数」），落成见右簇
+                      之后的整行芯片；onOpenProjectDetail 缺席（桌面/直渲染树）时
+                      维持摘要形态。 */}
+                  {compact && project.locations.length > 0 && openDetail === undefined && (
+                    <span data-testid="project-loc-summary" className="flex shrink-0 items-center gap-1 text-[13px] text-muted-foreground">
+                      <StateDot tone={locationProblemCount > 0 ? 'failed' : 'active'} />
+                      <span>{project.locations.length} 处位置{locationProblemCount > 0 ? ` · ${locationProblemCount} 处断开` : ''}</span>
+                    </span>
                   )}
                 </span>
                 <span className="flex shrink-0 items-center gap-[7px] text-[15px] font-medium text-muted-foreground">
@@ -751,6 +742,38 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
                   </span>
                   {project.locations.length > 0 && <Arrow open={pOpen} onToggle={() => toggle(pKey)} />}
                 </span>
+                {chipsLine && (
+                  // 整行芯片：w-full 让它在 flex-wrap 的父里独占一行；pr-20 预备
+                  // 「工作项」绝对定位钮的 zone（钮在 right-20、宽约 26px，挡的是
+                  // 行尾 54~80px 那段），否则芯片文字仍会被钮压住。
+                  <span
+                    data-testid="project-loc-chips"
+                    className={cn(
+                      'flex w-full min-w-0 flex-wrap items-center gap-1 text-[13px] text-muted-foreground',
+                      rowActionZone && 'pr-20',
+                    )}
+                  >
+                    {project.locations.map((loc) => {
+                      const offline = locationProblem(loc, tree.machines) !== ''
+                      return (
+                        <span
+                          key={loc.machine}
+                          data-testid="project-loc-chip"
+                          className="flex min-w-0 items-center gap-1 rounded-full border px-1.5 py-px"
+                        >
+                          <StateDot tone={offline ? 'failed' : 'active'} />
+                          {/* min-w-0 + truncate：390 下芯片比可用宽度还长的兜底是
+                              截断文本，不是溢出容器（溢出会横滚或压到邻元素）。 */}
+                          <span className="truncate">
+                            {offline
+                              ? `${machineLabel(loc.machine)} · 离线`
+                              : `${machineLabel(loc.machine)} · ${locationActiveCount(tasks, project, loc)} 活跃`}
+                          </span>
+                        </span>
+                      )
+                    })}
+                  </span>
+                )}
               </button>
               {/* B369.7：桌面 hidden group-hover:flex 逐字节保留；compact 下容器
                   常驻 flex（触屏无 hover），「代码图」子钮不渲染（/codegraph 整页

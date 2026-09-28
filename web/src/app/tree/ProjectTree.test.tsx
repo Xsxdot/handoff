@@ -1250,6 +1250,31 @@ describe('B369.8 compact 项目折叠与 hover', () => {
     expect(screen.queryByTestId('project-loc-summary')).toBeNull()
   })
 
+  // B369.10 验收实走修正（390 真机实测）：芯片原先塞在名旁，长名下容器被挤瘪、
+  // 单枚芯片溢出容器后伸进「工作项」绝对定位钮的 right-20 区被图标压字。修法是
+  // 把芯片行整行化（原型 .pcard .top / .locs 两段形态）并给钮区留位。
+  it('芯片整行：行 button flex-wrap + 芯片 w-full 独占一行 + 有工作项钮时留行尾位', () => {
+    const p = props({ compact: true, onOpenProjectDetail: vi.fn(), onOpenProjectCards: vi.fn() })
+    render(<ProjectTree {...p} />)
+    const node = screen.getByTestId('project-node-p1')
+    const row = within(node).getByRole('button', { name: /^handoff/ })
+    expect(row.className).toContain('flex-wrap')
+    const chips = within(node).getByTestId('project-loc-chips')
+    expect(chips.className).toContain('w-full')
+    // 工作项钮在场（admit 了 onOpenProjectCards）→ 芯片行预留 right-20 那段
+    expect(chips.className).toContain('pr-20')
+    // 芯片文本可截断（容器比芯片还窄时的兜底是截断，不是溢出横向滚动）
+    expect(within(node).getByTestId('project-loc-chip').querySelector('.truncate')).not.toBeNull()
+  })
+
+  it('无工作项钮（未注入 onOpenProjectCards）时芯片行不留行尾空位', () => {
+    const p = props({ compact: true, onOpenProjectDetail: vi.fn() })
+    render(<ProjectTree {...p} />)
+    const chips = screen.getByTestId('project-loc-chips')
+    expect(chips.className).toContain('w-full')
+    expect(chips.className).not.toContain('pr-20')
+  })
+
   it('onOpenProjectDetail 缺席（直渲染树）时维持摘要形态 + 主点击折叠', () => {
     const p = props({ compact: true })
     render(<ProjectTree {...p} />)
