@@ -1,4 +1,6 @@
-// AndroidCookieStoreTest.kt —— F2：平台 cookie 回调 false 必须转成失败（fail-closed），不得静默成功。
+// AndroidCookieStoreTest.kt —— F2：平台回调语义分野——
+//   setCookie false（写入被拒）必须转成失败（fail-closed），不得静默成功；
+//   removeAllCookies false 是平台语义「无 cookie 可删」（净罐已达成，B418），放行。
 package dev.gosuper.handoff.mobile.ui
 
 import android.webkit.ValueCallback
@@ -32,16 +34,11 @@ class AndroidCookieStoreTest {
     }
 
     @Test
-    fun removeAllCookies返回false_抛错且不flush() = runTest {
+    fun removeAllCookies返回false_视为净罐放行并flush() = runTest {
         val port = FakeCookieManagerPort(removeResult = false)
-        var failed = false
-        try {
-            AndroidCookieStore(port).clearHost("127.0.0.1")
-        } catch (e: Exception) {
-            failed = true
-        }
-        assertTrue("false 必须转成失败", failed)
-        assertEquals("失败态不得 flush", 0, port.flushCount)
+        // 平台语义：false = 无 cookie 可删 = 净罐已达成（B418），不得当拒绝。
+        AndroidCookieStore(port).clearHost("127.0.0.1")
+        assertEquals("净罐放行后必须 flush", 1, port.flushCount)
     }
 
     @Test
@@ -67,7 +64,7 @@ class AndroidCookieStoreTest {
     }
 
     @Test
-    fun 清罐返回false_进入错误态_不取cookie不load后续() = runTest {
+    fun 清罐返回false_视为净罐_继续注入并load() = runTest {
         val order = mutableListOf<String>()
         val core = FakeCore(order = order)
         val nav = FakeNavigator(order)
@@ -77,9 +74,9 @@ class AndroidCookieStoreTest {
             navigator = nav,
         )
 
-        assertTrue(binder.enterMachine("A").isFailure)
-        assertTrue("失败后不得 load", nav.loaded.isEmpty())
-        assertTrue("清罐失败后不得取 cookie", order.none { it.startsWith("sessionCookie") })
+        assertTrue(binder.enterMachine("A").isSuccess)
+        assertTrue("净罐放行后必须 load", nav.loaded.isNotEmpty())
+        assertTrue("注入必须发生在 load 之前", order.indexOfFirst { it.startsWith("sessionCookie") } >= 0)
     }
 
     @Test

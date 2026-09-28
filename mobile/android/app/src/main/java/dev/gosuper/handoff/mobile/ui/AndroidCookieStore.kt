@@ -1,7 +1,8 @@
 // AndroidCookieStore.kt —— CookieStore 的 Android 实现：包 WebView 的 CookieManager。
 //
 // 职责：把清 jar / 写 cookie 的异步回调转成可等待的 suspend，保证 I3 严格序；
-//       平台回调结果为 false（拒绝）时必须转成失败（fail-closed），绝不静默成功继续 load。
+//       setCookie 回调 false（写入被拒）必须转成失败（fail-closed），绝不静默成功继续 load；
+//       removeAllCookies 回调 false 是平台语义「无 cookie 可删」（净罐已达成），放行。
 // 边界：清回环专用 webview 的 jar（与定向删等价，contract §3.4 允许）；不解析 cookie 值、不记其内容。
 package dev.gosuper.handoff.mobile.ui
 
@@ -45,7 +46,9 @@ class AndroidCookieStore internal constructor(
 
     override suspend fun clearHost(host: String) {
         Log.i(TAG, "清 cookie jar host=$host")
-        awaitCookieAccepted { port.removeAllCookies(it) }
+        // removeAllCookies 回调布尔 = 「是否删除了任意 cookie」：false = 罐本就为空，
+        // 净罐目标态已达成，不是拒绝（B418：当拒绝会挡死所有全新安装的首次进入）。
+        awaitCookieCleared { port.removeAllCookies(it) }
         port.flush()
     }
 
@@ -56,9 +59,21 @@ class AndroidCookieStore internal constructor(
     }
 
     /**
-     * 等待平台 cookie 操作回调：true 才通过；false/null 一律 resumeWithException。
-     * 这样 WebviewSessionBinder 进入 failure 分支且不 load 后续（fail-closed，不复用旧会话）。
-     * 仅成功后才 flush（失败态不需要落盘）。
+     * 等待平台清罐回调：true（删了）与 false（本无可删）都达成净罐，均放行；
+     * 无回调结果（null）才失败。成功后才 flush（失败态不需要落盘）。
+     */
+    private suspend fun awaitCookieCleared(register: (ValueCallback<Boolean>) -> Unit) {
+        suspendCancellableCoroutine<Unit> { cont ->
+            register { result ->
+                if (!cont.isActive) return@register
+                if (result != null) cont.resume(Unit) else cont.resumeWithException(CookieRejectedException())
+            }
+        }
+    }
+
+    /**
+     * 等待平台 cookie 写入回调：true 才通过；false/null 一律 resumeWithException。
+     * setCookie 的 false 是真拒绝（写入没生效），fail-closed 由 WebviewSessionBinder 承接。
      */
     private suspend fun awaitCookieAccepted(register: (ValueCallback<Boolean>) -> Unit) {
         suspendCancellableCoroutine<Unit> { cont ->
