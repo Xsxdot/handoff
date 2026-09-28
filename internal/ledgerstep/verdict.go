@@ -2,6 +2,7 @@
 // 共用同一份节点决策与派发装配。
 // 边界：无自有状态——回合计数从事件流推导，全部写入经 internal/ledger。
 // 本文件解析最后 handoff-verdict 围栏；抢救只针对围栏正文，不扫描整回合文本。
+// 缺收尾围栏时退化为「最后一处开盘后的第一段 JSON 对象」（B416），仍只认围栏正文。
 package ledgerstep
 
 import (
@@ -32,14 +33,48 @@ type Verdict struct {
 
 var verdictBlockPat = regexp.MustCompile("(?s)```handoff-verdict\\s*\\n(.*?)\\n?```")
 
+// verdictFenceOpen 是裁决围栏的开盘标记，与 verdictBlockPat 的字面量保持一致。
+const verdictFenceOpen = "```handoff-verdict"
+
+// unterminatedVerdictBody 取最后一处开盘围栏之后的第一段完整 JSON 对象，供漏写
+// 收尾围栏的报文使用（B416：opencode 部分模型实测会写出只有开盘的围栏）。
+//
+// 为什么只取紧跟开盘标记的第一个 JSON 对象、而不是「开盘到报文末尾」：模型漏闭合
+// 时，围栏正文之后往往直接跟回合 trailer JSON 或后续散文；把整段都当正文会把误读面
+// 扩大到 trailer/散文里的任何字面量。只认第一个 JSON 对象，既不丢裁决对象本身，也
+// 不吞后文。正文的严格解析与逐字段抢救完全复用正式路径；找不到开盘标记、或其后没有
+// 可解码的 JSON 对象时返回 ok=false，由调用方继续 fail-closed。
+func unterminatedVerdictBody(message string) (string, bool) {
+	i := strings.LastIndex(message, verdictFenceOpen)
+	if i < 0 {
+		return "", false
+	}
+	rest := message[i+len(verdictFenceOpen):]
+	j := strings.IndexByte(rest, '{')
+	if j < 0 {
+		return "", false
+	}
+	var body json.RawMessage
+	if err := json.NewDecoder(strings.NewReader(rest[j:])).Decode(&body); err != nil {
+		return "", false
+	}
+	return string(body), true
+}
+
 // ParseVerdict 从审阅报文提取最后一个 handoff-verdict block 并解析。
 // 严格 JSON 失败时，只从该围栏正文逐字段抢救；无法确认 verdict 时仍报错。
+// 模型漏写收尾围栏时（B416），退化为「从最后一处开盘围栏起到报文末尾」，正文仍
+// 走同一套严格 JSON + 抢救判定。
 func ParseVerdict(message string) (Verdict, error) {
 	blocks := verdictBlockPat.FindAllStringSubmatch(message, -1)
-	if len(blocks) == 0 {
+	var raw string
+	if len(blocks) > 0 {
+		raw = strings.TrimSpace(blocks[len(blocks)-1][1])
+	} else if body, ok := unterminatedVerdictBody(message); ok {
+		raw = body
+	} else {
 		return Verdict{}, fmt.Errorf("报文中没有 handoff-verdict block")
 	}
-	raw := strings.TrimSpace(blocks[len(blocks)-1][1])
 	var wire struct {
 		Verdict  string    `json:"verdict"`
 		Findings []Finding `json:"findings"`
