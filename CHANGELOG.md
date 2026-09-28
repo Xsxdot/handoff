@@ -31,6 +31,7 @@
 
 ### 修复
 
+- **手机上点「在此打开终端」后页面冻在旧态（B413）。** 紧凑视口的下钻导航走 React Router 的 transition 渲染，而 usePoll 轮询续帧的 setData 是 sync 高优更新——存在慢轮询源（如一台离线机器把 `/api/pty/sessions?scope=all` 扇出拖到 ~3s）时，慢解析落在渲染让出窗口会反复打断 transition 提交，URL 前进了 UI 永不跟随（终端/任务现场路径确定性命中），只能整页刷新恢复。修复：usePoll 续帧的全部状态写入改包 `React.startTransition`（非紧急数据语义，与导航 transition 合并进同一次渲染提交），`refresh()` 等用户主动动作保持 sync；`PollState` 签名与轮询纪律零改动，桌面路径不回归。
 - **切走终端再回来 TUI 花屏、划不动（B367）。** 后台组叠在原位，不移出视口、不 opacity-0。隐藏组 `pointer-events-none` + `inert`，避免 z-0 的 WebGL 画布抢走滚轮；激活组不加这个类。滚轮跟指针走。组容器 `min-w-0`，进设置再回来不再被画布固有宽撑出一串 SIGWINCH。
 - **审批 client 生产实现迁出 agentd（B233.8）。** OpenCode 派发 / continue / resume 仍注入同一 `ApprovalClient`；`internal/agentd` 只组装。非 OpenCode 权限权威与跨机真机延后 B233.9。
 - **远端落账失败会停孤儿任务并改名重试（B351）。** `ViaTemplate` 在 Transport 成功但本地挂账失败时记独立耗费轮次，`PurposeRounds` 按成功挂账加失败轮次计数；CLI 与 agentd 注入 Stop 后强制 Reclaim，不删分支。跨机真机延后 B233.9。

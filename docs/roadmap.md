@@ -930,3 +930,7 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 ## 来自 B413 implement（2026-09-28，先于本卡的用例隔离缺陷）
 
 - **Shell.test.tsx「工作项钮」用例 mock 泄漏依赖**：该用例体内不调 `mockCardLedger()`，其数据依赖同文件前序用例残留的 `fetchCards` mock（文件级默认空卡集；全局 beforeEach 不重置 fetchCards；vite 配置无 restoreMocks）——过滤单跑（`vitest -t 工作项`）无论断言怎么写必红，全量跑才绿。修法：用例内显式 `mockCardLedger()`。B413 只修了它的竞态半边（waitFor），泄漏半边在此立账。来源：B413 implement 裁决执行回报（commit 91a69a02 期间发现）。
+
+## 来自 B413 finish（2026-09-28，代码图基线保鲜积压）
+
+- **代码图基线 absorb 积压清理**：`codegraph/diffs/` 存着 12 个未 absorb 的分支视图 diff（cards-B233.1~6、B272、B358、B369、B374、B395、B398——均为各卡流程副产物，finish 时未吸收），`validate --stale` 报 1215 条行锚漂移（含 B413 改动带来的 usePoll.ts 6 条）。修法：逐个 `codegraph absorb <视图>`（按 finish skill 的冲突处置：取主线基线 + 在新基线上重跑 absorb），或一次全量重扫重建基线后清空 diffs/。B413 本身零视图 diff（分支流程未跑扫描），无可吸收产物。来源：B413 finish 基准回灌判定；积压早于本卡。
