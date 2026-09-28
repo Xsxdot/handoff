@@ -11,7 +11,7 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
     }
 
     func applicationWillTerminate(_ application: UIApplication) {
-        // Task 7 在此加一行 AppComposition.current?.shutdown()（装配点，见 Task 7 Step 2）。
-        Log.shell.info("App 终止")
+        Log.shell.info("App 终止：关闭 Go 核")
+        AppComposition.current?.shutdown()
     }
 }
