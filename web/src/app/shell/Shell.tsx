@@ -1085,6 +1085,9 @@ export function Shell() {
                         // 冲突/删除上报进左栏圆点（冲突红、删灰；已编辑由
                         // 草稿有无在 openItems 投影处判，2026-08-29）
                         onStatus={(status) => reportFileStatus(tabId, status)}
+                        // B369.10 T9：compact 只读档（390 无编辑交互）。home 浮窗
+                        // 的 file tab（下方独立挂载）不传，桌面语义。
+                        compact={compact}
                       />
                     )
                   case 'session':
@@ -1315,6 +1318,7 @@ export function Shell() {
                   onOpenTerminal={(rel) => openMobileTerminal(fileDrawer, rel)}
                   revealSupported={caps.reveal('')}
                   onClose={() => nav.setDir(null)}
+                  compact={compact}
                 />
               </div>
             </div>
