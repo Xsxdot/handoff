@@ -10,9 +10,12 @@ package dev.gosuper.handoff.mobile.ui
 import android.view.ViewGroup
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 
 fun AppCompatActivity.applySystemBarsInsets() {
+    // 浅色主题下系统条图标用深色（B421 复验发现：默认白图标在白底上不可见）。
+    WindowCompat.getInsetsController(window, window.decorView).isAppearanceLightStatusBars = true
     val content = findViewById<ViewGroup>(android.R.id.content)
     ViewCompat.setOnApplyWindowInsetsListener(content) { v, insets ->
         val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
