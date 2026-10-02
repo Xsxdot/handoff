@@ -106,3 +106,92 @@ python3 遍历 diffs/*.json：撞基线按 id ∈ baseline.nodes；锚漂移按 
 ### 6.10 后续工作记录
 
 implement 起的提交、命令与原始输出、吸收报文、S3 取证原文一律追加在「## 7. 工作记录」段（本节之后新起，不回写 §1–6 勘误定稿）。
+
+## 7. 工作记录
+
+> implement 执行者会话（2026-10-02）。逐事实当步追加。
+
+### 7.1 第一段环境与分支（charter 仓）
+
+- 环境核实：handoff 仓 `cards/B379-charter-1`@89fafbfc 工作树干净（仅他人未跟踪 `.zcodeignore`，不动）；charter 仓检出 `codex/charter-story-batches` 工作树干净；`~/go/bin/codegraph` 为 2026-08-24 旧构建（vcs.revision=b5c59799，无守卫）。
+- 建分支：`cd ~/workspace/charter && git fetch origin && git switch -c b379-absorb-guard origin/master` → `Switched to a new branch 'b379-absorb-guard'`，基点 origin/master@01720d4d。
+
+### 7.2 S1 TDD 红（新用例先红）
+
+`validate_test.go` 新增 `TestValidateDiffRejectsAddedNodeConflict`（撞基线 id `n_do` 断言报文含 id 与「只接受新节点」）与 `TestValidateDiffAllowsGenuinelyNewNode`（全新 id 反向断言）。跑 `cd ~/workspace/charter/graph && go test ./codegraph/ -run 'TestValidateDiffRejectsAddedNodeConflict|TestValidateDiffAllowsGenuinelyNewNode' -v`：
+
+```
+=== RUN   TestValidateDiffRejectsAddedNodeConflict
+    validate_test.go:230: nodesAdded 撞基线同 id 应报 n_do 与「只接受新节点」语义: []
+--- FAIL: TestValidateDiffRejectsAddedNodeConflict (0.00s)
+=== RUN   TestValidateDiffAllowsGenuinelyNewNode
+--- PASS: TestValidateDiffAllowsGenuinelyNewNode (0.00s)
+FAIL
+```
+
+红因为「功能缺失」（issues 为空），非 typo。
+
+### 7.3 S1 TDD 绿
+
+`ValidateDiff` 的 nodesAdded 循环内加判据（报文 `新增节点 %s 已存在于基线，nodesAdded 只接受新节点`）。`go test ./...`：
+
+```
+ok  	github.com/Xsxdot/charter/graph/cli	1.396s
+?  	github.com/Xsxdot/charter/graph/cmd/codegraph	[no test files]
+ok  	github.com/Xsxdot/charter/graph/codegraph	0.881s
+ok  	github.com/Xsxdot/charter/graph/webui	1.258s
+```
+
+### 7.4 S1 分层边界用例与变异验牙
+
+`absorb_test.go` 新增 `TestAbsorbDoesNotRejectDuplicateNodes`：断言 Absorb 对撞 id 的 nodesAdded 照常按 diff 覆盖（无 error 返回、无拒绝动作）——钉住「守卫单点在 ValidateDiff、Absorb 保持纯函数」的 spec 决策。变异验牙：临时把 `absorb.go` 的 NodesAdded 併入循环改为「撞 id 跳过」（模拟守卫被搬进 Absorb），该用例红：
+
+```
+--- FAIL: TestAbsorbDoesNotRejectDuplicateNodes (0.00s)
+    absorb_test.go:78: Absorb 不做查重，撞 id 应按 diff 覆盖（守卫单点在 ValidateDiff）: {Kind:func … File:svc/server.go Line:4 …}
+```
+
+随后还原变异，`git diff --stat` 确认改动面恰为三个准动文件（validate.go +6、validate_test.go +28、absorb_test.go +16），全量复跑绿。
+
+### 7.5 S1 提交与二进制重建
+
+- charter 仓提交：`82c6c216` `feat(B379): ValidateDiff 拒绝 nodesAdded 撞基线同 id——吸收防线节点版（契约 §7-R1 容器版对齐）`（分支 `b379-absorb-guard`，3 files changed, 50 insertions）。
+- 重建安装（提交后执行，使 vcs.revision 直接钉住守卫提交——比计划原序「先装后提交」的验证更强，判定为满足计划「确认构建时间晚于本次提交」的等价更强形式）：`cd ~/workspace/charter/graph && go install ./cmd/codegraph`，`go version -m ~/go/bin/codegraph`：
+
+```
+path	github.com/Xsxdot/charter/graph/cmd/codegraph
+mod	github.com/Xsxdot/charter/graph	(devel)
+build	vcs=git
+build	vcs.revision=82c6c21602b29150d24c4274debabe497eff2ea3
+build	vcs.time=2026-10-02T13:17:53Z
+build	vcs.modified=false
+```
+
+### 7.6 S1 合成仓端到端（/tmp/b379-s1-e2e）
+
+场景按台账 §2 重建：基线含 `n_old`（k_svc，v1.go:10），diff `repro-stale` 的 nodesAdded 带同名 id（v0.go:99）；合成仓为独立 git 仓（main@e83024cf，实验后 HEAD）。
+
+**validate（新二进制）**：退出 1，issues 含：
+
+```
+[repro-stale] 新增节点 n_old 已存在于基线，nodesAdded 只接受新节点
+Error: 发现 1 个完整性问题、0 个失鲜节点
+```
+
+**拒绝例**：`shasum -a 256 codegraph/baseline.json` → `06c5b72916af9d78e9e0684c428afd4b49cb97c6ace5caa6343b5a00a95baad7`；`~/go/bin/codegraph absorb repro-stale` → 退出 1：
+
+```
+Error: 视图 repro-stale 引用不完整，拒绝併入: [新增节点 n_old 已存在于基线，nodesAdded 只接受新节点]
+```
+
+复核：sha256 前后相同（`BASELINE_UNCHANGED=yes`）、`codegraph/diffs/` 下 `repro-stale.json` 仍在。
+
+**照常例**：另造 `repro-clean`（全新 id `n_new`，k_svc，v2.go:5）→ `~/go/bin/codegraph absorb repro-clean` → 退出 0：
+
+```
+已併入视图 repro-clean：+1 节点 ~0 -0，基线 2 节点 @e83024cf4076e71672fcd9d507ab22c264daa4ff
+```
+
+复核：`repro-clean.json` 被工具删除（diffs/ 只剩 repro-stale.json）、基线 `n_new` = `{"file":"v2.go","line":5,…}`。
+
+S1 判据全过：撞基线视图显式拒绝且基线字节不变、diff 保留；干净视图照常併入并删 diff。
