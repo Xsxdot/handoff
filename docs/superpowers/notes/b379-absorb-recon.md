@@ -52,3 +52,57 @@
 ## 5. 复核命令
 
 分类可复跑：对照脚本要点 = 遍历 diffs/*.json 的 nodesAdded/nodesModified，按 `(file,line)` 与基线比对计锚漂移、按 `os.path.exists(file)` 计死文件、按 ValidateDiff 判据四查容器/节点引用。边复现核查：edgesAdded/implementsAdded 元组与基线 edges/implements 集合求差。
+
+## 6. plan 节点复核与勘误（2026-10-02，plan 执行者会话）
+
+复核环境：handoff 仓 cards/B379-charter-1@10be7c17（= 0e5db81b + 本卡 spec/台账提交；`git diff 0e5db81b..HEAD -- codegraph/baseline.json` 为空，基线与 §1–5 侦察时逐字一致）。以下事实全部本会话亲手重验。
+
+### 6.1 B272 计数勘误（无碍处置）
+
+§3 表该行「7（0）」按列头（nodesAdded 撞基线）会误读成 7 条撞基线。实测：B272 nodesAdded 共 7 条，撞基线 **0** 条——与 §3 四组结论「7 节点为 dropdir 特性合法新增」一致。7 个 id：`e_http_post_api_drop`、`n_agentd_Server_handleDropPut`、`n_agentd_Server_forwardDropIfRequested`、`n_dropdir_Dir`、`n_dropdir_Put`、`m_proto_DropPutResp`、`n_web_api_client_uploadDropFile`。结论：改挂组只需改容器领域，无需修剪任何节点，与新守卫不冲突。
+
+### 6.2 B358 计数勘误（承重，处置不变）
+
+§3 表「125（16）」与 spec「全部 nodesAdded 已存在于基线、其中 108 条锚已漂移」对 B358 不成立。实测（按 id 对基线 nodes）：B358 nodesAdded 125 条，撞基线 **42** 条（其中锚漂移 7），其余 83 条不在基线。七份合计 nodesAdded 撞基线 321、nodesAdded 锚漂移 86（§3 各行括号数似混入 nodesModified 漂移，B233.6 脚注即明说如此）。
+
+时间线取证（git log）：B358.4 implement 09-13 11:10（4162505f，sessionsapi.go 建档）→ B233.26 全量重扫 09-14 10:45（92995010）→ **B358.9「会话身份本质重做」合入 09-18 16:00（1f46cc1e，T3 CLI 收敛等）→ cards-B358.9-charter-4 吸收 09-18 16:04（4e1e40c3）**。即 cards-B358-charter 是重做前旧快照：其未撞余量一属重做前旧面（如 `n_cmd_sessionWaitCmd_RunE`，基线经 B358.9 吸收录得的是重做后新面 `n_cmd_sessionsCmd_RunE` 等），二属 main 在册但基线未录的内容（见 6.3）。
+
+**删除处置维持，依据改写为三条**：① 七份视图每份都有撞基线 nodesAdded，新守卫落地后原样吸收一概被拒；② 重扫（09-14）是合并后代码的权威读数，旧视图吸收=回退（§3 原判据，成立）；③ B358 余量吸收会把重做前节点注入重做后基线，恰是本卡要防的腐化本体。spec 引述的「全部撞基线即证」作废，以本节为准。
+
+### 6.3 基线覆盖债线索（不阻塞本卡，另卡候选）
+
+main 工作树在册但基线 0 节点的文件（B358 余量所在）：internal/agentd/sessionsapi.go（`validSessionOwner` 真身在 :35，grep 实证）、web/src/app/rooms/sessionModel.ts 等。修复途径是将来对 main 的新鲜扫描，与 spec Out of Scope「约 33 条未复现边」同族（扫描配方保真度/覆盖），不属本卡。
+
+### 6.4 其余计数复核（与 §3 一致）
+
+- 七份「边未复现」合计 33：B233.1 缺边 2；B233.2 缺边 2 + 缺 implements 2；B233.3 缺 implements 1；B233.4 缺边 15；B233.5 缺边 11；B233.6、B358 均 0（B358 无任何 edgesAdded/implementsAdded 条目）。
+- B374：containersAdded 仅 k_collab_model，与基线容器同 label「collab 实体」/kind「实体」/domain d_collab；nodesAdded 9 条撞 0；nodesModified 中 1 条锚漂移（n_agentd_Server_handleRoomsList）。
+- 直收组：B369 nodesAdded 29 撞 0；B395-charter-5 nodesAdded 5 撞 0；B398-charter-12 nodesAdded 0。三份均无 ValidateDiff 硬拒项。
+- B272 容器：containersAdded 仅 k_dropdir_fn，domain=d_coordination_api；基线 domains 无 d_coordination_api、有 d_gateway（§4 判据数据复验成立）。
+
+### 6.5 charter 仓主线勘误
+
+charter 仓**无本地 main**；origin/HEAD → **origin/master**（远端 git@github.com:Xsxdot/charter.git）。当前检出分支 codex/charter-story-batches（工作树干净），origin/master..HEAD 的 graph/ 差异仅 cli_test.go 一个文件——validate.go / absorb.go / cli.go 与 master 逐字一致，守卫落点事实对 master 成立。工作分支应 `git fetch origin && git switch -c b379-absorb-guard origin/master`。
+
+### 6.6 构建命令勘误
+
+charter 仓根**无 go.mod**，graph/ 是独立 Go 模块（module github.com/Xsxdot/charter/graph，go 1.26.1，本会话 `go build ./...` 通过；仓内仅此一个 Go 模块）。spec 所写 `go install ./graph/cmd/codegraph` 在仓根不可运行；正确命令：`cd ~/workspace/charter/graph && go install ./cmd/codegraph`（产物 ~/go/bin/codegraph）。意图不变：重建并安装使守卫生效。
+
+### 6.7 工具面事实（plan 引用）
+
+- graphAbsorbCmd 闸序 = LoadGraph → LoadDiff → ValidateDiff → CheckEdges（**仅 edgesAdded**，implements 边不经源码校验）→ Absorb → SaveGraph → 删 diff；ValidateDiff/CheckEdges 拒绝发生在删 diff 之前，被拒视图的 diff 文件保留。
+- CheckEdges（edgegate.go）：`CheckEdges(repoRoot string, nodes map[string]Node, edges []Edge) []EdgeIssue`。
+- Diff.summary 是纯字符串展示字段（types.go），修剪/改挂编辑不触及；Diff.base 记录视图基底提交。
+- absorb 运行目录 = 仓根（graphRepo="."），view 参数 = diffs/ 文件名去 .json；吸收后 meta.commit/branch 取当前 HEAD（工具默认行为，不干预）。
+
+### 6.8 S3 取证对象修正
+
+spec S3「约 33 条未复现边」全部来自 B233.1–.5 五份（B233.6/B358 零边）。抽样在删除前做；若时序错过，可从本分支 git 历史读被删 diff。
+
+### 6.9 复核命令要点
+
+python3 遍历 diffs/*.json：撞基线按 id ∈ baseline.nodes；锚漂移按 (file,line) 二元组不等；边未复现按 edgesAdded/implementsAdded 元组 ∉ baseline.edges/implements 集合。charter 对照：`git -C ~/workspace/charter diff origin/master..HEAD --stat -- graph/`；构建：`cd ~/workspace/charter/graph && go build ./...`。
+
+### 6.10 后续工作记录
+
+implement 起的提交、命令与原始输出、吸收报文、S3 取证原文一律追加在「## 7. 工作记录」段（本节之后新起，不回写 §1–6 勘误定稿）。
