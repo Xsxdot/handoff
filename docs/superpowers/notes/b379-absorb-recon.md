@@ -307,3 +307,11 @@ diff 文件被工具删除，CheckEdges 无误拒（§4.6 协议未触发）。
 - 行号小勘误（§7.7 S3-1）：三处 `Acknowledge` 实测 adapter.go:866/877/878（原记 :868/:879/:883）；:831/:840/:301 精确。结论不受影响。
 - spec 已回写 v3（S2 完整性读法、S3 实测读法、本节为证）；plan §4.7.2 已加裁决注记。
 - roadmap「重扫配方保真度/覆盖债」条目补读数：S2 stale 1165 存量亦归该条目的新鲜扫描修复。
+
+### 7.14 acceptance 记录（2026-10-02，协调者新鲜复跑）
+
+- 复跑：charter `go test ./... -count=1` 三包 ok；二进制 `go version -m` vcs.revision=82c6c216 modified=false；真仓 `views` 空（exit 0）/`validate`（exit 0，完整性零 issue）/`check`（exit 0，fails 空）。
+- 承重变异：validate.go 守卫判据 `if _, ok := g.Nodes[id]; ok` → `if false`（编译可过、行为摘除、打中唯一）→ 缝级测试 `TestValidateDiffRejectsAddedNodeConflict` 红（报文「撞基线同 id 应报…: []」）；`git checkout` 还原 → 回绿。
+- 真机行为：/tmp 重建预状态真数据（10be7c17 的 codegraph/，12 份顶层 diff）→ 新二进制 `absorb cards-B233.1-charter-2` 退出 1，逐节点点名 26 个撞基线 nodesAdded（守卫判据原文），diff 文件保留、baseline sha256 5b046665… 未落盘变更、n_executor_Authorize 未被覆盖——原事故形态被防线精确拦截。
+- 契约对照：`check` 无 fail（棘轮面未动）。findings 核销：review Important（spec v3 回写）已闭（79a47cf7），Minor 两条已记账（§7.13）。
+- 结论：S1/S2/S3 全部通过（S2 按裁决读法、S3 按实测读法），验收通过。
