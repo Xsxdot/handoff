@@ -315,3 +315,15 @@ diff 文件被工具删除，CheckEdges 无误拒（§4.6 协议未触发）。
 - 真机行为：/tmp 重建预状态真数据（10be7c17 的 codegraph/，12 份顶层 diff）→ 新二进制 `absorb cards-B233.1-charter-2` 退出 1，逐节点点名 26 个撞基线 nodesAdded（守卫判据原文），diff 文件保留、baseline sha256 5b046665… 未落盘变更、n_executor_Authorize 未被覆盖——原事故形态被防线精确拦截。
 - 契约对照：`check` 无 fail（棘轮面未动）。findings 核销：review Important（spec v3 回写）已闭（79a47cf7），Minor 两条已记账（§7.13）。
 - 结论：S1/S2/S3 全部通过（S2 按裁决读法、S3 按实测读法），验收通过。
+
+### 7.15 finish 记录（2026-10-02，协调者）
+
+- 集成方式：用户 2026-10-02 显式授权全权处理，取本地合并（本仓既有惯例）；两仓合并均完成并推送。
+- charter 仓：master 快进至 82c6c216（守卫），打 tag `graph/v0.10.2` 推送（注：`graph/v0.10.1` 早在 2026-09-03 被打在 01720d4d，本次顺延）。工作树还原 codex/charter-story-batches。
+- handoff 仓：分支 bump `charter/graph v0.10.0→v0.10.2`（59904738）。**事实勘误**：`handoff graph` 别名已删除（cmd/root_test.go `TestRootRejectsDeletedGraphCommand`），codegraph 独立二进制是唯一 absorb 入口——charter 仓 graph/cmd/codegraph/main.go 头注释「handoff 的 graph 别名挂同一构造」为过期陈述（遗留 nit，随下次 charter 卡顺带修）。bump 为模块对齐卫生。
+- 分支树新鲜全量：Go 65 包 ok + web vitest 140 文件/1705 用例全绿。
+- 合并 main：c8e14093（--no-ff，19 文件 +1960/−14508）；合并后 Go 全量 65 包 ok（web 树与分支树逐字节相同——合并零 web 改动，1705 用例的绿即结果树的绿）。推送 origin/main。
+- 基准回灌：本卡交付物即基线对账本身（五次 absorb 已在分支完成并随合并入主线），本分支未产出自身视图 diff（handoff 侧零 Go 源变更，charter 仓无 codegraph）——图对账列按「产出过视图 diff 才走」跳过。baseline meta 停在最后 absorb 戳（cards/B379-charter-1@55a914bc），按 plan §4.8 不手工改。
+- 文档对齐：spec v3/plan 注记/台账/roadmap 随分支入主线；B413 roadmap absorb 积压行销账。
+- 残余：roadmap 三行（指纹/CLI 扫描/保真度+覆盖债）+ B425 卡（漏网 diff 与 ListViews 盲区）。
+- /tmp 实验现场（b379-repro、b379-s1-e2e、b379-review、acc-real、handoff-b379）验毕即弃。
