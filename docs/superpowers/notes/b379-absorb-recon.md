@@ -213,3 +213,17 @@ S1 判据全过：撞基线视图显式拒绝且基线字节不变、diff 保留
 基线对照：基线 implements 记 agy/claudecode/codex/fake/grok/opencode 六个 Adapter → Provider，独缺 StaticProvider——重扫漏采。
 
 **抽样结论（如实）**：3/3 抽样边在现行 main 源码中**真实存在**。33 条未复现边不得表述为「均不存在」；「重扫是权威读数」在边维度存在保真度缺口（func→接口边、跨包方法调用、非热路径 implements 三族漏采各中一条）。按计划 §4.1.3 判为「重扫保真度缺口」数据点（与 spec Out of Scope「33 条全量追查」同族）：**本卡处置不变**——删除依据（§6.2 三条：撞基线守卫必拒、吸收=回退、B358 旧快照腐化）不依赖「边不存在」；删除丢失的是这批边的图记录（覆盖债），归将来对 main 的新鲜扫描。S3 故事结论**不写**「退役不丢现实存在的关系」的全称肯定，取证原文升级协调者裁决结论措辞。
+
+### 7.8 步骤 2+3：删取代组、修剪并吸收 B374
+
+- 取代组 7 份 `git rm` 与 §7.7 同批提交（amend 收进一个提交，hash 以收尾清单为准）。
+- B374 修剪前置复验：diff `containersAdded` 仅 `k_collab_model`，与基线容器逐键同内容（`{"label":"collab 实体","kind":"实体","domain":"d_collab"}`），d_collab 在基线 domains——§6.4 前提成立。外科编辑：单行 JSON 内精确替换（断言命中唯一）删去该条目，`containersAdded` 留空对象；其余键字节不动（nodesAdded 9、nodesModified 1、edgesAdded 12、edgesDeleted 1、base 41a28474 原样）。
+- 吸收：`~/go/bin/codegraph absorb cards-B374-charter` → 退出 0：
+
+```
+已併入视图 cards-B374-charter：+9 节点 ~1 -0，基线 5329 节点 @678d27f4f6663942bf743b56cf25581069112f8c
+```
+
+diff 文件被工具删除，CheckEdges 12 条边全过（无误拒，§4.6 协议未触发）。
+
+- **计划外发现（按 §4.8 不动、记台账、升级）**：`codegraph/diffs/cards/B233.28-charter.json`——git 跟踪（bad735a1，2026-09-15，`graph(B233.28): 对账补齐任务面/项目位置切门面视图`），view 名 `cards/B233.28-charter`，base b5ebef69，内容 15 节点增/77 节点改/1 节点删/20 边增/39 边删。它在 `diffs/cards/` **子目录**里，`ListViews` 只扫顶层 `diffs/*.json`，故 `codegraph views` 不列出、validate/check 也不校验它——十二份侦察（顶层 glob）与 S2 验收命令均不受影响，但它是一份未吸收也未入账的漏网视图。本卡不处置，升级协调者。
