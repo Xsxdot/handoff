@@ -227,3 +227,37 @@ S1 判据全过：撞基线视图显式拒绝且基线字节不变、diff 保留
 diff 文件被工具删除，CheckEdges 12 条边全过（无误拒，§4.6 协议未触发）。
 
 - **计划外发现（按 §4.8 不动、记台账、升级）**：`codegraph/diffs/cards/B233.28-charter.json`——git 跟踪（bad735a1，2026-09-15，`graph(B233.28): 对账补齐任务面/项目位置切门面视图`），view 名 `cards/B233.28-charter`，base b5ebef69，内容 15 节点增/77 节点改/1 节点删/20 边增/39 边删。它在 `diffs/cards/` **子目录**里，`ListViews` 只扫顶层 `diffs/*.json`，故 `codegraph views` 不列出、validate/check 也不校验它——十二份侦察（顶层 glob）与 S2 验收命令均不受影响，但它是一份未吸收也未入账的漏网视图。本卡不处置，升级协调者。
+
+### 7.9 步骤 4：改挂并吸收 B272
+
+改挂前置复验：`containersAdded` 仅 `k_dropdir_fn`（domain d_coordination_api），nodesAdded 7 个 id 与 §6.1 清单逐字一致。外科编辑：`"domain": "d_coordination_api"` → `"domain": "d_gateway"`（文件为两空格缩进多行 JSON，替换串全文件命中恰 1 次，`git diff --stat` 恰 1 行变更）。判据 = spec 实现决定：agentd 包既存容器全归 d_gateway、dropdir 随包归属。
+
+- 吸收：`~/go/bin/codegraph absorb cards-B272-charter` → 退出 0：
+
+```
+已併入视图 cards-B272-charter：+7 节点 ~0 -0，基线 5336 节点 @55a914bc4a78067d722e1371f8a422b3b7507616
+```
+
+diff 文件被工具删除，CheckEdges 无误拒（§4.6 协议未触发）。
+
+### 7.10 步骤 5：直收组三份原样吸收（不编辑）
+
+- `~/go/bin/codegraph absorb cards-B369-charter` → 退出 0：
+
+```
+已併入视图 cards-B369-charter：+29 节点 ~0 -0，基线 5365 节点 @55a914bc4a78067d722e1371f8a422b3b7507616
+```
+
+- `~/go/bin/codegraph absorb cards-B395-charter-5` → 退出 0：
+
+```
+已併入视图 cards-B395-charter-5：+5 节点 ~47 -0，基线 5370 节点 @55a914bc4a78067d722e1371f8a422b3b7507616
+```
+
+- `~/go/bin/codegraph absorb cards-B398-charter-12` → 退出 0：
+
+```
+已併入视图 cards-B398-charter-12：+0 节点 ~110 -0，基线 5370 节点 @55a914bc4a78067d722e1371f8a422b3b7507616
+```
+
+三份的 nodesModified 锚更新（47/110 条）属正常保鲜，不是腐化。~47/~110 与台账 §3 的 nodesModified×47/×110 读数一致。吸收后 `codegraph/diffs/` 顶层仅剩计划外 `cards/` 子目录（§7.8）。步骤 4+5 的 baseline 变更同文件难以拆分，合入一个提交（计划 §4.7.6「建议每步一提交」为建议项，报文已逐份留痕）。
