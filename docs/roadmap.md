@@ -931,12 +931,14 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 
 - **Shell.test.tsx「工作项钮」用例 mock 泄漏依赖**：该用例体内不调 `mockCardLedger()`，其数据依赖同文件前序用例残留的 `fetchCards` mock（文件级默认空卡集；全局 beforeEach 不重置 fetchCards；vite 配置无 restoreMocks）——过滤单跑（`vitest -t 工作项`）无论断言怎么写必红，全量跑才绿。修法：用例内显式 `mockCardLedger()`。B413 只修了它的竞态半边（waitFor），泄漏半边在此立账。来源：B413 implement 裁决执行回报（commit 91a69a02 期间发现）。
 
-## 来自 B413 finish（2026-09-28，代码图基线保鲜积压）
-
-- **代码图基线 absorb 积压清理**：`codegraph/diffs/` 存着 12 个未 absorb 的分支视图 diff（cards-B233.1~6、B272、B358、B369、B374、B395、B398——均为各卡流程副产物，finish 时未吸收），`validate --stale` 报 1215 条行锚漂移（含 B413 改动带来的 usePoll.ts 6 条）。修法：逐个 `codegraph absorb <视图>`（按 finish skill 的冲突处置：取主线基线 + 在新基线上重跑 absorb），或一次全量重扫重建基线后清空 diffs/。B413 本身零视图 diff（分支流程未跑扫描），无可吸收产物。来源：B413 finish 基准回灌判定；积压早于本卡。
-
 ## 来自 B417 真机验收（2026-09-28，本期不做、后续要做）
 
 - **壳配对流程主线程同步执行**：PairingActivity 在主线程同步调 core.Pair（内含逐机拨号+3s 探测超时），真机实测主线程冻结 ~4.4s（Choreographer Skipped 249–265 frames），期间整机无响应、页面白帧。修法：Pair/切机链路移后台协程 + 进度态。来源：B417 真机竖切走查 logcat 实证（23:02:32 / 23:37:18 两次）。
 - **Android 壳深色模式主题支持**：B419 止血方案为钉死 Light；真正的 dark 主题（values-night 变体 + 动态背景色）留后续期。来源：B419 根因注记。
 - **移动端 bundle 服务的凭据卫生**：验收期间为免扫码配对在局域网明文 HTTP 提供 bundle（60s 票据窗口 + 验收后即停），如后续复用该形态需改为一次性 token 取票或走既有 QR 通道。来源：B417 真机验收执行备注。
+
+## 来自 B379 spec（2026-10-02，本期不做、后续要做）
+
+- **diff 烙基线指纹**：视图 diff 生成时记录基线 scannedAt/commit，absorb 时对不上即拒——把「diff 挂在已漂移基线上」从吸收期显式拒绝提前到生成期。触发条件：守卫拒绝率显示对账成本失控时提前。来源：B379 spec 弃选。
+- **codegraph CLI 内建扫描命令**：分支视图产出收进工具（现在由执行侧扫描纪律手工产出），与基线指纹配套。来源：B379 spec 弃选。
+- **重扫扫描配方的边提取保真度**：取代组 33 条分支时态边未被 09-14 重扫复现（B233.1–.5），且 internal/agentd/sessionsapi.go 等 B358 特性文件在基线 0 节点（台账 §6.3 覆盖债）——同族缺口，修复途径是对 main 的新鲜全量扫描并核对配方；B379 收口时 validate --stale 存量 1165 条亦归此修复（预 1215，本卡对账净减 50）。来源：B379 spec OOS / plan 节点台账 §6.3 / §7.13。
