@@ -261,3 +261,36 @@ diff 文件被工具删除，CheckEdges 无误拒（§4.6 协议未触发）。
 ```
 
 三份的 nodesModified 锚更新（47/110 条）属正常保鲜，不是腐化。~47/~110 与台账 §3 的 nodesModified×47/×110 读数一致。吸收后 `codegraph/diffs/` 顶层仅剩计划外 `cards/` 子目录（§7.8）。步骤 4+5 的 baseline 变更同文件难以拆分，合入一个提交（计划 §4.7.6「建议每步一提交」为建议项，报文已逐份留痕）。
+
+### 7.11 步骤 6：S2 终验（handoff 仓根，新二进制）
+
+**① `~/go/bin/codegraph views`** → 退出 0：
+
+```json
+{
+ "views": []
+}
+```
+
+**② `~/go/bin/codegraph validate`（完整性半边）** → 退出 0，`issues: None`（零完整性问题）。
+
+**`~/go/bin/codegraph validate --stale`** → **退出 1**：完整性 issues 仍为 0，但 stale（保鲜检测）1165 条——S2 计划判据「--stale 零 issue 退出 0」在卡内 scope 内不可达，事实与判定如下，**升级协调者裁决 S2 验收读法**：
+
+- 预状态对照（临时 worktree @10be7c17，改动前基线 + 同一二进制复跑）：stale **1215** 条，退出 1——**该判据在本卡动手前就不成立**（基线 scannedAt 2026-09-14，源码漂移 18 天；与 spec 写判据时未实测预状态同族，属 plan 节点漏检项，与 §6 计数勘误同类）。
+- 吸收净效应：1215 → 1165（**−50**）：73 条被直收组/修剪改挂组的 nodesModified 保鲜更新治好；**23 条新增**——构成：B374 nodesAdded 9/9 全部、B369 nodesAdded 10、B272 nodesAdded 2（handleDropPut/forwardDropIfRequested）、B398-charter-12 nodesModified 保鲜更新中的 2（n_agentd_Server_runStep、n_agentd_requiresInlineLocalFile）。原因一致：diff 携带的是**分支时态锚**，diff 生成（09-17~09-23）到吸收（10-02）之间 main 源码移动，锚行不再对上（报文「行内容与名字对不上（疑似代码已移动）」）。Absorb 忠实于 diff 内容，非腐化——这正是本卡主题（分支时态快照 vs 活基线）在接收侧的显影；全量修复途径是对 main 的新鲜扫描（spec Out of Scope，与 §6.3 覆盖债同族）。
+- 两侧源码树相同（10be7c17 与 HEAD 的源码文件零差异，分支只动 docs/数据），stale 集合差异全部来自基线吸收，逐条归因见上。
+
+**③ `~/go/bin/codegraph check`** → 退出 0，`fails: []`，仅 warns（container-unplaced k_dropdir_fn 等 legacy 提示，非失败）。
+
+**④ 基线内容只读抽验（python3）**：
+
+- `k_dropdir_fn` ∈ containers 且 `domain == "d_gateway"`：✓（`{"label":"dropdir（包级函数）","kind":"函数组","domain":"d_gateway"}`）；
+- B374 九节点（§4.3 清单）全部在 nodes：✓；B272 七节点（§6.1 清单）全部在 nodes：✓；
+- 节点数算术闭合：5320 → 5370（+9 B374、+7 B272、+29 B369、+5 B395、+0 B398）；边 6639 → 6683；
+- meta.branch = `cards/B379-charter-1`（absorb 按当时 HEAD 戳，§4.8 工具既有行为）；meta.commit = 55a914bc4a78…（最后一次 absorb 时点的 HEAD；S2 收尾提交晚于它，hash 不同是 absorb 戳语义的必然，非漏记）。
+
+**⑤ 改动面复核（`git diff --stat 10be7c17..HEAD`）**：恰为 baseline.json（唯一图内容变更，全部出自 5 次 absorb）、12 份 diff 文件删除（7 git rm + 5 工具删，numstat 全为 0 插入）、台账/plan/spec/roadmap 文档。`git diff 10be7c17..HEAD -- codegraph/target.json codegraph/best.json` 为空（未触碰）；`.zcodeignore` 保持未跟踪未动；工作树收口时干净。
+
+**附带证据（S1 延伸）**：预状态 worktree 用新二进制跑 `validate`，十二份积压视图中取代组七份全部被新守卫点名（`[cards-B233.x-charter*] 新增节点 … 已存在于基线，nodesAdded 只接受新节点`，共 323 条 view issues）——守卫对真实积压的拒收行为在真数据上复验成立。
+
+**终验裁决请求（升级协调者）**：S2 的「validate --stale 零 issue 退出 0」建议改读为「validate 完整性 issues 为零、退出 0；stale 为保鲜计数、如实记录（预 1215 → 后 1165）」，或由协调者另卡安排新鲜扫描后回归该判据。执行者未对 stale 做任何数据干预（手改基线属全局禁止事项 3）。
