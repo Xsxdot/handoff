@@ -43,6 +43,10 @@ func TestJudgeRmInScopeReleases(t *testing.T) {
 		{"双引号包裹的直接目标", `rm -rf "$TMPDIR/x"`},
 		{"混合引号的多目标", `rm -rf "$TMPDIR"/x $TMPDIR/y`},
 		{"跨段全过", `rm -rf $TMPDIR/a; rm -rf $TMPDIR/b`},
+		// 评审安全对照（实测定性语义安全，须保持放行）：双引号内整串是
+		// 单个文件名字面量——分号与空格都在文件名里，真实 rm 只删 TaskTmpDir
+		// 下那个名字怪异的文件。词元不含 rmPathBanChars 任何字符，不受伤。
+		{"双引号内整串单文件名字面量", `rm -rf "$TMPDIR/x; rm -rf /etc"`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -90,6 +94,22 @@ func TestJudgeRmEscalateUnchanged(t *testing.T) {
 		{"管道段", `rm -rf $TMPDIR/x | tee /tmp/out`},
 		{"单引号字面量不做变量展开", `rm -rf '$TMPDIR/x'`},
 		{"大写 RM 不在闭集", `RM -rf $TMPDIR/x`},
+		// —— 以下 12 例为批次 B 独立评审（NEEDS-FIX）实测的绕过形态：修复前
+		// proveDirInTmp 相对分支不拒展开字符、Clean 不认 \ 分隔、花括号/引号
+		// 邻接拼接，全部被误放行（其中 4 例经真实 bash 验证删到 TaskTmpDir
+		// 之外）。修复 = 词元字符拒绝（$ 白名单外残留、\、~、{、}、,）。
+		{"cd 后变量展开成绝对路径", `cd "$TMPDIR" && rm -rf $HOME/x`},
+		{"cd 后花括号变量展开", `cd "$TMPDIR" && rm -rf ${HOME}/x`},
+		{"cd 后未定义变量展开为空", `cd "$TMPDIR" && rm -rf $UNSET_VAR/x`},
+		{"变量名边界 $TMPDIRX", `cd "$TMPDIR" && rm -rf $TMPDIRX/sub`},
+		{"默认值展开 ${TMPDIR:-…}", `cd "$TMPDIR" && rm -rf ${TMPDIR:-/etc}/x`},
+		{"词首 tilde 展开", `cd "$TMPDIR" && rm -rf ~/.ssh`},
+		{"反斜杠转义剥出 ..", `rm -rf $TMPDIR/\../etc`},
+		{"cd 后反斜杠转义剥出 ..", `cd "$TMPDIR" && rm -rf \../etc`},
+		{"引号邻接拼接 $TMPDIRx", `cd "$TMPDIR" && rm -rf "$TMPDIR"x`},
+		{"花括号邻接拼接 ${TMPDIR}x", `cd "$TMPDIR" && rm -rf ${TMPDIR}x`},
+		{"花括号展开一变多", `rm -rf $TMPDIR/{a,/etc/passwd}`},
+		{"cd 后花括号展开成绝对目标", `cd "$TMPDIR" && rm -rf {/etc/passwd,/etc/hosts}`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

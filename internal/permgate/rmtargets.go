@@ -17,9 +17,11 @@
 //     的相对删除不放宽
 //   - cd 本批只读解析（确认 cd 目标可证明进入 TaskTmpDir 或其子目录）；通用
 //     「cd 后相对写基准」是批次 C 的活，不在这里实现写路径的基准重写
-//   - 反斜杠转义不做解释：转义空白会把词元切碎，多出来的碎片按相对目标
-//     fail-closed；转义分隔符会让本文件比真实 shell 切得更碎——两个方向的
-//     误差都只会「判不了 → 不放宽」，不会把危险形态判成安全
+//   - 反斜杠与展开字符不做解释、直接拒绝：本文件不解释反斜杠转义（\.
+//     转义剥掉后会重组成 ..，Clean 不认 \ 分隔，静态路径与真实解析路径
+//     会分叉——批次 B 评审用 $TMPDIR/\../etc 实测证伪过「误差只落安全侧」
+//     的早先假设），凡词元残留 \ 与展开字符（见 rmPathBanChars）一律
+//     整条不放宽，不存在「切得更碎也能对齐真实语义」的假设
 package permgate
 
 import (
@@ -51,6 +53,12 @@ var rmLongFlags = map[string]bool{
 	"--dir":              true,
 	"--verbose":          true,
 }
+
+// rmPathBanChars 是删除目标词元的展开/转义/花括号字符拒绝集（评审 NEEDS-FIX
+// 根因修复）：$ 变量展开、\ 转义（Clean 不认反斜杠分隔，$TMPDIR/\../etc 的
+// \. 剥掉后露出 ..）、~ tilde 展开、{ } , 花括号展开一变多。$TMPDIR/${TMPDIR}
+// 白名单前缀由 proveDirInTmp 先行剥除，仅对残留部分做本拒绝。
+const rmPathBanChars = "$\\~{},"
 
 // rmInScopeVerdict 是 B383 S2a 的「范围内删除」放行判定（judgeBash 专用）。
 //
@@ -177,8 +185,34 @@ func tmpRoot(scope Scope) string {
 //     可能藏进 `..`
 //   - 残留单引号：shell 对单引号内容不做变量展开（'$TMPDIR' 是字面文件名），
 //     与双引号/裸词元的展开语义不同源，混排后无法静态对应真实参数
+//   - 展开/转义/花括号字符（$ 白名单外残留、\、~、{、}、,）：见下方字符拒绝
 func proveDirInTmp(tok, cdBase, tmpDir, root string) (string, bool) {
 	if tmpDir == "" || strings.ContainsAny(tok, "*?[") || strings.ContainsRune(tok, '\'') {
+		return "", false
+	}
+	// 展开字符拒绝（批次 B 评审 NEEDS-FIX 的根因修复）：剥掉 $TMPDIR/${TMPDIR}
+	// 白名单前缀后，词元残留部分不得再含 $ \ ~ { } , 任何一个。四形态解析
+	// **之前**先做这道否决——否则：
+	//   - 相对分支把「不像白名单形式」的展开词元当字面量拼进 cdBase 判内，
+	//     而 shell 运行时把它们展开成绝对路径或空串（$HOME/x、$TMPDIRX/sub、
+	//     ${TMPDIR:-/etc}/x、~/.ssh），真实删除面完全不可证明；
+	//   - Clean 不认反斜杠分隔，$TMPDIR/\../etc 的 \. 转义剥掉后露出 ..，
+	//     静态看到的路径与真实解析路径分叉（\.. 被当成组件名而非父目录）；
+	//   - 花括号展开一变多（$TMPDIR/{a,/etc/passwd}、{/etc/passwd,/etc/hosts}），
+	//     单词元证明不了多目标；${TMPDIR}x / "$TMPDIR"x 的引号-花括号邻接
+	//     拼接展开成基准的**兄弟路径**，词元已不是白名单形式，残留 $ { } 即拒。
+	var rest string
+	switch {
+	case tok == "$TMPDIR" || tok == "${TMPDIR}":
+		rest = ""
+	case strings.HasPrefix(tok, "$TMPDIR/"):
+		rest = tok[len("$TMPDIR/"):]
+	case strings.HasPrefix(tok, "${TMPDIR}/"):
+		rest = tok[len("${TMPDIR}/"):]
+	default:
+		rest = tok
+	}
+	if strings.ContainsAny(rest, rmPathBanChars) {
 		return "", false
 	}
 	var joined string

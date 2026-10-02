@@ -76,6 +76,59 @@ func TestSafeCommandPermissionAuditsOnceWithoutTicket(t *testing.T) {
 	}
 }
 
+// TestRmInScopePermissionAuditsWithRule locks the B383 S2a release's audit
+// seam: an rm command whose targets all provably sit in TaskTmpDir gets
+// AutoAllow with Rule=rm-in-scope and mints the same structured
+// permission_auto_allow event as the static whitelist — it is a release of a
+// formerly escalating blacklist hit, so the durable audit must be able to
+// answer "who allowed this and under which rule".
+func TestRmInScopePermissionAuditsWithRule(t *testing.T) {
+	m, st, _, adapter := newTestManager(t)
+	taskID := "rm-scope-task"
+	now := time.Now().UTC()
+	mustCreateTask(t, st, &proto.Task{ID: taskID, RepoPath: t.TempDir(), Executor: "fake",
+		State: proto.TaskStateRunning, CreatedAt: now, UpdatedAt: now})
+	command := `cd "$TMPDIR" && rm -rf verify`
+	ev := executor.AdapterEvent{
+		Type: "permission", PermissionID: "rm-1", Text: "Bash: " + command,
+		Perm: &executor.PermRequest{Tool: executor.PermToolBash, Command: command},
+	}
+	m.handlePermission(context.Background(), taskID, ev)
+	if got := adapter.recordedPerms(); len(got) != 1 || got[0] != "rm-1:once" {
+		t.Fatalf("responded permissions = %v, want [rm-1:once]", got)
+	}
+	events := mustEvents(t, st, taskID)
+	var audit proto.Event
+	count := 0
+	for _, event := range events {
+		if event.Type == proto.EventTypePermissionAutoAllow {
+			audit = event
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("permission_auto_allow count = %d, want 1", count)
+	}
+	var payload permissionAutoAllowPayload
+	if err := json.Unmarshal(audit.Payload, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.PermissionID != "rm-1" || payload.Tool != executor.PermToolBash ||
+		payload.Command != command || payload.Rule != permgate.RuleRmInScope || payload.Reason == "" {
+		t.Fatalf("audit payload = %#v", payload)
+	}
+	if _, err := st.GetTicket(taskID + ":rm-1"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("ticket lookup error = %v, want store.ErrNotFound", err)
+	}
+	task, err := st.GetTask(taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.State != proto.TaskStateRunning {
+		t.Fatalf("task state = %s, want running", task.State)
+	}
+}
+
 // TestAnsweredTicketReplayStillResponds 锁死 B314：审批链已答之后，
 // 同一 PermissionID 的第二次 PreToolUse 仍须按工单回写（agy HOME+workspace 双 hook）。
 // 命令故意用白名单拒掉的连接符形态，避免漏回写时误走 AutoAllow 假绿。
