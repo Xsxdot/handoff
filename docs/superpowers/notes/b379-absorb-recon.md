@@ -195,3 +195,21 @@ Error: 视图 repro-stale 引用不完整，拒绝併入: [新增节点 n_old �
 复核：`repro-clean.json` 被工具删除（diffs/ 只剩 repro-stale.json）、基线 `n_new` = `{"file":"v2.go","line":5,…}`。
 
 S1 判据全过：撞基线视图显式拒绝且基线字节不变、diff 保留；干净视图照常併入并删 diff。
+
+### 7.7 S3 抽样取证（第二段步骤 1，删除前）
+
+33 条未复现边先全量复算（python3：五份 B233.x 的 edgesAdded/implementsAdded 元组对基线 edges/implements 集合求差）= 2+4+1+15+11 = 33，与 §6.4 分布逐份一致。抽样 3 条、跨三份视图，逐条对当前 main 源码取证（取证树 = `cards/B379-charter-1` 工作树，即 main@0e5db81b + 本卡 docs 提交，源码与 main 一致）：
+
+**S3-1**（来源 cards-B233.1-charter-2，同边亦在 B233.4/B233.5 未复现清单中）：边元组 `n_opencode_Adapter_authorizeNativePermission -> m_executor_ApprovalClient`。
+取证：`internal/executor/opencode/adapter.go:831` `func (a *Adapter) authorizeNativePermission`，函数体内 `:840` `executor.Authorize(ctx, r.approval, executor.ApprovalRequest{…})`，`r.approval` 字段类型即 `executor.ApprovalClient`（`:301` `approval executor.ApprovalClient`）；另 `:868/:879/:883` 三处 `r.approval.Acknowledge(…)`。**结论：关系真实存在。**
+基线对照：基线记有该函数到 ApprovalAck/ApprovalRef/ApprovalRequest/Authorize 等 9 条边，独缺到接口类型 ApprovalClient 这条——重扫边提取对 func→接口类型边漏采。
+
+**S3-2**（来源 cards-B233.5-charter）：边元组 `n_agentd_Server_resolveReceiver -> n_scheduling_Service_DefaultCarrier`。
+取证：`internal/agentd/receiver_bind.go:17` `func (s *Server) resolveReceiver(…)`，`:24` `defaultName, defErr := s.scheduling.DefaultCarrier()`；被调方 `internal/scheduling/scheduling.go:421` `func (s *Service) DefaultCarrier()`。**结论：调用关系真实存在。**
+基线对照：基线记 resolveReceiver → m_scheduling_ResolvedReceiver / n_scheduling_ResolveLookup，独缺这条跨包方法调用——重扫漏采。
+
+**S3-3**（来源 cards-B233.2-charter）：implements 元组 `m_executor_StaticProvider -> m_executor_Provider`。
+取证：`internal/executor/capability.go:99` `type StaticProvider struct`，`:105` `func (p StaticProvider) Name() string`、`:108` `func (p StaticProvider) Report() CapabilityReport`，与 `Provider` 接口（`:71-74`：`Name() string` + `Report() CapabilityReport`）方法集完全吻合。**结论：实现关系真实存在。**
+基线对照：基线 implements 记 agy/claudecode/codex/fake/grok/opencode 六个 Adapter → Provider，独缺 StaticProvider——重扫漏采。
+
+**抽样结论（如实）**：3/3 抽样边在现行 main 源码中**真实存在**。33 条未复现边不得表述为「均不存在」；「重扫是权威读数」在边维度存在保真度缺口（func→接口边、跨包方法调用、非热路径 implements 三族漏采各中一条）。按计划 §4.1.3 判为「重扫保真度缺口」数据点（与 spec Out of Scope「33 条全量追查」同族）：**本卡处置不变**——删除依据（§6.2 三条：撞基线守卫必拒、吸收=回退、B358 旧快照腐化）不依赖「边不存在」；删除丢失的是这批边的图记录（覆盖债），归将来对 main 的新鲜扫描。S3 故事结论**不写**「退役不丢现实存在的关系」的全称肯定，取证原文升级协调者裁决结论措辞。
