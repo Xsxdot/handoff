@@ -258,6 +258,19 @@ func (g *Gate) judgeBash(req Request, scope Scope) Verdict {
 		}
 		g.log.Debug("命令落点在任务范围内", "path", p, "base", base)
 	}
+	// B383 S2a：rm「范围内删除」放行出口，挂在落点范围循环之后、命令类判定
+	// 之前。选点理由：
+	//   - scope 只在 judgeBash 手里——judgeCommand 是无 scope 的共享判据
+	//    （非 bash 路由也在用），把 scope 传下去要动它的签名；
+	//   - 落点循环先行，保证重定向落点与 executor 检出的越界目录仍按现状
+	//     最先升级，不被 rm 放行面截胡；
+	//   - rmInScopeVerdict 的闭集（所有段必须是 cd/rm 且全部目标可证明）
+	//     保证它永远不会推翻 judgeCommand 的自指令/包装器/eval 升级——那些
+	//     形态必含非 cd/rm 段，闭集先就不成立。
+	if v, ok := rmInScopeVerdict(req.Command, scope); ok {
+		g.log.Info("范围内删除放行", "command", req.Command, "rule", RuleRmInScope)
+		return v
+	}
 	// Existing self-command, blacklist, and wrapper rules remain authoritative;
 	// the positive whitelist only handles their ordinary Consult result.
 	verdict := g.judgeCommand(req.Command)

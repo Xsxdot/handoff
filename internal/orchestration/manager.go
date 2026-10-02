@@ -2210,7 +2210,10 @@ type permissionAutoAllowPayload struct {
 func (m *Manager) auditAutoAllowOnly(taskID string, ev executor.AdapterEvent, verdict permgate.Verdict) {
 	m.log.Info("权限请求自动放行", "task", taskID, "perm", ev.PermissionID,
 		"action", verdict.Action.String(), "rule", verdict.Rule, "reason", verdict.Reason)
-	if verdict.Rule == permgate.RuleSafeCommand {
+	if verdict.Rule == permgate.RuleSafeCommand || verdict.Rule == permgate.RuleRmInScope {
+		// rm-in-scope（B383 S2a）与白名单同享结构化审计：它是「黑名单命中被
+		// scope 解除」的放行——改动前这条命令会升级人工，落库事件必须能
+		// 回放「谁放行的、凭哪条规则」。
 		if ev.Perm == nil {
 			m.log.Error("白名单自动放行缺结构化权限载荷", "task", taskID,
 				"perm", ev.PermissionID, "rule", verdict.Rule)
