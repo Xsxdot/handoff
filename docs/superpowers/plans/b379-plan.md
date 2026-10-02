@@ -142,6 +142,7 @@ CheckEdges 按当前源码逐条校验 diff 的 `edgesAdded`；若 absorb 报「
 
 1. `~/go/bin/codegraph views` → `views` 数组为空（不含十二份名单中任何一个）；
 2. `~/go/bin/codegraph validate --stale` → 零 issue，退出 0；
+   【裁决注记 v3】本判据误设（预状态 stale 已 1215 条）：按协调者裁决（台账 §7.12）改按完整性半边收口——`validate`（不带 --stale）零 issue 退出 0；stale 存量如实记录（预 1215 → 后 1165，净 -50），修复归 roadmap 新鲜全量扫描。
 3. `~/go/bin/codegraph check` → 退出 0；
 4. 基线内容抽验（python3/jq **只读**）：`k_dropdir_fn` 在 containers 且 `domain == "d_gateway"`；B374 九个节点 id（§4.3 清单）在 nodes；B272 七个节点 id（台账 §6.1 清单）在 nodes；
 5. `git status`/`git diff --stat` 复核本段改动面**恰为**：diffs/ 下 12 个文件消失（7 git rm + 5 工具删）、baseline.json 变更（全部出自 absorb）、台账与计划文档更新——绝无 baseline 手改痕迹、绝无 target/best 变更；
