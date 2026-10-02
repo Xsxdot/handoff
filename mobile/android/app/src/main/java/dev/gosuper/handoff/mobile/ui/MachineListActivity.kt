@@ -23,6 +23,8 @@ class MachineListActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_machine_list)
+        // B421：targetSdk 36 强制 edge-to-edge，内容避开系统条。
+        applySystemBarsInsets()
 
         val machines = MachineList.load((application as HandoffApp).graph.core)
         val listView = findViewById<ListView>(R.id.machineListView)

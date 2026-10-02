@@ -31,6 +31,8 @@ class PairingActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_pairing)
+        // B421：targetSdk 36 强制 edge-to-edge，内容避开系统条。
+        applySystemBarsInsets()
 
         val bundleInput = findViewById<EditText>(R.id.bundleInput)
 

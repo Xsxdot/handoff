@@ -31,6 +31,8 @@ class WebviewActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_webview)
+        // B421：targetSdk 36 强制 edge-to-edge，内容避开系统条。
+        applySystemBarsInsets()
 
         val machine = intent.getStringExtra(EXTRA_MACHINE).orEmpty()
         val online = intent.getBooleanExtra(EXTRA_ONLINE, false)

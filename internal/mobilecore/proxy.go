@@ -41,6 +41,12 @@ func newReverseProxy(machineName string, cl *client.Client, log *slog.Logger) ht
 			r.URL.Host = target.Host
 			// 回环源与目标源不同，Host 必须改写为对端白名单内的 loopback 名。
 			r.Host = target.Host
+			// Origin 同步改写（B423）：agentd 的 WS 升级校验 Origin/Host 一致性，
+			// webview 带手机回环源 Origin（http://127.0.0.1:<壳端口>）会被对端拒握手，
+			// 终端/预览 WS 全挂。这是拓扑校正——不涉凭据注入。
+			if r.Header.Get("Origin") != "" {
+				r.Header.Set("Origin", target.Scheme+"://"+target.Host)
+			}
 			// 不注入任何凭据：cookie / Authorization 原样透传。
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
