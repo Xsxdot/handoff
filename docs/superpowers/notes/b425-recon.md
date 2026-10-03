@@ -65,3 +65,11 @@ PY
 - 提交：`0f93d4f1`（b425-listviews-guard，2 files）。
 - **构建偏差记录**：先在 linked worktree（/tmp/b425-charter）构建——Go 在 `.git` 为文件的 worktree 里 VCS stamping 静默不生效（强制 `-buildvcs=true` 亦无戳无报错，实测）；改沿 B379 §7.5 先例把 charter 主检出切到 `b425-listviews-guard` 构建。中途一次误装：worktree 占用分支致 switch 失败而链式 install 照跑，装出 `codex/charter-story-batches@ffd60ed1` 的错分支二进制（无守卫无修复）；删 worktree 后重装纠正。最终 `go version -m`：`vcs.revision=0f93d4f1cb573c54c930243777da485caadee173`，`vcs.modified=false`。worktree 已删，主检出停在 b425-listviews-guard（S3 同分支续做，finish 切回 codex/charter-story-batches）。
 - 真机红（B425 工作树，2026-10-03）：`views` 与 `validate` 均退出 1，报文同上点名 `cards`——S1 真机证据成立，S2 起点状态确认。
+
+### 6.2 S2：cards/B233.28-charter 直收对账（handoff 仓，2026-10-03）
+
+- absorb：`~/go/bin/codegraph absorb cards/B233.28-charter` → 退出 0：`已併入视图 cards/B233.28-charter：+15 节点 ~77 -1，基线 5384 节点 @a5dad5690603d993a1ecbea70679d20851c7a539`。diff 文件被工具删除，`rmdir codegraph/diffs/cards` 成功。工作树变更恰两处：baseline.json 改、cards/B233.28-charter.json 删。
+- 四命令读数（B425 工作树）：`views` → `{"views": []}` 退出 0；`validate` → `issues: null`（完整性零 issue）、nodes 5384、edges 6664，退出 0；`validate --stale` → 退出 1「发现 0 个完整性问题、1174 个失鲜节点」（1165 → 1174，+9 为 B233.28 分支时态锚覆盖保鲜所致，B379 裁决 1 读法：Absorb 忠实于 diff，归 roadmap 重扫，不做数据干预）；`check` → 退出 0，`fails: []`，warns 28（legacy 提示，非失败）。
+- **算术闭合（命中验算）**：节点 5370+15−1=5384 ✓；边 6683−39+20=6664 ✓（plan 节点勘误值被工具实测精确命中——原 6660 错式若未勘误将在此停机）。
+- **逐点名验证**：`git show main:codegraph/baseline.json` 与吸收后基线的节点 id 集合差恰为新增 15 个 `n_orchestration_Manager_*` 门面方法（AnswerTicket/CountEvents/EventsFrom/EventsFromAsc/GetProjectLocationByName/GetTask/LatestEvent/ListMirrorTasks/ListProjectLocations/ListTasks/MirrorEventsFrom/MirrorTaskTarget/PendingTickets/ResumeIfIdle/UpdateProjectLocation）+ 移除 `n_agentd_Server_resumeIfIdle`——逐字清单强于「至少 3 个」判据。（勘误注记：spec S2 抽验样例曾猜 `n_orchestration_Manager_GetProjectLocation`，真名是 `GetProjectLocationByName`，猜测错误非数据缺失，已改逐点名验证。）
+- 基线戳：meta.branch=`cards/B425-charter-1`、meta.commit=a5dad569（absorb 时点 HEAD，工具既有行为，不手工改）。
