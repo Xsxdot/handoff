@@ -56,3 +56,12 @@ PY
 - **B1 验算（协调者亲手复核，python3）**：`edgesDeleted` 39 条与被删节点 `n_agentd_Server_resumeIfIdle` 牵连边重叠 **4/4**（牵连边共 4 条全部在待删集内）；`edgesAdded` 20 条零触碰被删节点、待增∩待删=0。故 `mergeEdges` 实际结果 = 6683 − 39 + 20 = **6664**。spec v2 与 plan 同步勘误。
 - **纪律块面事实**：`handoff discipline list` 现存旧族七块（charter-recon v1 等），无 story 族块入账；`~/.handoff/discipline/charter-recon.md`（1174 字节）落后 skills/recon 正文（1206 字节）——存量滞后，S3 put 新版顺带治愈。story 族只随 regen 落盘，安装另走 charter_provision，本卡不碰。
 - 其余抽验 8 项全属实（行号/计数/路径/分支状态/装机二进制版本）。
+
+### 6.1 S1：ListViews 拒子目录（charter 仓，2026-10-03）
+
+- TDD 红：新用例先红——`TestListViewsRejectsSubdir`（「diffs 下有子目录应当报错——视图必须平铺顶层，静默跳过就是盲区」）与 `TestListViewsRejectsEmptySubdir`（「空子目录也应当报错」）双 FAIL。
+- 绿：`load.go` ListViews 加子目录检查（报文：「视图目录 codegraph/diffs 下发现子目录 %s：视图 diff 必须平铺在顶层（视图名取分支名时把 / 拍平为 -）」）。全量 `go test ./... -count=1`：cli / codegraph / webui 三包 ok，gofmt -l 零输出。
+- 变异验牙：`sed 's/if e.IsDir() {/if false {/'` 摘除检查 → 两新用例 FAIL；还原 → ok。测试真实钉住行为。
+- 提交：`0f93d4f1`（b425-listviews-guard，2 files）。
+- **构建偏差记录**：先在 linked worktree（/tmp/b425-charter）构建——Go 在 `.git` 为文件的 worktree 里 VCS stamping 静默不生效（强制 `-buildvcs=true` 亦无戳无报错，实测）；改沿 B379 §7.5 先例把 charter 主检出切到 `b425-listviews-guard` 构建。中途一次误装：worktree 占用分支致 switch 失败而链式 install 照跑，装出 `codex/charter-story-batches@ffd60ed1` 的错分支二进制（无守卫无修复）；删 worktree 后重装纠正。最终 `go version -m`：`vcs.revision=0f93d4f1cb573c54c930243777da485caadee173`，`vcs.modified=false`。worktree 已删，主检出停在 b425-listviews-guard（S3 同分支续做，finish 切回 codex/charter-story-batches）。
+- 真机红（B425 工作树，2026-10-03）：`views` 与 `validate` 均退出 1，报文同上点名 `cards`——S1 真机证据成立，S2 起点状态确认。
