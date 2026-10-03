@@ -79,3 +79,8 @@ PY
 - 条文勘误（b425-listviews-guard @9ae3fb51）：`skills/recon/SKILL.md` 红线条与 `skills/contract/SKILL.md` 骨架符号入图条各补一句——视图名/文件名取分支名必须扁平化（`/`→`-`）+ 理由（ListViews 只认顶层平铺，带斜杠落子目录即报错，B425）。注：本分支（origin/master 基）条文行号与 story-batches 检出线不同（contract 为 :24 非 :25），以分支实际为准。
 - **计划外发现（不动、记台账）**：`scripts/regen_discipline.py` 的 `prefix` 参数未接入写盘路径（代码写死 `f"{out}/charter-{name}.md"`，docstring 却称写 charter-story-*）——即 regen 实际更新旧族文件、story 族盘上文件（Sep 28 旧产）静默滞留。属 charter 仓工具缺陷，roadmap 候选，本卡不修。
 - **账本同步（含一次误 put 的更正）**：先误把陈旧 story 族文件 put 为 charter-recon v2 / charter-contract v4（内容无新条文）；查明后以 regen 新产的正确文件重 put——`charter-recon` → **v3**、`charter-contract` → **v5**，`discipline get` 验证正文含扁平化条文。版本化不可变，v2/v4 留史不删。`discipline get charter-recon`（旧 v1）put 前读数：0 处扁平化（旧版滞后确认，本次顺带治愈）。
+
+### 6.4 review 裁决与勘误（2026-10-03，独立审计两轴 pass）
+
+- 裁决：story 轴 pass（S1 全量测试/变异验牙/守卫 diff 亲手复验；S2 四命令/算术/逐点名/meta 戳亲手复跑；S3 条文 diff 与账本 v3/v5 正文亲手核对）；边界轴 pass（charter 恰 4 文件、handoff 恰 5 文件、Absorb/cli 未动、算术逐提交闭合、偏差三条合理已记并已纠正/自愈、spec v2 未越故事边界）。无 Critical/Important。
+- **Minor 勘误（本节即回写）**：§6.3 对 regen 缺陷的机制描述不准确——「prefix 参数未接入写盘路径」在任一已提交版本均不成立：story-batches 线脚本 prefix 已接入写盘路径（该线 `path = f"{out}/{prefix}-{name}.md"`），master/b425 线脚本则无 prefix 参数且 docstring 自洽（charter-*）。真实问题 = **两检出线脚本版本分叉 + compose_map 无 story 族条目**，故 b425 分支上 regen 只刷新旧族文件、story 族盘上文件（Sep 28 旧产）滞留。观察结论与处置（不修、roadmap 候选）不变，落 roadmap 条目时按本描述更正。
