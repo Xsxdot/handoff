@@ -67,10 +67,8 @@ func manualGateSegment(seg string, toks []string) (Verdict, bool) {
 	case head == "python" || strings.HasPrefix(head, "python3") || strings.HasPrefix(head, "python2"):
 		// 内联 Python：-c 与标准输入脚本（裸命令、显式 -、heredoc 喂入、
 		// 管道喂入后的裸段）都可执行任意代码
-		for _, f := range toks[1:] {
-			if strings.HasPrefix(f, "-c") {
-				return escalate("人工清单：内联 Python（-c）可执行任意代码，保持人工裁决")
-			}
+		if hasPythonInlineFlag(toks[1:]) {
+			return escalate("人工清单：内联 Python（-c）可执行任意代码，保持人工裁决")
 		}
 		if len(toks) == 1 || hasToken(toks[1:], "-") || strings.Contains(seg, "<<") {
 			return escalate("人工清单：内联 Python（标准输入脚本）可执行任意代码，保持人工裁决")
@@ -83,4 +81,26 @@ func manualGateSegment(seg string, toks []string) (Verdict, bool) {
 		}
 	}
 	return Verdict{}, false
+}
+
+// hasPythonInlineFlag 判定 python 参数里是否含 -c 内联旗标，覆盖全部短旗标
+// 词元形态（B383 批次 C 评审 NEEDS-FIX）：
+//   - 独立与粘连：-c、-c'code'（rmTokens 剥双引号后成 -ccode）；
+//   - 短旗标聚簇：-Sc、-ESc——评审真机实证 `python3 -Sc 'code'` 会把下一
+//     词元当代码执行，而 HasPrefix("-c") 认不出簇形态，落 Consult 交模型直批
+//     （v6 红线）。修法照 hasSedInPlace 先例按字母扫描：python 短选项表中
+//     「c」唯一（只属 -c），簇内出现 c 即内联；c 带值，簇内其后字符属它的
+//     实参，对检测无影响。长旗标（-- 开头）与显式 stdin 标记（-）不扫——
+//     python 没有 --command 类长旗标，误伤面为零；-Xpycache_prefix=x 这类
+//     粘连值里恰好含 c 的形态会被 over-reject（升级而非放行，安全侧）。
+func hasPythonInlineFlag(args []string) bool {
+	for _, f := range args {
+		if f == "-" || !strings.HasPrefix(f, "-") || strings.HasPrefix(f, "--") {
+			continue
+		}
+		if strings.ContainsRune(f[1:], 'c') {
+			return true
+		}
+	}
+	return false
 }

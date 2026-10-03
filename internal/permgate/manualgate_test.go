@@ -26,6 +26,8 @@ func TestJudgeManualChecklistEscalates(t *testing.T) {
 		{"python -c", `python -c 'print(1)'`},
 		{"python3 -c", `python3 -c 'print(1)'`},
 		{"python3.11 -c", `python3.11 -c 'print(1)'`},
+		{"python3 短旗标聚簇 -Sc", `python3 -Sc 'import os; os.system("id")'`},
+		{"python 短旗标聚簇 -ESc", `python -ESc 'import os; os.system("id")'`},
 		{"python 裸命令读标准输入", `python`},
 		{"python 显式标准输入", `python -`},
 		{"python heredoc 标准输入脚本", "python <<'EOF'\nprint(1)\nEOF"},

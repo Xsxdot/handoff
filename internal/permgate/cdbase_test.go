@@ -9,8 +9,9 @@ import "testing"
 
 // TestJudgeCDRelativeWriteEscalatesWhenUnprovable 红例：cd 目标越出三基准或
 // 含不可证明形态时，其后相对写落点无法解释，整条必须 Escalate——修前这些命令
-// 的相对落点被按 Workdir 拼接判成范围内（redirect.go:15-17 的已知误放行残余，
-// `cd /etc && go test ./... > passwd` 修前甚至是 safe-command AutoAllow）。
+// 的相对落点被按 Workdir 拼接判成范围内（redirect.go:15-17 的已知误放行残余；
+// 基线出口是 Consult 而非硬升级，台账 #60——落点被误判成范围内，越界从未
+// 触发落点循环的确定性升级，交由廉价模型裁决）。
 func TestJudgeCDRelativeWriteEscalatesWhenUnprovable(t *testing.T) {
 	g := newTestGate(t)
 	sc := newRmScope(t)
