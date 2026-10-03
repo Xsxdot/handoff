@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/executor"
 	"github.com/Xsxdot/handoff/internal/permgate"
 	"github.com/Xsxdot/handoff/internal/proto"
@@ -344,5 +345,195 @@ func TestJudgePermissionNilGateEscalates(t *testing.T) {
 	v := m.judgePermission("t1", executor.AdapterEvent{PermissionID: "p1"})
 	if v.Action != permgate.Escalate {
 		t.Fatalf("gate 为 nil 时必须 Escalate，实得 %v", v.Action)
+	}
+}
+
+// TestManualChecklistEscalatesToGateTicketWithoutConsult 锁死 B383 S4 的三出口
+// 断言之「无复用」腿：人工清单形态（git checkout --）在无可复用同任务 allow 时
+// 必须建 gate 工单，不经 Consult 审批模型直批（审批者已启用也不得被咨询）。
+func TestManualChecklistEscalatesToGateTicketWithoutConsult(t *testing.T) {
+	ap, aerr := NewApprover(config.ApproverConfig{Executor: config.ExecutorList{"opencode"}, Timeout: time.Second}, nil, slog.Default())
+	if aerr != nil {
+		t.Fatal(aerr)
+	}
+	consulted := make(chan struct{}, 1)
+	ap.BindOneShot(&stubShot{fn: func(context.Context, executor.OneShotReq) (executor.OneShotReply, error) {
+		consulted <- struct{}{}
+		return executor.OneShotReply{Status: executor.OneShotOK}, nil
+	}})
+	ad := &chanAdapter{evCh: make(chan executor.AdapterEvent, 1)}
+	m, st, _ := newTestManagerWithApprover(t, map[string]executor.Adapter{"fake": ad}, "fake", ap)
+	taskID := "manual-gate-task"
+	now := time.Now().UTC()
+	work := t.TempDir()
+	mustCreateTask(t, st, &proto.Task{ID: taskID, RepoPath: work, Executor: "fake",
+		State: proto.TaskStateRunning, CreatedAt: now, UpdatedAt: now})
+	command := "git checkout -- main.go"
+	ev := executor.AdapterEvent{
+		Type: "permission", PermissionID: "manual-1", Text: "Bash: " + command,
+		Perm: &executor.PermRequest{Tool: executor.PermToolBash, Command: command},
+	}
+	m.handlePermission(context.Background(), taskID, ev)
+	// 审批模型不得被咨询：give the (wrong) consult goroutine a chance to fire.
+	select {
+	case <-consulted:
+		t.Fatal("人工清单形态不得经 Consult 审批模型直批")
+	case <-time.After(150 * time.Millisecond):
+	}
+	if got := ad.recordedPerms(); len(got) != 0 {
+		t.Fatalf("no-reuse 腿不得自动回传 executor，实得 %v", got)
+	}
+	if _, err := st.GetTicket(taskID + ":manual-1"); err != nil {
+		t.Fatalf("人工清单形态必须建 gate 工单: %v", err)
+	}
+	if got := countEvents(mustEvents(t, st, taskID), proto.EventTypePermissionAutoAllow); got != 0 {
+		t.Fatalf("人工门不得落 auto-allow 审计，实得 %d", got)
+	}
+	task, err := st.GetTask(taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.State != proto.TaskStateWaitingAnswer {
+		t.Fatalf("task state = %s, want waiting_answer", task.State)
+	}
+}
+
+// TestManualChecklistReusesSameTaskHumanAllow 三出口断言之「有复用」腿：同任务
+// 已有人工 allow 时沿既有 reuseDecision 复用放行——不经 Consult、不建第二张待办。
+func TestManualChecklistReusesSameTaskHumanAllow(t *testing.T) {
+	ap, aerr := NewApprover(config.ApproverConfig{Executor: config.ExecutorList{"opencode"}, Timeout: time.Second}, nil, slog.Default())
+	if aerr != nil {
+		t.Fatal(aerr)
+	}
+	consulted := make(chan struct{}, 1)
+	ap.BindOneShot(&stubShot{fn: func(context.Context, executor.OneShotReq) (executor.OneShotReply, error) {
+		consulted <- struct{}{}
+		return executor.OneShotReply{Status: executor.OneShotOK}, nil
+	}})
+	ad := &chanAdapter{evCh: make(chan executor.AdapterEvent, 1)}
+	m, st, _ := newTestManagerWithApprover(t, map[string]executor.Adapter{"fake": ad}, "fake", ap)
+	taskID := "manual-reuse-task"
+	now := time.Now().UTC()
+	work := t.TempDir()
+	mustCreateTask(t, st, &proto.Task{ID: taskID, RepoPath: work, Executor: "fake",
+		State: proto.TaskStateRunning, CreatedAt: now, UpdatedAt: now})
+	command := "git checkout -- main.go"
+	ev := executor.AdapterEvent{
+		Type: "permission", PermissionID: "manual-2", Text: "Bash: " + command,
+		Perm: &executor.PermRequest{Tool: executor.PermToolBash, Command: command},
+	}
+	// 同任务先落一张同指纹、已 allow、已送达的人工工单。
+	priorID := taskID + ":manual-prior"
+	if _, err := st.CreateTicket(&proto.Ticket{
+		ID: priorID, TaskID: taskID, Kind: "gate",
+		Request:     json.RawMessage(`{"kind":"gate","permission":"Bash: ` + command + `"}`),
+		Fingerprint: executor.PermFingerprint(ev), CreatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AnswerTicket(priorID, "allow"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.MarkTicketDelivered(priorID); err != nil {
+		t.Fatal(err)
+	}
+	m.handlePermission(context.Background(), taskID, ev)
+	select {
+	case <-consulted:
+		t.Fatal("复用放行不得经 Consult 审批模型")
+	case <-time.After(150 * time.Millisecond):
+	}
+	if got := ad.recordedPerms(); len(got) != 1 || got[0] != "manual-2:once" {
+		t.Fatalf("复用腿应回传 once，实得 %v", got)
+	}
+	if got := countEvents(mustEvents(t, st, taskID), proto.EventTypePermissionReuse); got != 1 {
+		t.Fatalf("permission_reuse 事件数 = %d, want 1", got)
+	}
+	if got := countEvents(mustEvents(t, st, taskID), proto.EventTypePermissionAutoAllow); got != 0 {
+		t.Fatalf("复用腿不得落 auto-allow 审计，实得 %d", got)
+	}
+	if got := countEvents(mustEvents(t, st, taskID), proto.EventTypePermissionRequest); got != 0 {
+		t.Fatalf("复用腿不得再发人工升级事件，实得 %d", got)
+	}
+}
+
+// TestGoModuleCachePathsEscalatesHard 三出口断言之「越界 Paths」腿：以越界
+// Paths 上报的 Go 模块缓存读由范围门硬升级，不经 Consult（断言既有语义不回退）。
+func TestGoModuleCachePathsEscalatesHard(t *testing.T) {
+	ap, aerr := NewApprover(config.ApproverConfig{Executor: config.ExecutorList{"opencode"}, Timeout: time.Second}, nil, slog.Default())
+	if aerr != nil {
+		t.Fatal(aerr)
+	}
+	consulted := make(chan struct{}, 1)
+	ap.BindOneShot(&stubShot{fn: func(context.Context, executor.OneShotReq) (executor.OneShotReply, error) {
+		consulted <- struct{}{}
+		return executor.OneShotReply{Status: executor.OneShotOK}, nil
+	}})
+	ad := &chanAdapter{evCh: make(chan executor.AdapterEvent, 1)}
+	m, st, _ := newTestManagerWithApprover(t, map[string]executor.Adapter{"fake": ad}, "fake", ap)
+	taskID := "gomod-paths-task"
+	now := time.Now().UTC()
+	mustCreateTask(t, st, &proto.Task{ID: taskID, RepoPath: t.TempDir(), Executor: "fake",
+		State: proto.TaskStateRunning, CreatedAt: now, UpdatedAt: now})
+	ev := executor.AdapterEvent{
+		Type: "permission", PermissionID: "gomod-1", Text: "Bash: go build ./...",
+		Perm: &executor.PermRequest{Tool: executor.PermToolBash, Command: "go build ./...",
+			Paths: []string{"/home/u/go/pkg/mod/cache/download"}},
+	}
+	verdict := m.judgePermission(taskID, ev)
+	if verdict.Action != permgate.Escalate {
+		t.Fatalf("越界 Paths 必须硬升级，实得 %s（%s）", verdict.Action, verdict.Reason)
+	}
+	m.handlePermission(context.Background(), taskID, ev)
+	select {
+	case <-consulted:
+		t.Fatal("越界 Paths 不得经 Consult 审批模型")
+	case <-time.After(150 * time.Millisecond):
+	}
+	if _, err := st.GetTicket(taskID + ":gomod-1"); err != nil {
+		t.Fatalf("越界 Paths 必须建 gate 工单: %v", err)
+	}
+}
+
+// TestHeredocInScopePermissionAuditsWithRule 锁死 B383 S2b 的审计缝：heredoc
+// 闭集放行与 rm-in-scope 同享结构化 permission_auto_allow 审计，可回答「谁放行的、
+// 凭哪条规则」。
+func TestHeredocInScopePermissionAuditsWithRule(t *testing.T) {
+	m, st, _, adapter := newTestManager(t)
+	taskID := "heredoc-scope-task"
+	now := time.Now().UTC()
+	mustCreateTask(t, st, &proto.Task{ID: taskID, RepoPath: t.TempDir(), Executor: "fake",
+		State: proto.TaskStateRunning, CreatedAt: now, UpdatedAt: now})
+	tmpDir := executor.TaskTmpDir(m.cfg.DataDir, taskID)
+	command := "cd " + tmpDir + "/cardq && cat > main.go <<'EOF'\npackage main\nEOF"
+	ev := executor.AdapterEvent{
+		Type: "permission", PermissionID: "hd-1", Text: "Bash: " + command,
+		Perm: &executor.PermRequest{Tool: executor.PermToolBash, Command: command},
+	}
+	m.handlePermission(context.Background(), taskID, ev)
+	if got := adapter.recordedPerms(); len(got) != 1 || got[0] != "hd-1:once" {
+		t.Fatalf("responded permissions = %v, want [hd-1:once]", got)
+	}
+	events := mustEvents(t, st, taskID)
+	var audit proto.Event
+	count := 0
+	for _, event := range events {
+		if event.Type == proto.EventTypePermissionAutoAllow {
+			audit = event
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("permission_auto_allow count = %d, want 1", count)
+	}
+	var payload permissionAutoAllowPayload
+	if err := json.Unmarshal(audit.Payload, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Rule != permgate.RuleHeredocInScope || payload.PermissionID != "hd-1" || payload.Reason == "" {
+		t.Fatalf("audit payload = %#v", payload)
+	}
+	if _, err := st.GetTicket(taskID + ":hd-1"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("ticket lookup error = %v, want store.ErrNotFound", err)
 	}
 }
