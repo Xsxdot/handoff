@@ -84,3 +84,11 @@ PY
 
 - 裁决：story 轴 pass（S1 全量测试/变异验牙/守卫 diff 亲手复验；S2 四命令/算术/逐点名/meta 戳亲手复跑；S3 条文 diff 与账本 v3/v5 正文亲手核对）；边界轴 pass（charter 恰 4 文件、handoff 恰 5 文件、Absorb/cli 未动、算术逐提交闭合、偏差三条合理已记并已纠正/自愈、spec v2 未越故事边界）。无 Critical/Important。
 - **Minor 勘误（本节即回写）**：§6.3 对 regen 缺陷的机制描述不准确——「prefix 参数未接入写盘路径」在任一已提交版本均不成立：story-batches 线脚本 prefix 已接入写盘路径（该线 `path = f"{out}/{prefix}-{name}.md"`），master/b425 线脚本则无 prefix 参数且 docstring 自洽（charter-*）。真实问题 = **两检出线脚本版本分叉 + compose_map 无 story 族条目**，故 b425 分支上 regen 只刷新旧族文件、story 族盘上文件（Sep 28 旧产）滞留。观察结论与处置（不修、roadmap 候选）不变，落 roadmap 条目时按本描述更正。
+
+## 7. acceptance 记录（2026-10-03，协调者新鲜复跑）
+
+- ①复跑：charter graph `go test ./... -count=1` 三包 ok、gofmt 零输出；handoff B425 工作树 `views`/`validate`/`check` 全部退出 0（views 空、validate 完整性零 issue nodes 5384/edges 6664、check fails 空 warns 28）。
+- ②承重变异：`sed 's/if e.IsDir() {/if false {/'` 摘除守卫 → `TestListViewsRejects*` 双 FAIL；`git checkout` 还原 → ok；工作树干净。
+- ③真机行为：/tmp 重建真数据（真 baseline/target/best + 真 B233.28 diff 置于 `diffs/cards/` 子目录）→ 新二进制 `views` 退出 1，报文「视图目录 codegraph/diffs 下发现子目录 cards：视图 diff 必须平铺在顶层（视图名取分支名时把 / 拍平为 -）」——**B233.28 原事故形态被防线精确拦截**。
+- ④契约对照：`check` fails=[]（棘轮面未动）。review Minor（§6.3 缺陷描述）已按 §6.4 勘误核销。
+- 结论：S1/S2/S3 全部通过，验收通过。图对账列按「产出过视图 diff 才走」跳过——本分支 handoff 侧零 Go 源变更、基线变更全部出自一次 absorb、未产出自身视图 diff（B379 §7.15 同判据）。
