@@ -47,3 +47,12 @@ d = json.load(open('codegraph/diffs/cards/B233.28-charter.json'))
 b = json.load(open('codegraph/baseline.json'))
 PY
 ```
+
+## 6. 工作记录
+
+### 6.0 plan 节点零上下文复核与勘误（2026-10-03，独立复核 subagent + 协调者验算）
+
+- 复核裁决：需修订，两条阻塞——**A1/E1**（S3 原写「regen 同步产物入同一提交」不可满足：`scripts/regen_discipline.py` 只写 `~/.handoff/discipline/charter-story-*.md` 活体目录，不入任何仓；账本权威副本需 `handoff discipline put`，计划未给授权）与 **B1**（S2 边算术 6660 重复扣减）。建议项 A2/A3/B2/B3/B4 一并采纳。
+- **B1 验算（协调者亲手复核，python3）**：`edgesDeleted` 39 条与被删节点 `n_agentd_Server_resumeIfIdle` 牵连边重叠 **4/4**（牵连边共 4 条全部在待删集内）；`edgesAdded` 20 条零触碰被删节点、待增∩待删=0。故 `mergeEdges` 实际结果 = 6683 − 39 + 20 = **6664**。spec v2 与 plan 同步勘误。
+- **纪律块面事实**：`handoff discipline list` 现存旧族七块（charter-recon v1 等），无 story 族块入账；`~/.handoff/discipline/charter-recon.md`（1174 字节）落后 skills/recon 正文（1206 字节）——存量滞后，S3 put 新版顺带治愈。story 族只随 regen 落盘，安装另走 charter_provision，本卡不碰。
+- 其余抽验 8 项全属实（行号/计数/路径/分支状态/装机二进制版本）。
