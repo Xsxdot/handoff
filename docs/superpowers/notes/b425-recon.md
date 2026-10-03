@@ -73,3 +73,9 @@ PY
 - **算术闭合（命中验算）**：节点 5370+15−1=5384 ✓；边 6683−39+20=6664 ✓（plan 节点勘误值被工具实测精确命中——原 6660 错式若未勘误将在此停机）。
 - **逐点名验证**：`git show main:codegraph/baseline.json` 与吸收后基线的节点 id 集合差恰为新增 15 个 `n_orchestration_Manager_*` 门面方法（AnswerTicket/CountEvents/EventsFrom/EventsFromAsc/GetProjectLocationByName/GetTask/LatestEvent/ListMirrorTasks/ListProjectLocations/ListTasks/MirrorEventsFrom/MirrorTaskTarget/PendingTickets/ResumeIfIdle/UpdateProjectLocation）+ 移除 `n_agentd_Server_resumeIfIdle`——逐字清单强于「至少 3 个」判据。（勘误注记：spec S2 抽验样例曾猜 `n_orchestration_Manager_GetProjectLocation`，真名是 `GetProjectLocationByName`，猜测错误非数据缺失，已改逐点名验证。）
 - 基线戳：meta.branch=`cards/B425-charter-1`、meta.commit=a5dad569（absorb 时点 HEAD，工具既有行为，不手工改）。
+
+### 6.3 S3：纪律条文扁平化勘误与账本同步（charter 仓 + handoff 账本，2026-10-03）
+
+- 条文勘误（b425-listviews-guard @9ae3fb51）：`skills/recon/SKILL.md` 红线条与 `skills/contract/SKILL.md` 骨架符号入图条各补一句——视图名/文件名取分支名必须扁平化（`/`→`-`）+ 理由（ListViews 只认顶层平铺，带斜杠落子目录即报错，B425）。注：本分支（origin/master 基）条文行号与 story-batches 检出线不同（contract 为 :24 非 :25），以分支实际为准。
+- **计划外发现（不动、记台账）**：`scripts/regen_discipline.py` 的 `prefix` 参数未接入写盘路径（代码写死 `f"{out}/charter-{name}.md"`，docstring 却称写 charter-story-*）——即 regen 实际更新旧族文件、story 族盘上文件（Sep 28 旧产）静默滞留。属 charter 仓工具缺陷，roadmap 候选，本卡不修。
+- **账本同步（含一次误 put 的更正）**：先误把陈旧 story 族文件 put 为 charter-recon v2 / charter-contract v4（内容无新条文）；查明后以 regen 新产的正确文件重 put——`charter-recon` → **v3**、`charter-contract` → **v5**，`discipline get` 验证正文含扁平化条文。版本化不可变，v2/v4 留史不删。`discipline get charter-recon`（旧 v1）put 前读数：0 处扁平化（旧版滞后确认，本次顺带治愈）。
