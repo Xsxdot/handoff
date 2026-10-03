@@ -1,0 +1,49 @@
+# B425 事实台账：子目录积压 diff 对账侦察（2026-10-03，协调者本会话）
+
+## 1. 基线身份
+
+- handoff 仓 main @642bfa0e（B379 finish 后）；本卡分支 `cards/B425-charter-1`，工作树 `~/.handoff/worktrees/manual/B425`。
+- 现行基线 `codegraph/baseline.json`：5370 节点 / 6683 边，sha256 前 8 位 `5c4d260c`（python3 实测，2026-10-03）。
+- 装机二进制 `~/go/bin/codegraph`：B379 §7.14 读数 vcs.revision=82c6c216 modified=false，本卡未重装前沿用。
+- charter 仓 master @82c6c216（含 B379 守卫，tag graph/v0.10.2）；工作检出线 `codex/charter-story-batches` **不含**守卫——本卡源码读数一律取 `git show master:…`，实现须从 master 拉分支。
+
+## 2. 盲区机制读数（charter 仓 master:graph/，2026-10-03）
+
+- `ListViews`（`graph/codegraph/load.go:47`）：`os.ReadDir` 只扫 `diffs/` 顶层，`!e.IsDir()` 过滤——子目录条目直接跳过，非递归。这是盲区的唯一点。
+- 消费方两处：`validate` 全视图校验循环（`graph/cli/cli.go:170`，ListViews → LoadDiff → ValidateDiff）；`views` 命令（`cli.go:458`）。
+- `check`（`cli.go:249`）读 target/best + `graphLoadView`，**不列 diffs 目录**——它对子目录 diff「不可见」是因为内容从未被吸收、不进基线，与 ListViews 无关。
+- `LoadDiff`（`load.go:33`）：`filepath.Join(diffs, view+".json")`——view 名带斜杠**可直接定位子目录文件**。`absorb <view>`（`cli.go:375` 命令层：LoadDiff → ValidateDiff → Absorb → SaveGraph → `os.Remove(diffPath)`）与 `--view` 叠加（`cli.go:84`）都不吃 ListViews，不受盲区影响——对账动作本身不被工具阻塞。
+- `mergeEdges`（`graph/codegraph/absorb.go`）：deleted 边进 drop 集合，基线里不存在的边静默不删，**不报错**——基线漂移不会让吸收失败。
+- 真仓复现（handoff 仓根，2026-10-03）：`diffs/cards/B233.28-charter.json` 在场，`codegraph views` → `{"views":[]}` 退出 0；`validate` 退出 0；`check` 退出 0。盲区在真数据上成立。
+
+## 3. 漏网 diff 对账读数（cards/B233.28-charter，2026-10-03）
+
+- 文件：`codegraph/diffs/cards/B233.28-charter.json`，提交 bad735a1（2026-09-15，「graph(B233.28): 对账补齐任务面/项目位置切门面视图」，author xsx），view 名 `cards/B233.28-charter`（带斜杠），base `b5ebef69`。
+- 内容：nodesAdded 15 / nodesModified 77 / nodesDeleted 1（`n_agentd_Server_resumeIfIdle`）/ edgesAdded 20 / edgesDeleted 39 / implementsAdded 0 / 无 containersAdded。
+- 对现行基线（python3 核对）：
+  - nodesAdded ∩ 基线：**0/15**——零撞车，B379 守卫（ValidateDiff 拒 nodesAdded 撞基线）不会拒收；
+  - nodesModified 77/77 全部 ∈ 基线；nodesDeleted ∈ 基线；
+  - edgesDeleted 39/39 仍存在于现行基线；edgesAdded 20/20 无一已存在、端点零悬空（基线∪增∪改闭合）；
+  - 牵连边：现行基线中触及 `n_agentd_Server_resumeIfIdle` 的边 4 条（absorb 删节点时一并剔除）；
+  - 预期算术：节点 5370 + 15 − 1 = **5384**；边 6683 − 39 + 20 − 4 = **6660**。
+- 结论：**直收候选**（B379 四类处置中最轻一类），无需外科编辑。
+- 价值：15 个编排门面方法节点（gateway facade.go 的 Manager 方法）从未入图，吸收补真实覆盖。
+
+## 4. 产生侧根因
+
+- 纪律条文：charter 仓 `skills/recon/SKILL.md` 第 16/27 行与 `skills/contract/SKILL.md` 第 25 行均写 `codegraph/diffs/<分支>.json`，**未规定分支名扁平化**。
+- 事故形态：B233.28 执行者照字面把分支名 `cards/B233.28-charter` 当文件名 → 带斜杠落成子目录；其余卡执行者自行拍平（既有视图全是 `cards-B*-charter` 扁平形态，如 B379 吸收的 `cards-B374-charter`）。
+- 判定：纪律条文缺口，非个案手误——条文不改，带斜杠分支名会重演。
+
+## 5. 复核命令要点
+
+```bash
+git -C ~/workspace/charter show master:graph/codegraph/load.go   # ListViews/LoadDiff 读数
+git -C ~/workspace/charter grep -n ListViews master -- graph/    # 消费方两点
+~/go/bin/codegraph views          # 真仓盲区复现：[] 但子目录有文件
+python3 - <<'PY'                  # 撞车/闭合/算术核对（§3 读数来源）
+import json
+d = json.load(open('codegraph/diffs/cards/B233.28-charter.json'))
+b = json.load(open('codegraph/baseline.json'))
+PY
+```
