@@ -488,6 +488,84 @@ func TestLateOpenedSegmentClosesOnDeniedTurn(t *testing.T) {
 	}
 }
 
+// TestRespondAskFollowUpTurnCarriesLatePermissionWait（B383 S1 续聊形状，真机
+// 任务 5b3d38ec 2026-10-03 09:00:07 现场）：提问回合已结束（无 pending 原生提问）
+// 时 RespondAsk 走回退分支续聊，新回合里 permission.asked（带 tool.callID）先于
+// 任何 tool part 到达。修前回退分支只开 frames 回合、不开段回合，整个续聊回合在
+// 段切分器里 turn==0，ToolStart/PauseWaiting/Resume 全被「回合外信号一律丢弃」
+// 守卫吞掉——迟到段失效、成对 WARN 复活；修后与 Send 同形（BeginTurn 后上报段
+// 回合），零 WARN、等待进 other 桶（按时钟：api=2s，tool=1s+5s=6s，other=60s）。
+func TestRespondAskFollowUpTurnCarriesLatePermissionWait(t *testing.T) {
+	buf := captureLog(t)
+	fs := newFakeServer(t)
+	taskID := "task-b383-respondask"
+	ad, ch := startFakeRun(t, fs, taskID, t.TempDir(), t.TempDir())
+	sink := startS1Sink(ch)
+	r := ad.lookup(taskID)
+	// 无活动段回合的初态：上一回合已被 mapIdle 收口后 seg.turn==0（EndTurn 归零、
+	// 清 open 表），与换上全新段切分器同形——即「第一回合已正常结束、协调者正答复
+	// git 兜底提问」的现场前提。换表发生在任何 push 之前（H2 同款 happens-before）。
+	clock := newFakeClock(time.Date(2026, 9, 28, 10, 0, 0, 0, time.UTC))
+	r.seg = turn.NewSegmenter(clock.Now)
+
+	// RespondAsk 回退分支：pending 空（原生提问不跨回合），按工单身份续接。
+	// 生产驱动形态与 manager.go:1925/3009 一致，走 executor.AskResponder 契约方法。
+	if err := ad.RespondAsk(context.Background(), executor.RespondAskReq{
+		TaskID: taskID, TicketID: taskID + ":req_old", QuestionID: "req_old",
+		Answer: "继续：用方案 A",
+	}); err != nil {
+		t.Fatalf("RespondAsk: %v", err)
+	}
+	// 续聊确实以关联 Prompt 起新回合（dispatch + respond_ask 恰两次 prompt）
+	prompts := fs.prompts()
+	if len(prompts) != 2 || !strings.Contains(prompts[1], "回答工单") {
+		t.Fatalf("RespondAsk 回退分支应恰发一次关联 Prompt，实得 %d 次：%+v",
+			len(prompts), prompts)
+	}
+
+	clock.advance(2 * time.Second)
+	fs.push(permissionAskedEventOn("sess-1", "perm-ra", "bash",
+		"git rev-parse --abbrev-ref HEAD", "call-ra"))
+	sink.waitPermission(t) // 栅栏：迟到段已占、等待已挂（或修前落空 WARN 已打）
+
+	clock.advance(60 * time.Second) // 审批等待窗口
+	if err := ad.RespondPermission(context.Background(), taskID, "perm-ra", "once", ""); err != nil {
+		t.Fatalf("RespondPermission: %v", err)
+	}
+	clock.advance(1 * time.Second)
+	fs.push(toolPartEvent("sess-1", "msg-ra", "prt-ra", "call-ra", "bash",
+		"running", `{"command":"git rev-parse --abbrev-ref HEAD"}`, ""))
+	waitToolFrame(t, r, proto.FrameToolCall, "call-ra") // 栅栏：同键 ToolStart 已被去重
+	clock.advance(5 * time.Second)
+	fs.push(toolPartEvent("sess-1", "msg-ra", "prt-ra", "call-ra", "bash",
+		"completed", `{"command":"git rev-parse --abbrev-ref HEAD"}`, "cards/B383-charter"))
+	waitToolFrame(t, r, proto.FrameToolResult, "call-ra") // 栅栏：ToolEnd 已按假钟结算
+	// 回合收尾屏障：push idle 并等 result，此后计时条目必已齐
+	fs.push(statusIdleEvent())
+	sink.waitResult(t)
+	timings := takeToolTimings(t, ad, taskID, sink)
+
+	assertZeroWaitMissWarn(t, buf)
+	// 迟到段命中：恰一条「先占工具段」说明（每次等待只占一段）
+	if n := strings.Count(buf.String(), "opencode 权限早于工具 part 到达"); n != 1 {
+		t.Fatalf("续聊回合的迟到权限应恰一条「先占工具段」Info，实得 %d 条\n日志：\n%s",
+			n, buf.String())
+	}
+	api, tool, otherMS, toolEntries := sumTimingBuckets(timings)
+	if len(toolEntries) != 1 {
+		t.Fatalf("一次工具调用应恰一条 tool 条目，实得 %d 条（全部条目 %+v）", len(toolEntries), timings)
+	}
+	if toolEntries[0].Label != "bash" || toolEntries[0].Detail != "git rev-parse --abbrev-ref HEAD" {
+		t.Fatalf("tool 条目应带真实工具名与命令，实得 %+v", toolEntries[0])
+	}
+	if api != 2_000 || tool != 6_000 {
+		t.Fatalf("api 桶应只含权限前的 2s、tool 桶应只含执行 6s，实得 api=%dms tool=%dms", api, tool)
+	}
+	if otherMS != 60_000 {
+		t.Fatalf("60s 审批等待应进 other 桶，实得 %dms", otherMS)
+	}
+}
+
 // TestSpikeReplayPermissionWaitAttributionUnchanged（B383 S1 回归）：spike3/spike5
 // 真实抓包原样本回放——序 A（pending → running 非空 → permission.asked）里
 // PauseWaiting 命中已开段，迟到段路径根本不触发，因此：

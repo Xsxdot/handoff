@@ -651,6 +651,11 @@ func (a *Adapter) RespondAsk(ctx context.Context, req executor.RespondAskReq) (e
 	if err := r.frames.BeginTurn("respond_ask", text); err != nil {
 		a.log.Warn("写 turn_start 帧失败，不影响回合", "task", req.TaskID, "cause", err)
 	}
+	// 段回合与帧回合必须同开（形态镜像 Send）：漏掉这行，整个续聊回合在段切
+	// 分器里 turn==0，ToolStart/PauseWaiting/Resume 全被「回合外信号一律丢弃」
+	// 守卫吞掉——真机 5b3d38ec（2026-10-03）答完 git 兜底提问后的迟到权限成对
+	// WARN（「未找到工具等待窗口」×2）即此缝隙，迟到段在续聊回合里失效。
+	a.reportTiming(r, r.seg.BeginTurn(r.frames.Turn()))
 	return r.api.PromptAsync(ctx, r.session, text)
 }
 
