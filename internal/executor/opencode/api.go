@@ -328,6 +328,9 @@ func (a *API) HasSession(ctx context.Context, sessionID string) (ok bool, err er
 //   - ToolStatus: 最后一条 tool part 的 state.status（取值实测 "running"/
 //     "completed"/"error"）。用于把「finish=tool-calls 的回合终态」与「真·回合
 //     中途冻结」区分开：error=被拒/报错而终（补发），completed=中途冻结（不补发）
+//   - ToolError: 最后一条 tool part 的 state.error 原文（B383 Wave 0 对账归因）。
+//     与 ToolStatus 同点提取：row4（ToolStatus=error）命中后，只有它才能区分
+//     「权限被拒」与普通工具报错。空=该 part 没有 error 文案
 type SessionMessage struct {
 	ID          string
 	Role        string
@@ -337,6 +340,7 @@ type SessionMessage struct {
 	Finish      string
 	ErrorName   string
 	ToolStatus  string
+	ToolError   string
 }
 
 // sessionMessageEnvelope 是 GET /session/{id}/message 列表里每一项的形状。
@@ -357,9 +361,11 @@ type sessionMessageEnvelope struct {
 		Type string `json:"type"`
 		Text string `json:"text"`
 		// State 是 tool part 的运行时状态（state.status 区分 running/completed/error）；
-		// 非 tool part 无此字段
+		// 非 tool part 无此字段。Error 是失败时服务端写入的原文——权限被拒时是
+		// 固定哨兵文案（见 reconcile.go rejectedToolSentinel），对账归因靠它
 		State struct {
 			Status string `json:"status"`
+			Error  string `json:"error"`
 		} `json:"state"`
 	} `json:"parts"`
 }
@@ -444,6 +450,7 @@ func (a *API) LastAssistantMessage(ctx context.Context, sessionID string) (msg *
 			}
 			if p.Type == "tool" && p.State.Status != "" {
 				out.ToolStatus = p.State.Status // 最后一条 tool part 的 status
+				out.ToolError = p.State.Error   // 同点提取 error 文案（B383 对账归因用）
 			}
 		}
 		out.Text = sb.String()

@@ -223,16 +223,27 @@ func (g *Gate) judgeFileWrite(req Request, scope Scope) Verdict {
 // 纯 bash 门类本来就不带路径，`go build ./...` 是绝大多数情形；在这里 fail-closed
 // 等于把每条命令都升级人工，那是 spec §3 明确排除的反转。
 func (g *Gate) judgeBash(req Request, scope Scope) Verdict {
-	// 落点有三个来源，判定规则完全一致，合并后走同一个循环：
-	//   - req.Paths：executor 自己检出的（opencode 的 external_directory）
-	//   - RedirectTargets：handoff 从重定向语法里摘的（B134）
-	//   - WriteArgTargets：handoff 从写命令参数位摘的（B151）——claude 的 bash
-	//     请求 Paths 恒为空，opencode 对管道后的 tee 也检不出，这一路是唯一兜底
-	redirects := RedirectTargets(req.Command)
-	writeArgs := WriteArgTargets(req.Command)
+	// B383 S2b②：heredoc 受限闭集。整条命令符合「引用字面定界符 + 单个裸 cat
+	// 写 scope 内一个文件 + 无管道/替换/包装器/执行型后继」时，正文作为数据
+	// 剔除，此后所有判据面（落点提取/黑名单/自指令/人工门）只看剥离后的命令；
+	// 不命中时 judged == 原文，一切按现状。
+	judged := req.Command
+	if hd := closedHeredoc(req.Command); hd != nil {
+		judged = hd.stripped
+		g.log.Debug("heredoc 闭集命中，正文按数据剔除", "command", req.Command)
+	}
+	redirects := RedirectTargets(judged)
+	writeArgs := WriteArgTargets(judged)
+	// B383 S2b①：cd 相对写基准。相对落点的解释基准 = 按命令顺序已生效、可
+	// 静态证明的 cd 目录（起点 Workdir）；cd 目标越出三基准或不可证明时基准
+	// 破坏，其后相对落点无法解释 → 整条升级。无 cd 的命令行为零变化。
+	resolved, unres := cdResolvedTargets(judged, scope)
+	if unres != "" {
+		g.log.Debug("cd 基准不可证明", "command", req.Command, "cause", unres)
+		return Verdict{Action: Escalate, Reason: unres}
+	}
 	targets := append([]string(nil), req.Paths...)
-	targets = append(targets, redirects...)
-	targets = append(targets, writeArgs...)
+	targets = append(targets, resolved...)
 	if n := len(targets); n > 0 {
 		g.log.Debug("命令落点已汇总", "count", n,
 			"from_executor", len(req.Paths),
@@ -258,13 +269,40 @@ func (g *Gate) judgeBash(req Request, scope Scope) Verdict {
 		}
 		g.log.Debug("命令落点在任务范围内", "path", p, "base", base)
 	}
+	// B383 S2a：rm「范围内删除」放行出口，挂在落点范围循环之后、命令类判定
+	// 之前。选点理由：
+	//   - scope 只在 judgeBash 手里——judgeCommand 是无 scope 的共享判据
+	//    （非 bash 路由也在用），把 scope 传下去要动它的签名；
+	//   - 落点循环先行，保证重定向落点与 executor 检出的越界目录仍按现状
+	//     最先升级，不被 rm 放行面截胡；
+	//   - rmInScopeVerdict 的闭集（所有段必须是 cd/rm 且全部目标可证明）
+	//     保证它永远不会推翻 judgeCommand 的自指令/包装器/eval 升级——那些
+	//     形态必含非 cd/rm 段，闭集先就不成立。
+	if v, ok := rmInScopeVerdict(req.Command, scope); ok {
+		g.log.Info("范围内删除放行", "command", req.Command, "rule", RuleRmInScope)
+		return v
+	}
+	// B383 S2b②：heredoc 闭集放行出口。closedHeredoc 的形态闭集保证正文是
+	// 纯数据（引用定界符 + 裸 cat），cd 段与落点已逐项证明——与 rm 出口同
+	// 选点逻辑（scope 只在这里；落点循环先行）。
+	if v, ok := heredocInScopeVerdict(req.Command, scope); ok {
+		g.log.Info("heredoc 闭集放行", "command", req.Command, "rule", RuleHeredocInScope)
+		return v
+	}
+	// B383 S4：人工清单显式 Escalate——用户裁定的形态不允许 Consult 审批
+	// 模型直批，只能在判定层硬升级（建 gate 工单）。挂在本处：落点循环之后
+	// （越界理由优先），judgeCommand 之前（Consult 出口之前）。
+	if v, ok := manualGateVerdict(judged); ok {
+		g.log.Info("人工清单命中，保持人工裁决", "command", req.Command, "rule", RuleManualGate)
+		return v
+	}
 	// Existing self-command, blacklist, and wrapper rules remain authoritative;
 	// the positive whitelist only handles their ordinary Consult result.
-	verdict := g.judgeCommand(req.Command)
+	verdict := g.judgeCommand(judged)
 	if verdict.Action != Consult {
 		return verdict
 	}
-	if id, ok := safeCommandID(req.Command); ok {
+	if id, ok := safeCommandID(judged); ok {
 		g.log.Info("安全命令白名单命中", "command", req.Command, "id", id,
 			"targets", len(targets))
 		return Verdict{Action: AutoAllow, Rule: RuleSafeCommand,
@@ -273,7 +311,7 @@ func (g *Gate) judgeBash(req Request, scope Scope) Verdict {
 	// B376：复合只读拆段静默。白名单仍只认单段——这一段只在「整条仍是
 	// Consult」时把 `a && b` / `a | b` / `a; b` 拆开逐段证明只读；任一段
 	// 证明不了就整条 Consult，绝不半段放行。
-	if id, segs, ok := compoundSilent(req.Command); ok {
+	if id, segs, ok := compoundSilent(judged); ok {
 		g.log.Info("复合只读命令静默", "command", req.Command, "id", id,
 			"segments", segs, "targets", len(targets))
 		return Verdict{Action: AutoAllow, Rule: RuleSafeCommand,

@@ -107,6 +107,10 @@ const (
 	VoidReasonExecutorGone = "executor 已终结"
 	// VoidReasonTurnDiscipline 用于 executor 活着但没守回合纪律：无 trailer、零文本。
 	VoidReasonTurnDiscipline = "回合未按纪律收尾，executor 仍在线"
+	// VoidReasonPermissionDenied 用于权限被拒导致回合终止（B383 Wave 0）：executor
+	// 仍在线，只是本回合被协调者的 reject 收了口。作废挂起工单的审计若把它记成
+	// 「executor 已终结」就是说谎——continue 续接此刻完全可用。
+	VoidReasonPermissionDenied = "权限被拒，executor 仍在线"
 )
 
 // 归一化工具名：各 adapter 的原始工具名折算到这一组常量，permgate 只认它们。

@@ -291,18 +291,62 @@ func TestReconcileRestoresQuestionNotResult(t *testing.T) {
 	_ = fmt.Sprint() // 保留 fmt 引用
 }
 
-// TestReconcileEmitsRejectedToolEnd —— B38 Task9 row4：尾部是「finish=tool-calls +
-// tool state.status=error」的被拒而终消息 → 必须补发成 question（对齐实时路径
-// rejectedTurnQuestion 的口径，adapter.go:1236-1241）。
+// assistantToolErrorMsg 造一条 finish=tool-calls、尾部 tool part state.status=error
+// 的 assistant 消息（对齐 session_rejectedend.json 的形态，error 文案可指定）。
+func assistantToolErrorMsg(id, toolErr string, completed int64) map[string]any {
+	return map[string]any{
+		"info": map[string]any{
+			"id": id, "role": "assistant", "finish": "tool-calls",
+			"time": map[string]any{"completed": completed},
+		},
+		"parts": []map[string]any{
+			{"type": "step-start"},
+			{"type": "tool", "tool": "bash", "callID": "call_x",
+				"state": map[string]any{"status": "error", "error": toolErr}},
+			{"type": "step-finish"},
+		},
+	}
+}
+
+// TestReconcileEmitsRejectedToolEnd —— B383 Wave 0 对账哨兵归因：尾部是「finish=
+// tool-calls + tool state.status=error」且 error 文案**精确命中**拒绝哨兵 → 补发
+// 与实时路径同形的失败 result（VoidReason=权限被拒），而不是 question——旧实现
+// 一律发 question，会让断线前的拒绝在对账时多出一张 ask 工单。
 //
 // 夹具：testdata/session_rejectedend.json 取自真机会话（msg_febd7418…，权限被拒
 // 的回合终态），finish=tool-calls、completed 非零、tool part state.status=error。
-// 本会话 14 条带 tool error 的消息 14/14 后面都是 user 消息或会话尾——零反例。
+// 夹具里 tool part 的 error 必须逐字节等于哨兵常量——单点定义的双保险：有人改了
+// 常量而没重新抓包核对，本测试立刻翻红。
 func TestReconcileEmitsRejectedToolEnd(t *testing.T) {
 	raw, err := os.ReadFile("testdata/session_rejectedend.json")
 	if err != nil {
 		t.Fatalf("读夹具失败: %v", err)
 	}
+	// 夹具 ↔ 哨兵常量绑定校验（why 见函数头）
+	var msgs []struct {
+		Parts []struct {
+			Type  string `json:"type"`
+			State struct {
+				Status string `json:"status"`
+				Error  string `json:"error"`
+			} `json:"state"`
+		} `json:"parts"`
+	}
+	if err := json.Unmarshal(raw, &msgs); err != nil {
+		t.Fatalf("解析夹具: %v", err)
+	}
+	fixtureErr := ""
+	for _, m := range msgs {
+		for _, p := range m.Parts {
+			if p.Type == "tool" && p.State.Status == "error" {
+				fixtureErr = p.State.Error
+			}
+		}
+	}
+	if fixtureErr != rejectedToolSentinel {
+		t.Fatalf("夹具 error=%q 与哨兵常量 %q 不再逐字节一致：改常量前必须重新抓包核对", fixtureErr, rejectedToolSentinel)
+	}
+
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Write(raw)
@@ -322,17 +366,112 @@ func TestReconcileEmitsRejectedToolEnd(t *testing.T) {
 	if !ok {
 		t.Fatal("没有补发事件")
 	}
+	if ev.Type != "result" {
+		t.Fatalf("哨兵命中应补发失败结果（与实时路径同形），got %q（内容 %q）", ev.Type, ev.Text)
+	}
+	if ev.Result == nil || ev.Result.OK {
+		t.Fatalf("应是失败结果: %+v", ev.Result)
+	}
+	if ev.Result.VoidReason != executor.VoidReasonPermissionDenied {
+		t.Fatalf("VoidReason=%q，期望 %q", ev.Result.VoidReason, executor.VoidReasonPermissionDenied)
+	}
+	if !strings.Contains(ev.Result.FailReason, "断线期间") {
+		t.Fatalf("FailReason 应点明断线期间被拒终结: %q", ev.Result.FailReason)
+	}
+	if !strings.Contains(out.Note, "权限被拒") {
+		t.Fatalf("应命中哨兵归因的专属结论，got note=%q", out.Note)
+	}
+}
+
+// TestReconcileFreshCaptureSentinelStillAttributed —— B383 Wave 0 新鲜抓包回归：
+// opencode 1.18.32（本机 2026-09-28 实测，真实 permission.asked → POST reject →
+// 抓 SSE + 会话消息）确认拒绝哨兵文案未漂移，对账归因对该样本同样命中。
+// 夹具 session_rejectedend_opencode_1_18_32.json 就是该次抓包的最后一条 assistant
+// 消息原文（finish=tool-calls、tool part state.status=error、error=哨兵）。
+// 版本演进后再漂移时：本测试翻红提示重新抓包，而不是让归因静默失效。
+func TestReconcileFreshCaptureSentinelStillAttributed(t *testing.T) {
+	raw, err := os.ReadFile("testdata/session_rejectedend_opencode_1_18_32.json")
+	if err != nil {
+		t.Fatalf("读新鲜抓包夹具失败: %v", err)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(raw)
+	}))
+	defer srv.Close()
+	a := newTestAdapter(t)
+	r := newTestRun(t, a, srv.URL, "", true)
+
+	out, err := a.Reconcile(context.Background(), r.taskID)
+	if err != nil {
+		t.Fatalf("对账失败: %v", err)
+	}
+	if out.Emitted != 1 {
+		t.Fatalf("新鲜样本应补发 1 条，got Emitted=%d note=%s", out.Emitted, out.Note)
+	}
+	ev, ok := drainOne(r)
+	if !ok {
+		t.Fatal("没有补发事件")
+	}
+	if ev.Type != "result" || ev.Result == nil || ev.Result.OK {
+		t.Fatalf("新鲜样本应归因为被拒失败结果，got %+v", ev)
+	}
+	if ev.Result.VoidReason != executor.VoidReasonPermissionDenied {
+		t.Fatalf("VoidReason=%q，期望 %q", ev.Result.VoidReason, executor.VoidReasonPermissionDenied)
+	}
+}
+
+// TestReconcilePlainToolErrorStillAsks —— 普通工具报错（哨兵不命中）必须维持
+// question 现状（fail-closed）：row4 的 ToolStatus=error 双义，归因拿不准时宁可
+// 回到人工裁决，不能把普通报错误判成权限被拒。
+func TestReconcilePlainToolErrorStillAsks(t *testing.T) {
+	srv := fakeSession(t, []map[string]any{
+		assistantToolErrorMsg("msg_toolerr", "connect ECONNREFUSED 127.0.0.1:5432", 1786348485642),
+	})
+	defer srv.Close()
+	a := newTestAdapter(t)
+	r := newTestRun(t, a, srv.URL, "", true)
+
+	out, err := a.Reconcile(context.Background(), r.taskID)
+	if err != nil {
+		t.Fatalf("对账失败: %v", err)
+	}
+	if out.Emitted != 1 {
+		t.Fatalf("普通工具报错的回合必须补发，got Emitted=%d", out.Emitted)
+	}
+	ev, ok := drainOne(r)
+	if !ok {
+		t.Fatal("没有补发事件")
+	}
 	if ev.Type != "question" {
-		t.Fatalf("被拒而终应补发成 question（对齐实时路径），got %q", ev.Type)
+		t.Fatalf("普通工具报错必须维持 question（fail-closed），got %q", ev.Type)
 	}
-	if ev.Text == "" {
-		t.Fatal("提问文本不应为空")
+}
+
+// TestReconcileMutatedSentinelStillAsks —— 哨兵文案漂移（opencode 版本升级改措辞）
+// 必须退化到安全侧兜底 ask：精确匹配不命中 ⇒ 维持 question，绝不按被拒归因。
+// 漂移的代价是多一次人工裁决，冒认被拒的代价是把普通故障记成人工拒绝——后者不可接受。
+func TestReconcileMutatedSentinelStillAsks(t *testing.T) {
+	srv := fakeSession(t, []map[string]any{
+		assistantToolErrorMsg("msg_drift", rejectedToolSentinel+" (denied by policy v2)", 1786348485642),
+	})
+	defer srv.Close()
+	a := newTestAdapter(t)
+	r := newTestRun(t, a, srv.URL, "", true)
+
+	out, err := a.Reconcile(context.Background(), r.taskID)
+	if err != nil {
+		t.Fatalf("对账失败: %v", err)
 	}
-	// 断言命中 row4 的专属结论文本（含「工具被拒」），使其区别于 row6 兜底——
-	// 若夹具打错行（例如误取成 completed=0 被 row1 拦下，或没有 tool part 走
-	// row6），此处会翻红。自检：临时注释 reconcileTurnEnded 的 row4，本测试必红。
-	if !strings.Contains(out.Note, "工具被拒/报错而终") {
-		t.Fatalf("应命中 row4（工具被拒/报错而终）的专属结论，got note=%q", out.Note)
+	if out.Emitted != 1 {
+		t.Fatalf("漂移形态仍须补发（兜底 ask），got Emitted=%d", out.Emitted)
+	}
+	ev, ok := drainOne(r)
+	if !ok {
+		t.Fatal("没有补发事件")
+	}
+	if ev.Type != "question" {
+		t.Fatalf("哨兵失配必须退化到 question（安全侧），got %q", ev.Type)
 	}
 }
 
