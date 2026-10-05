@@ -44,6 +44,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -91,6 +92,20 @@ const (
 	pendingDeltaLimit      = 64 << 10
 )
 
+// B383 Wave 0 的拒绝终局参数：
+//   - respondPermissionTimeout：RespondPermission 转发应答的硬截止。等 API 结果
+//     不能无限挂住任务；超时按投递失败结算（摘拒绝标记），manager 侧既有
+//     NoteDeliveryFailed/重投分支会接住（manager.go handlePermission）。测试经
+//     Adapter.respondTimeout 注入毫秒级值（模式同 idleGrace）
+//   - rejectSettleGraceDefault：「idle 先到、拒绝应答在飞」时重新武装 idle 分类
+//     的延迟。必须大于应答截止 30s——到期时应答必然已结算（成功或失败），一次
+//     重武装即可判终局；否则掉进防御分支按零文本收口。测试经
+//     Adapter.rejectSettleGrace 注入毫秒级值
+const (
+	respondPermissionTimeout = 30 * time.Second
+	rejectSettleGraceDefault = 31 * time.Second
+)
+
 // serveHandle 抽象 serve 进程的存活/销毁/诊断：真实实现是 *Proc（procHandle），
 // 测试注入假探活，绕开真实进程依赖。
 type serveHandle interface {
@@ -134,6 +149,12 @@ type Adapter struct {
 	// idleGrace 是 idle 去抖宽限期（见 scheduleIdle）。测试注入毫秒级值，
 	// 让回合分类的断言不必真等 1.5s。
 	idleGrace time.Duration
+	// respondTimeout 是权限应答转发的硬截止，默认取 respondPermissionTimeout
+	// （B383 Wave 0）。测试注入毫秒级值，不必真等 30s。
+	respondTimeout time.Duration
+	// rejectSettleGrace 是拒绝应答在飞时 idle 重新分类的宽限（见
+	// rearmIdleForReject）。测试注入毫秒级值，不必真等 31s。
+	rejectSettleGrace time.Duration
 	// reapInterval/reapMaxAttempts 是 kill 失败保留态的后台重试节奏与放弃上限
 	// （见 reapRetained）。测试注入毫秒级值，避免真等 30s。
 	reapInterval    time.Duration
@@ -188,11 +209,13 @@ func New(log *slog.Logger) *Adapter {
 		log = slog.Default()
 	}
 	return &Adapter{
-		log:             log,
-		runs:            make(map[string]*runState),
-		idleGrace:       idleGraceDefault,
-		reapInterval:    reapIntervalDefault,
-		reapMaxAttempts: reapMaxAttemptsDefault,
+		log:               log,
+		runs:              make(map[string]*runState),
+		idleGrace:         idleGraceDefault,
+		respondTimeout:    respondPermissionTimeout,
+		rejectSettleGrace: rejectSettleGraceDefault,
+		reapInterval:      reapIntervalDefault,
+		reapMaxAttempts:   reapMaxAttemptsDefault,
 	}
 }
 
@@ -254,10 +277,20 @@ type runState struct {
 	// permText/turnRejected 支撑「被拒权限终止回合」的识别（2026-08-08 实测 P0）：
 	// opencode 收到 reject 会直接终结回合，最后一条消息只有 error 状态的 tool
 	// part、零文本，idle 时回合文本为空。仅凭「空回合」无法区分它与「会话瞬时
-	// 空闲」——前者必须唤醒协调者（否则任务挂死到看门狗），后者必须忽略（否则
-	// 每次批准都塞一条无意义提问）。故显式记录本回合发生过的拒绝。
+	// 空闲」——前者必须收口成失败结果，后者必须忽略（否则每次批准都塞一条无意义
+	// 提问）。故显式记录本回合发生过的拒绝。
+	//
+	// B383 Wave 0 把 turnRejected 从 []string 改成 map（permID→描述）：登记前移到
+	// 发 API **之前**（旧序是成功后才登记，SSE idle 会在登记前抢先消费空回合），
+	// 转发失败时按 permID 摘除——登记与摘除都要以 permID 为键，map 是为此服务的。
 	permText     map[string]string // permID -> 权限描述（会话级：permID 全局唯一，不随回合清空）
-	turnRejected []string          // 本回合已回传 reject 的权限描述，mapIdle 消费后清空
+	turnRejected map[string]string // 本回合拒绝标记表 permID -> 描述（已确认已拒），mapIdle 消费后清空
+	// rejectInFlight 是已登记但尚未结算（API 未返回）的拒绝应答数（turnMu 保护）。
+	// mapIdle 见非零即「应答在飞」，延迟分类而不是凭登记表提前宣判——登记不等于已拒。
+	rejectInFlight int
+	// rejectRearmGen 记录当前在途「重武装」的 idle 代次；0 表示没有在途重武装。
+	// 保证每次候选 idle 至多重武装一次（见 mapIdle / rearmIdleForReject）。
+	rejectRearmGen uint64
 	// 提问通路状态（B49）。opencode 原生 question 工具会阻塞等人作答，而它的
 	// 应答通道（question.asked → /question/{id}/reply）handoff 此前从没订阅，
 	// 于是工具永远等不到应答、回合不结束、任务挂死到 stall 超时。
@@ -324,6 +357,7 @@ func (a *Adapter) newRun(taskID, taskDir, repoPath string) *runState {
 		pendingDelta:    make(map[string]string),
 		userMsgs:        make(map[string]bool),
 		permText:        make(map[string]string),
+		turnRejected:    make(map[string]string),
 		childSessions:   map[string]string{},
 		permSession:     map[string]string{},
 		permTiming:      map[string]permissionTiming{},
@@ -617,6 +651,11 @@ func (a *Adapter) RespondAsk(ctx context.Context, req executor.RespondAskReq) (e
 	if err := r.frames.BeginTurn("respond_ask", text); err != nil {
 		a.log.Warn("写 turn_start 帧失败，不影响回合", "task", req.TaskID, "cause", err)
 	}
+	// 段回合与帧回合必须同开（形态镜像 Send）：漏掉这行，整个续聊回合在段切
+	// 分器里 turn==0，ToolStart/PauseWaiting/Resume 全被「回合外信号一律丢弃」
+	// 守卫吞掉——真机 5b3d38ec（2026-10-03）答完 git 兜底提问后的迟到权限成对
+	// WARN（「未找到工具等待窗口」×2）即此缝隙，迟到段在续聊回合里失效。
+	a.reportTiming(r, r.seg.BeginTurn(r.frames.Turn()))
 	return r.api.PromptAsync(ctx, r.session, text)
 }
 
@@ -737,7 +776,33 @@ func (a *Adapter) RespondPermission(ctx context.Context, taskID, permID, decisio
 	if r.api == nil {
 		return fmt.Errorf("任务 %s: api 未就绪", taskID)
 	}
-	if err := r.api.RespondPermission(ctx, sess, permID, decision); err != nil {
+	// 拒绝登记前移（B383 Wave 0）：必须在发 API **之前**登记并把应答记为在飞。
+	//
+	// 与旧序（成功后才登记）的差别与理由：SSE idle 与应答转发跑在不同 goroutine，
+	// opencode 收到 reject 会立刻终结回合，idle 可在转发返回之前到达——旧序下这次
+	// idle 看不到拒绝登记，把被拒空回合误判成 B21 零文本。先登记 + 在飞计数，
+	// mapIdle 才能对三种交错（结算先于 idle / idle 先于结算 / 转发失败）都给出
+	// 唯一正确的终局。登记≠已拒：转发失败由下方结算摘除。
+	if decision == "reject" {
+		r.markRejectPending(permID)
+	}
+	// 硬截止（B383 Wave 0）：等待 API 结果不能无限挂住任务。超时=投递失败走
+	// 结算摘除，manager 侧既有 NoteDeliveryFailed/重投分支会接住（handlePermission
+	// 的 RespondPermission 错误分支）。
+	timeout := a.respondTimeout
+	if timeout <= 0 {
+		timeout = respondPermissionTimeout
+	}
+	apiCtx, cancelAPI := context.WithTimeout(ctx, timeout)
+	err = r.api.RespondPermission(apiCtx, sess, permID, decision)
+	cancelAPI()
+	if decision == "reject" {
+		// 结算（B383 Wave 0）：成功=确认已拒（标记保留）；失败（含超时）=按
+		// permID 摘除，绝不留作已拒。两种结算都递减在飞计数。必须排在 permTiming
+		// 恢复等后续工作之前：让 idle 尽早看到终态，缩短被拒终局的判定延迟。
+		r.settleReject(permID, err == nil)
+	}
+	if err != nil {
 		return err
 	}
 	r.sessMu.Lock()
@@ -759,40 +824,92 @@ func (a *Adapter) RespondPermission(ctx context.Context, taskID, permID, decisio
 			"part", timing.part)
 		entries := r.seg.Resume(timing.part)
 		if len(entries) == 0 {
-			a.log.Warn("opencode 权限应答成功但未找到工具等待窗口",
-				"task", taskID, "perm", permID, "part", timing.part)
+			// H1（B383 S1）应答侧同判：子会话权限的等待在请求侧已声明「不承载
+			// 计时」（见 mapPermissionAsked 的 permSess != r.session 分支），Resume
+			// 落空是设计内结局而非异常——spec §S1 要求每次等待只留一条不承载
+			// Info，应答侧再发一条说明就是重复同一事实，降为 Debug 保留可观测性。
+			// 父会话权限的落空没有请求侧声明兜着，仍是真异常，保 WARN。
+			if r.permFromChildSession(permID) {
+				a.log.Debug("子 agent 权限等待结束（等待未承载计时，无窗口可恢复）",
+					"task", taskID, "perm", permID, "part", timing.part)
+			} else {
+				a.log.Warn("opencode 权限应答成功但未找到工具等待窗口",
+					"task", taskID, "perm", permID, "part", timing.part)
+			}
 		} else {
 			a.reportTiming(r, entries)
 		}
 	}
-	// 拒绝登记必须在转发成功之后：没送达的拒绝不会终止 executor 的回合，
-	// 提前登记会让下一次空回合 idle 谎报「因权限被拒终止」。
-	// 不在 turnMu 下调 api（网络 I/O），故登记单独短暂加锁。
-	if decision == "reject" {
-		r.noteRejected(permID)
-	}
 	return nil
 }
 
-// noteRejected 登记一次已送达的权限拒绝，供 mapIdle 识别「被拒终止的空回合」。
+// permFromChildSession 判定一次权限请求是否来自子会话（B52 的 permSession 归属，
+// B383 S1 的应答侧收口复用）。
+//
+// 查不到归属时按父会话处置：无归属说明映射已丢（agentd 重启后进程内表为空），
+// 此时等待窗口落空是真异常，WARN 才是诚实的。
+func (r *runState) permFromChildSession(permID string) bool {
+	r.sessMu.RLock()
+	defer r.sessMu.RUnlock()
+	sess, ok := r.permSession[permID]
+	return ok && sess != r.session
+}
+
+// markRejectPending 在发 API 前登记一次拒绝意向（B383 Wave 0，替代旧 noteRejected
+// 的「成功后才登记」）。
 //
 // 参数：
-//   - permID: 被拒的权限 id（描述从 permText 反查，查不到时退化为 id 本身）
-func (r *runState) noteRejected(permID string) {
+//   - permID: 被拒的权限 id（描述从 permText 反查，查不到时退化为 id 本身——
+//     与旧 noteRejected 同源）
+//
+// why 先登记再发 API：见 RespondPermission 内注释。登记不等于已拒——mapIdle
+// 以 rejectInFlight 区分「意向在飞」与「已确认」，转发失败由 settleReject 摘除。
+func (r *runState) markRejectPending(permID string) {
 	r.turnMu.Lock()
 	defer r.turnMu.Unlock()
 	desc := r.permText[permID]
 	if strings.TrimSpace(desc) == "" {
 		desc = "权限 " + permID
 	}
-	r.turnRejected = append(r.turnRejected, desc)
+	if r.turnRejected == nil {
+		r.turnRejected = make(map[string]string)
+	}
+	r.turnRejected[permID] = desc
+	r.rejectInFlight++
 }
 
-// takeTurnRejected 取出并清空本回合的拒绝记录（调用方须已持 turnMu）。
-func (r *runState) takeTurnRejected() []string {
-	rejected := r.turnRejected
-	r.turnRejected = nil
-	return rejected
+// settleReject 结算一次在飞的拒绝应答（B383 Wave 0）。
+//
+// delivered=false（含超时）时按 permID 摘除标记：没送达的拒绝不会终结 executor
+// 的回合，留着会让下一次空回合 idle 谎报「因权限被拒终止」。delivered=true 时
+// 标记保留（=确认已拒）。两种结算都递减在飞计数（下限 0：clearTurn 归零后到达
+// 的迟到结算不得减成负数）。
+func (r *runState) settleReject(permID string, delivered bool) {
+	r.turnMu.Lock()
+	defer r.turnMu.Unlock()
+	if !delivered {
+		delete(r.turnRejected, permID)
+	}
+	if r.rejectInFlight > 0 {
+		r.rejectInFlight--
+	}
+}
+
+// rejectedDescriptions 把拒绝标记表折算成确定性的描述列表（调用方须已持 turnMu）。
+//
+// 为什么按 permID 字典序：map 遍历无序，拼接顺序不确定会让 FailReason 与审计
+// 记录不可比对、回归断言不可写。
+func (r *runState) rejectedDescriptions() []string {
+	ids := make([]string, 0, len(r.turnRejected))
+	for id := range r.turnRejected {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	descs := make([]string, 0, len(ids))
+	for _, id := range ids {
+		descs = append(descs, r.turnRejected[id])
+	}
+	return descs
 }
 
 // deliveryFailureHasTicket 判定一次终态决定背后是否有可恢复的持久工单。
@@ -941,16 +1058,13 @@ func (r *runState) takeAskedViaTool() bool {
 	return asked
 }
 
-// rejectedTurnQuestion 组装「回合因权限被拒而终止」交给协调者的提问文本。
+// rejectedTurnBullets 把被拒描述列表拼成列表正文（B383 Wave 0）。
 //
-// why（必须是 question 而不是 result/failed）：任务没失败也没完成，它只是停在
-// 半路等人指路。question 让任务进 waiting_answer，协调者可直接续发指令（换个
-// 方式做/跳过这步/收尾提交），会话上下文完整保留——这与 fallbackClassify
-// 「流程不卡死」的取向一致。
-func rejectedTurnQuestion(rejected []string) string {
-	return "上一步操作因权限被拒而终止了本回合（executor 未产出任何文本）：\n  - " +
-		strings.Join(rejected, "\n  - ") +
-		"\n\n请给出下一步指令：换用其他方式完成该步骤 / 跳过该步骤继续 / 直接收尾提交。"
+// 组装沿用旧 rejectedTurnQuestion 的列表形态；载体从合成 question 换成被拒
+// result 的 FailReason——被拒终局沿 manager 的 handleResult 处置（作废挂起
+// 工单 → turn_failed → waiting_review），不再产第二张 ask 工单。
+func rejectedTurnBullets(rejected []string) string {
+	return "\n  - " + strings.Join(rejected, "\n  - ")
 }
 
 // Stop 终止任务执行：取消订阅 → kill serve（执行者进程组）→ 事件通道关闭 → 注销运行态。
@@ -1628,10 +1742,36 @@ func (a *Adapter) mapPermissionAsked(r *runState, props json.RawMessage) {
 		if duplicate {
 			a.log.Debug("重复 permission.asked 不重复暂停工具窗口",
 				"task", r.taskID, "perm", pa.ID, "part", pa.Tool.CallID)
+		} else if permSess != r.session {
+			// 子 agent 权限的等待「显式不承载计时」（B383 S1 H1）：acceptForeign
+			// 丢弃子会话的工具 part（回合记账围绕单一会话的消息序列构建，放开会
+			// 污染水位与空闲判定，见该处注释），段切分器里永远不会有子会话的段
+			// ——等待没有工具段可挂，也不能去碰父回合的段（callID 属于子会话，
+			// 挂上去就是错归属）。级别用 Info 而非 WARN：WARN 档留给「本该静默
+			// 通过却被拦」的事件，而这是设计内的必然结局；spec §S1 要求每次等待
+			// 只留一条说明不承载的 Info。应答侧按 permSession 的同一归属收口
+			// （见 RespondPermission），不再发第二条不承载说明。
+			a.log.Info("子 agent 权限等待不承载计时（子会话工具 part 不进回合记账，无工具段可挂）",
+				"task", r.taskID, "perm", pa.ID, "part", pa.Tool.CallID, "session", permSess)
 		} else {
 			a.log.Info("opencode 权限等待开始", "task", r.taskID,
 				"perm", pa.ID, "part", pa.Tool.CallID, "session", permSess)
 			entries := r.seg.PauseWaiting(pa.Tool.CallID)
+			if len(entries) == 0 {
+				// H2（B383 S1）：permission.asked 先于带非空入参的工具 part 到达
+				//（卡事件 16677 证实的双 WARN 事件序），段还没开——补一个「迟到
+				// 段」把等待挂上去：工具调用在 opencode 侧已经成立（part 稍后必到
+				// ，拒绝时也留 error 状态 part，见 mapIdle 注释），等待因此进
+				// other 桶而不是被吞进 api/tool。真实 part 到达时同键 ToolStart
+				// 被段切分器去重，段的起点与归属不被第二次 start 改写；spike3/5
+				// 序 A（part 先于权限）的 PauseWaiting 命中，根本走不到这里。
+				// detail 取命令、无命令时取路径（与随后 part 的 input 同源）。
+				detail := pa.Metadata.Command
+				if detail == "" {
+					detail = pa.Metadata.FilePath
+				}
+				entries = a.lateOpenPermissionWait(r, pa.ID, pa.Tool.CallID, pa.Permission, detail)
+			}
 			if len(entries) == 0 {
 				a.log.Warn("opencode 权限请求未找到对应工具等待窗口",
 					"task", r.taskID, "perm", pa.ID, "part", pa.Tool.CallID)
@@ -1684,6 +1824,35 @@ func (a *Adapter) mapPermissionAsked(r *runState, props json.RawMessage) {
 		Text: turn.TruncateMarked(text, permTextHardLimit),
 		Perm: req,
 	})
+}
+
+// lateOpenPermissionWait 补开一个「迟到段」并把权限等待挂上去（B383 S1 H2）。
+//
+// 为什么允许在权限时刻占段：permission.asked 先于带非空入参的 tool part 到达时，
+// PauseWaiting 找不到已开段，等待要么成对 WARN 要么被静默吞进 api/tool 桶。而
+// 权限门挡住的工具调用在 opencode 侧已经成立——part 稍后必然到达（批准后是
+// running/completed，拒绝后是 error，两种终局都会 ToolEnd 收段），在权限时刻
+// 占段没有制造空段，只是把「等待审批」如实记为该工具段内被扣除的窗口。
+//
+// 参数取自权限事件自身：工具名用 permission 字段（与 part.tool 同源——真机实测
+// 取值 bash/edit/external_directory 就是 opencode 的工具类别原文），detail 用
+// metadata 的命令/路径，与随后 part 的 input.command 同值。真实 part 到达时同键
+// ToolStart 被段切分器去重（见 Segmenter.ToolStart 的重复 start 防线），迟到段
+// 的起点与归属不被改写。
+//
+// 返回值与 PauseWaiting 同形：占段+挂起成功返回回合条目；失败（工具名缺失、
+// 回合外）返回 nil，由调用方维持原有的落空 WARN（那才是「本该静默通过却被拦」
+// 的异常）。
+func (a *Adapter) lateOpenPermissionWait(r *runState, permID, callID, tool, detail string) []proto.TimingEntry {
+	if strings.TrimSpace(tool) == "" {
+		// 提取不出工具名就无法诚实标注段归属，不占段
+		return nil
+	}
+	a.log.Info("opencode 权限早于工具 part 到达，先占工具段承载等待",
+		"task", r.taskID, "perm", permID, "part", callID, "tool", tool,
+		"detail", turn.TruncateRunes(detail, 80))
+	a.reportTiming(r, r.seg.ToolStart(callID, tool, detail))
+	return r.seg.PauseWaiting(callID)
 }
 
 // mapQuestionAsked 处理 question.asked：opencode 原生 question 工具的提问请求。
@@ -2137,6 +2306,13 @@ func (a *Adapter) mapSessionStatus(r *runState, props json.RawMessage) {
 
 // scheduleIdle 把一次 idle 登记为「候选回合结束」，静默满 idleGrace 后才真正分类。
 // 调用方须持有 turnMu。
+func (a *Adapter) scheduleIdle(r *runState, raw json.RawMessage) {
+	a.scheduleIdleWithGrace(r, raw, a.idleGrace)
+}
+
+// scheduleIdleWithGrace 是 scheduleIdle 的宽限参数化形态（B383 Wave 0）：拒绝在飞
+// 的重武装复用同一套 idleTimer/idleGen 机制，只换延迟（rejectSettleGrace > 应答
+// 截止 30s，到期时应答必已结算）。不新建定时器类型、不另起 goroutine。
 //
 // why（去抖而非见 idle 即分类）：idle 是 opencode 的会话状态信号，不等于「模型
 // 这一轮说完了」——工具调用间隙、权限等待期间都可能出现瞬时 idle。见 idle 即
@@ -2145,21 +2321,35 @@ func (a *Adapter) mapSessionStatus(r *runState, props json.RawMessage) {
 //
 // 宽限期内任何回合推进（新增文本、非 idle 状态、下一条 idle）都会自增 idleGen，
 // 使在途的候选失效——真正的回合结束后不会再有事件，宽限期自然走完。代价是回合
-// 分类延迟 idleGrace，相对协调者分钟级的往返可忽略。
-func (a *Adapter) scheduleIdle(r *runState, raw json.RawMessage) {
+// 分类延迟宽限期，相对协调者分钟级的往返可忽略。
+func (a *Adapter) scheduleIdleWithGrace(r *runState, raw json.RawMessage, grace time.Duration) {
+	if grace <= 0 {
+		grace = idleGraceDefault
+	}
 	r.idleGen++
 	gen := r.idleGen
 	if r.idleTimer != nil {
 		r.idleTimer.Stop()
 	}
-	grace := a.idleGrace
-	if grace <= 0 {
-		grace = idleGraceDefault
-	}
 	// raw 由 SSE 解析缓冲复用，定时器在回调返回后才读，必须拷贝
 	snapshot := append(json.RawMessage(nil), raw...)
 	a.log.Debug("登记候选回合结束，等待去抖", "task", r.taskID, "grace", grace)
 	r.idleTimer = time.AfterFunc(grace, func() { a.resolveIdle(r, gen, snapshot) })
+}
+
+// rearmIdleForReject 把一次「拒绝应答在飞」的 idle 重新武装为延迟分类（B383 Wave 0）。
+//
+// 调用方须已持 turnMu（mapIdle 契约）。宽限取 rejectSettleGrace（默认 31s >
+// 应答截止 30s），到期重跑 mapIdle 按当时状态判：标记在 → 被拒 result；标记已摘
+// → B21 零文本。记录本次武装的代次，使至多重武装一次成为可判定的不变量。
+func (a *Adapter) rearmIdleForReject(r *runState, raw json.RawMessage) {
+	grace := a.rejectSettleGrace
+	if grace <= 0 {
+		grace = rejectSettleGraceDefault
+	}
+	a.log.Info("拒绝应答在飞，idle 分类延迟到应答结算后", "task", r.taskID, "grace", grace)
+	a.scheduleIdleWithGrace(r, raw, grace)
+	r.rejectRearmGen = r.idleGen
 }
 
 // resolveIdle 是 idle 去抖到期后的回合分类入口（定时器 goroutine 执行）。
@@ -2193,24 +2383,59 @@ func (r *runState) cancelPendingIdle() {
 //
 // 空回合（无累积文本）不再静默跳过：零文本转失败结果交协调者（B21）——idle 但
 // 无文本说明文本流没被本层接住（事件结构变化/增量对账失败）或供应商流中断，
-// 这是「任务可能静默挂死」的观测点，必须产事件而非 Debug 静默。被拒终止的
-// 空回合例外，它走 question（有内容可问，见下文）。props 为触发 idle 的
-// session.status 载荷，仅用于日志上下文。
+// 这是「任务可能静默挂死」的观测点，必须产事件而非 Debug 静默。被拒终止的空回合
+// 走自己的失败结果（VoidReason=权限被拒，B383 Wave 0）；拒绝应答在飞时延迟分类
+// （见下）。props 为触发 idle 的 session.status 载荷，仅用于日志上下文。
 func (a *Adapter) mapIdle(r *runState, raw json.RawMessage) {
-	// 回合收尾在最前面：本函数有四条出口（被拒空回合、零文本、trailer 三分支），
-	// 放在开头是唯一能同时覆盖全部的位置。EndTurn 幂等，重复触发无害。
+	// 回合收尾在最前面：本函数有五条出口（重武装、防御兜底、被拒空回合、零文本、
+	// trailer 三分支），放在开头是唯一能同时覆盖全部的位置。EndTurn 幂等，重复
+	// 触发无害。
 	a.reportTiming(r, r.seg.EndTurn())
 	text := r.turnText()
 	if strings.TrimSpace(text) == "" {
-		// 被拒终止的回合：opencode 收到 reject 直接终结回合，只留 error 状态的
-		// tool part、零文本。旧实现在此静默 return，任务停在 running 直到 2h
-		// 看门狗（2026-08-08 真实派发实测的 P0）——必须转 question 唤醒协调者
-		if rejected := r.takeTurnRejected(); len(rejected) > 0 {
-			a.log.Warn("回合因权限被拒终止且无文本产出，转提问交协调者裁决",
-				"task", r.taskID, "rejected", rejected)
-			a.emit(r, executor.AdapterEvent{
-				Type: "question", Text: turn.ClampQuestion(rejectedTurnQuestion(rejected)),
-			})
+		// 拒绝应答在飞（B383 Wave 0）：idle 撞上还没返回的 reject 转发。此刻无法
+		// 判终局——应答成功则回合是被拒终止，失败则只是普通空回合。不分类，复用
+		// idle 去抖机制（idleTimer/idleGen）重新武装一次，延迟 rejectSettleGrace
+		// （> 应答截止 30s），到期时应答必然已结算，按当时状态判。
+		if r.rejectInFlight > 0 {
+			// 重武装至多一次：rejectRearmGen 记住本候选的代次，到期仍不可判走
+			// 防御分支收口，绝不循环武装把任务重新挂死。
+			if r.rejectRearmGen != 0 && r.rejectRearmGen == r.idleGen {
+				a.log.Warn("idle 重武装到期拒绝应答仍未结算，按零文本失败收口",
+					"task", r.taskID, "event", turn.TailRunes(string(raw), 120))
+				a.emit(r, executor.AdapterEvent{Type: "result", SessionID: r.session,
+					Result: &executor.Result{
+						OK: false,
+						FailReason: "回合结束但零文本产出，且拒绝应答超时仍未结算" +
+							"（拒绝现场无法归因，拒绝结果不会送达）；executor 仍在线，" +
+							"可 continue 续接重试",
+						VoidReason: executor.VoidReasonTurnDiscipline,
+					}})
+				a.advanceWatermark(r)
+				r.clearTurn()
+				r.takeAskedViaTool()
+				r.captureStartCommit(a)
+				return
+			}
+			a.rearmIdleForReject(r, raw)
+			return
+		}
+		// 被拒终止的回合（B383 Wave 0 改语义）：opencode 收到 reject 直接终结回合，
+		// 只留 error 状态的 tool part、零文本。旧实现在此发合成 question，manager
+		// 据此再建一张 ask 工单——被拒终局其实是一份「为什么停了」的失败报告，
+		// 沿 handleResult 既有处置（作废挂起工单 → turn_failed → waiting_review，
+		// continue 可用）比多一张永远回答不完的 ask 更对得上语义。前置条件
+		// 「标记在且不在飞」由上方 in-flight 分支保证。
+		if len(r.turnRejected) > 0 {
+			descs := r.rejectedDescriptions()
+			a.log.Warn("回合因权限被拒终止且无文本产出，转失败结果交协调者",
+				"task", r.taskID, "rejected", descs)
+			a.emit(r, executor.AdapterEvent{Type: "result", SessionID: r.session,
+				Result: &executor.Result{
+					OK:         false,
+					FailReason: "回合因权限被拒终止：" + rejectedTurnBullets(descs),
+					VoidReason: executor.VoidReasonPermissionDenied,
+				}})
 			a.advanceWatermark(r)
 			r.clearTurn()
 			r.takeAskedViaTool() // 回合结束（被拒终止空回合），标记必须随回合清掉，否则漏到下一回合
@@ -2220,17 +2445,20 @@ func (a *Adapter) mapIdle(r *runState, raw json.RawMessage) {
 		// 零文本回合转失败结果交协调者（B21）：旧实现在此静默 return，任务停在
 		// running 直到 2h 看门狗。
 		//
-		// 为什么是 result{OK:false} 而不是 question：上面「被拒终止」那条走
-		// question，因为那个现场有内容可问；零文本回合没有任何东西可问，它是一份
-		// 故障报告——result{OK:false} 的语义才对得上，且 FailReason 能把现场
-		// 写清楚。manager 的 handleResult 对 OK=false 的既有处置（作废挂起工单 →
-		// failed 事件 → 落 waiting_review）正是我们要的，continue 立刻可用
+		// 为什么是 result{OK:false} 而不是 question：零文本回合没有任何东西可问，
+		// 它是一份故障报告——result{OK:false} 的语义才对得上，且 FailReason 能把
+		// 现场写清楚。manager 的 handleResult 对 OK=false 的既有处置（作废挂起
+		// 工单 → turn_failed → 落 waiting_review）正是我们要的，continue 立刻可用。
+		// VoidReason=TurnDiscipline（B383 Wave 0 补）：executor 仍在线，作废挂起
+		// 工单的审计不得记成「executor 已终结」——那正是 executor.go 里记载的
+		// 审计与事实矛盾，此处是它最大的产生源。
 		a.log.Warn("idle 但回合无文本，转失败结果交协调者", "task", r.taskID,
 			"event", turn.TailRunes(string(raw), 120))
 		a.emit(r, executor.AdapterEvent{Type: "result", SessionID: r.session, Result: &executor.Result{
 			OK: false,
 			FailReason: "回合结束但零文本产出（可能是供应商流中断）；executor 仍在线，" +
 				"可 continue 续接重试",
+			VoidReason: executor.VoidReasonTurnDiscipline,
 		}})
 		a.advanceWatermark(r)
 		r.clearTurn()
@@ -2373,10 +2601,19 @@ func (r *runState) turnText() string {
 // 唯一），保留才能保证回合边界之后到达的 reasoning 增量与重放的 user 文本 part
 // 永不混入下一回合（A-4）。pendingDelta 同样保留：类型未揭晓的暂存增量跨回合
 // 边界仍可能被 part.updated 认领。
+//
+// B383 Wave 0 补清拒绝终局的三样残留：拒绝标记表置空、在飞计数归零、重武装
+// 代次复位。旧实现不清 turnRejected——一次迟到登记（应答失败但标记已留）会把
+// 下一回合的普通空回合误判成被拒终局。计数器一并归零：迟到结算由 settleReject
+// 的下限 0 保护；父回合有文本走 trailer 分类时也经这里清标记（「父回合有文本
+// 则清」）。调用方须已持 turnMu（mapIdle 契约）。
 func (r *runState) clearTurn() {
 	r.turnOrder = nil
 	r.partSeen = make(map[string]string)
 	r.partSnap = make(map[string]bool)
+	r.turnRejected = make(map[string]string)
+	r.rejectInFlight = 0
+	r.rejectRearmGen = 0
 }
 
 // partKey 生成 part 累积对账的键：messageID+partID 唯一标识一个 part

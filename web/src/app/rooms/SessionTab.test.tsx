@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { archiveSession, fetchRoomMessages, fetchSessionDetail, joinSessionCard, markRoomRead } from '../../api/rooms'
+import { ApiError } from '../../api/client'
 import { fetchCards } from '../../api/ledger'
 import { openSessionDetail } from './sessionDetailOpener'
 import { ApiError } from '../../api/client'
@@ -63,7 +64,7 @@ describe('SessionTab', () => {
   it('历史鉴权失败时显示失效原因，不谎报会话没有消息', async () => {
     vi.mocked(fetchRoomMessages).mockRejectedValue(new ApiError(401, '会话失效'))
     render(<SessionTab sessionId="session:7" title="架构物理化" />)
-    expect(await screen.findByRole('alert')).toHaveTextContent('会话失效')
+    expect(await screen.findByRole('alert')).toHaveTextContent('会话已失效')
     expect(screen.queryByText('（还没有消息）')).toBeNull()
   })
 
@@ -173,6 +174,31 @@ describe('SessionTab', () => {
     await user.click(await screen.findByRole('button', { name: '拉卡进群' }))
     expect(await screen.findByText('已在会话')).toBeInTheDocument()
     expect(screen.getByRole('checkbox', { name: '选择 B1' })).toBeDisabled()
+  })
+
+  // B406：401 是 usePoll 的终止态（停表、data 恒 null）——消费端必须把它渲染成
+  // 过期横幅，而不是把「还没有消息」空态挂成永久假读数。
+  it('历史流 401：消息区渲染过期横幅替代「还没有消息」假读数，断线文案不混入', async () => {
+    vi.mocked(fetchRoomMessages).mockRejectedValue(
+      new ApiError(401, '未授权：浏览器会话已失效，请重新执行 handoff console 兑换 cookie'))
+    render(<SessionTab sessionId="session:7" title="架构物理化" />)
+    expect(await screen.findByText(/会话已失效/)).toBeInTheDocument()
+    expect(screen.queryByText('（还没有消息）')).not.toBeInTheDocument()
+    // 过期与断线是两种终止语义：footer 的「消息流已断开」不得在 401 场景出现
+    expect(screen.queryByText(/消息流已断开/)).not.toBeInTheDocument()
+  })
+
+  it('详情流 401：抽屉渲染过期横幅而非「正在读取…」', async () => {
+    vi.mocked(fetchSessionDetail).mockRejectedValue(
+      new ApiError(401, '未授权：浏览器会话已失效，请重新执行 handoff console 兑换 cookie'))
+    vi.mocked(fetchRoomMessages).mockRejectedValue(
+      new ApiError(401, '未授权：浏览器会话已失效，请重新执行 handoff console 兑换 cookie'))
+    render(<SessionTab sessionId="session:7" title="架构物理化" />)
+    await screen.findByText(/会话已失效/)
+    act(() => { openSessionDetail('session:7') })
+    const drawer = await screen.findByTestId('session-drawer')
+    expect(within(drawer).getByText(/会话已失效/)).toBeInTheDocument()
+    expect(within(drawer).queryByText('正在读取…')).not.toBeInTheDocument()
   })
 })
 

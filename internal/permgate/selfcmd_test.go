@@ -125,3 +125,73 @@ func TestIsSelfCommandCommandPosition(t *testing.T) {
 		})
 	}
 }
+
+// TestSearchPatternExceptionNotSelfCommand —— B383 S2b③：自指令搜索参数例外。
+// 仅 grep 的纯搜索参数（首词元、-e/--regexp 的 VALUE）与显式 rg --no-config 的
+// 纯搜索参数可排除参数里的 handoff 字样；命令替换、执行包装器、rg --pre、
+// rg --config、真正调用 handoff 的形态不享受例外。修前 -e/-c/-E 触发通用
+// 执行包装器判据把搜索词误判成命令位置（卡事件 16971），红例修后必须放行。
+func TestSearchPatternExceptionNotSelfCommand(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want bool
+	}{
+		// —— 红例：纯搜索参数位上的 handoff 不得判自指令 ——
+		{"grep -e 搜索词", `grep -e handoff docs/`, false},
+		{"grep -c 计数旗标加搜索词", `grep -c handoff docs/x.md`, false},
+		{"grep -E 扩展正则旗标", `grep -E handoff x`, false},
+		{"grep 引号包裹的搜索词", `grep -e "x handoff y" docs/`, false},
+		{"grep --regexp= 长旗标", `grep --regexp=handoff docs/`, false},
+		{"rg 显式 --no-config 的 -e 搜索词", `rg --no-config -e handoff internal/`, false},
+		{"rg --no-config 的 --regexp 长旗标", `rg --no-config --regexp handoff x`, false},
+		{"rg --no-config 旗标在后", `rg -e handoff internal/ --no-config`, false},
+		// —— 安全底线：改前改后都必须命中 ——
+		{"rg 无 --no-config 不享受例外", `rg -e handoff internal/`, true},
+		{"rg --pre 不享受例外", `rg --pre handoff dispatch -e x`, true},
+		{"rg --config 不享受例外", `rg --config x.conf -e handoff y`, true},
+		{"env 包装器不享受例外", `env grep -e handoff docs/`, true},
+		{"eval 包装器不享受例外", `eval grep -e handoff docs/`, true},
+		{"段首 handoff 不享受例外", `handoff dispatch`, true},
+		{"管道后段首 handoff", `grep -e handoff docs/ && handoff dispatch`, true},
+		{"命令替换不在例外内", "grep $(handoff) x", false},
+		{"文件位上的 handoff 维持现状", `grep pattern handoff dispatch`, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			hit, sub := IsSelfCommand(c.in)
+			if hit != c.want {
+				t.Fatalf("IsSelfCommand(%q) = (%v, %q)，期望 hit=%v", c.in, hit, sub, c.want)
+			}
+		})
+	}
+}
+
+// TestSearchPatternExceptionThroughJudge 生产判定面：卡事件 16971 的形态经
+// judgeBash 修后应落安全命令白名单 AutoAllow；无 --no-config 的 rg 维持升级。
+func TestSearchPatternExceptionThroughJudge(t *testing.T) {
+	g := newTestGate(t)
+	sc := newRmScope(t)
+	cases := []struct {
+		name string
+		cmd  string
+		want Action
+		rule string
+	}{
+		{"grep -e 搜索词落白名单", `grep -e handoff docs/`, AutoAllow, RuleSafeCommand},
+		{"grep -c 计数加搜索词落白名单", `grep -c handoff docs/x.md`, AutoAllow, RuleSafeCommand},
+		{"rg --no-config 落白名单", `rg --no-config -e handoff internal/`, AutoAllow, RuleSafeCommand},
+		{"rg 无 --no-config 维持升级", `rg -e handoff internal/`, Escalate, RuleSelfCommand},
+		{"rg --pre 走人工门", `rg --pre cat pattern .`, Escalate, RuleManualGate},
+		{"env 包装的 rg 维持升级", `env rg --no-config -e handoff x`, Escalate, RuleSelfCommand},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			v := g.Judge(Request{Tool: "bash", Command: tc.cmd}, sc)
+			if v.Action != tc.want || v.Rule != tc.rule {
+				t.Fatalf("command %q verdict = %s（rule=%q reason=%q），期望 %s（rule=%q）",
+					tc.cmd, v.Action, v.Rule, v.Reason, tc.want, tc.rule)
+			}
+		})
+	}
+}

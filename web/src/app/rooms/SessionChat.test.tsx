@@ -43,7 +43,7 @@ beforeEach(() => {
 
 describe('SessionChat', () => {
   it('群主行与卡 chips 行不再渲染（B358.8 #3 反例：两块迁详情抽屉）', () => {
-    render(<SessionChat sessionId="session:1" summary={summary()} events={[]} historyError="" onSent={() => {}} />)
+    render(<SessionChat sessionId="session:1" summary={summary()} events={[]} historyExpired={false} historyError="" onSent={() => {}} />)
     expect(screen.queryByTestId('session-card-chip')).toBeNull()
     expect(screen.queryByText(/群主：/)).toBeNull()
     expect(document.body.textContent).not.toContain('还没配人')
@@ -52,10 +52,10 @@ describe('SessionChat', () => {
   it('拉卡入口在输入框左下工具钮：点击回调触发；不传 onJoinCard 不渲染', async () => {
     const onJoinCard = vi.fn()
     const user = userEvent.setup()
-    const view = render(<SessionChat sessionId="session:1" summary={summary()} events={[]} historyError="" onSent={() => {}} onJoinCard={onJoinCard} />)
+    const view = render(<SessionChat sessionId="session:1" summary={summary()} events={[]} historyExpired={false} historyError="" onSent={() => {}} onJoinCard={onJoinCard} />)
     await user.click(screen.getByRole('button', { name: '拉卡进群' }))
     expect(onJoinCard).toHaveBeenCalledOnce()
-    view.rerender(<SessionChat sessionId="session:1" summary={summary()} events={[]} historyError="" onSent={() => {}} />)
+    view.rerender(<SessionChat sessionId="session:1" summary={summary()} events={[]} historyExpired={false} historyError="" onSent={() => {}} />)
     expect(screen.queryByRole('button', { name: '拉卡进群' })).toBeNull()
   })
 
@@ -65,7 +65,7 @@ describe('SessionChat', () => {
       <SessionChat
         sessionId="session:1" summary={summary()}
         events={[event(41, '商定的是走分支 B', { actor: 'user:sy' }), event(42, '@B233.16 收口归你，别撞 14 的分支', { payload: { room: 'session:1', kind: 'user', body: '@B233.16 收口归你', reply_to: 41, mentions: ['B233.16'] } })]}
-        historyError="" onSent={() => {}}
+        historyExpired={false} historyError="" onSent={() => {}}
       />,
     )
     const at = screen.getByTestId('mention-42-0')
@@ -80,7 +80,7 @@ describe('SessionChat', () => {
     render(
       <SessionChat sessionId="session:1" summary={summary()}
         events={[event(41, '商定的是走分支 B', { actor: 'user:sy' })]}
-        historyError="" onSent={() => {}} />,
+        historyExpired={false} historyError="" onSent={() => {}} />,
     )
     await user.hover(screen.getByTestId('msg-41'))
     await user.click(screen.getByRole('button', { name: '回复 #41' }))
@@ -94,7 +94,7 @@ describe('SessionChat', () => {
     render(
       <SessionChat sessionId="session:1" summary={summary()}
         events={[event(41, '商定的是走分支 B', { actor: 'user:sy' })]}
-        historyError="" onSent={() => {}} />,
+        historyExpired={false} historyError="" onSent={() => {}} />,
     )
     await user.click(screen.getByRole('button', { name: '回复 #41' }))
     await user.type(screen.getByRole('textbox', { name: '发送消息' }), '收到')
@@ -107,7 +107,7 @@ describe('SessionChat', () => {
   it('@ 输入联想：键入 @ 出候选、空座不进候选、实时筛选、Enter 插入完整 token（B358.8 #2）', async () => {
     const user = userEvent.setup()
     const onSent = vi.fn()
-    render(<SessionChat sessionId="session:1" summary={summary()} events={[]} historyError="" onSent={onSent} />)
+    render(<SessionChat sessionId="session:1" summary={summary()} events={[]} historyExpired={false} historyError="" onSent={onSent} />)
     const input = screen.getByRole('textbox', { name: '发送消息' })
     await user.type(input, '@')
     expect(screen.getByTestId('mention-menu')).toBeInTheDocument()
@@ -125,7 +125,7 @@ describe('SessionChat', () => {
 
   it('@ 联想键盘语义：Esc 关闭面板，token 变化重开；点选插入', async () => {
     const user = userEvent.setup()
-    render(<SessionChat sessionId="session:1" summary={summary()} events={[]} historyError="" onSent={() => {}} />)
+    render(<SessionChat sessionId="session:1" summary={summary()} events={[]} historyExpired={false} historyError="" onSent={() => {}} />)
     const input = screen.getByRole('textbox', { name: '发送消息' })
     await user.type(input, '@sy')
     expect(screen.getAllByRole('option')).toHaveLength(1)
@@ -150,7 +150,7 @@ describe('SessionChat', () => {
           { identity: 'user:sy', kind: 'seat', status: 'working', card_id: 'B1', card_title: '席位卡' },
           { identity: 'user:sy', kind: 'human', status: 'working' },
         ] })}
-        events={[]} historyError="" onSent={() => {}}
+        events={[]} historyExpired={false} historyError="" onSent={() => {}}
       />,
     )
     await user.type(screen.getByRole('textbox', { name: '发送消息' }), '@')
@@ -163,7 +163,7 @@ describe('SessionChat', () => {
   it('发送：正文里的 @token 解析进 mentions（服务端据此寻址）', async () => {
     const onSent = vi.fn()
     const user = userEvent.setup()
-    render(<SessionChat sessionId="session:1" summary={summary()} events={[]} historyError="" onSent={onSent} />)
+    render(<SessionChat sessionId="session:1" summary={summary()} events={[]} historyExpired={false} historyError="" onSent={onSent} />)
     await user.type(screen.getByRole('textbox', { name: '发送消息' }), '@B233.16 收口归你')
     await user.click(screen.getByRole('button', { name: '发送' }))
     await waitFor(() => expect(sendRoomMessage).toHaveBeenCalledWith('session:1', '@B233.16 收口归你', { mentions: ['B233.16'] }))
@@ -173,7 +173,7 @@ describe('SessionChat', () => {
   it('发送 403 渲染可行动原文（控制台非成员——岔口 1 的组件半边）', async () => {
     vi.mocked(sendRoomMessage).mockRejectedValue(new ApiError(403, '你不是这场会话的成员'))
     const user = userEvent.setup()
-    render(<SessionChat sessionId="session:1" summary={summary()} events={[]} historyError="" onSent={() => {}} />)
+    render(<SessionChat sessionId="session:1" summary={summary()} events={[]} historyExpired={false} historyError="" onSent={() => {}} />)
     await user.type(screen.getByRole('textbox', { name: '发送消息' }), 'hi')
     await user.click(screen.getByRole('button', { name: '发送' }))
     expect(await screen.findByRole('alert')).toHaveTextContent('你不是这场会话的成员')
@@ -186,7 +186,7 @@ describe('SessionChat', () => {
     vi.mocked(addSessionMember).mockResolvedValue({ ok: true })
     const onSent = vi.fn()
     const user = userEvent.setup()
-    render(<SessionChat sessionId="session:1" summary={summary()} events={[]} historyError="" onSent={onSent} />)
+    render(<SessionChat sessionId="session:1" summary={summary()} events={[]} historyExpired={false} historyError="" onSent={onSent} />)
     await user.type(screen.getByRole('textbox', { name: '发送消息' }), 'hi')
     await user.click(screen.getByRole('button', { name: '发送' }))
     expect(await screen.findByRole('alert')).toHaveTextContent('书写者与房间身份不符')
@@ -203,7 +203,7 @@ describe('SessionChat', () => {
   it('一键只在 403 出现：非成员判定按状态码，其余错误（如 500）不给加入入口', async () => {
     vi.mocked(sendRoomMessage).mockRejectedValue(new ApiError(500, '账本写失败'))
     const user = userEvent.setup()
-    render(<SessionChat sessionId="session:1" summary={summary()} events={[]} historyError="" onSent={() => {}} />)
+    render(<SessionChat sessionId="session:1" summary={summary()} events={[]} historyExpired={false} historyError="" onSent={() => {}} />)
     await user.type(screen.getByRole('textbox', { name: '发送消息' }), 'hi')
     await user.click(screen.getByRole('button', { name: '发送' }))
     expect(await screen.findByRole('alert')).toHaveTextContent('账本写失败')
@@ -214,7 +214,7 @@ describe('SessionChat', () => {
     render(
       <SessionChat sessionId="session:1" summary={summary({ archived: true })}
         events={[event(41, '商定的是走分支 B', { actor: 'user:sy' })]}
-        historyError="" onSent={() => {}} />,
+        historyExpired={false} historyError="" onSent={() => {}} />,
     )
     expect(screen.getByRole('textbox', { name: '发送消息' })).toBeDisabled()
     expect(screen.getByText('会话已归档，只读。')).toBeInTheDocument()
@@ -227,7 +227,7 @@ describe('SessionChat', () => {
         event(51, '甲', { actor: 'user:sycm', payload: { room: 'session:1', kind: 'user', body: '甲', device: 'mbp / Safari' } }),
         event(52, '乙', { actor: 'user:sycm' }),
       ]}
-      historyError="" onSent={() => {}} />)
+      historyExpired={false} historyError="" onSent={() => {}} />)
     expect(await screen.findByText(/user:sycm · mbp \/ Safari/)).toBeInTheDocument()
     expect(screen.getByTestId('msg-52')).toHaveTextContent('user:sycm · #52')
   })
@@ -235,7 +235,7 @@ describe('SessionChat', () => {
   it('自方判定取服务端人名：本人消息靠右（items-end）', async () => {
     vi.mocked(fetchIdentity).mockResolvedValue({ member: 'user:sycm', device: '', configured: true })
     render(<SessionChat sessionId="session:1" summary={summary()}
-      events={[event(53, '我', { actor: 'user:sycm' })]} historyError="" onSent={() => {}} />)
+      events={[event(53, '我', { actor: 'user:sycm' })]} historyExpired={false} historyError="" onSent={() => {}} />)
     expect(await screen.findByTestId('msg-53')).toHaveClass('items-end')
   })
 })

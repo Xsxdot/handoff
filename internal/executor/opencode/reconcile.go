@@ -21,6 +21,15 @@ import (
 	"github.com/Xsxdot/handoff/internal/executor/turn"
 )
 
+// rejectedToolSentinel 是 opencode 权限被拒时写进 tool part state.error 的原生文案
+// （B383 Wave 0 对账归因的唯一判据，单点定义）。
+//
+// 实证来源：单一样本 testdata/session_rejectedend.json（真机会话 msg_febd7418…）。
+// **未记录产生该样本的 opencode 版本**，文案漂移风险已知——漂移的退化方向是安全
+// 侧：新版本改了措辞 ⇒ 精确匹配不命中 ⇒ 对账维持既有兜底 ask（fail-closed），
+// 绝不会把普通工具报错误判成权限被拒。版本确认排 acceptance（新鲜抓包验证）。
+const rejectedToolSentinel = "The user rejected permission to use this specific tool call."
+
 // Reconcile 把断连期间错过的回合终态补回事件流。
 //
 // 参数：
@@ -144,9 +153,9 @@ func (a *Adapter) Reconcile(ctx context.Context, taskID string) (executor.Reconc
 // row4 为什么成立（工具 error ⇒ 回合结束）：本会话 14 条带 state.status=error
 // 工具 part 的消息 14/14 后面紧跟的都是 user 消息（或就是会话尾），零反例——
 // 「工具报错模型会自己重试、回合不结束」的担心被数据否掉。更重要的代码佐证：
-// 实时路径 adapter.go:1236-1241 早就把「回合因权限被拒而终止」当作回合结束并转成
-// question 唤醒协调者（rejectedTurnQuestion，adapter.go:482-488）——row4 不是
-// 新发明，是让对账口径与实时路径对齐。
+// 实时路径 mapIdle 早就把「回合因权限被拒而终止」当作回合结束并收口成失败结果
+// （VoidReason=权限被拒，B383 Wave 0）——row4 不是新发明，是让对账口径与实时
+// 路径对齐。归因（被拒 vs 普通报错）由 classifyReconciled 按 ToolError 哨兵判。
 //
 // row6 为什么是窄兜底且判已结束：真实 payload 里 completed 的消息几乎总带 finish
 // （456 条：tool-calls 452 / unknown 2 / 缺席 2，缺席那两条一条是 abort、一条是
@@ -216,17 +225,30 @@ func (a *Adapter) classifyReconciled(r *runState, msg *SessionMessage) (executor
 						turn.TruncateRunes(msg.ErrorText, 200)}},
 			"补回了一条断连期间丢失的失败结果"
 	}
-	// 工具被拒/报错而终（row4）：实时路径把「回合因权限被拒而终止」转成 question
-	// 唤醒协调者（rejectedTurnQuestion，adapter.go:1236-1241），对账补发必须同形——
-	// 这里没有实时路径的 turnRejected 清单，但工具 error 本身就是要告诉协调者的结论。
-	// 文本取消息文本（可能是空：纯工具消息无 text），有文本则带原文
+	// 工具被拒/报错而终（row4）。B383 Wave 0 起按 ToolError 精确归因：
+	//   - ToolError 精确命中拒绝哨兵 → 补与实时路径同形的失败 result
+	//     （VoidReason=权限被拒）。旧实现一律发 question，会让断线前的拒绝在对账
+	//     时多出一张 ask 工单；
+	//   - 不命中（普通工具报错/文案漂移）→ 维持 question 现状（fail-closed）：
+	//     row4 的 ToolStatus=error 本就双义，归因拿不准时宁可回到人工裁决，绝不
+	//     把普通故障冒认成人工拒绝。
 	if msg.ToolStatus == "error" {
+		if msg.ToolError == rejectedToolSentinel {
+			a.log.Warn("对账发现回合因权限被拒终结（哨兵命中），转失败结果交协调者",
+				"task", r.taskID, "msg", msg.ID)
+			return executor.AdapterEvent{Type: "result", SessionID: r.session,
+					Result: &executor.Result{OK: false,
+						FailReason: "断线期间回合因权限被拒终结：" + msg.ToolError,
+						VoidReason: executor.VoidReasonPermissionDenied}},
+				"补回了一条断连期间因权限被拒终结的回合（失败结果）"
+		}
 		text := "断连期间该回合以工具被拒或工具报错告终"
 		if msg.Text != "" {
 			text += "，回合原文：\n" + turn.TailRunes(msg.Text, 1000)
 		}
 		a.log.Warn("对账发现回合以工具错误告终，转提问交协调者裁决",
-			"task", r.taskID, "msg", msg.ID)
+			"task", r.taskID, "msg", msg.ID,
+			"tool_error", turn.TruncateRunes(msg.ToolError, 120))
 		return executor.AdapterEvent{Type: "question", SessionID: r.session,
 				Text: turn.ClampQuestion(text)},
 			"补回了一条断连期间丢失的回合（工具被拒/报错而终），需人工裁决"

@@ -7,6 +7,7 @@ import { useState } from 'react'
 import type { DragEvent } from 'react'
 import type { SessionSummary } from '../../api/rooms'
 import { formatRelative } from '../lib/format'
+import { SessionExpiredBanner } from '../lib/Banners'
 import { DRAG_SESSION_MIME } from '../workbench/paneDrop'
 import { filterSessionsByProject, totalUnread } from './sessionModel'
 
@@ -35,7 +36,7 @@ const MEMBER_COLORS = ['#fde68a', '#dbeafe', '#dcfce7', '#ede9fe', '#fce7f3']
 // 横排上限：第 6 枚起折成「+N」文本 chip（N = 总数 − 5）。
 const MEMBER_AVATAR_MAX = 5
 
-export function SessionSidebar({ sessions, loading, errorText, needsOnly, onToggleNeeds, onOpen, onCreate,
+export function SessionSidebar({ sessions, loading, errorText, expired = false, needsOnly, onToggleNeeds, onOpen, onCreate,
   projectFilter, onProjectFilter, projectOptions, projectOfCard, compact = false }: SessionSidebarProps) {
   const byProject = filterSessionsByProject(sessions, projectOfCard, projectFilter)
   const visible = needsOnly ? byProject.filter((session) => session.needs_human) : byProject
@@ -71,7 +72,7 @@ export function SessionSidebar({ sessions, loading, errorText, needsOnly, onTogg
           <button type="button" aria-pressed={needsOnly} onClick={onToggleNeeds} className={needsOnly ? 'font-semibold text-amber-700' : 'text-muted-foreground'}>
             ⚑ 需要你 <span data-testid="needs-count" className="rounded-full bg-amber-100 px-1.5 text-[10px] font-semibold text-amber-700">{needsCount}</span>
           </button>
-          <span className="ml-auto shrink-0 text-muted-foreground" data-testid="session-total">{loading ? '读取中' : `${visible.length} 个会话`}</span>
+          <span className="ml-auto shrink-0 text-muted-foreground" data-testid="session-total">{loading && !expired ? '读取中' : `${visible.length} 个会话`}</span>
         </div>
       )}
       {compact && (
@@ -89,7 +90,7 @@ export function SessionSidebar({ sessions, loading, errorText, needsOnly, onTogg
             className={!needsOnly ? 'rounded-full border bg-accent px-2 py-0.5 font-medium' : 'rounded-full border px-2 py-0.5 text-muted-foreground'}>
             全部
           </button>
-          <span className="ml-auto text-muted-foreground" data-testid="session-total">{loading ? '读取中' : `${visible.length} 个会话`}</span>
+          <span className="ml-auto text-muted-foreground" data-testid="session-total">{loading && !expired ? '读取中' : `${visible.length} 个会话`}</span>
         </div>
       )}
       {compact && (
@@ -103,9 +104,10 @@ export function SessionSidebar({ sessions, loading, errorText, needsOnly, onTogg
           </select>
         </div>
       )}
-      {errorText !== '' && <p role="alert" className="shrink-0 border-b bg-amber-50 px-3 py-1.5 text-xs text-amber-800">会话列表已断开：{errorText}</p>}
+      {expired ? <SessionExpiredBanner />
+        : errorText !== '' && <p role="alert" className="shrink-0 border-b bg-amber-50 px-3 py-1.5 text-xs text-amber-800">会话列表已断开：{errorText}</p>}
       <div className="min-h-0 flex-1 overflow-y-auto p-1">
-        {!loading && errorText === '' && visible.length === 0 ? (
+        {!expired && !loading && errorText === '' && visible.length === 0 ? (
           <p className="p-2 text-sm text-muted-foreground">（暂无会话）</p>
         ) : visible.map((session) => (
           <button key={session.id} type="button" data-testid="session-row" aria-label={`会话 ${session.title}`}

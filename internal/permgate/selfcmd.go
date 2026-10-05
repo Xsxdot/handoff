@@ -97,6 +97,11 @@ func splitSegments(s string) []string {
 // 时，handoff 可能正处命令位置，仍按旧判据整段定位首个 handoff 词元——包装器
 // 形态维持现状、不额外放宽（fail-closed）。所以本函数只会**减少**命中，不会
 // 新增：段首命中是旧命中的子集，包装器命中与旧判据逐字相同。
+//
+// B383 S2b③ 补一路收窄：grep/rg 纯搜索段（rg 须显式 --no-config）里落在纯
+// 搜索参数位（首词元、-e/--regexp 的 VALUE）的 handoff 是数据不是命令——
+// 通用 -c/-e/-E 执行包装器判据会把 `grep -e handoff docs/` 误判成命令位置
+// （卡事件 16971），见 searchPatternException。
 func judgeSegment(seg string) (bool, string) {
 	fields := strings.Fields(seg)
 	if len(fields) == 0 {
@@ -107,6 +112,11 @@ func judgeSegment(seg string) (bool, string) {
 	case isHandoffBinary(fields[0]):
 		// 段首即 handoff 调用：命令位置。
 		idx = 0
+	case searchPatternException(seg):
+		// grep/rg 纯搜索段：全部 handoff 词元都在纯搜索参数位，是数据不是
+		// 命令 → 无自指令候选。命令替换、执行包装器、rg --pre/--config、
+		// 段首 handoff 都到不了这里（见 searchPatternException 的否决面）。
+		return false, ""
 	case hasExecWrapper(seg, fields):
 		// 段内含执行包装器：无法排除 handoff 处于命令位置，按旧判据整段定位。
 		// 这一路是 `sh -c "handoff dispatch"`、`xargs handoff dispatch` 的落点。
@@ -122,6 +132,89 @@ func judgeSegment(seg string) (bool, string) {
 		return false, ""
 	}
 	return judgeHandoffCall(fields[idx+1:])
+}
+
+// searchPatternException 判定一段是否为「handoff 词元全部落在纯搜索参数位」
+// 的 grep/rg 纯搜索段（B383 S2b③）。
+//
+// 例外面（严格，v6 §S2）：
+//   - 段首必须是裸 grep 或裸 rg（经 basename 归一，与 isHandoffBinary 的
+//     调用形态识别同口径）；其余头一律不享受例外；
+//   - rg 必须显式带 --no-config（RIPGREP_CONFIG_PATH 可注入 --pre 等执行面）；
+//   - rg 带 --pre/--pre= 或 --config/--config= 时不享受（--pre 会对每个检索
+//     文件执行任意程序，此时 handoff 词元可能是真实被执行者）；
+//   - 段内含命令替换/反引号时不享受（运行时词元不可静态证明）；
+//   - 任何 handoff 词元落在纯搜索参数位之外（如文件参数位）时不享受——维持
+//     既有包装器判据的现状判定，不因例外放宽。
+//
+// 纯搜索参数位 = 首个位置参数（模式词元）与 -e VALUE / --regexp=VALUE /
+// --regexp VALUE 的 VALUE。词元化用 rmTokens（双引号剥离、单引号字符保留），
+// 引号包裹的搜索词（`grep -e "x handoff y"`）因此并成一个词元、不再按
+// strings.Fields 的引号边界误拆。
+func searchPatternException(seg string) bool {
+	toks, ok := rmTokens(seg)
+	if !ok || len(toks) == 0 {
+		return false
+	}
+	head := tokenBase(toks[0])
+	isGrep, isRG := head == "grep", head == "rg"
+	if !isGrep && !isRG {
+		return false
+	}
+	if isRG {
+		noConfig := false
+		for _, t := range toks[1:] {
+			if t == "--no-config" {
+				noConfig = true
+				break
+			}
+		}
+		// 无显式 --no-config 不享受例外；--pre/--config 形态同样不享受。
+		if !noConfig || hasRGExecuteFlag(toks[1:]) {
+			return false
+		}
+		for _, t := range toks[1:] {
+			if t == "--config" || strings.HasPrefix(t, "--config=") {
+				return false
+			}
+		}
+	}
+	if hasCommandSubstitution(seg) {
+		return false
+	}
+	return handoffTokensAllSearch(toks)
+}
+
+// handoffTokensAllSearch 判定段内全部 handoff 词元是否都落在纯搜索参数位。
+//
+// 首个位置参数是模式词元（grep/rg 的 PATTERN）；其后的位置参数是输入文件，
+// 文件位上的 handoff 不在例外内（返回 false，维持现状判定）。其余旗标不解释
+// 取值语义——其后的词元按位置参数处理，误判方向是「例外不适用 → 现状升级」，
+// 安全侧。
+func handoffTokensAllSearch(toks []string) bool {
+	firstPositional := false
+	valueNext := false // -e / --regexp 的独立 VALUE 形态
+	for _, t := range toks[1:] {
+		if valueNext {
+			valueNext = false
+			continue // 搜索参数 VALUE：任何词元都是数据
+		}
+		switch {
+		case t == "-e" || t == "--regexp":
+			valueNext = true
+		case strings.HasPrefix(t, "--regexp="):
+			// VALUE 粘连在旗标上：词元整体不是 handoff 二进制名，无需分类
+		case strings.HasPrefix(t, "-"):
+			// 其余旗标（含 -c/-E 等触发通用包装器判据的形态）：取值语义不解释
+		default:
+			if !firstPositional {
+				firstPositional = true // 首个位置参数 = 模式词元（纯搜索参数）
+			} else if isHandoffBinary(t) {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // judgeHandoffCall 对一次「命令位置的 handoff 调用」做三级判定。

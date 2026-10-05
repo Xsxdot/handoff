@@ -942,3 +942,12 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 - **diff 烙基线指纹**：视图 diff 生成时记录基线 scannedAt/commit，absorb 时对不上即拒——把「diff 挂在已漂移基线上」从吸收期显式拒绝提前到生成期。触发条件：守卫拒绝率显示对账成本失控时提前。来源：B379 spec 弃选。
 - **codegraph CLI 内建扫描命令**：分支视图产出收进工具（现在由执行侧扫描纪律手工产出），与基线指纹配套。来源：B379 spec 弃选。
 - **重扫扫描配方的边提取保真度**：取代组 33 条分支时态边未被 09-14 重扫复现（B233.1–.5），且 internal/agentd/sessionsapi.go 等 B358 特性文件在基线 0 节点（台账 §6.3 覆盖债）——同族缺口，修复途径是对 main 的新鲜全量扫描并核对配方；B379 收口时 validate --stale 存量 1165 条亦归此修复（预 1215，本卡对账净减 50）。来源：B379 spec OOS / plan 节点台账 §6.3 / §7.13。
+## 来自 B383 spec（2026-09-28，本期不做、后续要做）
+
+- **跨任务同类指纹记忆**：拍板 B 选 a（静态判据扩容承接）后被否决的 b 案——动 schema/新事件、TTL 与快照版本语义、deny 不可记忆；若静态扩容落地后同类重复升级仍痛，从本条重走 spec。来源：`docs/superpowers/specs/b383.md` §3 WP3。
+- **executor 只读基准**：Go 模块缓存等以 `Paths` 上报的只读读，在 `judgeBash` 落点循环（`permgate.go:242-249`）先于安全命令白名单（`:267`）被范围门拦下；承接需 Scope 层「只读基准」并与写面分离，另立卡。来源：`docs/superpowers/specs/b383.md` §3 WP3 / §8。
+- **opencode 拒绝理由送达模型**：拒绝理由现是死存储（`adapter.go:702` 丢参、guidance 唯一消费点被 `!taskIsOpenCode` 门住 `manager.go:2896-2901`），模型学不到为何被拒；打开 in-band 或 guidance 通路是独立改进。来源：`docs/superpowers/specs/b383.md` §8。
+
+## 来自 B383 acceptance（2026-10-05，本期不做、后续要做）
+
+- **带文本拒绝终局的兜底提问**：模型在被拒前输出过文字时，回合以文本终结走 git 兜底提问——一次拒绝仍产生第二次人工往返（两次探针实证）。v6 §S3 的收口范围是「空回合」；带文本形态若要收口（如「回合因被拒终结即转 result，不管文本」），需重走 spec 定语义（文本内容会丢给谁、与 B21 零文本报告的边界）。来源：`docs/superpowers/ledgers/ledger-b383-spec.md` #70。

@@ -6,6 +6,8 @@
 // sendRoomMessage 契约不动）。缝位：replyTarget 现只喂引用条显示，B365 接线时
 // 仅消费 replyTarget.seq 作为 reply_to 字段，不新增 wire 字段。
 // B358.8 #3：群主与卡列表迁详情抽屉（SessionDetail），拉卡入口在输入框左下工具钮。
+// B406：历史流 401 是终止态（usePoll 停表、data 恒 null）——消息区渲染过期横幅；
+// 「还没有消息」只属于正常拉到的空会话，否则 401 会把空态挂成永久假读数。
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { CornerUpLeft, ListPlus } from 'lucide-react'
 import type { KeyboardEvent } from 'react'
@@ -14,6 +16,7 @@ import { addSessionMember, fetchIdentity, sendRoomMessage } from '../../api/room
 import { ApiError } from '../../api/client'
 import { errorMessage } from '../lib/format'
 import { cn } from '@/lib/utils'
+import { SessionExpiredBanner } from '../lib/Banners'
 import { logRoom } from './roomLog'
 import { applyMention, extractSessionMentions, isSelfActor, memberKindLabel, mentionCandidates, segmentBody, signatureText } from './sessionModel'
 
@@ -23,6 +26,8 @@ export interface SessionChatProps {
   events: RoomHistoryItem[]
   historyError: string
   historyLoading?: boolean
+  // 历史流 401 终止态（B406）：与 historyError（断线）互斥——宿主保证不同时为真
+  historyExpired: boolean
   onSent: () => void
   onJoinCard?: () => void
   // compact（B369.8 T5）：回复钮常驻（岔口 3 #1，键盘 focus 现身路径保留）、
@@ -84,7 +89,7 @@ function MessageRow({ event, referenced, highlight, archived, selfMember, onJump
   )
 }
 
-export function SessionChat({ sessionId, summary, events, historyError, historyLoading = false, onSent, onJoinCard, compact = false, onOpenCard }: SessionChatProps) {
+export function SessionChat({ sessionId, summary, events, historyError, historyLoading = false, historyExpired, onSent, onJoinCard, compact = false, onOpenCard }: SessionChatProps) {
   const [draft, setDraft] = useState('')
   const [sending, setSending] = useState(false)
   const [sendError, setSendError] = useState('')
@@ -243,7 +248,8 @@ export function SessionChat({ sessionId, summary, events, historyError, historyL
             })}
           </div>
         )}
-        {events.length === 0 ? <p className="text-sm text-muted-foreground">{historyLoading ? '正在读取消息…' : historyError !== '' ? '消息暂时无法读取' : '（还没有消息）'}</p>
+        {historyExpired ? <SessionExpiredBanner />
+          : events.length === 0 ? <p className="text-sm text-muted-foreground">{historyLoading ? '正在读取消息…' : historyError !== '' ? '消息暂时无法读取' : '（还没有消息）'}</p>
           : events.map((item) => {
             const payload = item.payload as { reply_to?: number }
             const replyTo = typeof payload.reply_to === 'number' && payload.reply_to > 0 ? payload.reply_to : null

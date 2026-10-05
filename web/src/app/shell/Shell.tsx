@@ -238,8 +238,6 @@ export function Shell() {
   // 列表组件只渲染。未启用账本时轮询关闭（与旧房间面同门控）。
   const sessionsState = usePoll((signal) => fetchSessions(signal), COLLAB_POLL_MS,
     { enabled: ledgerEnabled, timeoutMs: 15_000 })
-  const sessionsError = sessionsState.sessionExpired ? '会话失效，请重新打开 handoff console'
-    : sessionsState.disconnected ? sessionsState.errorText : ''
   const sessions = useMemo(() => sessionsState.data ?? [], [sessionsState.data])
   // pty 会话流（B369.10）：项目详情面「这台机器上的终端会话」的数据源。
   // 只在紧凑视口开表（fetchPtySessions('all') 是会话恢复的唯一真相源，桌面详情
@@ -981,8 +979,11 @@ export function Shell() {
         </div>
         {ledgerEnabled && (
           <div className={`flex min-h-0 flex-1 flex-col ${sidebarTab !== 'sessions' ? 'hidden' : ''}`}>
-            <SessionSidebar sessions={sessions} loading={sessionsState.data === null && sessionsError === ''}
-              errorText={sessionsError}
+            {/* B406：401 终止态不算 loading（否则永转圈），过期面交由 expired 渲染 */}
+            <SessionSidebar sessions={sessions}
+              loading={sessionsState.data === null && !sessionsState.disconnected && !sessionsState.sessionExpired}
+              errorText={sessionsState.disconnected ? sessionsState.errorText : ''}
+              expired={sessionsState.sessionExpired}
               needsOnly={needsOnly}
               onToggleNeeds={() => setNeedsOnly((current) => !current)}
               projectFilter={projectFilter}
@@ -1162,8 +1163,9 @@ export function Shell() {
                   ledgerEnabled ? (
                     <SessionSidebar
                       sessions={sessions}
-                      loading={sessionsState.data === null && sessionsError === ''}
-                      errorText={sessionsError}
+                      loading={sessionsState.data === null && !sessionsState.disconnected && !sessionsState.sessionExpired}
+                      errorText={sessionsState.disconnected ? sessionsState.errorText : ''}
+                      expired={sessionsState.sessionExpired}
                       needsOnly={needsOnly}
                       onToggleNeeds={() => setNeedsOnly((current) => !current)}
                       projectFilter={projectFilter}
