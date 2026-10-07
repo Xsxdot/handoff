@@ -131,3 +131,38 @@
       </application>
   ```
 - 无单测接缝（spec §6）：真机项挂起待用户设备（acceptance 节点责任）。
+
+### implement 节点收尾（2026-10-07，分支 b426-mobile-walkthrough）
+
+**全量命令与输出摘要**（三段律：编译全量 / 测试局部 / 集成全量）：
+
+| 命令 | 结果 |
+|---|---|
+| `cd web && npm test`（Step 0 基线） | `Test Files 140 passed (140) / Tests 1709 passed (1709)` |
+| `cd web && npm test`（收口全量） | `Test Files 141 passed (141) / Tests 1727 passed (1727)`（净增 18 测，零失败） |
+| `go build ./...` | 退出码 0、零输出；`git diff main --name-only` 内 `.go` 文件 = 0（预期零 Go diff 成立） |
+| `cd web && npx tsc -b` | **15 个 TS 错误，与 main @95f90fa4 逐文件一致（零新增）**——main 的 typecheck 本就不绿（预存债：SessionChat.test 8 / Shell.tsx 2 / SessionTab.test 2 / Shell.test 1 / SessionSidebar.tsx 1 / SessionSidebar.test 1），vitest 不做类型检查故不影响测试判定。本卡不修（避免扩 diff 面），留协调者裁决是否另立卡。 |
+
+**每故事对应提交**：
+
+| 故事 | 提交 | 关键承重断言 |
+|---|---|---|
+| S1 | `2f6b4397` | 一行筛选三元素并存；点已选「需要你」取消回全部；无「全部」chip；桌面筛选行反例锁原样 |
+| S3 | `b246a508` | 必含①工作流状态卡归语义桶（charter spec 卡→「沟通中」，真实解析链）双端同断言；必含②未知流兜底「进行中」（正反两面）；点已选取消回全部 |
+| S4 | `babd141e` | 主面无行 3 三件；抽屉顶部三件生效（设筛选→关抽屉→列表 filtered）；关抽屉筛选保留；QueuePanel 细横条可展开 |
+| S2 | `556fc6cb` | 项目卡流渲染（图标/名称/›/位置 chips 含活跃数与离线态）；点卡进详情；＋添加项目回调；桌面树四件套不在 compact（反例锁） |
+| S5 | `c992ef6e` | 房间仅一条 header；⋯进详情；详情返回回群聊不出房间；header 返回出房间；终端下钻 chrome 反例四件套（返回条/无横幅/TabBar 在场/返回语义照旧） |
+| S6 | `8ed52fc7` | 无单测接缝——两处配置 `sed -n` 原文逐字核对落本台账上方 + web 全绿；真机挂起待用户设备 |
+
+**S2 形态对照结论**（权威 `prototypes/mobile-app/pages/mobile-projects.html`）：
+apphead（「项目」标题 flex-1 + 右上「＋添加项目」pill）✓；卡=白底圆角块，top 行 36px 圆角图标块（名称前两字符+哈希底色）+名称+› ✓；第二行位置 chips（绿点/灰点+机器名+「N 活跃」amber /「离线」）✓；零活跃位置裸机器名（原型卡三语义）✓。已记录偏离：原型 mock 图标 'ho' 与项目名 'handoff' 不自洽，图标取 plan 权威口径「名称前两字符」='ha'。
+
+**S4 形态对照结论**（权威 `prototypes/mobile-app/pages/mobile-cards.html`）：行 1=apphead（标题+＋新建右位）✓；行 2 chips 单行 ✓——词表偏离原型注③（五锚点），依据用户 2026-10-07 裁决改看板五列（plan 节已记原型注③被实测证伪）；原型无行 3 次级控件→主面已撤出 ✓；原型无排队大盒→细横条 ✓。
+
+**ProjectTree compact 特判裁定**：**保留**。依据：S2 后 grep 确认 ProjectTree 唯一挂载点=Shell:897（`!compact` 门内消费），compact prop 恒 false 成死参数；但移除需改写其内 43 处 compact 消费点及关联测试，虽渲染输出不变，但违反 plan §2「桌面 aside ProjectTree 逐字节不动」验收承诺、churn/回归风险远超收益（plan §3 Step 4 两种裁定均授权，选保留）。
+
+**决策权限内裁量汇总**：S4「从浏览器打开」落行 1 尾（页面级控制留在页面级，抽屉内语义错位）；S2 底色走 projectColorVar+color-mix inline style（不走 Tailwind bg 类，零 index.css 同步）；S5 paneDetail 上提 Shell（三条头部约束需 Shell 知道详情态，内部态+上报有失同步窗口）；locationActiveCount 加 export 复用（plan 明令不另立第二套口径，行为零变化）。
+
+**升级/停回报事项**：无触碰 plan §5 升级线（未动 S3 之外桌面 JSX、未动 API/端点、未触「代办」词表、S6 未加 JS 兜底、Step 0 基线绿）。唯一带出事项 = main 预存 typecheck 债（上表）。
+
+**未验证项**：S6 真机键盘行为（spec §4/§6 明定真机证据归用户设备走查，acceptance 节点补）；Android 壳 manifest 变更的壳侧构建（无 CI 构建接缝，plan §6 已记同因）。
