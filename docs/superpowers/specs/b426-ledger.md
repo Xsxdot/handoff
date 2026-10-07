@@ -67,3 +67,18 @@
   - 「必含②：未知流兜底——flows 未含该卡 workflow 且状态非映射串 → 归「进行中」chip」（正反两面：进行中可见、代办不可见）
   - 「点已选 chip 取消回全部（toggle 原样保留）」
   - 双端 chips 同断言成立 = 同 bug 同修证据；`grep card-status-|CARD_STATUSES` 退出 cards 域外零引用。
+
+### Step 3（S4 卡页头部收敛）
+
+- 红先于实现：`npx vitest run src/app/cards/CardsPage.test.tsx src/app/cards/QueuePanel.test.tsx` → `5 failed | 38 passed`（行 3 三件仍在主面、抽屉无筛选区、QueuePanel 无 compact 分支=功能缺失）。首跑另有 2 处测试笔误（CardsPage.test 未导入 userEvent），属测试代码问题非实现问题，补 import 后收口。
+- 实现：
+  - `CardsPage.tsx`：compact 头部三行收敛两行——行 1 = 工作项+健康指示+⚑需要你(ml-auto)+＋新建+从浏览器打开；行 3 整块删除；`drawerFilters`（项目/工作流/搜索三件，testid `card-drawer-filters`）经新 prop `compactFilters` 注入 CardDrawer；QueuePanel 传 `compact`。
+  - `CardDrawer.tsx`：新增 `compactFilters?: ReactNode` 内容槽，渲染于 header 之下、滚动区之外（aside flex-col，固定顶部）；桌面不传不渲染，aside 类串与块序逐字节不动。
+  - `QueuePanel.tsx`：新增 `compact?: boolean`——compact 容器 `shrink-0 border-b px-3 py-1.5` 细横条；缺省桌面 `mx-4 mt-2 rounded-lg border bg-background p-3` 大盒逐字节不动；展开 state/aria-expanded/列表渲染不变。
+- 执行者裁量（plan §3 Step 3 授权）：「从浏览器打开」落 **行 1 尾**——它是页面级控制（打开当前 /cards 页），放卡抽屉里语义错位（会被读成"打开这张卡"）；仅桌面薄壳 UA 渲染，390px 移动面不受影响。
+- 形态对照（S4 ↔ `mobile-cards.html`）：行 1 = apphead（标题左、＋新建右）✓；行 2 chips 对应原型 .filter 单行——**词表偏离原型注③（五锚点）**：按用户 2026-10-07 裁决改看板五列（台账 plan 节已记原型注③被实测证伪）；原型无行 3 次级控件 → 主面已撤出 ✓；原型无排队大盒 → 细横条 ✓。
+- 绿：`npx vitest run src/app/cards/` → `Test Files 11 passed (11) / Tests 141 passed (141)`，含承重断言：
+  - 「compact 主面无行 3 三件控件；+ 新建升行 1；从浏览器打开保留（行 1 尾）」
+  - 「抽屉顶部筛选区三件生效：设筛选 → 关抽屉 → 背后列表 filtered 反映；重开抽屉筛选保留」（select beta → 关抽屉 → alpha 卡消失 beta 卡在场 → 重开值仍 beta）
+  - 「QueuePanel compact 细横条：收缩态无大边框盒；展开仍列完整队列」（CardsPage 集成 + QueuePanel 单测双面）
+  - 桌面既有断言原样通过（桌面 header 逐字节未动的证据）。

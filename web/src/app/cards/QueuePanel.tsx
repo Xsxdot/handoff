@@ -14,6 +14,10 @@ export interface QueuePanelProps {
   errorText: string
   onToggle: () => void
   onOpenCard: (cardId: string) => void
+  // S4（B426）：compact 收细横条——收缩态单行高（⧗ 排队中 N + 箭头）、无大边框
+  // 盒（原型 mobile-cards 移动端没有这个盒）；展开 state / aria-expanded / 队列
+  // 列表渲染行为不变。缺省 false = 桌面大边框盒逐字节不动。
+  compact?: boolean
 }
 
 /** 返回每张卡的最早服务端位次；不排序、不把空卡号写入结果。 */
@@ -46,6 +50,7 @@ export function QueuePanel({
   errorText,
   onToggle,
   onOpenCard,
+  compact = false,
 }: QueuePanelProps): ReactElement {
   const [localOpen, setLocalOpen] = useState(false)
   const expanded = open || localOpen
@@ -58,7 +63,10 @@ export function QueuePanel({
   }
 
   return (
-    <section className="mx-4 mt-2 rounded-lg border bg-background p-3" aria-label="排队中">
+    <section
+      className={compact ? 'shrink-0 border-b px-3 py-1.5' : 'mx-4 mt-2 rounded-lg border bg-background p-3'}
+      aria-label="排队中"
+    >
       <button
         type="button"
         className="flex w-full items-center justify-between gap-2 text-left text-xs font-semibold"

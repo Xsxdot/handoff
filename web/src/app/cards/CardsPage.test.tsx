@@ -3,6 +3,7 @@
 // 卡到任务深链的管线要真通（B181）。
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import type { Task } from '../../api/types'
 import { CardsPage } from './CardsPage'
@@ -669,7 +670,96 @@ describe('B412 合并视图按各流当前版本看板配置归列', () => {
   })
 })
 
-// —— B369.8 T3：compact 单列扫描面 + 三行头部 ——
+// —— S4（B426）：卡页头部收敛——行 3 次级筛选收进抽屉顶部、+ 新建升行 1、
+// 「从浏览器打开」保留（落点=行 1 尾，执行者裁量记台账）、QueuePanel 细横条。 ——
+describe('S4 卡页头部收敛（B426）', () => {
+  const compactCard = (over: Partial<import('../../api/ledger').CardView> = {}) => ({
+    id: 'B1', title: '卡', status: '进行中', priority: '中', project: 'handoff', workflow: '',
+    parent: '', base_branch: '', attachments: [], following: '', blocked: false, blocked_by: [],
+    merged_count: 0, needs: '', open_decisions: 0, children_total: 0, children_done: 0,
+    conflict: false, open_tickets: 0, ...over,
+  })
+
+  async function renderCompactWithCards(cards: Partial<import('../../api/ledger').CardView>[]) {
+    const ledger = await import('../../api/ledger')
+    vi.mocked(ledger.fetchCards).mockResolvedValue({
+      cards: cards.map((over) => ({ ...compactCard(), ...over }) as import('../../api/ledger').CardView),
+      unlinked: { count: 0, tasks: [], unknown_targets: [] },
+    } as never)
+    render(
+      <MemoryRouter initialEntries={['/cards']}>
+        <Routes>
+          <Route path="/cards" element={<CardsPage compact />} />
+          <Route path="/tasks/:id" element={<p>deep-link-hit</p>} />
+        </Routes>
+      </MemoryRouter>,
+    )
+    await screen.findByTestId('cards-single-column')
+  }
+
+  it('compact 主面无行 3 三件控件；+ 新建升行 1；「从浏览器打开」保留（行 1 尾）', async () => {
+    setUA(DESKTOP_UA)
+    await renderCompactWithCards([{}])
+    // 主面无三件次级控件
+    expect(screen.queryByRole('combobox', { name: '项目' })).toBeNull()
+    expect(screen.queryByRole('combobox', { name: '工作流' })).toBeNull()
+    expect(screen.queryByPlaceholderText('搜 B 号 / 标题')).toBeNull()
+    // + 新建升行 1
+    const newButton = screen.getByRole('button', { name: '+ 新建' })
+    expect(newButton.closest('div')!.textContent).toContain('工作项')
+    // 「从浏览器打开」能力保留（spec 未点名，落点行 1 尾=页面级控制留在页面级）
+    expect(screen.getByRole('button', { name: '从浏览器打开' })).toBeInTheDocument()
+  })
+
+  it('抽屉顶部筛选区三件生效：设筛选 → 关抽屉 → 背后列表 filtered 反映；重开抽屉筛选保留', async () => {
+    const user = userEvent.setup()
+    await renderCompactWithCards([
+      { id: 'B1', title: '甲项目卡', project: 'alpha' },
+      { id: 'B2', title: '乙项目卡', project: 'beta' },
+    ])
+    // 开抽屉（点第一张卡）
+    fireEvent.click(screen.getByText('甲项目卡'))
+    const drawer = await screen.findByRole('dialog', { name: '工作项详情' })
+    // 三件都在抽屉顶部筛选区
+    const filters = within(drawer).getByTestId('card-drawer-filters')
+    expect(within(filters).getByRole('combobox', { name: '项目' })).toBeInTheDocument()
+    expect(within(filters).getByRole('combobox', { name: '工作流' })).toBeInTheDocument()
+    expect(within(filters).getByPlaceholderText('搜 B 号 / 标题')).toBeInTheDocument()
+    // 改值作用于背后列表（state 住 CardsPage）
+    await user.selectOptions(within(filters).getByRole('combobox', { name: '项目' }), 'beta')
+    // 关抽屉
+    fireEvent.click(within(drawer).getByRole('button', { name: '关闭' }))
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '工作项详情' })).toBeNull())
+    // 列表 filtered 反映：alpha 卡消失、beta 卡在场
+    expect(screen.queryByText('甲项目卡')).toBeNull()
+    expect(screen.getByText('乙项目卡')).toBeInTheDocument()
+    // 筛选在抽屉关闭后保留：重开抽屉，select 值仍是 beta
+    fireEvent.click(screen.getByText('乙项目卡'))
+    const drawerAgain = await screen.findByRole('dialog', { name: '工作项详情' })
+    expect(within(drawerAgain).getByRole('combobox', { name: '项目' })).toHaveValue('beta')
+  })
+
+  it('QueuePanel compact 细横条：收缩态无大边框盒；展开仍列完整队列', async () => {
+    const scheduling = await import('../../api/scheduling')
+    vi.mocked(scheduling.getQueue).mockResolvedValue({
+      queue: [{
+        kind: 'launch_queue', id: 'q1', card: 'B1', node: '', squad: 'exec',
+        priority: '', ready: true, actor: 'wake', seq: 1, position: 1,
+      }],
+    })
+    await renderCompactWithCards([{}])
+    const toggle = screen.getByRole('button', { name: '⧗ 排队中 1' })
+    const strip = toggle.closest('section')!
+    // 细横条：无大边框圆角盒（原型 mobile-cards 无此盒）；与头部行同为 border-b 条
+    expect(strip.className).toContain('border-b')
+    expect(strip.className).not.toContain('rounded-lg')
+    // 展开仍列队列
+    await userEvent.setup().click(toggle)
+    expect(await screen.findByRole('button', { name: '打开 B1' })).toBeInTheDocument()
+  })
+})
+
+// —— B369.8 T3：compact 单列扫描面 + 头部行（S4 后行 3 撤出）——
 // 桌面零漂移的证据 = 本文件全部既有 describe（桌面头部/看板/列表）全绿；
 // 这里只锁 compact 分支自身的形状。
 describe('B369.8 compact 单列', () => {
@@ -713,19 +803,19 @@ describe('B369.8 compact 单列', () => {
     expect(needsButton.className).toContain('ml-auto')
   })
 
-  it('行 2 状态 chips 逐值渲染看板五列（S3 后与 displayedColumns 同源）；行 3 次级四控件在场且 min-h-11', async () => {
+  it('行 2 状态 chips 逐值渲染看板五列（S3 后与 displayedColumns 同源）；S4 后 + 新建升行 1、行 3 三件次级控件撤出主面', async () => {
     await renderCompact()
     for (const column of DEFAULT_BOARD_COLUMNS) {
       expect(screen.getByTestId(`card-status-${column}`)).toBeInTheDocument()
     }
-    const secondary = screen.getByTestId('cards-controls-secondary')
-    expect(within(secondary).getByRole('combobox', { name: '项目' })).toBeInTheDocument()
-    expect(within(secondary).getByRole('combobox', { name: '工作流' })).toBeInTheDocument()
-    expect(within(secondary).getByPlaceholderText('搜 B 号 / 标题')).toBeInTheDocument()
-    expect(within(secondary).getByRole('button', { name: '+ 新建' })).toBeInTheDocument()
-    for (const control of within(secondary).getAllByRole('combobox')) {
-      expect(control.className).toContain('min-h-11')
-    }
+    // S4：+ 新建升行 1（与「工作项」标题同一行容器）
+    const newButton = screen.getByRole('button', { name: '+ 新建' })
+    expect(newButton.closest('div')!.textContent).toContain('工作项')
+    // S4：行 3 次级三件不再渲染于主面（移抽屉顶部筛选区，行为见 S4 describe）
+    expect(screen.queryByTestId('cards-controls-secondary')).toBeNull()
+    expect(screen.queryByRole('combobox', { name: '项目' })).toBeNull()
+    expect(screen.queryByRole('combobox', { name: '工作流' })).toBeNull()
+    expect(screen.queryByPlaceholderText('搜 B 号 / 标题')).toBeNull()
   })
 
   it('main 根挂触点基线类（24px 次级底线）', async () => {

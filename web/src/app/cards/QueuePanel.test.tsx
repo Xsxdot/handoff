@@ -79,4 +79,22 @@ describe('QueuePanel', () => {
     expect(screen.getByText('网络断开')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '打开 B1' })).toBeInTheDocument()
   })
+
+  // S4（B426）：compact 细横条——收缩态无大边框盒（单行高），展开行为与字段原样；
+  // 缺省（桌面）容器类串逐字节不动。
+  it('compact 细横条：收缩态 border-b 条无 rounded-lg 大盒，展开仍列完整队列', async () => {
+    const user = userEvent.setup()
+    renderPanel({ compact: true })
+
+    const toggle = screen.getByRole('button', { name: '⧗ 排队中 2' })
+    const strip = toggle.closest('section')!
+    expect(strip.className).toContain('border-b')
+    expect(strip.className).not.toContain('rounded-lg')
+    expect(screen.queryByRole('button', { name: '打开 B1' })).not.toBeInTheDocument()
+
+    await user.click(toggle)
+    expect(screen.getByText('B1')).toBeInTheDocument()
+    expect(screen.getByText('拉起')).toBeInTheDocument()
+    expect(screen.getByText('未就绪')).toBeInTheDocument()
+  })
 })
