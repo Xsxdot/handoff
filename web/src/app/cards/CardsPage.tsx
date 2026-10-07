@@ -11,6 +11,7 @@ import { useUnlinkedSummaryClock } from '../data/useUnlinkedSummaryClock'
 import { useTasks } from '../data/useTasks'
 import type { Task } from '../../api/types'
 import { isDesktopShell, requestOpenCurrentPageInBrowser } from '../lib/desktopShell'
+import { SessionExpiredBanner } from '../lib/Banners'
 import { errorMessage } from '../lib/format'
 import { TOUCH_BASELINE } from '@/lib/touch'
 import { cn } from '@/lib/utils'
@@ -139,10 +140,12 @@ export interface CardsPageProps {
   // B369.10 T8 seam：卡 → 驾驶会话双跳（Shell 会话流反查，零新端点）。缺席 =
   // 抽屉双跳行第二跳不渲染（桌面原样）。
   onOpenSessionForCard?: (cardId: string) => void
+  /** Session lookup must finish before a fast detail can offer the driver-session jump. */
+  driverSessionReady?: boolean
 }
 
 /** 参数：协调者终端回调与紧凑 seam；返回：工作项看板/列表与抽屉。 */
-export function CardsPage({ onOpenCoordinatorTerminal, onDrawerCardChange, taskJumpHref, compact = false, onOpenSessionForCard, sharedData }: CardsPageProps = {}) {
+export function CardsPage({ onOpenCoordinatorTerminal, onDrawerCardChange, taskJumpHref, compact = false, onOpenSessionForCard, driverSessionReady = true, sharedData }: CardsPageProps = {}) {
   const [searchParams] = useSearchParams()
   const projectFromUrl = searchParams.get('project') ?? ''
   const [view, setView] = useState<'board' | 'list'>('board')
@@ -206,6 +209,7 @@ export function CardsPage({ onOpenCoordinatorTerminal, onDrawerCardChange, taskJ
   // 时给 undefined，抽屉按「计数不可知」显示旧标题，不谎报「0 个在跑」。
   const localTasksPoll = useTasks({ enabled: !sharedData })
   const tasksPoll = sharedData?.tasks ?? localTasksPoll
+  const sessionExpired = cardsPoll.sessionExpired || decisionsPoll.sessionExpired || tasksPoll.sessionExpired
   useEffect(() => {
     console.info('cards.data.source', { source: sharedData ? 'shell' : 'page' })
   }, [!!sharedData])
@@ -443,11 +447,13 @@ export function CardsPage({ onOpenCoordinatorTerminal, onDrawerCardChange, taskJ
         onOpenCard={(id) => openDrawer(id)}
         compact={compact}
       />
+      {sessionExpired && <SessionExpiredBanner />}
+      {sessionExpired && cardsPoll.data !== null && <p className="px-4 py-1.5 text-xs text-muted-foreground">保留上次获取的数据，当前状态尚未确认。</p>}
       {flowsError && <p role="alert" className="mx-4 mt-2 text-xs text-destructive">流程读取失败：{flowsError}</p>}
       {projectDecisions.length > 0 && <ProjectDecisions decisions={projectDecisions} compact={compact} />}
       {cardsPoll.data?.unlinked && <UnlinkedRow summary={cardsPoll.data.unlinked} />}
       {cardsPoll.data === null ? (
-        <p className="p-4 text-sm text-muted-foreground">正在读取账本…</p>
+        sessionExpired ? null : <p className="p-4 text-sm text-muted-foreground">正在读取账本…</p>
       ) : compact ? (
         // B369.8 T3：compact 单列扫描面——看板横滚与八列表格不作为扫描面
         //（view 切换控件在 compact 头部不渲染，view 恒 'board'，这里不再判它）。
@@ -576,7 +582,7 @@ export function CardsPage({ onOpenCoordinatorTerminal, onDrawerCardChange, taskJ
           {surfaceContent}
         </>
       )}
-      {selected && <CardDrawer key={selected} id={selected} onDetailLoaded={onDetailLoaded} onClose={closeDrawer} onOpenCard={(id) => openDrawer(id)} workflowStates={selectedPinnedWorkflow?.states} boardLayout={selectedListCard ? cardLayoutResolver(selectedListCard) : selectedCard ? mergedLayoutFor(selectedCard, layoutForWorkflow) : undefined} initialSection={drawerFocus} nodes={drawerNodes} tasks={tasksPoll.data ?? undefined} onJumpToTask={jumpToTask} onOpenCoordinatorTerminal={onOpenCoordinatorTerminal} compact={compact} compactFilters={compact ? drawerFilters : undefined} onOpenDriverSession={onOpenSessionForCard ? () => onOpenSessionForCard(selected) : undefined} />}
+      {selected && <CardDrawer key={selected} id={selected} onDetailLoaded={onDetailLoaded} onClose={closeDrawer} onOpenCard={(id) => openDrawer(id)} workflowStates={selectedPinnedWorkflow?.states} boardLayout={selectedListCard ? cardLayoutResolver(selectedListCard) : selectedCard ? mergedLayoutFor(selectedCard, layoutForWorkflow) : undefined} initialSection={drawerFocus} nodes={drawerNodes} tasks={tasksPoll.data ?? undefined} onJumpToTask={jumpToTask} onOpenCoordinatorTerminal={onOpenCoordinatorTerminal} compact={compact} compactFilters={compact ? drawerFilters : undefined} driverSessionReady={driverSessionReady} onOpenDriverSession={onOpenSessionForCard ? () => onOpenSessionForCard(selected) : undefined} />}
       <NewCardDialog
         open={newCardOpen} project={project} cardProjects={projectOptions} workflows={newCardWorkflows}
         onClose={() => setNewCardOpen(false)}

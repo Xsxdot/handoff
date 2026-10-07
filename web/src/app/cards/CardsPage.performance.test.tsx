@@ -139,3 +139,21 @@ describe('B427 pinned workflow partial failure', () => {
   })
 
 })
+
+describe('B427 page expiry presentation', () => {
+  it('standalone cards first-load 401 uses the existing expiry banner instead of endless loading', async () => {
+    vi.mocked(ledger.fetchCards).mockRejectedValueOnce(new ApiError(401, 'expired'))
+    mount()
+    expect(await screen.findByText('会话已失效，请重新打开控制台')).toBeInTheDocument()
+    expect(screen.queryByText('正在读取账本…')).toBeNull()
+    expect(screen.queryByText('（没有匹配的工作项）')).toBeNull()
+  })
+  it.each(['decisions', 'tasks'] as const)('an expired injected %s stream explicitly marks retained data', async (expiredStream) => {
+    const state = <T,>(data: T, expired = false) => ({ data, disconnected: false, sessionExpired: expired, errorText: '', refresh: vi.fn() })
+    render(<MemoryRouter><CardsPage compact sharedData={{ cards: state({ cards: [card()], unlinked }), decisions: state([], expiredStream === 'decisions'), tasks: state([], expiredStream === 'tasks') }} /></MemoryRouter>)
+    expect(await screen.findByText('现役工作项')).toBeInTheDocument()
+    expect(screen.getByText('会话已失效，请重新打开控制台')).toBeInTheDocument()
+    expect(screen.getByText('保留上次获取的数据，当前状态尚未确认。')).toBeInTheDocument()
+    expect(ledger.fetchCards).not.toHaveBeenCalled()
+  })
+})

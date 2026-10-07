@@ -49,7 +49,7 @@
 - 新故事扩展绿：`npm test -- src/app/cards/CardsPage.performance.test.tsx src/app/shell/Shell.test.tsx -t B427`（`/private/tmp/b427-expanded3.log`，退出 0）→ 2 files passed、14 passed / 112 skipped。覆盖单次卡首拉、移动点卡/URL/关闭、终态/404深链、URL历史返回、迟到旧ID、桌面普通点击/显式历史开关、404不重取/成功Drawer状态、网络重试、workflow401终止、所有者切换迟到、Shell首次/返回单流、未知首拉、断线恢复与cards401留快照/停表。
 - 全量类型检查第一次 `npm run typecheck`（`/private/tmp/b427-typecheck.log`，退出 2）发现本任务 fixture 漏 unlinked 与 Card/CardView union；随后修正。本轮 `npm run typecheck -- --force`（`/private/tmp/b427-typecheck-force.log`，退出 2）只剩继承 rooms 的 14 条诊断：SessionChat fixtures 缺 historyExpired、SessionSidebar 缺 expired 类型声明、SessionTab test 重复 ApiError import。协调者独立核实并在 `b9e8e721` 最小修正，未由实现者扩改 rooms。
 - 收尾触及绿：`npm test -- src/app/cards/CardsPage.performance.test.tsx src/app/cards/CardsPage.test.tsx src/app/cards/CardDrawer.test.tsx src/app/shell/Shell.test.tsx src/app/data/usePoll.test.ts`（`/private/tmp/b427-touched4.log`，退出 0）→ **5 files passed / 225 tests passed**。该结果包含 B426 现有形态、项目过滤与 ready 态双跳回归。
-- 没有运行服务启动、部署、handoff 命令或真机复测；实现者没有 commit。全量 Web test/build、独立 review/变异与卡账本交协调者。手机号/手机性能结论仍未验证。
+- 没有运行服务启动、部署、handoff 命令或真机复测；实现者没有 commit。全量 Web test/build、独立 review/变异与卡账本交协调者。手机性能结论仍未验证。
 - 实现者收尾全量编译：`npm run typecheck -- --force`（`/private/tmp/b427-typecheck-final.log`，退出 0）→ `tsc -b --force` 无诊断；`git diff --check` 退出 0。该次是在继承 rooms 修正后、最终 touched 用例之后亲跑。
 - 协调者收尾（协调者转达亲跑结果）：全量 Web 测试 **141 files / 1731 tests passed、22.55s**；force typecheck 与 `npm run build` 退出 0，Vite 构建 1996 modules；`codegraph check --base babd141e` 退出 0、`fails=[]`，继承 warnings 保留。全量日志由协调者持有（`/private/tmp/b427-full-web.log`）。独立 review 尚待进行，以上不是最终手机验收。
 
@@ -62,3 +62,24 @@
 - `codegraph check --base babd141e`（exit 0）：fails=[]，继承 warns 保留；本次没有重扫图，不能据此宣称新增前端符号已入图。
 - 承重变异唯一命中 `fetchCards(includeArchived ? 'all=1' : '')`，恢复旧 cardDeepLink 扩历史条件，强制编译通过。第一轮行为2红8绿揭示移动点卡测试只检查当刻；补上真实2.5秒轮询断言后再次变异（`/private/tmp/b427-mutation2-*.log`）：compile exit0，behavior exit1/3 failed+7 passed（移动点击后轮询、终态深链、不存在ID），finally按原字节恢复后 exit0/10 passed。通过生产 CardsPage→fetchCards 接缝，非字符串锁。
 - 全量1731通过发生在补2.5秒测试断言前，生产源码此后未改；该测试文件补强后10/10新鲜复跑通过。独立 review 交棒后若有生产修正，须重跑全量。
+
+## 2026-10-07 独立 review R1/R2 回实现（实现者亲跑）
+
+- 协调者将 R1/R2 持久回账并重回 implement（R1 seq22755、R2 seq22757），授权本轮最小修复，不授权提交/部署。前文“会话首拉未完成点击”未修边界由此进入本轮正式修复。
+- R1 首红：新增真实 Shell → CardsPage → Drawer 测试，让 `fetchSessions` 首拉保持 deferred、单卡详情先成功；`npm test -- src/app/shell/Shell.test.tsx -t 'B427 driver session readiness'`（`/private/tmp/b427-r1-red.log`，退出 1）→ `expect(element).toBeDisabled()` 失败，实际驾驶会话按钮 enabled，1 failed / 116 skipped。它直接证明此前快详情与未知会话查找的竞态，不用人为等待隐藏问题。
+- R1 最小实现：Shell 用既有 `sessionsState.data !== null && !sessionsState.sessionExpired` 派生 ready，经 CardsPage 可选 bool seam 传给 Drawer（缺省 true 保留独立组件调用兼容）；行保留但 ready=false 时 disabled 且显示「驾驶会话（尚未就绪）」。Shell callback 也防御未就绪，日志分别记录 not_ready 与已知 missing。没有新增数据请求、计时器、排队或状态。已有断线快照允许沿既有语义导航；首拉网络错误与 401 无快照均维持“尚未就绪”，不误称正常 loading。
+- R1 绿验证：deferred 期间点击不能调用 missing 路径或改变 URL；首拉成功后同一按钮 enabled，真实进入会话工作台并保留既有 `from=card-B1` 返回上下文，返回仍打开 B1 详情。另覆盖首拉网络失败/401 时行可见、disabled、点击不导航。
+- R2 首红：新增真实 Shell 的 cards 首拉401与已成功快照后401两态 DOM 断言；`npm test -- src/app/shell/Shell.test.tsx -t 'B427 shared expiry presentation'`（`/private/tmp/b427-r2-red.log`，退出 1）→ 两条均 `Unable to find ... 会话已失效，请重新打开控制台`，2 failed / 117 skipped。
+- R2 最小实现：CardsPage 仅从既有 cards/decisions/tasks 的 `sessionExpired` 合成渲染判据，复用 `SessionExpiredBanner`。无数据过期时不再显示“正在读取账本”或空列表；有数据时保留快照并明确显示“保留上次获取的数据，当前状态尚未确认。”不改变 usePoll 的401停表/恢复纪律，不新增认证状态。
+- R1/R2 主红→绿：同一 Shell 文件按 `-t 'B427 driver session readiness|B427 shared expiry presentation'`（`/private/tmp/b427-r1r2-green.log`，退出 0）→ 3 passed / 116 skipped。扩展真实消费（含 standalone cards 首拉401、注入 decisions/tasks 各401、首拉会话网络/401与原有单流/恢复）：`npm test -- src/app/cards/CardsPage.performance.test.tsx src/app/shell/Shell.test.tsx -t B427`（`/private/tmp/b427-r1r2-expanded-green.log`，退出 0）→ 2 files passed、22 passed / 112 skipped。
+- M1 测试隔离首红：`npm test -- src/app/cards/CardsPage.test.tsx -t B426`（`/private/tmp/b427-m1-red.log`，退出 1）→ 5 failed / 4 passed / 31 skipped。根因是 B426 的 `mockCharter` 未给 `fetchFlow` Promise、`renderCompactWithCards` 未给 `fetchCardDetail` Promise，依赖前序用例残留 mock。只补 helper 的准确 name/version 或 ID 对应 fixtures，未泛化测试框架/改生产。
+- M1 隔离绿：同一命令（`/private/tmp/b427-m1-green.log`，退出 0）→ **9 passed / 31 skipped**。`git diff --check` 退出 0。
+- 回实现收尾触及测试：`npm test -- src/app/cards/CardsPage.performance.test.tsx src/app/cards/CardsPage.test.tsx src/app/cards/CardDrawer.test.tsx src/app/shell/Shell.test.tsx src/app/data/usePoll.test.ts`（`/private/tmp/b427-r1r2-touched-final.log`，退出 0）→ **5 files passed / 233 tests passed**。本轮无 commit/handoff/服务启动/部署；停止文件写入交协调者执行全量编译、测试、构建、承重变异及独立复审。真实手机性能仍 pending。
+
+## 2026-10-07 协调者 R1/R2 修复后全量复跑
+
+- 最终生产源码与测试亲跑 `npm test`（`/private/tmp/b427-final-full-web.log`，exit0）：**141 files passed，1739 tests passed，26.68s**。
+- `npm run typecheck -- --force`（`/private/tmp/b427-final-typecheck.log`，exit0），`npm run build`（`/private/tmp/b427-final-build.log`，exit0）：1996 modules，built in2.29s，既有大chunk提示保留。
+- `codegraph check --base babd141e`（`/private/tmp/b427-final-graph.log`，exit0）：fails=[]、28条继承warns；未重扫，图覆盖债不核销。
+- 另做真实 Shell 共享流承重变异：Shell 唯一 sharedData 注入换为 undefined（不删字段引用、不造编译红）；force compile exit0，`Shell.test.tsx -t 'B427 mobile shared ledger consumption'` exit1：首次切入卡请求 expected1/got2。finally恢复原字节后同一DOM测试 exit0/1 passed。日志 `/private/tmp/b427-shared-mutation-*.log`；覆盖实际 Shell→CardsPage 生产组装接缝。
+- 上述最终全量对应修复后源码；后续变异已按原字节恢复，没有带入代码变化。独立复审待新提交核销 R1/R2/M1。真实手机仍未验，未部署/合并。
