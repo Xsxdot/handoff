@@ -108,3 +108,26 @@
 - 测试改写（改期望不删断言意图）：SessionTab.test 两态 describe 改受控语义（tablist 缺席/详情头部/注册表投递/Esc/草稿跨切换存活）；`role=tab` 断言在会话房间失效（TabBar 收敛的形态代价）——改由「房间头部在场」证明会话 tab 已开（其判据即焦点 tab 为会话）；from= 深链用例澄清两段路径：首击落在返回条（焦点 tab 未重建为会话→非房间分支），openOrFocus 重建后才是房间分支。
 - 录得既有债务：**main @95f90fa4 的 `tsc -b` 本就不绿（15 个 TS 错误）**——SessionChat.test 8（historyExpired 缺参）、SessionSidebar expired prop 缺声明 2、SessionTab.test Duplicate ApiError 2、Shell.test/其他 3；vitest 不跑类型检查故测试全绿。本分支同清单 15 个（SessionTab.test 的 detailPanel 未使用已修），**对 main 零新增**；词表外债务留协调者裁决（本卡不修，修了会扩 diff 面）。
 - 绿：`npx vitest run src/app/rooms/ src/app/workbench/ src/app/shell/ src/app/tree/` → `Test Files 50 passed (50) / Tests 825 passed (825)`，含 S5 承重断言（会话房间仅一条 header/⋯进详情/详情返回回群聊不出房间/header 返回出房间/终端下钻 chrome 反例四件套）。
+
+### Step 6（S6 键盘遮挡，两处配置收尾）
+
+- `web/index.html` viewport meta 并入 `interactive-widget=resizes-content`（不另起 meta）；themes.xml 未动；无 visualViewport JS 兜底（spec §5 明令）；iOS 壳未加代码。逐字核对原文：
+  ```
+  $ sed -n '4,8p' web/index.html
+      <meta charset="UTF-8" />
+      <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+      <!-- interactive-widget=resizes-content（S6/B426）：键盘弹出时布局视口收缩上浮，
+           聊天 composer 与新建会话弹层输入框不被遮挡；Android WebViewChrome 语义。 -->
+      <meta name="viewport" content="width=device-width, initial-scale=1.0, interactive-widget=resizes-content" />
+  ```
+- `mobile/android/app/src/main/AndroidManifest.xml` WebviewActivity 声明逐字加一行 `android:windowSoftInputMode="adjustResize"`。逐字核对原文：
+  ```
+  $ sed -n '38,43p' mobile/android/app/src/main/AndroidManifest.xml
+          <activity
+              android:name=".ui.WebviewActivity"
+              android:exported="false"
+              android:configChanges="orientation|screenSize|keyboardHidden"
+              android:windowSoftInputMode="adjustResize" />
+      </application>
+  ```
+- 无单测接缝（spec §6）：真机项挂起待用户设备（acceptance 节点责任）。
