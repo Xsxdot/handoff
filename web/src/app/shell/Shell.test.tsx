@@ -368,13 +368,6 @@ function locationRef(): string | null {
   return screen.getByTestId('test-location').getAttribute('data-ref')
 }
 
-// S2（B426）：compact 项目 tab = 原型卡流 MobileProjectList（桌面 ProjectTree 的
-// compact 复用退役）。下钻助手：点项目卡 → MobileProjectDetail 覆盖层。
-async function openMobileProjectDetail() {
-  fireEvent.click(await screen.findByTestId('mobile-project-card'))
-  await screen.findByTestId('mobile-project-detail')
-}
-
 // renderShellWithHistory 与 renderShell 同构，但把 memory history 句柄交出来。
 // window.history 不驱动 MemoryRouter；用例⑯用 history.go(-1)（POP 语义）验证
 // 浏览器返回键一致性——与真机返回键走的是同一份 in-memory 历史栈。
