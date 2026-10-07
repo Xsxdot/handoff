@@ -24,3 +24,24 @@
 - **M1 Minor，待修/不阻塞**：B426 helper 未独立设置 fetchCardDetail/fetchFlow Promise fixtures。审阅者 `CardsPage.test.tsx -t B426` 5 failed/4 passed、完整文件40/40通过；属于用例顺序依赖，非生产回归证据。
 
 无 Critical。后续修复必须以新提交重新独立审阅，不以第一轮绿灯核销 findings。
+
+## 第二轮：代码与自动化阶段通过（2026-10-07）
+
+- 审对象：`77292b7e`，修复差异 `e3a969e6..77292b7e`；spec r1、plan p1。独立审阅者只读，协调者转录。
+- **目标轴及架构/证据轴通过；R1/R2/M1 核销，无新 Critical/Important。真实手机性能未验，不能归档卡。**
+
+| 轴 | 维度 | 裁决与证据 |
+| --- | --- | --- |
+| 目标 | 故事与验收覆盖 | 代码/自动化通过，S1–S5保留；Shell.test:2422/2454覆盖会话延迟/失败首拉和两类401。spec:50手机仍欠项。 |
+| 目标 | 原型/流程基准差异 | B426基线对照，Drawer:1050行保留/disabled/尚未就绪；Shell.test:2440 ready后导航及返回卡。B426隔离9/9通过。 |
+| 目标 | Scope drift | 无。Shell:565/CardsPage:212仅既有readiness/过期消费与fixtures，无新请求/队列/计时器/端点。 |
+| 架构与证据 | 架构法与触及路径 | 通过。readiness归Shell，props经CardsPage传Drawer；PollState/Banner复用，无权威状态复制。Shell:1196、CardsPage:450。亲跑graph fails=[]、继承warn、未重扫。 |
+| 架构与证据 | 测试有牙 | 审阅者亲跑B427+既有ready双跳23/23、B426隔离9/9。核读共享注入变异compile绿、真实DOM expected1/got2红、恢复绿；核读协调者全量141files/1739tests绿。 |
+| 架构与证据 | 日志与注释 | 通过；Shell:564未知/过期guard与结构化not_ready日志，保留来源/详情/工作流日志。 |
+| 架构与证据 | 序列化边界 | 无新wire字段，仅Drawer props:284内部seam。 |
+| 架构与证据 | 适用契约 | 既有符合，无新冻结对象；CardsPage props:143落实原导航接缝，不改后端API或缓存口径。 |
+
+- R1 Important **已核销**：入口与callback守卫；deferred/失败首拉不可执行，ready后恢复且返回卡语境成立。
+- R2 Important **已核销**：卡/决策/任务过期均明示；首拉不永久loading，旧快照注明尚未确认；CardsPage:450、performance.test:143与真实Shell两态401。
+- M1 Minor **已核销**：helpers:533/689完整Promise fixtures，B426过滤单跑9/9通过。
+- 依据日志：`/private/tmp/b427-final-full-web.log`、`b427-shared-mutation-red.log`、`b427-shared-mutation-green.log`及ledger原始红绿记录。所有验证针对77292b7e源码；后续仅追加本文档。

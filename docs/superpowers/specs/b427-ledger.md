@@ -1,5 +1,7 @@
 # B427 台账
 
+阶段状态：**代码与自动化通过，真实手机性能待验**。被测源码 `77292b7e`；独立复审见 [b427-review.md](b427-review.md)。未部署或合并。
+
 ## 2026-10-07 用户范围与授权
 
 - 用户最初指出：桌面端速度快，移动端工作项慢，会话快。
@@ -83,3 +85,9 @@
 - `codegraph check --base babd141e`（`/private/tmp/b427-final-graph.log`，exit0）：fails=[]、28条继承warns；未重扫，图覆盖债不核销。
 - 另做真实 Shell 共享流承重变异：Shell 唯一 sharedData 注入换为 undefined（不删字段引用、不造编译红）；force compile exit0，`Shell.test.tsx -t 'B427 mobile shared ledger consumption'` exit1：首次切入卡请求 expected1/got2。finally恢复原字节后同一DOM测试 exit0/1 passed。日志 `/private/tmp/b427-shared-mutation-*.log`；覆盖实际 Shell→CardsPage 生产组装接缝。
 - 上述最终全量对应修复后源码；后续变异已按原字节恢复，没有带入代码变化。独立复审待新提交核销 R1/R2/M1。真实手机仍未验，未部署/合并。
+
+## 2026-10-07 独立复审与阶段交接
+
+- 独立新上下文审阅者针对77292b7e复审，目标/架构证据双轴通过，R1/R2/M1核销，无新Critical/Important。审阅者亲跑B427+既有ready双跳23/23、B426隔离9/9，核读协调者1739全量与共享变异。完整维度表与核销指针持久保留b427-review.md。
+- 本期代码/自动化阶段交接完成，遵从用户先完成代码与自动化的明确安排。卡进入acceptance并整体记未验，唯一剩余必交为同一Android手机/服务入口实测列表首次、点卡、返回再进入的请求范围/数量、网络等待与渲染时间；不声称两秒已解决。
+- 保留codex/b427-performance本地分支与独立worktree，未部署/推送/合并，不修改主checkout B426改动；后续真实手机验收不得使用模拟视口或本机API时间替代。
