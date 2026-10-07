@@ -128,24 +128,25 @@ describe('B369.10 compact 会话首页', () => {
   const member = (identity: string): SessionMember => ({ identity, kind: 'agent', status: 'listening' })
   const withMembers = (members: SessionMember[], owner = 'user:sy'): SessionSummary => ({ ...golden(), members, owner })
 
-  it('chips 行在上、筛选行在下：needs-count 在场，两态切换走既有 needsOnly 回调', async () => {
+  // S1（B426）：compact 筛选两段收一行——「⚑需要你 N」toggle chip + 项目 select +
+  // 计数右对齐；「全部」chip 删除，回全部 = 再点一次已选中的「需要你」。
+  it('S1：筛选一行三元素（needs-count/项目/计数）；点已选「需要你」取消回全部；无「全部」chip', async () => {
     const user = userEvent.setup()
     const onToggleNeeds = vi.fn()
-    const { rerender } = render(<SessionSidebar sessions={[golden()]} {...defaultProps} compact onToggleNeeds={onToggleNeeds} />)
-    // 次序：chips 行在项目筛选行之前（原型「筛选紧贴头部」阅读序）
-    const chips = screen.getByTestId('session-filter-chips')
-    expect(chips.compareDocumentPosition(screen.getByTestId('session-project-filter')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
-    expect(screen.getByTestId('needs-count')).toHaveTextContent('1')
-    // needsOnly=false：需要你 chip 未按下，点它 → 回调翻转
-    const needsChip = screen.getByRole('button', { name: /需要你/ })
-    expect(needsChip).toHaveAttribute('aria-pressed', 'false')
-    await user.click(needsChip)
+    const { rerender } = render(<SessionSidebar sessions={[golden()]} {...defaultProps} compact projectOptions={['handoff']} onToggleNeeds={onToggleNeeds} />)
+    // 一条筛选行同时含 needs-count / 项目筛选 / session-total 三元素
+    const row = screen.getByTestId('session-filter-chips')
+    expect(row).toContainElement(screen.getByTestId('needs-count'))
+    expect(row).toContainElement(screen.getByTestId('session-project-filter'))
+    expect(row).toContainElement(screen.getByTestId('session-total'))
+    // 「全部」chip 不再渲染（toggle 语义取代两态 chips）
+    expect(screen.queryByRole('button', { name: '全部' })).toBeNull()
+    // toggle：needsOnly=false 点「需要你」→ 翻转回调
+    await user.click(screen.getByRole('button', { name: /需要你/ }))
     expect(onToggleNeeds).toHaveBeenCalledTimes(1)
-    // needsOnly=true：全部 chip 未按下，点它 → 回调翻转；点已按下的需要你 chip 不再翻转
-    rerender(<SessionSidebar sessions={[golden()]} {...defaultProps} compact needsOnly onToggleNeeds={onToggleNeeds} />)
+    // needsOnly=true 再点「需要你」→ 仍回调（取消回全部），不再有防翻转守卫
+    rerender(<SessionSidebar sessions={[golden()]} {...defaultProps} compact needsOnly projectOptions={['handoff']} onToggleNeeds={onToggleNeeds} />)
     expect(screen.getByRole('button', { name: /需要你/ })).toHaveAttribute('aria-pressed', 'true')
-    await user.click(screen.getByRole('button', { name: '全部' }))
-    expect(onToggleNeeds).toHaveBeenCalledTimes(2)
     await user.click(screen.getByRole('button', { name: /需要你/ }))
     expect(onToggleNeeds).toHaveBeenCalledTimes(2)
   })
