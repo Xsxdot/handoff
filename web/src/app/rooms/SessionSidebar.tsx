@@ -76,25 +76,15 @@ export function SessionSidebar({ sessions, loading, errorText, expired = false, 
         </div>
       )}
       {compact && (
-        /* B369.10（岔口 5）：compact 头部次序对齐原型「筛选紧贴头部」的阅读序
-           ——chips 行在上、项目筛选行在下（只留项目 select，不再渲染第二枚
-           needs-count/session-total：同一 testid 一棵树里只能出现一次）。chips
-           两态 = 既有 needsOnly 回调（点已选中的 chip 不再翻转，避免 toggle
-           语义下的反向突跳）。 */
+        /* S1（B426）：compact 筛选两段收一行——「⚑需要你 N」toggle chip + 项目
+           select + N 个会话计数右对齐，对齐原型单行筛选形态。「全部」chip 删除：
+           点已选中的「需要你」即取消回全部（toggle 语义，2026-10-07 用户裁决），
+           不再有防翻转守卫。桌面 !compact 筛选行零改动。 */
         <div className="flex shrink-0 items-center gap-2 border-b px-3 py-1.5 text-xs" data-testid="session-filter-chips">
-          <button type="button" aria-pressed={needsOnly} onClick={() => { if (!needsOnly) onToggleNeeds() }}
-            className={needsOnly ? 'rounded-full border border-amber-200 bg-amber-100 px-2 py-0.5 font-semibold text-amber-700' : 'rounded-full border px-2 py-0.5 text-muted-foreground'}>
+          <button type="button" aria-pressed={needsOnly} onClick={onToggleNeeds}
+            className={`shrink-0 rounded-full border px-2 py-0.5 ${needsOnly ? 'border-amber-200 bg-amber-100 font-semibold text-amber-700' : 'text-muted-foreground'}`}>
             ⚑ 需要你 <span data-testid="needs-count">{needsCount}</span>
           </button>
-          <button type="button" aria-pressed={!needsOnly} onClick={() => { if (needsOnly) onToggleNeeds() }}
-            className={!needsOnly ? 'rounded-full border bg-accent px-2 py-0.5 font-medium' : 'rounded-full border px-2 py-0.5 text-muted-foreground'}>
-            全部
-          </button>
-          <span className="ml-auto text-muted-foreground" data-testid="session-total">{loading && !expired ? '读取中' : `${visible.length} 个会话`}</span>
-        </div>
-      )}
-      {compact && (
-        <div className="flex shrink-0 items-center gap-2 border-b px-3 py-1.5 text-xs">
           <label htmlFor="session-project-filter" className="shrink-0 text-muted-foreground">项目</label>
           <select id="session-project-filter" data-testid="session-project-filter" value={projectFilter}
             onChange={(event) => onProjectFilter(event.target.value)}
@@ -102,6 +92,7 @@ export function SessionSidebar({ sessions, loading, errorText, expired = false, 
             <option value="">全部项目</option>
             {projectOptions.map((project) => <option key={project} value={project}>{project}</option>)}
           </select>
+          <span className="ml-auto shrink-0 text-muted-foreground" data-testid="session-total">{loading && !expired ? '读取中' : `${visible.length} 个会话`}</span>
         </div>
       )}
       {expired ? <SessionExpiredBanner />

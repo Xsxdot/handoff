@@ -39,6 +39,7 @@ import { AddProjectWizard } from '../projects/AddProjectWizard'
 import { ProjectEditDialog } from '../projects/ProjectEditDialog'
 import { findBaseByKey, findBaseOfTask, ProjectTree, workspaceBase, type OpenItem } from '../tree/ProjectTree'
 import { MobileProjectDetail } from '../tree/MobileProjectDetail'
+import { MobileProjectList } from '../tree/MobileProjectList'
 import { FileTree } from '../files/FileTree'
 import { WorkbenchPage } from '../workbench/WorkbenchPage'
 import { TerminalTab } from '../workbench/TerminalTab'
@@ -67,6 +68,7 @@ import type { SessionSummary } from '../../api/rooms'
 import { NewSessionDialog } from '../rooms/NewSessionDialog'
 import { SessionSidebar } from '../rooms/SessionSidebar'
 import { SessionTab } from '../rooms/SessionTab'
+import { openSessionDetail } from '../rooms/sessionDetailOpener'
 import { totalUnread } from '../rooms/sessionModel'
 import { COLLAB_POLL_MS } from '../rooms/constants'
 import { needsAttention } from '../cards/columns'
@@ -846,14 +848,48 @@ export function Shell() {
   const desktop = isDesktopShell()
   const focusedBase = focusedPaneBase(wb.wb)
   // focusedTab：焦点窗格里的 tab 本体。面包屑第三段（内容名）与左栏焦点态共用。
-  const focusedTab = focusedTabOf(wb.wb)
-  // 面包屑第三段跟焦点窗格的内容名（spec §3）：tui=任务原名、file=文件名、
+  const focusedTab = focusedTabOf(wb.wb)  // 面包屑第三段跟焦点窗格的内容名（spec §3）：tui=任务原名、file=文件名、
   // terminal=终端标题；空白窗格或没有焦点内容时不传，行里回落目录名。
   const crumbTail = focusedBase && focusedTab && focusedTab.content.kind !== 'blank'
     ? tabTitle(focusedTab.content, focusedBase.label, taskNameResolver)
     : undefined
   // focusedTaskId：焦点窗格是 tui 内容时的 taskId，左栏任务行据此画焦点态。
   const focusedTaskId = focusedTab && focusedTab.content.kind === 'tui' ? focusedTab.content.taskId : null
+
+  // S5（B426）：会话房间判据——compact && 下钻态 && 焦点 tab 内容为会话。
+  // 数据全部本组件已持有（focusedTab/nav），WorkbenchPage/SessionTab 不自判
+  //（singleFocus 同款下传通道）。
+  const focusedSessionId = focusedTab !== null && focusedTab.content.kind === 'session'
+    ? focusedTab.content.sessionId
+    : null
+  const sessionRoom = compact && nav.detail && focusedSessionId !== null
+  // 房间详情态（paneDetail 真值源，上提至此）：⋯（注册表）/详情头部返回/Esc 三条
+  // 通道都汇到这里。房间头部按它隐显——群聊态 = 房间头部（返回+标题+⋯），详情
+  // 态 = SessionTab 自渲染头部（返回+标题，无 ⋯），房间任一时刻只渲染一条 header。
+  // 重置：焦点会话变化或出房间时不残留（避免「头部说群聊、内容在详情」的失同步）。
+  const [roomDetailOpen, setRoomDetailOpen] = useState(false)
+  useEffect(() => { setRoomDetailOpen(false) }, [focusedSessionId, nav.detail])
+
+  // 下钻返回条的分派（B369.7 按来源分派，plan §3.2）：会话来源重建会话 tab 且
+  // 仍在下钻态（from 清除，再返回走无 from 兜底——逐级出栈）；卡来源落
+  // /cards?card=<id> 不带 from（from=card-Y 意味着卡详情原本无来源，没有「来源
+  // 的来源」可恢复）；无 from 走 exitDetail 兜底。S5 起房间头部的返回复用同一
+  // 分派（出房间回会话列表的语义与既有返回条逐字相同）。
+  const detailBack = () => {
+    const src = nav.from
+    if (src !== null && src.startsWith('session-')) {
+      const sessionId = src.slice('session-'.length)
+      const session = sessions.find((s) => s.id === sessionId)
+      wb.openOrFocus({ kind: 'session', sessionId, title: session?.title ?? sessionId }, sessionBase(sessionId))
+      console.debug('shell.mobile_nav.detail_back', { from: src })
+      navigate('/?tab=sessions&detail=1', { replace: true })
+    } else if (src !== null && src.startsWith('card-')) {
+      console.debug('shell.mobile_nav.detail_back', { from: src })
+      navigate(`/cards?card=${encodeURIComponent(src.slice('card-'.length))}`, { replace: true })
+    } else {
+      nav.exitDetail()
+    }
+  }
 
   // 裁决横幅判据（B369.10 岔口 4）：焦点**组**内存在 tui 窗格、其任务处于
   // waiting_review，或该任务有挂起工单。判据字面取「焦点窗格是 tui」会让
@@ -889,9 +925,9 @@ export function Shell() {
     wb.select(workspaceBase(project, machine, ws))
   }, [treeState, wb])
 
-  // projectTree 是项目树的唯一实例来源：桌面左栏与紧凑视口「项目」tab 共用同一份
-  // JSX（P1=A 一份产物）。两处同时挂载会撞 testid，故用 `!compact` 门保证任一时刻
-  // 只挂一个实例（见下面两处消费点）。
+  // projectTree 是桌面左栏的项目树实例（S2/B426 后 compact「项目」tab 不再复用
+  // 它——改挂原型卡流 MobileProjectList）。`!compact` 门在下方消费点保证桌面
+  // 语义；compact prop 恒 false（见台账「ProjectTree compact 特判裁定：保留」）。
   const projectTree = treeState.data === null ? null : (
     <ProjectTree
       tree={treeState.data}
@@ -1031,6 +1067,7 @@ export function Shell() {
             <WorkbenchPage
               api={wb}
               singleFocus={viewport === 'phone'}
+              sessionRoom={sessionRoom}
               onAddProject={() => setWizardOpen(true)}
               tree={treeState.data}
               tasks={tasks}
@@ -1111,8 +1148,12 @@ export function Shell() {
                       <SessionTab
                         sessionId={c.sessionId}
                         title={c.title}
-                        // B369.8 T5：compact 用「群聊|详情」两态替换「⋯」抽屉。
+                        // S5（B426）：compact 两态受控——paneDetail 真值源在本组件的
+                        // roomDetailOpen（房间头部隐显与两态翻转同一开关）；仅焦点
+                        // 会话吃这个值，后台会话窗格不受牵连。桌面不传，抽屉原样。
                         compact={compact}
+                        paneDetail={sessionRoom && roomDetailOpen && focusedSessionId === c.sessionId}
+                        onPaneDetailChange={setRoomDetailOpen}
                         onOpenCard={(cardId) => {
                           // B369.7：紧凑下会话卡身份只进卡 tab/对应卡详情（带会话来源，
                           // 不直接跳任务现场）；桌面走既有 /cards 深链。
@@ -1190,19 +1231,25 @@ export function Shell() {
                   />
                 )}
                 {nav.tab === 'projects' && (
-                  // B369.7 验收实走修正：ProjectTree 根是 flex-1 三段式（树独滚、
-                  // 底部入口行与解释文案钉底），只在有界的 flex 父级里成立；
-                  // mobile-home 的滚动容器是普通块级，不包裹的话页脚会被 16 个
-                  // 项目推到 scrollHeight 底（实测 note top:6454 / 视口 844），
-                  // 「隐藏并给出解释」的解释永远不在视口内。h-full 让 ProjectTree
-                  // 自带的三段式在紧凑视口照常钉底；桌面 aside 不经过此处，零接触。
-                  // B369.10：详情层以 absolute 覆盖层挂在同一 relative 容器内——
-                  // ProjectTree 保挂载，折叠集/搜索词/滚动不因进出详情丢失
-                  // （mobile-dir 同款手法）；mobile-dir 是 main 层兄弟覆盖层、DOM 序
-                  // 在后，project+dir 同持时目录层天然盖在详情层上，「详情→浏览文件
-                  // →返回」的层序零代码。详情层在 mobile-home 之内，不算覆盖期闸对象。
+                  // S2（B426）：compact 项目 tab 换原型卡流 MobileProjectList——
+                  // 桌面 ProjectTree 的 compact 复用退役（⌘K 搜索框/树轨/worktree
+                  // 计数/「流程与代码图暂未适配移动端」页脚不再出现在移动端）。
+                  // 数据全部 Shell 已持有（treeState + tasks），零新端点。
+                  // relative 容器与 MobileProjectDetail 覆盖层保留（B369.10 的保
+                  // 挂载手法不动）：点卡 nav.setProject 下钻、＋添加项目走既有
+                  // 向导通道（setWizardOpen）。
                   <div className="relative flex h-full min-h-0 flex-col">
-                    {projectTree ?? <p className="p-4 text-sm text-muted-foreground">正在读取项目…</p>}
+                    {treeState.data === null ? (
+                      <p className="p-4 text-sm text-muted-foreground">正在读取项目…</p>
+                    ) : (
+                      <MobileProjectList
+                        projects={treeState.data.projects}
+                        machines={treeState.data.machines}
+                        tasks={tasks}
+                        onOpenProject={(projectId) => nav.setProject(projectId)}
+                        onAddProject={() => setWizardOpen(true)}
+                      />
+                    )}
                     {detailProject !== null && (
                       <MobileProjectDetail
                         project={detailProject}
@@ -1250,8 +1297,39 @@ export function Shell() {
               （桌面靠左栏与面包屑，手机两者都不挂）。固定在顶部，含当前焦点内容名。
               紧凑视口下 fullPageRoute 恒假（S2d-1），故不与整页路由互压。 */}
           {compact && nav.detail && (
+            sessionRoom && roomDetailOpen ? null : sessionRoom ? (
+              // S5（B426）：会话房间的唯一 header（群聊态）——‹返回（出房间回
+              // 会话列表，分派复用 detailBack）+ 房间标题 + ⋯更多（右侧，经
+              // openSessionDetail 注册表投递进 SessionTab，不新开缝）。详情态
+              // （roomDetailOpen）时整个让位给 SessionTab 自渲染的详情头部。
+              <div
+                data-testid="mobile-room-header"
+                className="absolute inset-x-0 top-0 z-30 flex items-center gap-2 border-b bg-background px-2 py-1.5"
+              >
+                <button
+                  type="button"
+                  data-testid="mobile-room-back"
+                  onClick={detailBack}
+                  className="rounded px-2 py-1 text-sm text-muted-foreground hover:bg-accent hover:text-foreground"
+                >
+                  ‹ 返回
+                </button>
+                <span className="min-w-0 flex-1 truncate text-sm">{crumbTail ?? focusedBase?.label ?? ''}</span>
+                <button
+                  type="button"
+                  aria-label="会话详情"
+                  title="会话详情（成员/卡/归档）"
+                  data-testid="mobile-room-more"
+                  onClick={() => { if (focusedSessionId !== null) openSessionDetail(focusedSessionId) }}
+                  className="rounded px-2 py-1 text-sm text-muted-foreground hover:bg-accent hover:text-foreground"
+                >
+                  ⋯
+                </button>
+              </div>
+            ) : (
             // B369.10：单条 absolute bar 升格为「bar + 裁决横幅」的组合容器——
             // 横幅判据与落点理由见 bannerTask memo（Shell 层、不进窗格树）。
+            // S5：焦点 tab 为会话时走上面的房间头部分支，此分支只剩终端/任务下钻。
             <div className="absolute inset-x-0 top-0 z-30 flex min-h-0 flex-col">
               {bannerTask !== null && (
                 <div
@@ -1290,25 +1368,7 @@ export function Shell() {
               <button
                 type="button"
                 data-testid="mobile-detail-back"
-                onClick={() => {
-                  // B369.7 返回条按来源分派（plan §3.2）：会话来源重建会话 tab 且
-                  // 仍在下钻态（from 清除，再返回走无 from 兜底——逐级出栈）；卡来源
-                  // 落 /cards?card=<id> 不带 from（from=card-Y 意味着卡详情原本无
-                  // 来源，没有「来源的来源」可恢复）；无 from 走 exitDetail 兜底。
-                  const src = nav.from
-                  if (src !== null && src.startsWith('session-')) {
-                    const sessionId = src.slice('session-'.length)
-                    const session = sessions.find((s) => s.id === sessionId)
-                    wb.openOrFocus({ kind: 'session', sessionId, title: session?.title ?? sessionId }, sessionBase(sessionId))
-                    console.debug('shell.mobile_nav.detail_back', { from: src })
-                    navigate('/?tab=sessions&detail=1', { replace: true })
-                  } else if (src !== null && src.startsWith('card-')) {
-                    console.debug('shell.mobile_nav.detail_back', { from: src })
-                    navigate(`/cards?card=${encodeURIComponent(src.slice('card-'.length))}`, { replace: true })
-                  } else {
-                    nav.exitDetail()
-                  }
-                }}
+                onClick={detailBack}
                 className="rounded px-2 py-1 text-sm text-muted-foreground hover:bg-accent hover:text-foreground"
               >
                 ‹ 返回
@@ -1316,6 +1376,7 @@ export function Shell() {
               <span className="min-w-0 flex-1 truncate text-sm">{crumbTail ?? focusedBase?.label ?? ''}</span>
               </div>
             </div>
+            )
           )}
           {/* 紧凑视口的目录面（项目 tab → 位置 → 目录）：右栏无处安放，改为覆盖层，
               带返回条回项目列表。文件/终端下钻切工作台（S2b 的两个回调）——

@@ -15,9 +15,8 @@ import { TOUCH_BASELINE } from '@/lib/touch'
 import { cn } from '@/lib/utils'
 import { CardDrawer } from './CardDrawer'
 import { CardItem } from './CardItem'
-import { boardColumns, cardsInColumn, DEFAULT_BOARD_COLUMNS, filterNeeds, mergeStateOrder, mergedLayoutFor, needsAttention, nodeLabelFor, normalizeBoardLayout, visibleColumns } from './columns'
+import { boardColumnFor, boardColumns, cardsInColumn, DEFAULT_BOARD_COLUMNS, filterNeeds, mergeStateOrder, mergedLayoutFor, needsAttention, nodeLabelFor, normalizeBoardLayout, visibleColumns } from './columns'
 import type { CardLayoutResolver, WorkflowBoardLookup } from './columns'
-import { CARD_STATUSES } from './statusVocab'
 import { ListView } from './ListView'
 import { MigrateDialog } from './MigrateDialog'
 import { NewCardDialog } from './NewCardDialog'
@@ -140,8 +139,8 @@ export function CardsPage({ onOpenCoordinatorTerminal, onDrawerCardChange, taskJ
   const projectFromUrl = searchParams.get('project') ?? ''
   const [view, setView] = useState<'board' | 'list'>('board')
   const [needsOnly, setNeedsOnly] = useState(false)
-  // statusFilter：移动「卡」tab 的状态词表筛选（'' = 全部）。词表是受控的
-  // CARD_STATUSES（与 Go 逐值一致），不提供自由输入——自由输入等于允许词表外串。
+  // statusFilter：卡页状态筛选（'' = 全部）。S3（B426）语义 = 看板列名——chip
+  // 集来自 displayedColumns（与桌面看板同源），过滤走 boardColumnFor 逐卡归桶。
   const [statusFilter, setStatusFilter] = useState('')
   const [selected, setSelected] = useState<string | null>(null)
   const [newCardOpen, setNewCardOpen] = useState(false)
@@ -266,9 +265,16 @@ export function CardsPage({ onOpenCoordinatorTerminal, onDrawerCardChange, taskJ
       if (workflow && card.workflow !== workflow) return false
       return query === '' || card.id.toLowerCase().includes(query) || card.title.toLowerCase().includes(query)
     })
-    const byStatus = statusFilter === '' ? base : base.filter((card) => card.status === statusFilter)
+    // S3（B426）：statusFilter 语义从「状态字面量」变「看板列名」——每张卡按其
+    // 工作流 board 布局归列（与桌面看板 cardsInColumn 同一归桶机制）。刻意不套
+    // cardsInColumn：它带 !card.following 折叠语义，chips 过滤现状不排 following，
+    // 换源不得引入行为差。未知流（lookup undefined）走 mergedLayoutFor 默认映射
+    // 兜底「进行中」，与桌面看板同口径。
+    const byStatus = statusFilter === ''
+      ? base
+      : base.filter((card) => boardColumnFor(card.status, cardLayoutResolver(card)) === statusFilter)
     return filterNeeds(byStatus, needsOnly)
-  }, [cards, needsOnly, project, search, workflow, statusFilter])
+  }, [cards, needsOnly, project, search, workflow, statusFilter, cardLayoutResolver])
   const attentionCount = cards.filter(needsAttention).length + projectDecisionCount(decisions)
   // 项目级请示不跟筛选走：它被算进了「需要你」徽标，只在筛选态显示等于
   // 徽标数字有一部分永远看不见（同一类毛病见 visibleColumns 的注释）
@@ -356,6 +362,16 @@ export function CardsPage({ onOpenCoordinatorTerminal, onDrawerCardChange, taskJ
     if (!onDrawerCardChange && new URLSearchParams(location.search).has('card')) navigate('/cards', { replace: true })
   }
   const newCardWorkflows = flows?.workflows.map((item) => item.name) ?? []
+  // S4（B426）：compact 抽屉顶部筛选区——行 3 三件次级控件移驻于此，绑定本组件
+  // 既有 state（project/workflow/search 住 CardsPage、不随抽屉卸载，「关闭后
+  // 筛选保留」由 state 住所天然满足，不新造持久化）。桌面抽屉不传不渲染。
+  const drawerFilters = (
+    <div data-testid="card-drawer-filters" className="flex flex-wrap items-center gap-2 border-b px-4 py-2">
+      <select aria-label="项目" value={project} onChange={(event) => setProject(event.target.value)} className="min-h-11 rounded-md border bg-background px-2 py-1 text-xs"><option value="">全部项目</option>{projectOptions.map((item) => <option key={item} value={item}>{item}</option>)}</select>
+      <select aria-label="工作流" value={workflow} onChange={(event) => setWorkflow(event.target.value)} className="min-h-11 rounded-md border bg-background px-2 py-1 text-xs"><option value="">全部工作流</option>{workflowOptions.map((item) => <option key={item.name} value={item.name}>{item.name} v{item.version}</option>)}</select>
+      <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜 B 号 / 标题" className="min-h-11 min-w-0 flex-1 rounded-md border bg-background px-2 py-1 text-xs" />
+    </div>
+  )
   // 卡到任务的唯一出口是 /tasks/:id 深链：目录解析、开 TUI tab、跨机全由
   // Shell 既有的 TaskDeepLink 完成，这里绝不顺手做目录切换（spec §3.3 明令
   // 禁止复制那套逻辑）。跳转即离开 /cards 是接受的代价（spec §3.3 已弃选回退机制）。
@@ -400,6 +416,7 @@ export function CardsPage({ onOpenCoordinatorTerminal, onDrawerCardChange, taskJ
         errorText={queuePoll.errorText}
         onToggle={() => setQueueOpen((current) => !current)}
         onOpenCard={(id) => openDrawer(id)}
+        compact={compact}
       />
       {flowsError && <p role="alert" className="mx-4 mt-2 text-xs text-destructive">流程读取失败：{flowsError}</p>}
       {projectDecisions.length > 0 && <ProjectDecisions decisions={projectDecisions} compact={compact} />}
@@ -434,8 +451,12 @@ export function CardsPage({ onOpenCoordinatorTerminal, onDrawerCardChange, taskJ
           aria-hidden={selected !== null}
           {...(selected !== null ? { inert: true } : {})}
         >
-          {/* B369.8 岔口 6：compact 头部三行、全部常驻不折叠（390 宽下常驻比
-              折叠少一次点击）。桌面 header（下方分支）逐字节不动。 */}
+          {/* S4（B426）：compact 头部收敛为两行——行 1（主控：工作项/健康指示/
+              ⚑需要你/＋新建/从浏览器打开）、行 2（状态列 chips）。原行 3 三件
+              次级控件移驻抽屉顶部筛选区（drawerFilters），「+ 新建」按原型
+              apphead「＋记一张」同位升行 1。「从浏览器打开」spec 未点名但不得
+              无删：保留为页面级控制、落行 1 尾（仅桌面薄壳 UA 渲染，移动 WebView
+              不可见）；桌面 header（下方分支）逐字节不动。 */}
           <div className="flex min-h-11 flex-wrap items-center gap-2 border-b px-3 py-1.5">
             <span className="text-sm font-semibold">工作项</span>
             <span
@@ -447,32 +468,6 @@ export function CardsPage({ onOpenCoordinatorTerminal, onDrawerCardChange, taskJ
               onClick={() => setNeedsOnly((current) => !current)}
               className={`ml-auto inline-flex min-h-11 items-center rounded-md border px-2.5 py-1 text-xs ${needsOnly ? 'border-amber-400 bg-amber-50 text-amber-800' : 'text-amber-700'}`}
             >⚑ 需要你 {attentionCount}</button>
-          </div>
-          {/* 行 2（词表）：最高频的筛选单独成行，与次级配置（项目/工作流）不同频 */}
-          <span data-testid="card-status-filter" className="flex flex-wrap items-center gap-1 border-b px-3 py-1.5">
-            {CARD_STATUSES.map((status) => (
-              <button
-                key={status}
-                type="button"
-                data-testid={`card-status-${status}`}
-                aria-pressed={statusFilter === status}
-                onClick={() => {
-                  const next = statusFilter === status ? '' : status
-                  console.debug('cards.status_filter', { status: next })
-                  setStatusFilter(next)
-                }}
-                className={`rounded-full border px-2 py-0.5 text-[11px] ${statusFilter === status ? 'border-foreground bg-accent font-medium' : 'text-muted-foreground'}`}
-              >
-                {status}
-              </button>
-            ))}
-          </span>
-          {/* 行 3（次级控制行）：全行控件统一 min-h-11（44px 触控）；看板/列表
-              切换不渲染——compact 的扫描面只有单列，切换是无消费者的死控件 */}
-          <div data-testid="cards-controls-secondary" className="flex flex-wrap items-center gap-2 border-b px-3 py-1.5">
-            <select aria-label="项目" value={project} onChange={(event) => setProject(event.target.value)} className="min-h-11 rounded-md border bg-background px-2 py-1 text-xs"><option value="">全部项目</option>{projectOptions.map((item) => <option key={item} value={item}>{item}</option>)}</select>
-            <select aria-label="工作流" value={workflow} onChange={(event) => setWorkflow(event.target.value)} className="min-h-11 rounded-md border bg-background px-2 py-1 text-xs"><option value="">全部工作流</option>{workflowOptions.map((item) => <option key={item.name} value={item.name}>{item.name} v{item.version}</option>)}</select>
-            <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜 B 号 / 标题" className="min-h-11 min-w-0 flex-1 rounded-md border bg-background px-2 py-1 text-xs" />
             <button type="button" onClick={() => setNewCardOpen(true)} className="min-h-11 rounded-md border px-2.5 py-1 text-xs">+ 新建</button>
             {showOpenInBrowser && (
               <button
@@ -480,12 +475,33 @@ export function CardsPage({ onOpenCoordinatorTerminal, onDrawerCardChange, taskJ
                 aria-label="从浏览器打开"
                 title="从浏览器打开当前工作项页"
                 onClick={() => { requestOpenCurrentPageInBrowser() }}
-                className="rounded-md border px-2.5 py-1 text-xs"
+                className="min-h-11 rounded-md border px-2.5 py-1 text-xs"
               >
                 从浏览器打开
               </button>
             )}
           </div>
+          {/* 行 2（状态列 chips）：S3（B426）后列序 = displayedColumns（看板五列，
+              与桌面看板同源），label 逐字跟列名（「代办」是现行词表，修正另立卡）；
+              过滤语义见 filtered 内注释。这是「桌面零改动」承诺的唯一双端例外。 */}
+          <span data-testid="card-status-filter" className="flex flex-wrap items-center gap-1 border-b px-3 py-1.5">
+            {displayedColumns.map((column) => (
+              <button
+                key={column}
+                type="button"
+                data-testid={`card-status-${column}`}
+                aria-pressed={statusFilter === column}
+                onClick={() => {
+                  const next = statusFilter === column ? '' : column
+                  console.debug('cards.status_filter', { column: next })
+                  setStatusFilter(next)
+                }}
+                className={`rounded-full border px-2 py-0.5 text-[11px] ${statusFilter === column ? 'border-foreground bg-accent font-medium' : 'text-muted-foreground'}`}
+              >
+                {column}
+              </button>
+            ))}
+          </span>
           {surfaceContent}
         </div>
       ) : (
@@ -498,21 +514,23 @@ export function CardsPage({ onOpenCoordinatorTerminal, onDrawerCardChange, taskJ
           <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜 B 号 / 标题" className="w-40 rounded-md border bg-background px-2 py-1 text-xs" />
           <button type="button" onClick={() => setNewCardOpen(true)} className="rounded-md border px-2.5 py-1 text-xs">+ 新建</button>
           <button type="button" onClick={() => setNeedsOnly((current) => !current)} className={`rounded-md border px-2.5 py-1 text-xs ${needsOnly ? 'border-amber-400 bg-amber-50 text-amber-800' : 'text-amber-700'}`}>⚑ 需要你 {attentionCount}</button>
+          {/* S3（B426）：桌面 header 同组 chips 一并切换到看板五列——同一 bug 同一修，
+              是「桌面零改动」承诺的唯一例外（spec §5/§8）；chips 段之外逐字节不动。 */}
           <span data-testid="card-status-filter" className="flex items-center gap-1">
-            {CARD_STATUSES.map((status) => (
+            {displayedColumns.map((column) => (
               <button
-                key={status}
+                key={column}
                 type="button"
-                data-testid={`card-status-${status}`}
-                aria-pressed={statusFilter === status}
+                data-testid={`card-status-${column}`}
+                aria-pressed={statusFilter === column}
                 onClick={() => {
-                  const next = statusFilter === status ? '' : status
-                  console.debug('cards.status_filter', { status: next })
+                  const next = statusFilter === column ? '' : column
+                  console.debug('cards.status_filter', { column: next })
                   setStatusFilter(next)
                 }}
-                className={`rounded-full border px-2 py-0.5 text-[11px] ${statusFilter === status ? 'border-foreground bg-accent font-medium' : 'text-muted-foreground'}`}
+                className={`rounded-full border px-2 py-0.5 text-[11px] ${statusFilter === column ? 'border-foreground bg-accent font-medium' : 'text-muted-foreground'}`}
               >
-                {status}
+                {column}
               </button>
             ))}
           </span>
@@ -533,7 +551,7 @@ export function CardsPage({ onOpenCoordinatorTerminal, onDrawerCardChange, taskJ
           {surfaceContent}
         </>
       )}
-      {selected && <CardDrawer id={selected} onClose={closeDrawer} onOpenCard={(id) => openDrawer(id)} workflowStates={selectedPinnedWorkflow?.states ?? (selectedWorkflowVersion !== undefined && selectedWorkflowVersion > 0 ? workflowStates : undefined)} boardLayout={selectedCard ? cardLayoutResolver(selectedCard) : undefined} initialSection={drawerFocus} nodes={drawerNodes} tasks={tasksPoll.data ?? undefined} onJumpToTask={jumpToTask} onOpenCoordinatorTerminal={onOpenCoordinatorTerminal} compact={compact} onOpenDriverSession={onOpenSessionForCard ? () => onOpenSessionForCard(selected) : undefined} />}
+      {selected && <CardDrawer id={selected} onClose={closeDrawer} onOpenCard={(id) => openDrawer(id)} workflowStates={selectedPinnedWorkflow?.states ?? (selectedWorkflowVersion !== undefined && selectedWorkflowVersion > 0 ? workflowStates : undefined)} boardLayout={selectedCard ? cardLayoutResolver(selectedCard) : undefined} initialSection={drawerFocus} nodes={drawerNodes} tasks={tasksPoll.data ?? undefined} onJumpToTask={jumpToTask} onOpenCoordinatorTerminal={onOpenCoordinatorTerminal} compact={compact} compactFilters={compact ? drawerFilters : undefined} onOpenDriverSession={onOpenSessionForCard ? () => onOpenSessionForCard(selected) : undefined} />}
       <NewCardDialog
         open={newCardOpen} project={project} cardProjects={projectOptions} workflows={newCardWorkflows}
         onClose={() => setNewCardOpen(false)}

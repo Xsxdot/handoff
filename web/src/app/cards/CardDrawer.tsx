@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import type { ReactNode } from 'react'
 import { X } from 'lucide-react'
 import { fetchTaskDetail, replyTicket } from '../../api/client'
 import type { Task, TaskDetail, Ticket } from '../../api/types'
@@ -278,6 +279,10 @@ export interface CardDrawerProps {
   // B369.10 T8：compact 双跳行第二跳「驾驶会话 → 群聊」的回调（CardsPage 经
   // onOpenSessionForCard 注入，Shell 会话流反查）。缺席不渲染——桌面永不渲染。
   onOpenDriverSession?: () => void
+  // S4（B426）：compact 抽屉顶部筛选区的内容槽（项目/工作流/搜索三件次级控件，
+  // 由 CardsPage 注入 JSX——筛选 state 住调用方，抽屉关闭后筛选保留）。桌面不传
+  // 不渲染，aside 结构与块序逐字节不动。
+  compactFilters?: ReactNode
 }
 
 export function CardDrawer({
@@ -293,6 +298,7 @@ export function CardDrawer({
   onOpenCoordinatorTerminal,
   compact = false,
   onOpenDriverSession,
+  compactFilters,
 }: CardDrawerProps) {
   const [detail, setDetail] = useState<CardDetail | null>(null)
   const [error, setError] = useState('')
@@ -1098,6 +1104,9 @@ export function CardDrawer({
         )}
         {titleError && <p role="alert" className="mt-1 text-xs text-destructive">{titleError}</p>}
       </header>
+      {/* S4（B426）：compact 抽屉顶部筛选区——固定在 header 下、滚动区外（aside
+          是 flex-col），作用于背后列表；桌面不渲染。 */}
+      {compact && compactFilters}
       <div className="min-h-0 flex-1 overflow-y-auto p-4">
         {error && <p role="alert" className="mb-3 break-words rounded border border-destructive/40 bg-destructive/5 p-2 text-sm text-destructive">{error}</p>}
         {!detail && !error && <p className="text-sm text-muted-foreground">正在读取账本…</p>}

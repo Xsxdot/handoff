@@ -202,56 +202,72 @@ describe('SessionTab', () => {
   })
 })
 
-// —— B369.8 T5：compact「群聊 | 详情」两态（岔口 5）——
+// —— S5（B426）：compact 房间两态改受控——「群聊 | 详情」tablist 删除，paneDetail
+// 上提 Shell（房间头部裁决需要知道详情态），SessionTab 受控渲染 + 详情态自渲染
+// 头部（左上返回回群聊、不渲染 ⋯）。 ——
 // panelByLabel：hidden 面板不进可达性树（这正是闸的证据），name 过滤会撞
 // 「隐藏元素可名计算为空」的库行为，故 role 全量（hidden:true）后按 aria-label 挑。
 const panelByLabel = (label: string) =>
   screen.getAllByRole('tabpanel', { hidden: true }).find((p) => p.getAttribute('aria-label') === label)!
 
-describe('B369.8 compact 两态', () => {
-  it('缺省群聊态：无叠加 aside、无 ⋯；详情面板 hidden、tab 选中态正确', async () => {
-    render(<SessionTab sessionId="session:7" title="架构物理化" compact />)
+describe('S5 compact 房间两态（B426，受控 paneDetail）', () => {
+  it('无「群聊|详情」tablist（S5 删除）；受控 false=群聊态：详情面板 hidden、无详情头部、无 ⋯、无 aside', async () => {
+    const onPaneDetailChange = vi.fn()
+    render(<SessionTab sessionId="session:7" title="架构物理化" compact paneDetail={false} onPaneDetailChange={onPaneDetailChange} />)
     await screen.findByRole('textbox', { name: '发送消息' })
+    expect(screen.queryByTestId('session-view-chat')).toBeNull()
+    expect(screen.queryByTestId('session-view-detail')).toBeNull()
     expect(screen.queryByTestId('session-drawer')).toBeNull()
+    // ⋯ 不在本组件（房间头部归 Shell、经注册表投递回来）
     expect(screen.queryByRole('button', { name: '会话详情' })).toBeNull()
-    expect(screen.getByTestId('session-view-chat')).toHaveAttribute('aria-selected', 'true')
-    expect(screen.getByTestId('session-view-detail')).toHaveAttribute('aria-selected', 'false')
+    // 详情头部仅详情态可达（面板 hidden 时头部随面板不进可达性树；DOM 内保挂载
+    // 与两态面板同款手法）
+    expect(screen.queryByRole('button', { name: '返回群聊' })).toBeNull()
     expect(panelByLabel('群聊').hasAttribute('hidden')).toBe(false)
-    // 详情面板 hidden：不进可达性树（可见面查询 getByRole 摸不到它，闸的正面证据）
     expect(screen.queryByRole('tabpanel', { name: '会话详情' })).toBeNull()
     expect(panelByLabel('会话详情').hasAttribute('hidden')).toBe(true)
   })
 
-  it('点「详情」→ aria-selected 翻转 + 五块全宽在场 + 群聊容器 hidden + 无 aside', async () => {
-    render(<SessionTab sessionId="session:7" title="架构物理化" compact />)
-    await screen.findByRole('textbox', { name: '发送消息' })
-    fireEvent.click(screen.getByTestId('session-view-detail'))
-    expect(screen.getByTestId('session-view-detail')).toHaveAttribute('aria-selected', 'true')
-    expect(screen.getByTestId('session-view-chat')).toHaveAttribute('aria-selected', 'false')
-    const detailPanel = panelByLabel('会话详情')
-    expect(detailPanel.hasAttribute('hidden')).toBe(false)
-    for (const name of ['成员', '会话卡', '任务节点', '会话 timeline', '会话管理']) {
-      expect(within(detailPanel).getByRole('region', { name })).toBeInTheDocument()
+  it('受控 true=详情态：详情头部（返回钮、无 ⋯）在场、五块全宽、群聊 hidden；点返回回调 false（仅回群聊不出房间）', async () => {
+    const onPaneDetailChange = vi.fn()
+    render(<SessionTab sessionId="session:7" title="架构物理化" compact paneDetail onPaneDetailChange={onPaneDetailChange} />)
+    await within(panelByLabel('会话详情')).findByRole('region', { name: '成员' })
+    for (const name of ['会话卡', '任务节点', '会话 timeline', '会话管理']) {
+      expect(within(panelByLabel('会话详情')).getByRole('region', { name })).toBeInTheDocument()
     }
+    // 详情态头部：左上返回、不渲染 ⋯（房间任一时刻只渲染一条 header 的另一半）
+    expect(screen.getByTestId('session-detail-back')).toBeInTheDocument()
+    expect(within(panelByLabel('会话详情')).queryByRole('button', { name: '会话详情' })).toBeNull()
     expect(panelByLabel('群聊').hasAttribute('hidden')).toBe(true)
+    expect(panelByLabel('会话详情').hasAttribute('hidden')).toBe(false)
     expect(screen.queryByTestId('session-drawer')).toBeNull()
+    fireEvent.click(screen.getByTestId('session-detail-back'))
+    expect(onPaneDetailChange).toHaveBeenCalledWith(false)
   })
 
-  it('切回群聊：草稿跨切换存活（hidden 保挂载的核心收益）', async () => {
-    render(<SessionTab sessionId="session:7" title="架构物理化" compact />)
+  it('注册表投递（⋯）：compact 下回调 onPaneDetailChange(true)（桌面开抽屉路径由桌面用例锁）', async () => {
+    const onPaneDetailChange = vi.fn()
+    render(<SessionTab sessionId="session:7" title="架构物理化" compact paneDetail={false} onPaneDetailChange={onPaneDetailChange} />)
+    await screen.findByRole('textbox', { name: '发送消息' })
+    act(() => { openSessionDetail('session:7') })
+    expect(onPaneDetailChange).toHaveBeenCalledWith(true)
+  })
+
+  it('Esc 关详情态：回调 false（compact 第二收起通道保持）', async () => {
+    const onPaneDetailChange = vi.fn()
+    render(<SessionTab sessionId="session:7" title="架构物理化" compact paneDetail onPaneDetailChange={onPaneDetailChange} />)
+    await within(panelByLabel('会话详情')).findByRole('region', { name: '成员' })
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(onPaneDetailChange).toHaveBeenCalledWith(false)
+  })
+
+  it('切回群聊：草稿跨切换存活（hidden 保挂载收益不变；受控翻转经 rerender）', async () => {
+    const onPaneDetailChange = vi.fn()
+    const view = render(<SessionTab sessionId="session:7" title="架构物理化" compact paneDetail={false} onPaneDetailChange={onPaneDetailChange} />)
     await screen.findByRole('textbox', { name: '发送消息' })
     fireEvent.change(screen.getByRole('textbox', { name: '发送消息' }), { target: { value: '草稿甲' } })
-    fireEvent.click(screen.getByTestId('session-view-detail'))
-    fireEvent.click(screen.getByTestId('session-view-chat'))
+    view.rerender(<SessionTab sessionId="session:7" title="架构物理化" compact paneDetail onPaneDetailChange={onPaneDetailChange} />)
+    view.rerender(<SessionTab sessionId="session:7" title="架构物理化" compact paneDetail={false} onPaneDetailChange={onPaneDetailChange} />)
     expect(screen.getByRole('textbox', { name: '发送消息' })).toHaveValue('草稿甲')
-  })
-
-  it('Esc 关详情态回群聊（compact 下的第二收起通道）', async () => {
-    render(<SessionTab sessionId="session:7" title="架构物理化" compact />)
-    await screen.findByRole('textbox', { name: '发送消息' })
-    fireEvent.click(screen.getByTestId('session-view-detail'))
-    expect(panelByLabel('会话详情').hasAttribute('hidden')).toBe(false)
-    fireEvent.keyDown(window, { key: 'Escape' })
-    expect(panelByLabel('群聊').hasAttribute('hidden')).toBe(false)
   })
 })
