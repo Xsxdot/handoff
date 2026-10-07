@@ -7,7 +7,7 @@ import {
   EMPTY_WORKBENCH,
   activateGroup as activateGroupLayout,
   activateTab,
-  appendRestoredTab,
+  focusRestoredTab,
   closePane as closePaneLayout,
   closeGroup as closeGroupLayout,
   closeTab,
@@ -172,7 +172,7 @@ export function useWorkbench(): WorkbenchApi {
 }
 
 function openRestored(wb: Workbench, base: BaseDir, sessionId: string, incompatible: boolean): Workbench {
-  return appendRestoredTab(wb, base, {
+  return focusRestoredTab(wb, base, {
     kind: 'terminal', seq: nextTerminalSeq(wb), sessionId, ...(incompatible ? { incompatible: true } : {}),
   })
 }

@@ -1270,9 +1270,9 @@ export function Shell() {
                         onOpenTask={(base, taskId) => openTaskTui(base, taskId)}
                         onWorktreeCreated={handleWorktreeCreated}
                         onReopenPtySession={(sessionId, base) => {
-                          // restoreTerminal 消费既有恢复 seam（自动去重/找位），
-                          // 不新建终端承载（B280 keep-alive 神圣）；restoreTerminal
-                          // 之后 detail=1 下钻，露出常驻工作台。
+                          // restoreTerminal 按 pty id 去重并切到那一格：已开则只聚焦，
+                          // 未开则放进独立组再激活。不新建第二条承载（B280）。
+                          // 下钻只揭开常驻工作台，眼前就是刚聚焦的这一格。
                           wb.restoreTerminal(base, sessionId)
                           openMobileDetail()
                         }}

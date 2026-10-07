@@ -101,7 +101,7 @@ describe('useWorkbench', () => {
     expect(result.current.wb.groups[0].sizes).toEqual([0.8])
   })
 
-  it('restoreTerminal 不 select、不抢 active group，hydrate 整体替换布局', () => {
+  it('restoreTerminal 不改选中目录；空工作台写入该 pty。hydrate 整体替换布局', () => {
     const { result } = renderHook(() => useWorkbench())
     act(() => result.current.select(a))
     act(() => result.current.restoreTerminal(b, 'S1'))
@@ -114,5 +114,42 @@ describe('useWorkbench', () => {
     expect(result.current.base).toEqual(a)
     expect(result.current.wb.activeGroupId).toBe('g7')
     expect(result.current.wb.groups[0].columns[0].panes[0]).toMatchObject({ base: b })
+  })
+
+  it('restoreTerminal 聚焦被点的 pty：离开上次打开的会话或终端，重复点击不复制 tab', () => {
+    const { result } = renderHook(() => useWorkbench())
+    const room = (id: string): BaseDir => ({
+      key: `session:${id}`, kind: 'home', path: '', label: '会话', projectName: '', machine: '',
+    })
+    const focused = () => {
+      const group = result.current.wb.groups.find((candidate) => candidate.id === result.current.wb.activeGroupId)
+      if (!group) return null
+      const [column, row] = group.focus
+      return group.columns[column]?.panes[row]?.content ?? null
+    }
+    const ptyTabs = (sessionId: string) => result.current.wb.groups.flatMap((group) =>
+      group.columns.flatMap((column) => column.panes.filter((tab) =>
+        tab?.content.kind === 'terminal' && tab.content.sessionId === sessionId,
+      )),
+    )
+
+    act(() => result.current.select(a))
+    act(() => result.current.openOrFocus({ kind: 'session', sessionId: 'room-1', title: '先开的会话' }, room('room-1')))
+    act(() => result.current.restoreTerminal(b, 'pty-old'))
+    act(() => result.current.openOrFocus({ kind: 'session', sessionId: 'room-2', title: '后开的会话' }, room('room-2')))
+    expect(focused()).toMatchObject({ kind: 'session', sessionId: 'room-2' })
+
+    act(() => result.current.restoreTerminal(b, 'pty-old'))
+    expect(focused()).toMatchObject({ kind: 'terminal', sessionId: 'pty-old' })
+    expect(ptyTabs('pty-old')).toHaveLength(1)
+
+    act(() => result.current.restoreTerminal(a, 'pty-new'))
+    expect(focused()).toMatchObject({ kind: 'terminal', sessionId: 'pty-new' })
+
+    act(() => result.current.restoreTerminal(b, 'pty-old'))
+    expect(focused()).toMatchObject({ kind: 'terminal', sessionId: 'pty-old' })
+    expect(ptyTabs('pty-old')).toHaveLength(1)
+    expect(ptyTabs('pty-new')).toHaveLength(1)
+    expect(result.current.base).toEqual(a)
   })
 })

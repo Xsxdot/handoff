@@ -495,7 +495,33 @@ export function placeSource(wb: Workbench, source: WorkbenchSource, target: Pane
   return next
 }
 
-/** 将恢复的会话加入独立 group；恢复前的空列不会成为孤儿会话的隐式归属。 */
+/**
+ * 用户点「回到这个终端」时把该 pty 变成眼前这一格。
+ * 已有同 sessionId 的终端只聚焦，不另开一组（一条会话一个承载）。
+ * 没有则 appendRestoredTab，再把 activeGroup 切到刚放入的那一格。
+ * 不改左栏选中目录：这次点击只决定看哪一格。
+ */
+export function focusRestoredTab(wb: Workbench, base: BaseDir, content: TabContent): Workbench {
+  const key = dedupKey(base.key, content)
+  const sessionId = content.kind === 'terminal' ? content.sessionId : undefined
+  if (key) {
+    const existing = findByKey(wb, key)
+    if (existing) {
+      const groupId = wb.groups[existing.group].id
+      console.debug('workbench.restore.focus_existing', { groupId, sessionId })
+      return activateTab(wb, groupId, existing.tab.id)
+    }
+  }
+  const placed = appendRestoredTab(wb, base, content)
+  if (!key) return placed
+  const created = findByKey(placed, key)
+  if (!created) return placed
+  const groupId = placed.groups[created.group].id
+  console.debug('workbench.restore.focus', { groupId, sessionId })
+  return activateTab(placed, groupId, created.tab.id)
+}
+
+/** 将恢复的会话加入独立 group；恢复前的空列不会成为孤儿会话的隐式归属。不切换 activeGroup。 */
 export function appendRestoredTab(wb: Workbench, base: BaseDir, content: TabContent): Workbench {
   const next = normalizeWorkbench(wb)
   const tab: Tab = { id: nextId(next, 't'), base: { ...base }, content: { ...content } as TabContent }
