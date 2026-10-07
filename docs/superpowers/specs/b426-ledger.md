@@ -82,3 +82,17 @@
   - 「抽屉顶部筛选区三件生效：设筛选 → 关抽屉 → 背后列表 filtered 反映；重开抽屉筛选保留」（select beta → 关抽屉 → alpha 卡消失 beta 卡在场 → 重开值仍 beta）
   - 「QueuePanel compact 细横条：收缩态无大边框盒；展开仍列完整队列」（CardsPage 集成 + QueuePanel 单测双面）
   - 桌面既有断言原样通过（桌面 header 逐字节未动的证据）。
+
+### Step 4（S2 项目页对齐原型）
+
+- 红先于实现（新缝符号双段）：①测试先行 → `Failed to resolve import "./MobileProjectList"`（编译红，核实非拼写错）；②落空壳（return null）→ `5 failed (5)`（断言红，证断言有牙）；③实现 → 绿。
+- 实现：
+  - 新组件 `web/src/app/tree/MobileProjectList.tsx`（tree 域，与 MobileProjectDetail 同域）：apphead（「项目」+「＋添加项目」）+ 项目卡流（图标=名称前两字符+哈希底色块、名称、›；第二行位置 chips）。纯投影、零请求、不识 router。
+  - `projectColor.ts` 新增 `projectColorVar(projectId)`（返回 `var(--project-N)`，同一 FNV-1a 哈希族）；图标底色经 inline style `color-mix(... 18%, white)` 消费——**不走 Tailwind bg 类**，理由与「拼类名 v4 静态扫描静默失效」的坑写进组件与函数注释，零 index.css 同步负担。
+  - `ProjectTree.tsx` 仅一处 `export` 关键字：`locationActiveCount` 导出供 MobileProjectList 复用（tasksOfWorkspace + running/waiting_answer/waiting_review 口径同源，plan 明令不另立第二套；行为零变化，ProjectTree.test 98 测原样绿）。
+  - `Shell.tsx:1192` 挂载点：`{projectTree ?? …}` 换 `<MobileProjectList projects={treeState.data.projects} machines={treeState.data.machines} tasks={tasks} onOpenProject={nav.setProject} onAddProject={setWizardOpen 通道}>`；MobileProjectDetail 覆盖层与 relative 容器保留（B369.10 保挂载手法不动）；桌面 aside 消费零改动。
+  - 测试笔误修正两次：图标首两字符是 'ha'（plan 权威=前两字符；原型 mock 'ho' 与其项目名不自洽，不跟）；chips 断言改 testid+textContent（getByText 只匹配直接文本节点）；组件内分隔点用显式字符串段（JSX 吞换行缩进空白）。
+- **ProjectTree compact 特判裁定：保留**（依据落账）：S2 后 grep 确认 ProjectTree 唯一挂载点=Shell:897（`!compact` 门内消费），compact prop 恒 false 成死参数；但移除需改写 ProjectTree 内 43 处 compact 消费点及关联测试用例，虽渲染输出不变，但违反 plan §2「桌面 aside ProjectTree 逐字节不动」的验收承诺、churn/回归风险远超收益。两种裁定 plan 均授权，选保留；死参数清理留待专门卡。
+- 形态对照（S2 ↔ `mobile-projects.html`）：apphead（标题 flex-1 + 右上「＋添加项目」pill）✓；卡=白底圆角块（top 行：36px 圆角图标块+名称+›）✓；第二行位置 chips（绿点/灰点+机器名+「N 活跃」amber/「离线」）✓；零活跃裸机器名（原型卡三）✓。
+- Shell.test compact 项目族 18 用例随语义更新（改期望不删断言意图）：下钻助手改 `openMobileProjectDetail`/`openWorkspaceTerminal`（卡→详情→wt 卡双动作）；离线用例改「卡 chip 离线 + 详情 pill disabled」承接不降级只读语义；:1585 改写为 S2 反例锁（树轨/worktree 计数/⌘K 搜索框/页脚/流程代码图死按钮全部不在场）；「工作项」行钮能力随树复用退役（原型形态无此钮，卡页走底栏），单独用例锁缺席；「浏览器返回键一致性」按详情层新路径验证 POP 落 `/?tab=projects&project=p1`。
+- 绿：`npx vitest run src/app/shell/ src/app/tree/` → `Test Files 20 passed (20) / Tests 374 passed (374)`。

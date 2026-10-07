@@ -44,3 +44,13 @@ function hash(input: string): number {
 export function projectColorClass(projectId: string): string {
   return CLASSES[hash(projectId) % CLASSES.length]
 }
+
+// projectColorVar 返回项目身份色的 CSS 变量引用（形如 'var(--project-3)'）。
+// 供把该色用作底色/边框的呈现面（B426 S2 移动项目卡图标块）经 color-mix 调淡、
+// 以 inline style 消费。why 给 var 不给 bg 类：Tailwind v4 按需产出只认字面量
+// 类名，拼出来的 bg-project-N 会静默失效（不报错、就是没颜色）；var 引用是
+// 运行时解析的 inline style，不吃静态扫描，也免去 CLASSES 与 index.css 两边
+// 同步组数的硬约束。
+export function projectColorVar(projectId: string): string {
+  return `var(--project-${(hash(projectId) % CLASSES.length) + 1})`
+}

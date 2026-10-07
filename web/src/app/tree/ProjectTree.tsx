@@ -258,12 +258,13 @@ export function tasksOfWorkspace(
 
 // locationActiveCount 数一个位置下沉睡的活跃任务（running + waiting_answer +
 // waiting_review）——B369.10 T3 的项目行位置芯片上那个「N 活跃」。
+// B426 S2 导出：MobileProjectList 的项目卡位置 chips 复用同一口径（不另立第二套）。
 //
 // 口径与 wsMetrics.tasks（目录行排序键）逐字同源：逐个工作树走 tasksOfWorkspace
 // 再按同样三态过滤。为什么不用 countsForProject 的 running+waiting：那个是项目级
 // 计数（含 pending/previews 的展示口径），位置芯片问的是「这台机器上有没有在跑
 // 的活」，同一棵树两处报不同的数才叫分叉。
-function locationActiveCount(tasks: Task[], project: ProjectNode, loc: ProjectLocationNode): number {
+export function locationActiveCount(tasks: Task[], project: ProjectNode, loc: ProjectLocationNode): number {
   return loc.workspaces.reduce(
     (n, ws) =>
       n +

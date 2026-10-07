@@ -39,6 +39,7 @@ import { AddProjectWizard } from '../projects/AddProjectWizard'
 import { ProjectEditDialog } from '../projects/ProjectEditDialog'
 import { findBaseByKey, findBaseOfTask, ProjectTree, workspaceBase, type OpenItem } from '../tree/ProjectTree'
 import { MobileProjectDetail } from '../tree/MobileProjectDetail'
+import { MobileProjectList } from '../tree/MobileProjectList'
 import { FileTree } from '../files/FileTree'
 import { WorkbenchPage } from '../workbench/WorkbenchPage'
 import { TerminalTab } from '../workbench/TerminalTab'
@@ -889,9 +890,9 @@ export function Shell() {
     wb.select(workspaceBase(project, machine, ws))
   }, [treeState, wb])
 
-  // projectTree 是项目树的唯一实例来源：桌面左栏与紧凑视口「项目」tab 共用同一份
-  // JSX（P1=A 一份产物）。两处同时挂载会撞 testid，故用 `!compact` 门保证任一时刻
-  // 只挂一个实例（见下面两处消费点）。
+  // projectTree 是桌面左栏的项目树实例（S2/B426 后 compact「项目」tab 不再复用
+  // 它——改挂原型卡流 MobileProjectList）。`!compact` 门在下方消费点保证桌面
+  // 语义；compact prop 恒 false（见台账「ProjectTree compact 特判裁定：保留」）。
   const projectTree = treeState.data === null ? null : (
     <ProjectTree
       tree={treeState.data}
@@ -1190,19 +1191,25 @@ export function Shell() {
                   />
                 )}
                 {nav.tab === 'projects' && (
-                  // B369.7 验收实走修正：ProjectTree 根是 flex-1 三段式（树独滚、
-                  // 底部入口行与解释文案钉底），只在有界的 flex 父级里成立；
-                  // mobile-home 的滚动容器是普通块级，不包裹的话页脚会被 16 个
-                  // 项目推到 scrollHeight 底（实测 note top:6454 / 视口 844），
-                  // 「隐藏并给出解释」的解释永远不在视口内。h-full 让 ProjectTree
-                  // 自带的三段式在紧凑视口照常钉底；桌面 aside 不经过此处，零接触。
-                  // B369.10：详情层以 absolute 覆盖层挂在同一 relative 容器内——
-                  // ProjectTree 保挂载，折叠集/搜索词/滚动不因进出详情丢失
-                  // （mobile-dir 同款手法）；mobile-dir 是 main 层兄弟覆盖层、DOM 序
-                  // 在后，project+dir 同持时目录层天然盖在详情层上，「详情→浏览文件
-                  // →返回」的层序零代码。详情层在 mobile-home 之内，不算覆盖期闸对象。
+                  // S2（B426）：compact 项目 tab 换原型卡流 MobileProjectList——
+                  // 桌面 ProjectTree 的 compact 复用退役（⌘K 搜索框/树轨/worktree
+                  // 计数/「流程与代码图暂未适配移动端」页脚不再出现在移动端）。
+                  // 数据全部 Shell 已持有（treeState + tasks），零新端点。
+                  // relative 容器与 MobileProjectDetail 覆盖层保留（B369.10 的保
+                  // 挂载手法不动）：点卡 nav.setProject 下钻、＋添加项目走既有
+                  // 向导通道（setWizardOpen）。
                   <div className="relative flex h-full min-h-0 flex-col">
-                    {projectTree ?? <p className="p-4 text-sm text-muted-foreground">正在读取项目…</p>}
+                    {treeState.data === null ? (
+                      <p className="p-4 text-sm text-muted-foreground">正在读取项目…</p>
+                    ) : (
+                      <MobileProjectList
+                        projects={treeState.data.projects}
+                        machines={treeState.data.machines}
+                        tasks={tasks}
+                        onOpenProject={(projectId) => nav.setProject(projectId)}
+                        onAddProject={() => setWizardOpen(true)}
+                      />
+                    )}
                     {detailProject !== null && (
                       <MobileProjectDetail
                         project={detailProject}
