@@ -6,7 +6,7 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import type { Task } from '../../api/types'
 import { CardsPage } from './CardsPage'
-import { CARD_STATUSES } from './statusVocab'
+import { DEFAULT_BOARD_COLUMNS } from './columns'
 
 vi.mock('../../api/client', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../api/client')>()),
@@ -325,8 +325,10 @@ describe('可配置看板列入口', () => {
     renderPage()
     await screen.findByText('自定义看板卡')
     fireEvent.change(screen.getByRole('combobox', { name: '工作流' }), { target: { value: 'custom' } })
-    expect(await screen.findByText('收集')).toBeInTheDocument()
-    expect(screen.getByText('完成')).toBeInTheDocument()
+    // S3（B426）后单流 chips 也渲染该流列名，裸 getByText 会撞 chip——列头断言
+    // 收紧到 section header span（语义更新，断言意图不变：看板按该流映射渲染列）。
+    expect(await screen.findByText('收集', { selector: 'section header span' })).toBeInTheDocument()
+    expect(screen.getByText('完成', { selector: 'section header span' })).toBeInTheDocument()
   })
 })
 
@@ -461,7 +463,7 @@ describe('CardsPage 从浏览器打开', () => {
   })
 })
 
-describe('B369.6 状态词表筛选（移动卡 tab）', () => {
+describe('B369.6 状态 chip（S3 后：看板五列语义，B426）', () => {
   const cardView = (over: Partial<import('../../api/ledger').CardView>) => ({
     id: 'B1', title: '卡', status: '待办', priority: '中', project: 'handoff', workflow: 'feature',
     parent: '', base_branch: '', attachments: [], following: '', blocked: false, blocked_by: [],
@@ -469,14 +471,14 @@ describe('B369.6 状态词表筛选（移动卡 tab）', () => {
     conflict: false, open_tickets: 0, ...over,
   })
 
-  it('chip 行逐值渲染受控词表的五个状态', async () => {
+  it('chip 行逐值渲染看板五列（displayedColumns，与桌面看板同源）', async () => {
     renderPage()
-    for (const status of ['待办', '进行中', '待审阅', '已完成', '终止']) {
-      expect(await screen.findByTestId(`card-status-${status}`)).toBeInTheDocument()
+    for (const column of DEFAULT_BOARD_COLUMNS) {
+      expect(await screen.findByTestId(`card-status-${column}`)).toBeInTheDocument()
     }
   })
 
-  it('点状态 chip 只留该状态；再点一次回全部', async () => {
+  it('点列 chip 只留该列（未知流卡按默认映射归桶）；再点一次回全部', async () => {
     const ledger = await import('../../api/ledger')
     vi.mocked(ledger.fetchCards).mockResolvedValue({
       cards: [
@@ -486,13 +488,111 @@ describe('B369.6 状态词表筛选（移动卡 tab）', () => {
       unlinked: { count: 0, tasks: [], unknown_targets: [] },
     } as never)
     renderPage()
-    fireEvent.click(await screen.findByTestId('card-status-已完成'))
+    // flows 未含 'feature' 流 → 未知流兜底：已完成 → 结束列、进行中 → 进行中列
+    fireEvent.click(await screen.findByTestId('card-status-结束'))
     // 断言钉在标题而非卡号：队列面板等别处的 fixture 也可能带同样的 B 号，
     // 用卡号会撞到跨用例残留 mock（假红）。
     expect(await screen.findByText('已完成卡')).toBeInTheDocument()
     await waitFor(() => expect(screen.queryByText('进行中卡')).toBeNull())
-    fireEvent.click(screen.getByTestId('card-status-已完成'))
+    fireEvent.click(screen.getByTestId('card-status-结束'))
     expect(await screen.findByText('进行中卡')).toBeInTheDocument()
+  })
+})
+
+// —— S3（B426）：状态 chip 以看板五列为准，过滤走真实归桶解析链（mergedLayoutFor /
+// layoutForWorkflow），不用 mock 布局顶替；必含「工作流状态卡归入语义桶」与
+// 「未知流兜底进行中」两条，双端同断言（唯一动桌面的例外，spec §5）。 ——
+describe('S3 状态 chip 归看板五列（B426，双端）', () => {
+  const charterCard = (over: Record<string, unknown> = {}) => ({
+    id: 'B1', title: '卡', status: '待办', priority: '中', project: 'p', workflow: 'charter',
+    parent: '', base_branch: '', attachments: [], following: '', blocked: false, blocked_by: [],
+    merged_count: 0, needs: '', open_decisions: 0, children_total: 0, children_done: 0,
+    conflict: false, open_tickets: 0, ...over,
+  })
+
+  const charterFlows = {
+    workflows: [{
+      name: 'charter', version: 12,
+      def: {
+        states: ['待办', 'spec', 'plan', 'implement', 'review', 'acceptance', 'integrate', '图对账', 'finish'],
+        board: {
+          columns: ['代办', '沟通中', '进行中', '审核中', '结束'],
+          state_to_column: {
+            spec: '沟通中', review: '审核中', acceptance: '审核中', integrate: '审核中',
+            图对账: '审核中', finish: '结束', 待办: '代办', plan: '进行中', implement: '进行中',
+          },
+          fallback: '进行中',
+        },
+      },
+    }],
+    templates: [],
+  }
+
+  const mockCharter = async (cards: Record<string, unknown>[]) => {
+    const ledger = await import('../../api/ledger')
+    vi.mocked(ledger.fetchFlows).mockResolvedValue(charterFlows)
+    vi.mocked(ledger.fetchCards).mockResolvedValue({
+      cards, unlinked: { count: 0, tasks: [], unknown_targets: [] },
+    } as never)
+  }
+
+  it('必含①：工作流状态卡归入语义桶——charter 流 spec 卡点「沟通中」chip 后可见（桌面 header chips）', async () => {
+    await mockCharter([
+      charterCard({ id: 'Bs', title: 'spec 卡', status: 'spec', workflow_version: 12 }),
+      charterCard({ id: 'Br', title: 'review 卡', status: 'review', workflow_version: 12 }),
+    ])
+    renderPage()
+    fireEvent.click(await screen.findByTestId('card-status-沟通中'))
+    expect(await screen.findByText('spec 卡')).toBeInTheDocument()
+    await waitFor(() => expect(screen.queryByText('review 卡')).toBeNull())
+  })
+
+  it('必含①（compact 同断言）：compact 行 2 chips 同样把 spec 卡归「沟通中」', async () => {
+    await mockCharter([
+      charterCard({ id: 'Bs', title: 'spec 卡', status: 'spec', workflow_version: 12 }),
+      charterCard({ id: 'Br', title: 'review 卡', status: 'review', workflow_version: 12 }),
+    ])
+    render(
+      <MemoryRouter initialEntries={['/cards']}>
+        <Routes>
+          <Route path="/cards" element={<CardsPage compact />} />
+          <Route path="/tasks/:id" element={<p>deep-link-hit</p>} />
+        </Routes>
+      </MemoryRouter>,
+    )
+    fireEvent.click(await screen.findByTestId('card-status-沟通中'))
+    expect(await screen.findByText('spec 卡')).toBeInTheDocument()
+    await waitFor(() => expect(screen.queryByText('review 卡')).toBeNull())
+  })
+
+  it('必含②：未知流兜底——flows 未含该卡 workflow 且状态非映射串 → 归「进行中」chip', async () => {
+    await mockCharter([
+      // workflow 'ghost-flow' 不在 flows；status 'mystery-state' 不在任何映射表
+      charterCard({ id: 'Bg', title: '幽灵卡', status: 'mystery-state', workflow: 'ghost-flow', workflow_version: 1 }),
+      charterCard({ id: 'Bt', title: '待办卡', status: '待办', workflow_version: 12 }),
+    ])
+    renderPage()
+    fireEvent.click(await screen.findByTestId('card-status-进行中'))
+    // 幽灵卡走 mergedLayoutFor 默认兜底落「进行中」；真待办卡不在此列
+    expect(await screen.findByText('幽灵卡')).toBeInTheDocument()
+    await waitFor(() => expect(screen.queryByText('待办卡')).toBeNull())
+    // 点「代办」chip → 幽灵卡不可见（证明兜底确落在进行中，而非无过滤）。
+    // 注意列名是现行词表「代办」（错字在账本工作流定义内，本卡不改）。
+    fireEvent.click(screen.getByTestId('card-status-代办'))
+    await waitFor(() => expect(screen.queryByText('幽灵卡')).toBeNull())
+    expect(screen.getByText('待办卡')).toBeInTheDocument()
+  })
+
+  it('点已选 chip 取消回全部（toggle 原样保留）', async () => {
+    await mockCharter([
+      charterCard({ id: 'Bs', title: 'spec 卡', status: 'spec', workflow_version: 12 }),
+      charterCard({ id: 'Bd', title: '待办卡', status: '待办', workflow_version: 12 }),
+    ])
+    renderPage()
+    fireEvent.click(await screen.findByTestId('card-status-沟通中'))
+    await waitFor(() => expect(screen.queryByText('待办卡')).toBeNull())
+    fireEvent.click(screen.getByTestId('card-status-沟通中'))
+    expect(await screen.findByText('待办卡')).toBeInTheDocument()
   })
 })
 
@@ -613,10 +713,10 @@ describe('B369.8 compact 单列', () => {
     expect(needsButton.className).toContain('ml-auto')
   })
 
-  it('行 2 状态 chips 逐值渲染 CARD_STATUSES 词表；行 3 次级四控件在场且 min-h-11', async () => {
+  it('行 2 状态 chips 逐值渲染看板五列（S3 后与 displayedColumns 同源）；行 3 次级四控件在场且 min-h-11', async () => {
     await renderCompact()
-    for (const status of CARD_STATUSES) {
-      expect(screen.getByTestId(`card-status-${status}`)).toBeInTheDocument()
+    for (const column of DEFAULT_BOARD_COLUMNS) {
+      expect(screen.getByTestId(`card-status-${column}`)).toBeInTheDocument()
     }
     const secondary = screen.getByTestId('cards-controls-secondary')
     expect(within(secondary).getByRole('combobox', { name: '项目' })).toBeInTheDocument()

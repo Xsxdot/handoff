@@ -50,3 +50,20 @@
 - 红先于实现：`npx vitest run src/app/rooms/SessionSidebar.test.tsx` → `1 failed | 12 passed`，失败原因 = select（session-project-filter）不在 session-filter-chips 行内（功能缺失，非 typo）。
 - 实现：`SessionSidebar.tsx` compact 两段（chips 行 + 项目筛选行）合一——「⚑需要你 N」toggle chip（`onClick={onToggleNeeds}` 直 toggle，删 `if (!needsOnly)`/`if (needsOnly)` 防翻转守卫）+ 项目 select + 计数右对齐；「全部」chip 删除；:79-83 旧注释改写为 toggle 新语义。桌面 `!compact` 段零改动。
 - 绿：`npx vitest run src/app/rooms/SessionSidebar.test.tsx` → `13 passed (13)`，含承重断言「S1：筛选一行三元素（needs-count/项目/计数）；点已选「需要你」取消回全部；无「全部」chip」与桌面反例锁（toggle 行原样、chips 行不渲染）原样通过。
+
+### Step 2（S3 状态 chip 归看板五列，双端）
+
+- 红先于实现：`npx vitest run src/app/cards/CardsPage.test.tsx` → `7 failed`（chip 行仍渲染五锚点词表：card-status-沟通中 等列名 testid 不存在、期望文本撞车），失败原因均为功能缺失。
+- 实现（CardsPage.tsx）：
+  - compact 行 2 与桌面 header chips 两处 `CARD_STATUSES.map` → `displayedColumns.map`（chips 列序与桌面看板同源；label 逐字跟列名，「代办」照写）；aria-pressed / toggle / testid 结构原样。
+  - `filtered` 过滤换 `boardColumnFor(card.status, cardLayoutResolver(card)) === statusFilter`（真实解析链 mergedLayoutFor/layoutForWorkflow），**未套 cardsInColumn**（避开其 `!card.following` 折叠语义，plan 判据）；deps 补 cardLayoutResolver。
+  - 移除 statusVocab import（noUnusedLocals 开启）；statusFilter 状态注释与两处 chips 段注释改写为新语义。
+- 波及与修复（按 plan §6 预警）：
+  - 既有用例「选中工作流时按其看板映射渲染五列」`findByText('收集')` 撞单流 chips 新列名——列头断言收紧 `selector: 'section header span'`（改期望不删断言）。
+  - 台账勘误：本执行者测试首写 card-status-待办——列名是现行词表「**代办**」（错字在账本工作流定义内），已修正；词表错字本卡不改。
+- 绿：`npx vitest run src/app/cards/` → `Test Files 11 passed (11) / Tests 137 passed (137)`，含必含断言：
+  - 「必含①：工作流状态卡归入语义桶——charter 流 spec 卡点「沟通中」chip 后可见（桌面 header chips）」（走真实 flows mock + mergedLayoutFor，非 mock 布局）
+  - 「必含①（compact 同断言）」
+  - 「必含②：未知流兜底——flows 未含该卡 workflow 且状态非映射串 → 归「进行中」chip」（正反两面：进行中可见、代办不可见）
+  - 「点已选 chip 取消回全部（toggle 原样保留）」
+  - 双端 chips 同断言成立 = 同 bug 同修证据；`grep card-status-|CARD_STATUSES` 退出 cards 域外零引用。

@@ -15,9 +15,8 @@ import { TOUCH_BASELINE } from '@/lib/touch'
 import { cn } from '@/lib/utils'
 import { CardDrawer } from './CardDrawer'
 import { CardItem } from './CardItem'
-import { boardColumns, cardsInColumn, DEFAULT_BOARD_COLUMNS, filterNeeds, mergeStateOrder, mergedLayoutFor, needsAttention, nodeLabelFor, normalizeBoardLayout, visibleColumns } from './columns'
+import { boardColumnFor, boardColumns, cardsInColumn, DEFAULT_BOARD_COLUMNS, filterNeeds, mergeStateOrder, mergedLayoutFor, needsAttention, nodeLabelFor, normalizeBoardLayout, visibleColumns } from './columns'
 import type { CardLayoutResolver, WorkflowBoardLookup } from './columns'
-import { CARD_STATUSES } from './statusVocab'
 import { ListView } from './ListView'
 import { MigrateDialog } from './MigrateDialog'
 import { NewCardDialog } from './NewCardDialog'
@@ -140,8 +139,8 @@ export function CardsPage({ onOpenCoordinatorTerminal, onDrawerCardChange, taskJ
   const projectFromUrl = searchParams.get('project') ?? ''
   const [view, setView] = useState<'board' | 'list'>('board')
   const [needsOnly, setNeedsOnly] = useState(false)
-  // statusFilter：移动「卡」tab 的状态词表筛选（'' = 全部）。词表是受控的
-  // CARD_STATUSES（与 Go 逐值一致），不提供自由输入——自由输入等于允许词表外串。
+  // statusFilter：卡页状态筛选（'' = 全部）。S3（B426）语义 = 看板列名——chip
+  // 集来自 displayedColumns（与桌面看板同源），过滤走 boardColumnFor 逐卡归桶。
   const [statusFilter, setStatusFilter] = useState('')
   const [selected, setSelected] = useState<string | null>(null)
   const [newCardOpen, setNewCardOpen] = useState(false)
@@ -266,9 +265,16 @@ export function CardsPage({ onOpenCoordinatorTerminal, onDrawerCardChange, taskJ
       if (workflow && card.workflow !== workflow) return false
       return query === '' || card.id.toLowerCase().includes(query) || card.title.toLowerCase().includes(query)
     })
-    const byStatus = statusFilter === '' ? base : base.filter((card) => card.status === statusFilter)
+    // S3（B426）：statusFilter 语义从「状态字面量」变「看板列名」——每张卡按其
+    // 工作流 board 布局归列（与桌面看板 cardsInColumn 同一归桶机制）。刻意不套
+    // cardsInColumn：它带 !card.following 折叠语义，chips 过滤现状不排 following，
+    // 换源不得引入行为差。未知流（lookup undefined）走 mergedLayoutFor 默认映射
+    // 兜底「进行中」，与桌面看板同口径。
+    const byStatus = statusFilter === ''
+      ? base
+      : base.filter((card) => boardColumnFor(card.status, cardLayoutResolver(card)) === statusFilter)
     return filterNeeds(byStatus, needsOnly)
-  }, [cards, needsOnly, project, search, workflow, statusFilter])
+  }, [cards, needsOnly, project, search, workflow, statusFilter, cardLayoutResolver])
   const attentionCount = cards.filter(needsAttention).length + projectDecisionCount(decisions)
   // 项目级请示不跟筛选走：它被算进了「需要你」徽标，只在筛选态显示等于
   // 徽标数字有一部分永远看不见（同一类毛病见 visibleColumns 的注释）
@@ -448,22 +454,24 @@ export function CardsPage({ onOpenCoordinatorTerminal, onDrawerCardChange, taskJ
               className={`ml-auto inline-flex min-h-11 items-center rounded-md border px-2.5 py-1 text-xs ${needsOnly ? 'border-amber-400 bg-amber-50 text-amber-800' : 'text-amber-700'}`}
             >⚑ 需要你 {attentionCount}</button>
           </div>
-          {/* 行 2（词表）：最高频的筛选单独成行，与次级配置（项目/工作流）不同频 */}
+          {/* 行 2（状态列 chips）：S3（B426）后列序 = displayedColumns（看板五列，
+              与桌面看板同源），label 逐字跟列名（「代办」是现行词表，修正另立卡）；
+              过滤语义见 filtered 内注释。这是「桌面零改动」承诺的唯一双端例外。 */}
           <span data-testid="card-status-filter" className="flex flex-wrap items-center gap-1 border-b px-3 py-1.5">
-            {CARD_STATUSES.map((status) => (
+            {displayedColumns.map((column) => (
               <button
-                key={status}
+                key={column}
                 type="button"
-                data-testid={`card-status-${status}`}
-                aria-pressed={statusFilter === status}
+                data-testid={`card-status-${column}`}
+                aria-pressed={statusFilter === column}
                 onClick={() => {
-                  const next = statusFilter === status ? '' : status
-                  console.debug('cards.status_filter', { status: next })
+                  const next = statusFilter === column ? '' : column
+                  console.debug('cards.status_filter', { column: next })
                   setStatusFilter(next)
                 }}
-                className={`rounded-full border px-2 py-0.5 text-[11px] ${statusFilter === status ? 'border-foreground bg-accent font-medium' : 'text-muted-foreground'}`}
+                className={`rounded-full border px-2 py-0.5 text-[11px] ${statusFilter === column ? 'border-foreground bg-accent font-medium' : 'text-muted-foreground'}`}
               >
-                {status}
+                {column}
               </button>
             ))}
           </span>
@@ -498,21 +506,23 @@ export function CardsPage({ onOpenCoordinatorTerminal, onDrawerCardChange, taskJ
           <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜 B 号 / 标题" className="w-40 rounded-md border bg-background px-2 py-1 text-xs" />
           <button type="button" onClick={() => setNewCardOpen(true)} className="rounded-md border px-2.5 py-1 text-xs">+ 新建</button>
           <button type="button" onClick={() => setNeedsOnly((current) => !current)} className={`rounded-md border px-2.5 py-1 text-xs ${needsOnly ? 'border-amber-400 bg-amber-50 text-amber-800' : 'text-amber-700'}`}>⚑ 需要你 {attentionCount}</button>
+          {/* S3（B426）：桌面 header 同组 chips 一并切换到看板五列——同一 bug 同一修，
+              是「桌面零改动」承诺的唯一例外（spec §5/§8）；chips 段之外逐字节不动。 */}
           <span data-testid="card-status-filter" className="flex items-center gap-1">
-            {CARD_STATUSES.map((status) => (
+            {displayedColumns.map((column) => (
               <button
-                key={status}
+                key={column}
                 type="button"
-                data-testid={`card-status-${status}`}
-                aria-pressed={statusFilter === status}
+                data-testid={`card-status-${column}`}
+                aria-pressed={statusFilter === column}
                 onClick={() => {
-                  const next = statusFilter === status ? '' : status
-                  console.debug('cards.status_filter', { status: next })
+                  const next = statusFilter === column ? '' : column
+                  console.debug('cards.status_filter', { column: next })
                   setStatusFilter(next)
                 }}
-                className={`rounded-full border px-2 py-0.5 text-[11px] ${statusFilter === status ? 'border-foreground bg-accent font-medium' : 'text-muted-foreground'}`}
+                className={`rounded-full border px-2 py-0.5 text-[11px] ${statusFilter === column ? 'border-foreground bg-accent font-medium' : 'text-muted-foreground'}`}
               >
-                {status}
+                {column}
               </button>
             ))}
           </span>
