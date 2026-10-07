@@ -30,9 +30,10 @@ import { WebglAddon } from '@xterm/addon-webgl'
 import '@xterm/xterm/css/xterm.css'
 import { createPtySession, deletePtySession, uploadDropFile, uploadDroppedPath } from '../../api/client'
 import { connectPty, type PtyHandle } from '../../api/pty'
-import { describeElement, logTermDrop, logTermFocus, logTermHost, logTermInput, logTermKeepalive, logTermOsc52, logTermResize, logTermWheel, logTermWheelBypass, terminalDebugEnabled } from './terminalDebug'
+import { describeElement, logTermDrop, logTermFocus, logTermHost, logTermInput, logTermKeepalive, logTermOsc52, logTermResize, logTermTouch, logTermWheel, logTermWheelBypass, terminalDebugEnabled } from './terminalDebug'
 import { isTerminalHostResponse, takeLeadingFocusReport } from './terminalHostResponse'
-import { altBufferWheelReports, mouseEncodingOf, pointerCell, wheelForcesSelection, wheelPixelDeltaY } from './terminalWheel'
+import { altBufferCursorReports, altBufferWheelReports, mouseEncodingOf, pointerCell, wheelForcesSelection, wheelPixelDeltaY } from './terminalWheel'
+import { touchPastSlop, touchWheelDelta, tuiTouchIntent, tuiTouchLocksViewport, tuiTouchMoveAction } from './terminalTouch'
 import { installTerminalInputFix } from './terminalInput'
 import { parseOsc52 } from './terminalOsc52'
 import { MobileKeybar } from './MobileKeybar'
@@ -469,6 +470,125 @@ export function TerminalTab({
     }
     host.addEventListener('wheel', onHostWheel, { capture: true, passive: false })
 
+    // 手指和桌面滚轮不是同一条 DOM 事件。xterm 在鼠标追踪开启时对 touchmove
+    // 直接返回，不 preventDefault；.xterm-viewport 是 overflow-y: scroll，
+    // 浏览器改 ydisp，整屏 TUI 跟着手指走。备用屏没有 scrollback 时滑到边
+    // 还会冒泡，WebView 把整页带着滑。这里按桌面同一条规则收成滚轮报告或方向键。
+    let touchOrigin: { x: number; y: number } | null = null
+    let touchPrev: { x: number; y: number } | null = null
+    let touchCaptured = false
+    const touchRemainder = { x: 0, y: 0 }
+    let touchLocked = false
+    const syncTouchLock = () => {
+      const lock = tuiTouchLocksViewport({
+        bufferType: term.buffer.active.type,
+        mouseTracking: term.modes.mouseTrackingMode !== 'none',
+      })
+      const value = lock ? 'none' : ''
+      const overflow = lock ? 'hidden' : ''
+      const applyTouch = (el: HTMLElement | null) => {
+        if (el && el.style.touchAction !== value) el.style.touchAction = value
+      }
+      applyTouch(host)
+      const viewport = host.querySelector('.xterm-viewport') as HTMLElement | null
+      const screen = host.querySelector('.xterm-screen') as HTMLElement | null
+      applyTouch(viewport)
+      applyTouch(screen)
+      // touch-action 挡不住 WebView 收走手势。锁住时 viewport 不再是滚动容器，
+      // xterm 改 scrollTop 也没有可滑的高度，整屏 TUI 不会跟着手指走。
+      if (viewport && viewport.style.overflowY !== overflow) viewport.style.overflowY = overflow
+      if (lock === touchLocked) return
+      touchLocked = lock
+      logTermTouch(label, 'lock', lock ? 'none' : 'pan')
+    }
+    syncTouchLock()
+    const onParsedForTouch = term.onWriteParsed(syncTouchLock)
+    const onBufferForTouch = term.buffer.onBufferChange(syncTouchLock)
+    const onTouchStart = (ev: TouchEvent) => {
+      const t = ev.touches[0]
+      if (!t || ev.touches.length !== 1) {
+        touchOrigin = null
+        touchPrev = null
+        touchCaptured = false
+        return
+      }
+      touchOrigin = { x: t.clientX, y: t.clientY }
+      touchPrev = touchOrigin
+      touchCaptured = false
+      touchRemainder.x = 0
+      touchRemainder.y = 0
+    }
+    const onTouchEnd = () => {
+      touchOrigin = null
+      touchPrev = null
+      touchCaptured = false
+    }
+    const onTouchMove = (ev: TouchEvent) => {
+      const t = ev.touches[0]
+      if (!touchPrev || !touchOrigin || !t) return
+      if (host.closest('[aria-hidden="true"]') || host.closest('[inert]')) return
+      const next = { x: t.clientX, y: t.clientY }
+      const intent = tuiTouchIntent({
+        bufferType: term.buffer.active.type,
+        mouseTracking: term.modes.mouseTrackingMode !== 'none',
+        altKey: ev.altKey,
+        shiftKey: ev.shiftKey,
+        isMac,
+        touches: ev.touches.length,
+      })
+      const pastSlop = touchCaptured || touchPastSlop(touchOrigin, next)
+      const action = tuiTouchMoveAction({ intent, pastSlop })
+      if (!action.prevent) {
+        touchPrev = next
+        return
+      }
+      // 第一下就要取消。死区只决定还不写入 PTY：点击（没有越过 10px）
+      // 不发滚轮，但浏览器不能把这段手势收走。第一下计入的位移仍从
+      // touchstart 算，不把死区丢掉。
+      if (ev.cancelable) ev.preventDefault()
+      ev.stopPropagation()
+      if (!action.emit) return
+      touchCaptured = true
+      const { deltaX, deltaY } = touchWheelDelta(touchPrev, next)
+      touchPrev = next
+      const screenEl = (host.querySelector('.xterm-screen') as HTMLElement | null) ?? host
+      const rect = screenEl.getBoundingClientRect()
+      const cellH = term.rows > 0 ? rect.height / term.rows : 16
+      const cellW = term.cols > 0 ? rect.width / term.cols : 8
+      if (intent === 'arrows') {
+        const seq = altBufferCursorReports({
+          deltaY, cellHeight: cellH, remainder: touchRemainder,
+          applicationCursorKeys: term.modes.applicationCursorKeysMode,
+        })
+        if (seq !== '') {
+          logTermTouch(label, 'arrows', seq)
+          term.input(seq)
+        }
+        return
+      }
+      const { col, row } = pointerCell(next.x, next.y, rect, term.cols, term.rows)
+      if (col < 1 || row < 1) {
+        logTermKeepalive(label, 'wheel-miss', { 原因: 'touch-no-cell', 宽: rect.width, 高: rect.height })
+        return
+      }
+      const seq = altBufferWheelReports({
+        deltaX, deltaY, cellWidth: cellW, cellHeight: cellH,
+        remainder: touchRemainder, col, row,
+        pixelX: Math.max(0, Math.floor(next.x - rect.left)),
+        pixelY: Math.max(0, Math.floor(next.y - rect.top)),
+        shift: ev.shiftKey, alt: ev.altKey, ctrl: ev.ctrlKey,
+        encoding: mouseEncodingOf(term as Parameters<typeof mouseEncodingOf>[0]),
+      })
+      if (seq !== '') {
+        logTermTouch(label, 'wheel', seq)
+        term.input(seq)
+      }
+    }
+    host.addEventListener('touchstart', onTouchStart, { capture: true, passive: true })
+    host.addEventListener('touchmove', onTouchMove, { capture: true, passive: false })
+    host.addEventListener('touchend', onTouchEnd, { capture: true, passive: true })
+    host.addEventListener('touchcancel', onTouchEnd, { capture: true, passive: true })
+
     // 焦点取证：只记不改。relatedTarget 是「焦点去了哪儿 / 从哪儿来」的标准来源，
     // 比在 blur 里读 document.activeElement 准——blur 触发时新的焦点元素还没落定。
     // 输入补漏必须装在 term.open() 之后：它要拿 term.textarea，也要抢在 xterm
@@ -735,6 +855,20 @@ export function TerminalTab({
       b270('unmount', { 会话: liveId ?? '(new)', ...snap() })
       ro.disconnect()
       host.removeEventListener('wheel', onHostWheel, { capture: true })
+      host.removeEventListener('touchstart', onTouchStart, { capture: true })
+      host.removeEventListener('touchmove', onTouchMove, { capture: true })
+      host.removeEventListener('touchend', onTouchEnd, { capture: true })
+      host.removeEventListener('touchcancel', onTouchEnd, { capture: true })
+      onParsedForTouch.dispose()
+      onBufferForTouch.dispose()
+      host.style.touchAction = ''
+      const viewport = host.querySelector('.xterm-viewport') as HTMLElement | null
+      const screen = host.querySelector('.xterm-screen') as HTMLElement | null
+      if (viewport) {
+        viewport.style.touchAction = ''
+        viewport.style.overflowY = ''
+      }
+      if (screen) screen.style.touchAction = ''
       ta?.removeEventListener('focus', onFocusEvt)
       ta?.removeEventListener('blur', onBlurEvt)
       inputFix.dispose()

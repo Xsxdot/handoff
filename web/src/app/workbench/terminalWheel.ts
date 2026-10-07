@@ -144,3 +144,24 @@ export function altBufferWheelReports(p: {
   }
   return out
 }
+
+// altBufferCursorReports 是 xterm 在备用屏、没有 scrollback、也没开鼠标追踪时
+// 对滚轮的回落：负 delta 上方向，正 delta 下方向。应用光标键模式用 SS3（ESC O）。
+//
+// 参数：deltaY 与滚轮同号；cellHeight 一行像素；remainder 就地改；
+//       applicationCursorKeys 为真时前缀是 ESC O 而不是 CSI。
+// 返回：要写入 PTY 的序列；凑不满一行时返回空串。一次最多 8 格。
+export function altBufferCursorReports(p: {
+  deltaY: number
+  cellHeight: number
+  remainder: { y: number }
+  applicationCursorKeys: boolean
+}): string {
+  const hold = { value: p.remainder.y }
+  const ticks = ticksFromDelta(p.deltaY, p.cellHeight, hold)
+  p.remainder.y = hold.value
+  if (ticks === 0) return ''
+  const prefix = p.applicationCursorKeys ? '\x1bO' : '\x1b['
+  const key = ticks < 0 ? 'A' : 'B'
+  return (prefix + key).repeat(Math.abs(ticks))
+}

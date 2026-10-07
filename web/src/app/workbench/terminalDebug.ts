@@ -146,6 +146,15 @@ export function logTermWheel(label: string, ticks: number, data: string): void {
   console.debug('[term:wheel]', { 终端: label, 格数: ticks, 原文: JSON.stringify(data) })
 }
 
+// logTermTouch 记一次「手指滑动被收成 TUI 滚动」或 viewport 锁的切换。
+//
+// 参数：label 是终端标识；kind 是 wheel / arrows / lock；detail 是序列或锁状态。
+// 锁的切换必须留痕：整屏跟着滑时，先看锁有没有在备用屏或鼠标追踪期间变成 none。
+export function logTermTouch(label: string, kind: 'wheel' | 'arrows' | 'lock', detail: string): void {
+  if (!terminalDebugEnabled()) return
+  console.debug('[term:touch]', { 终端: label, 动作: kind, 原文: JSON.stringify(detail) })
+}
+
 // logTermWheelBypass 记一次「自定义滚轮放行、不生成报告」。
 //
 // 参数：label 是终端标识；reason 说明为什么放行（如 forces-selection）。

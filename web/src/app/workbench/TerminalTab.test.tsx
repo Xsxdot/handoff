@@ -25,11 +25,16 @@ const termInstance = {
   loadAddon: vi.fn(),
   refresh: vi.fn(),
   input: vi.fn(),
-  buffer: { active: { type: 'normal' as 'normal' | 'alternate' } },
+  buffer: {
+    active: { type: 'normal' as 'normal' | 'alternate' },
+    onBufferChange: vi.fn(() => ({ dispose: vi.fn() })),
+  },
   modes: {
     mouseTrackingMode: 'none' as 'none' | 'x10' | 'vt200' | 'drag' | 'any',
     sendFocusMode: false,
+    applicationCursorKeysMode: false,
   },
+  onWriteParsed: vi.fn((_cb: () => void) => ({ dispose: vi.fn() })),
   onData: vi.fn((cb: (d: string) => void) => {
     termOnData = cb
     return { dispose: vi.fn() }
@@ -116,6 +121,7 @@ beforeEach(() => {
   termInstance.buffer.active.type = 'normal'
   termInstance.modes.mouseTrackingMode = 'none'
   termInstance.modes.sendFocusMode = false
+  termInstance.modes.applicationCursorKeysMode = false
   roCallbacks.length = 0
   createPtySession.mockResolvedValue({ id: 'new-1', base_path: WS.path })
   deletePtySession.mockResolvedValue({ ok: true })
@@ -489,6 +495,101 @@ describe('TerminalTab', () => {
     termInstance.modes.mouseTrackingMode = 'vt200'
     expect(handler({ deltaX: -80, deltaY: 0, clientX: 50, clientY: 50 })).toBe(false)
     expect(termInstance.input).toHaveBeenCalledWith('\x1b[<66;7;4M'.repeat(8))
+    spy.mockRestore()
+  })
+
+  it('备用屏上的手指上滑发滚轮报告，并取消浏览器滚动', async () => {
+    const spy = vi.spyOn(Element.prototype, 'getBoundingClientRect').mockReturnValue({
+      width: 800, height: 480, x: 0, y: 0, top: 0, left: 0, right: 800, bottom: 480,
+      toJSON: () => ({}),
+    } as DOMRect)
+    render(<TerminalTab base={WS} seq={1} sessionId="s" onSession={vi.fn()} />)
+    await waitFor(() => expect(connectPty).toHaveBeenCalled())
+    termInstance.buffer.active.type = 'alternate'
+    termInstance.modes.mouseTrackingMode = 'vt200'
+    const host = screen.getByTestId('pty-host')
+    const viewport = document.createElement('div')
+    viewport.className = 'xterm-viewport'
+    host.appendChild(viewport)
+    const sync = termInstance.onWriteParsed.mock.calls[0][0] as () => void
+    sync()
+    expect(host.style.touchAction).toBe('none')
+    expect(viewport.style.touchAction).toBe('none')
+    expect(viewport.style.overflowY).toBe('hidden')
+    // jsdom 没有 Touch / TouchEvent 构造器，用手写触点列表走同一条监听。
+    const point = (type: string, x: number, y: number) => {
+      const ev = new Event(type, { bubbles: true, cancelable: true })
+      Object.defineProperty(ev, 'touches', { value: [{ clientX: x, clientY: y }] })
+      Object.defineProperty(ev, 'altKey', { value: false })
+      Object.defineProperty(ev, 'shiftKey', { value: false })
+      Object.defineProperty(ev, 'ctrlKey', { value: false })
+      host.dispatchEvent(ev)
+      return ev
+    }
+    point('touchstart', 50, 50)
+    const moved = point('touchmove', 50, 18)
+    expect(moved.defaultPrevented).toBe(true)
+    expect(termInstance.input).toHaveBeenCalledWith('\x1b[<65;7;2M'.repeat(2))
+    termInstance.input.mockClear()
+    point('touchstart', 50, 50)
+    const tap = point('touchmove', 52, 51)
+    // 死区只推迟写入。第一下不取消的话，WebView 收走整段手势，慢滑仍整屏滑走。
+    expect(tap.defaultPrevented).toBe(true)
+    expect(termInstance.input).not.toHaveBeenCalled()
+    spy.mockRestore()
+  })
+
+  it('主屏手指滑动不拦截，shell 回滚仍交给浏览器', async () => {
+    render(<TerminalTab base={WS} seq={1} sessionId="s" onSession={vi.fn()} />)
+    await waitFor(() => expect(connectPty).toHaveBeenCalled())
+    const host = screen.getByTestId('pty-host')
+    const point = (type: string, x: number, y: number) => {
+      const ev = new Event(type, { bubbles: true, cancelable: true })
+      Object.defineProperty(ev, 'touches', { value: [{ clientX: x, clientY: y }] })
+      Object.defineProperty(ev, 'altKey', { value: false })
+      Object.defineProperty(ev, 'shiftKey', { value: false })
+      Object.defineProperty(ev, 'ctrlKey', { value: false })
+      host.dispatchEvent(ev)
+      return ev
+    }
+    const viewport = document.createElement('div')
+    viewport.className = 'xterm-viewport'
+    host.appendChild(viewport)
+    const sync = termInstance.onWriteParsed.mock.calls[0][0] as () => void
+    sync()
+    point('touchstart', 10, 10)
+    const moved = point('touchmove', 10, 80)
+    expect(moved.defaultPrevented).toBe(false)
+    expect(termInstance.input).not.toHaveBeenCalled()
+    expect(host.style.touchAction).toBe('')
+    expect(viewport.style.overflowY).toBe('')
+    expect(viewport.style.touchAction).toBe('')
+  })
+
+  it('备用屏没开鼠标追踪时，手指下滑发上方向键', async () => {
+    const spy = vi.spyOn(Element.prototype, 'getBoundingClientRect').mockReturnValue({
+      width: 800, height: 480, x: 0, y: 0, top: 0, left: 0, right: 800, bottom: 480,
+      toJSON: () => ({}),
+    } as DOMRect)
+    render(<TerminalTab base={WS} seq={1} sessionId="s" onSession={vi.fn()} />)
+    await waitFor(() => expect(connectPty).toHaveBeenCalled())
+    termInstance.buffer.active.type = 'alternate'
+    termInstance.modes.mouseTrackingMode = 'none'
+    termInstance.modes.applicationCursorKeysMode = false
+    const host = screen.getByTestId('pty-host')
+    const point = (type: string, x: number, y: number) => {
+      const ev = new Event(type, { bubbles: true, cancelable: true })
+      Object.defineProperty(ev, 'touches', { value: [{ clientX: x, clientY: y }] })
+      Object.defineProperty(ev, 'altKey', { value: false })
+      Object.defineProperty(ev, 'shiftKey', { value: false })
+      Object.defineProperty(ev, 'ctrlKey', { value: false })
+      host.dispatchEvent(ev)
+      return ev
+    }
+    point('touchstart', 40, 10)
+    const moved = point('touchmove', 40, 42)
+    expect(moved.defaultPrevented).toBe(true)
+    expect(termInstance.input).toHaveBeenCalledWith('\x1b[A'.repeat(2))
     spy.mockRestore()
   })
 

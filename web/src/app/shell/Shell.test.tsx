@@ -98,9 +98,10 @@ const termInstance = {
   loadAddon: vi.fn(),
   refresh: vi.fn(),
   input: vi.fn(),
-  buffer: { active: { type: 'normal' } },
-  modes: { mouseTrackingMode: 'none' },
+  buffer: { active: { type: 'normal' }, onBufferChange: vi.fn(() => ({ dispose: vi.fn() })) },
+  modes: { mouseTrackingMode: 'none', applicationCursorKeysMode: false },
   onData: vi.fn(() => ({ dispose: vi.fn() })),
+  onWriteParsed: vi.fn(() => ({ dispose: vi.fn() })),
   onResize: vi.fn(),
   attachCustomWheelEventHandler: vi.fn(),
   // B300 起 TerminalTab 挂载即注册 OSC 52 handler，替身必须提供 parser 键
