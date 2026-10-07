@@ -38,6 +38,12 @@ export interface WorkbenchPageProps {
   // viewport === 'phone' 下传，组件不自读视口；不传（pad/desktop）时列/窗格
   // 两层渲染输出逐字节保持现状。
   singleFocus?: boolean
+  // S5（B426）：会话房间判据（compact && 下钻 && 焦点 tab 为会话）由 Shell 下传，
+  // 组件不自判 nav/视口（singleFocus 同款通道）。真 = 房间 chrome 收敛：TabBar
+  // 组标签条与窗格标题行（含 ⋯/窗格切换/×）不渲染——房间内只留一条 header，
+  // 已知代价：房间内无多 tab 切换条，切 tab 先出房间（用户裁决接受）。缺省
+  // false = 终端/任务下钻与桌面零改动。
+  sessionRoom?: boolean
 }
 
 type DragOver = {
@@ -52,7 +58,7 @@ function tabCount(group: { columns: Array<{ panes: Array<Tab | null> }> }): numb
 }
 
 export function WorkbenchPage({
-  api, onAddProject, renderContent, terminalUnavailable, onBeforeClose, tree, tasks, onFileCreated, launchers = [], taskName, singleFocus = false,
+  api, onAddProject, renderContent, terminalUnavailable, onBeforeClose, tree, tasks, onFileCreated, launchers = [], taskName, singleFocus = false, sessionRoom = false,
 }: WorkbenchPageProps) {
   const { wb, base } = api
   const activeGroup = wb.groups.find((group) => group.id === wb.activeGroupId) ?? wb.groups[0]
@@ -394,6 +400,9 @@ export function WorkbenchPage({
                     )}
                   />
                 )}
+                {/* S5（B426）：会话房间不渲染窗格标题行（含拖拽柄/⋯/窗格切换/×）——
+                    房间只留一条 header；终端/任务下钻 sessionRoom=false 原样。 */}
+                {!sessionRoom && (
                 <div className="flex min-h-8 shrink-0 items-center gap-2 border-b px-2 text-xs">
                   <div
                     draggable={tab !== null}
@@ -452,6 +461,7 @@ export function WorkbenchPage({
                     className="rounded p-0.5 text-muted-foreground hover:bg-accent"
                   >×</button>
                 </div>
+                )}
                 <div data-testid="pane-content" className={cn('min-h-0 flex-1 overflow-hidden', dragging && 'pointer-events-none')}>{renderTab(group.id, columnIndex, row, tab)}</div>
               </div>
             )
@@ -470,6 +480,9 @@ export function WorkbenchPage({
 
   return (
     <div className="relative flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-border">
+      {/* S5（B426）：会话房间不渲染 TabBar（组标签条）——切 tab 先出房间（用户
+          裁决接受）；终端/任务下钻 sessionRoom=false 原样。 */}
+      {!sessionRoom && (
       <div className="flex min-h-0 items-stretch">
         <div className="min-w-0 flex-1">
           <TabBar
@@ -489,6 +502,7 @@ export function WorkbenchPage({
           />
         </div>
       </div>
+      )}
       {dropWarning !== '' && <p role="alert" className="bg-destructive/10 px-3 py-1 text-xs text-destructive">{dropWarning}</p>}
       {newFileError !== '' && <p role="alert" className="bg-destructive/10 px-3 py-1 text-xs text-destructive">新建文件失败：{newFileError}</p>}
       <div className="relative isolate min-h-0 min-w-0 flex-1 overflow-hidden">

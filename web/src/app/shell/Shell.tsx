@@ -68,6 +68,7 @@ import type { SessionSummary } from '../../api/rooms'
 import { NewSessionDialog } from '../rooms/NewSessionDialog'
 import { SessionSidebar } from '../rooms/SessionSidebar'
 import { SessionTab } from '../rooms/SessionTab'
+import { openSessionDetail } from '../rooms/sessionDetailOpener'
 import { totalUnread } from '../rooms/sessionModel'
 import { COLLAB_POLL_MS } from '../rooms/constants'
 import { needsAttention } from '../cards/columns'
@@ -847,14 +848,48 @@ export function Shell() {
   const desktop = isDesktopShell()
   const focusedBase = focusedPaneBase(wb.wb)
   // focusedTab：焦点窗格里的 tab 本体。面包屑第三段（内容名）与左栏焦点态共用。
-  const focusedTab = focusedTabOf(wb.wb)
-  // 面包屑第三段跟焦点窗格的内容名（spec §3）：tui=任务原名、file=文件名、
+  const focusedTab = focusedTabOf(wb.wb)  // 面包屑第三段跟焦点窗格的内容名（spec §3）：tui=任务原名、file=文件名、
   // terminal=终端标题；空白窗格或没有焦点内容时不传，行里回落目录名。
   const crumbTail = focusedBase && focusedTab && focusedTab.content.kind !== 'blank'
     ? tabTitle(focusedTab.content, focusedBase.label, taskNameResolver)
     : undefined
   // focusedTaskId：焦点窗格是 tui 内容时的 taskId，左栏任务行据此画焦点态。
   const focusedTaskId = focusedTab && focusedTab.content.kind === 'tui' ? focusedTab.content.taskId : null
+
+  // S5（B426）：会话房间判据——compact && 下钻态 && 焦点 tab 内容为会话。
+  // 数据全部本组件已持有（focusedTab/nav），WorkbenchPage/SessionTab 不自判
+  //（singleFocus 同款下传通道）。
+  const focusedSessionId = focusedTab !== null && focusedTab.content.kind === 'session'
+    ? focusedTab.content.sessionId
+    : null
+  const sessionRoom = compact && nav.detail && focusedSessionId !== null
+  // 房间详情态（paneDetail 真值源，上提至此）：⋯（注册表）/详情头部返回/Esc 三条
+  // 通道都汇到这里。房间头部按它隐显——群聊态 = 房间头部（返回+标题+⋯），详情
+  // 态 = SessionTab 自渲染头部（返回+标题，无 ⋯），房间任一时刻只渲染一条 header。
+  // 重置：焦点会话变化或出房间时不残留（避免「头部说群聊、内容在详情」的失同步）。
+  const [roomDetailOpen, setRoomDetailOpen] = useState(false)
+  useEffect(() => { setRoomDetailOpen(false) }, [focusedSessionId, nav.detail])
+
+  // 下钻返回条的分派（B369.7 按来源分派，plan §3.2）：会话来源重建会话 tab 且
+  // 仍在下钻态（from 清除，再返回走无 from 兜底——逐级出栈）；卡来源落
+  // /cards?card=<id> 不带 from（from=card-Y 意味着卡详情原本无来源，没有「来源
+  // 的来源」可恢复）；无 from 走 exitDetail 兜底。S5 起房间头部的返回复用同一
+  // 分派（出房间回会话列表的语义与既有返回条逐字相同）。
+  const detailBack = () => {
+    const src = nav.from
+    if (src !== null && src.startsWith('session-')) {
+      const sessionId = src.slice('session-'.length)
+      const session = sessions.find((s) => s.id === sessionId)
+      wb.openOrFocus({ kind: 'session', sessionId, title: session?.title ?? sessionId }, sessionBase(sessionId))
+      console.debug('shell.mobile_nav.detail_back', { from: src })
+      navigate('/?tab=sessions&detail=1', { replace: true })
+    } else if (src !== null && src.startsWith('card-')) {
+      console.debug('shell.mobile_nav.detail_back', { from: src })
+      navigate(`/cards?card=${encodeURIComponent(src.slice('card-'.length))}`, { replace: true })
+    } else {
+      nav.exitDetail()
+    }
+  }
 
   // 裁决横幅判据（B369.10 岔口 4）：焦点**组**内存在 tui 窗格、其任务处于
   // waiting_review，或该任务有挂起工单。判据字面取「焦点窗格是 tui」会让
@@ -1032,6 +1067,7 @@ export function Shell() {
             <WorkbenchPage
               api={wb}
               singleFocus={viewport === 'phone'}
+              sessionRoom={sessionRoom}
               onAddProject={() => setWizardOpen(true)}
               tree={treeState.data}
               tasks={tasks}
@@ -1112,8 +1148,12 @@ export function Shell() {
                       <SessionTab
                         sessionId={c.sessionId}
                         title={c.title}
-                        // B369.8 T5：compact 用「群聊|详情」两态替换「⋯」抽屉。
+                        // S5（B426）：compact 两态受控——paneDetail 真值源在本组件的
+                        // roomDetailOpen（房间头部隐显与两态翻转同一开关）；仅焦点
+                        // 会话吃这个值，后台会话窗格不受牵连。桌面不传，抽屉原样。
                         compact={compact}
+                        paneDetail={sessionRoom && roomDetailOpen && focusedSessionId === c.sessionId}
+                        onPaneDetailChange={setRoomDetailOpen}
                         onOpenCard={(cardId) => {
                           // B369.7：紧凑下会话卡身份只进卡 tab/对应卡详情（带会话来源，
                           // 不直接跳任务现场）；桌面走既有 /cards 深链。
@@ -1257,8 +1297,39 @@ export function Shell() {
               （桌面靠左栏与面包屑，手机两者都不挂）。固定在顶部，含当前焦点内容名。
               紧凑视口下 fullPageRoute 恒假（S2d-1），故不与整页路由互压。 */}
           {compact && nav.detail && (
+            sessionRoom && roomDetailOpen ? null : sessionRoom ? (
+              // S5（B426）：会话房间的唯一 header（群聊态）——‹返回（出房间回
+              // 会话列表，分派复用 detailBack）+ 房间标题 + ⋯更多（右侧，经
+              // openSessionDetail 注册表投递进 SessionTab，不新开缝）。详情态
+              // （roomDetailOpen）时整个让位给 SessionTab 自渲染的详情头部。
+              <div
+                data-testid="mobile-room-header"
+                className="absolute inset-x-0 top-0 z-30 flex items-center gap-2 border-b bg-background px-2 py-1.5"
+              >
+                <button
+                  type="button"
+                  data-testid="mobile-room-back"
+                  onClick={detailBack}
+                  className="rounded px-2 py-1 text-sm text-muted-foreground hover:bg-accent hover:text-foreground"
+                >
+                  ‹ 返回
+                </button>
+                <span className="min-w-0 flex-1 truncate text-sm">{crumbTail ?? focusedBase?.label ?? ''}</span>
+                <button
+                  type="button"
+                  aria-label="会话详情"
+                  title="会话详情（成员/卡/归档）"
+                  data-testid="mobile-room-more"
+                  onClick={() => { if (focusedSessionId !== null) openSessionDetail(focusedSessionId) }}
+                  className="rounded px-2 py-1 text-sm text-muted-foreground hover:bg-accent hover:text-foreground"
+                >
+                  ⋯
+                </button>
+              </div>
+            ) : (
             // B369.10：单条 absolute bar 升格为「bar + 裁决横幅」的组合容器——
             // 横幅判据与落点理由见 bannerTask memo（Shell 层、不进窗格树）。
+            // S5：焦点 tab 为会话时走上面的房间头部分支，此分支只剩终端/任务下钻。
             <div className="absolute inset-x-0 top-0 z-30 flex min-h-0 flex-col">
               {bannerTask !== null && (
                 <div
@@ -1297,25 +1368,7 @@ export function Shell() {
               <button
                 type="button"
                 data-testid="mobile-detail-back"
-                onClick={() => {
-                  // B369.7 返回条按来源分派（plan §3.2）：会话来源重建会话 tab 且
-                  // 仍在下钻态（from 清除，再返回走无 from 兜底——逐级出栈）；卡来源
-                  // 落 /cards?card=<id> 不带 from（from=card-Y 意味着卡详情原本无
-                  // 来源，没有「来源的来源」可恢复）；无 from 走 exitDetail 兜底。
-                  const src = nav.from
-                  if (src !== null && src.startsWith('session-')) {
-                    const sessionId = src.slice('session-'.length)
-                    const session = sessions.find((s) => s.id === sessionId)
-                    wb.openOrFocus({ kind: 'session', sessionId, title: session?.title ?? sessionId }, sessionBase(sessionId))
-                    console.debug('shell.mobile_nav.detail_back', { from: src })
-                    navigate('/?tab=sessions&detail=1', { replace: true })
-                  } else if (src !== null && src.startsWith('card-')) {
-                    console.debug('shell.mobile_nav.detail_back', { from: src })
-                    navigate(`/cards?card=${encodeURIComponent(src.slice('card-'.length))}`, { replace: true })
-                  } else {
-                    nav.exitDetail()
-                  }
-                }}
+                onClick={detailBack}
                 className="rounded px-2 py-1 text-sm text-muted-foreground hover:bg-accent hover:text-foreground"
               >
                 ‹ 返回
@@ -1323,6 +1376,7 @@ export function Shell() {
               <span className="min-w-0 flex-1 truncate text-sm">{crumbTail ?? focusedBase?.label ?? ''}</span>
               </div>
             </div>
+            )
           )}
           {/* 紧凑视口的目录面（项目 tab → 位置 → 目录）：右栏无处安放，改为覆盖层，
               带返回条回项目列表。文件/终端下钻切工作台（S2b 的两个回调）——

@@ -1363,18 +1363,20 @@ describe('B369.6 移动断点谱系', () => {
     expect(screen.getByTestId('mobile-home')).toBeInTheDocument()
   })
 
-  it('点会话进下钻态：底栏首页让开、返回条出现；返回回到底栏首页', async () => {
+  it('点会话进下钻态：底栏首页让开、房间头部出现；返回回到底栏首页', async () => {
     Object.defineProperty(window, 'innerWidth', { value: 375, configurable: true, writable: true })
     vi.mocked(fetchSessions).mockResolvedValue([sessionSummary()] as never)
-    renderShell()
+    renderShell('/')
     fireEvent.click(await screen.findByTestId('session-row'))
-    expect(await screen.findByTestId('mobile-detail-bar')).toBeInTheDocument()
+    // S5：会话房间只有一条 header = 房间头部（既有 mobile-detail-bar 不再渲染）
+    expect(await screen.findByTestId('mobile-room-header')).toBeInTheDocument()
+    expect(screen.queryByTestId('mobile-detail-bar')).toBeNull()
     // 下钻态：底栏首页整层让开，工作台仍在 DOM（keep-alive）
     expect(screen.queryByTestId('mobile-home')).toBeNull()
     expect(document.querySelector('[data-testid="workbench-group"]')).not.toBeNull()
-    fireEvent.click(screen.getByTestId('mobile-detail-back'))
+    fireEvent.click(screen.getByTestId('mobile-room-back'))
     expect(await screen.findByTestId('mobile-home')).toBeInTheDocument()
-    expect(screen.queryByTestId('mobile-detail-bar')).toBeNull()
+    expect(screen.queryByTestId('mobile-room-header')).toBeNull()
   })
 
   it('移动「项目」tab：不可达位置标离线、详情位可看不可操作（不降级只读）', async () => {
@@ -1500,8 +1502,8 @@ describe('B369.7 紧凑导航统一', () => {
     renderShell('/')
     fireEvent.click(await screen.findByTestId('session-row'))
     await waitFor(() => expect(locationRef()).toBe('/?tab=sessions&detail=1'))
-    // 会话 tab 在场 → compact「详情」tab（B369.8 T5：两态取代「⋯」抽屉）→ 点卡身份行
-    fireEvent.click(await screen.findByTestId('session-view-detail'))
+    // S5：会话房间 → ⋯（房间头部）进详情态 → 点卡身份行
+    fireEvent.click(await screen.findByTestId('mobile-room-more'))
     fireEvent.click(await screen.findByTestId('session-card-row'))
     // from 值里的会话 id 冒号按 URLSearchParams 规则转义；读回时自动解码
     await waitFor(() => expect(locationRef()).toBe('/cards?card=B1&from=session-session%3A1'))
@@ -1564,12 +1566,14 @@ describe('B369.7 紧凑导航统一', () => {
     // 先 act 冲刷微任务，否则点击落进兜底标题（sessionId）且不会自愈。
     await waitFor(() => expect(rooms.fetchSessions.mock.results.some((r) => r.type === 'return')).toBe(true))
     await act(async () => {})
+    // 首次点击落在返回条（深链直达时焦点 tab 尚未重建为会话 → 非会话房间分支）
     fireEvent.click(await screen.findByTestId('mobile-detail-back'))
     await waitFor(() => expect(locationRef()).toBe('/?tab=sessions&detail=1'))
-    expect(await screen.findByRole('tab', { name: /架构物理化/ })).toBeInTheDocument()
-    expect(screen.getByTestId('mobile-detail-bar')).toBeInTheDocument()
+    // openOrFocus 重建会话 tab 后即会话房间：S5 房间头部在场（TabBar 已收敛，
+    // tab 重建改由房间头部的存在证明——它的判据就是「焦点 tab 为会话」）
+    expect(await screen.findByTestId('mobile-room-header')).toBeInTheDocument()
     // from 已清除：再点返回走无 from 兜底（逐级出栈）
-    fireEvent.click(screen.getByTestId('mobile-detail-back'))
+    fireEvent.click(screen.getByTestId('mobile-room-back'))
     await waitFor(() => expect(locationRef()).toBe('/?tab=sessions'))
     expect(screen.getByTestId('mobile-home')).toBeInTheDocument()
   })
@@ -1577,10 +1581,12 @@ describe('B369.7 紧凑导航统一', () => {
   it('无 from 点返回 → 回底栏首页（现状兜底不回归）', async () => {
     Object.defineProperty(window, 'innerWidth', { value: 375, configurable: true, writable: true })
     renderShell('/?tab=sessions&detail=1')
+    // 深链直达无会话 tab 焦点 → 非会话房间分支 = 既有返回条
     fireEvent.click(await screen.findByTestId('mobile-detail-back'))
     await waitFor(() => expect(locationRef()).toBe('/?tab=sessions'))
     expect(screen.getByTestId('mobile-home')).toBeInTheDocument()
     expect(screen.queryByTestId('mobile-detail-bar')).toBeNull()
+    expect(screen.queryByTestId('mobile-room-header')).toBeNull()
   })
 
   it('S2 反例锁：compact 项目 tab 不再出现桌面树件（树轨/worktree 计数/⌘K/页脚/死按钮）', async () => {
@@ -1633,8 +1639,8 @@ describe('B369.7 紧凑导航统一', () => {
     fireEvent.click(await screen.findByTestId('session-row'))
     await waitFor(() => expect(locationRef()).toBe('/?tab=sessions&detail=1'))
     // ② 卡身份行 → 卡 tab 卡详情（不进任务现场）；
-    //    详情面板入口 = compact「详情」tab（B369.8 T5：两态取代「⋯」抽屉）
-    fireEvent.click(await screen.findByTestId('session-view-detail'))
+    //    详情面板入口 = S5 房间头部的 ⋯（经注册表投递）
+    fireEvent.click(await screen.findByTestId('mobile-room-more'))
     fireEvent.click(await screen.findByTestId('session-card-row'))
     await waitFor(() => expect(locationRef()).toBe('/cards?card=B1&from=session-session%3A1'))
     expect(await screen.findByRole('dialog', { name: '工作项详情' })).toBeInTheDocument()
@@ -1645,12 +1651,13 @@ describe('B369.7 紧凑导航统一', () => {
     expect(await screen.findByTestId('mobile-detail-bar')).toBeInTheDocument()
     await waitFor(() => expect(locationRef()).toBe('/?tab=cards&detail=1&from=session-session%3A1'))
     expect(await screen.findByRole('tab', { name: /重构工单通道/ })).toBeInTheDocument()
-    // ④ 返回 → 会话 tab 重建（openOrFocus 幂等），仍在下钻态
+    // ④ 返回 → 会话 tab 重建（openOrFocus 幂等），仍在下钻态（S5：房间头部在场
+    //    即证明焦点 tab 已是会话——TabBar 收敛后 tab 不再可见）
     fireEvent.click(screen.getByTestId('mobile-detail-back'))
     await waitFor(() => expect(locationRef()).toBe('/?tab=sessions&detail=1'))
-    expect(await screen.findByRole('tab', { name: /架构物理化/ })).toBeInTheDocument()
-    // ⑤ 再返回 → 会话列表（from 已清，逐级出栈兜底）
-    fireEvent.click(screen.getByTestId('mobile-detail-back'))
+    expect(await screen.findByTestId('mobile-room-header')).toBeInTheDocument()
+    // ⑤ 再返回 → 会话列表（from 已清，逐级出栈兜底；S5 房间头部返回）
+    fireEvent.click(screen.getByTestId('mobile-room-back'))
     await waitFor(() => expect(locationRef()).toBe('/?tab=sessions'))
     expect(screen.getByTestId('mobile-home')).toBeInTheDocument()
     expect(screen.queryByTestId('mobile-detail-bar')).toBeNull()
@@ -1807,17 +1814,18 @@ describe('B369.8 覆盖层硬闸', () => {
     expect(underlay.className).toContain('pointer-events-none')
   })
 
-  it('compact 下钻：会话行进任务现场 → 三件套整体摘除（工作台是活面，反例锁）；返回 → 恢复', async () => {
+  it('compact 下钻：会话行进会话房间（房间头部）→ 三件套整体摘除（工作台是活面，反例锁）；返回 → 恢复', async () => {
     Object.defineProperty(window, 'innerWidth', { value: 375, configurable: true, writable: true })
     vi.mocked(fetchSessions).mockResolvedValue([sessionSummary()] as never)
     renderShell('/')
     fireEvent.click(await screen.findByTestId('session-row'))
-    await screen.findByTestId('mobile-detail-bar')
+    // S5：会话房间的头部是房间头部，三件套照样整体摘除
+    await screen.findByTestId('mobile-room-header')
     const underlay = screen.getByTestId('workbench-underlay')
     expect(underlay.getAttribute('aria-hidden')).toBe('false')
     expect(underlay.hasAttribute('inert')).toBe(false)
     expect(underlay.className).not.toContain('pointer-events-none')
-    fireEvent.click(screen.getByTestId('mobile-detail-back'))
+    fireEvent.click(screen.getByTestId('mobile-room-back'))
     await screen.findByTestId('mobile-home')
     expect(underlay.getAttribute('aria-hidden')).toBe('true')
     expect(underlay.hasAttribute('inert')).toBe(true)
@@ -1876,17 +1884,18 @@ describe('B369.8 覆盖层硬闸', () => {
     expect(await screen.findByTestId('card-tier-work')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: '关闭' }))
     await waitFor(() => expect(screen.queryByRole('dialog', { name: '工作项详情' })).toBeNull())
-    // ③ 会话两态往返
+    // ③ 会话两态往返（S5）：⋯ 进详情态（详情头部在场、房间头部让位）→ 返回回群聊
     fireEvent.click(screen.getByTestId('mobile-tab-sessions'))
     fireEvent.click(await screen.findByTestId('session-row'))
-    await screen.findByTestId('mobile-detail-bar')
-    fireEvent.click(await screen.findByTestId('session-view-detail'))
-    expect(screen.getByTestId('session-view-detail')).toHaveAttribute('aria-selected', 'true')
-    fireEvent.click(screen.getByTestId('session-view-chat'))
-    expect(screen.getByTestId('session-view-chat')).toHaveAttribute('aria-selected', 'true')
+    await screen.findByTestId('mobile-room-header')
+    fireEvent.click(await screen.findByTestId('mobile-room-more'))
+    expect(await screen.findByTestId('session-detail-back')).toBeInTheDocument()
+    expect(screen.queryByTestId('mobile-room-header')).toBeNull()
+    fireEvent.click(screen.getByTestId('session-detail-back'))
+    expect(await screen.findByTestId('mobile-room-header')).toBeInTheDocument()
     // ④ 项目：卡主点击进详情（S2 后的主通道）→ 返回列表；workbench-underlay
     //    三件套随 mobile-home 覆盖层在场
-    fireEvent.click(screen.getByTestId('mobile-detail-back'))
+    fireEvent.click(screen.getByTestId('mobile-room-back'))
     fireEvent.click(await screen.findByTestId('mobile-tab-projects'))
     fireEvent.click(await screen.findByTestId('mobile-project-card'))
     await waitFor(() => expect(locationRef()).toBe('/?tab=projects&project=p1'))
@@ -1895,6 +1904,68 @@ describe('B369.8 覆盖层硬闸', () => {
     await waitFor(() => expect(locationRef()).toBe('/?tab=projects'))
     expect(screen.queryByTestId('mobile-project-detail')).toBeNull()
     expect(screen.getByTestId('workbench-underlay').hasAttribute('inert')).toBe(true)
+  })
+})
+
+// —— S5（B426）：会话房间头部收敛——compact+下钻+焦点会话 = 房间只留一条 header；
+// 终端/任务下钻的 chrome（返回条/裁决横幅/TabBar/窗格标题行）全部照旧（防回归）。 ——
+describe('S5 会话房间头部收敛', () => {
+  const setCompact = () =>
+    Object.defineProperty(window, 'innerWidth', { value: 375, configurable: true, writable: true })
+
+  async function enterRoom() {
+    const rooms = vi.mocked(await import('../../api/rooms'))
+    rooms.fetchSessions.mockResolvedValue([sessionSummary()] as never)
+    setCompact()
+    renderShell('/')
+    fireEvent.click(await screen.findByTestId('session-row'))
+    await screen.findByTestId('mobile-room-header')
+  }
+
+  it('会话房间仅一条 header：房间头部在场；返回条/裁决横幅/TabBar/窗格标题行/两态 tablist 全部不在', async () => {
+    await enterRoom()
+    expect(screen.getAllByTestId('mobile-room-header')).toHaveLength(1)
+    expect(screen.queryByTestId('mobile-detail-bar')).toBeNull()
+    expect(screen.queryByTestId('task-verdict-banner')).toBeNull()
+    // TabBar 收敛锚：组标签条（含 sr-only「新建标签组」）不渲染
+    expect(screen.queryByRole('button', { name: '新建标签组' })).toBeNull()
+    // 窗格标题行（含 ⋯/×）不渲染；两态 tablist 已删除
+    expect(screen.queryByRole('button', { name: /关闭 会话 · / })).toBeNull()
+    expect(screen.queryByTestId('session-view-chat')).toBeNull()
+    expect(screen.queryByTestId('session-view-detail')).toBeNull()
+  })
+
+  it('⋯ 进详情态：详情头部在场、无第二枚 ⋯；房间头部让位（任一时刻只渲染一条 header）', async () => {
+    await enterRoom()
+    fireEvent.click(screen.getByTestId('mobile-room-more'))
+    expect(await screen.findByTestId('session-detail-back')).toBeInTheDocument()
+    expect(screen.queryByTestId('mobile-room-header')).toBeNull()
+    expect(screen.queryByTestId('mobile-room-more')).toBeNull()
+    expect(screen.queryByRole('button', { name: '会话详情' })).toBeNull()
+  })
+
+  it('详情左上返回回群聊（不出房间）：URL 仍 detail=1、房间头部回来', async () => {
+    await enterRoom()
+    fireEvent.click(screen.getByTestId('mobile-room-more'))
+    await screen.findByTestId('session-detail-back')
+    fireEvent.click(screen.getByTestId('session-detail-back'))
+    expect(await screen.findByTestId('mobile-room-header')).toBeInTheDocument()
+    expect(locationRef()).toBe('/?tab=sessions&detail=1')
+  })
+
+  it('防回归反例：终端下钻 chrome 照旧——返回条/TabBar/窗格标题行在场、房间头部与横幅不在', async () => {
+    setCompact()
+    renderShell('/?tab=projects')
+    fireEvent.click(await screen.findByTestId('mobile-project-card'))
+    await screen.findByTestId('mobile-project-detail')
+    fireEvent.click(screen.getAllByTestId('project-wt-terminal')[0])
+    await screen.findByTestId('mobile-detail-bar')
+    expect(screen.queryByTestId('mobile-room-header')).toBeNull()
+    expect(screen.queryByTestId('task-verdict-banner')).toBeNull()
+    expect(screen.getByRole('button', { name: '新建标签组' })).toBeInTheDocument()
+    // 返回条返回语义照旧（出下钻回底栏首页）
+    fireEvent.click(screen.getByTestId('mobile-detail-back'))
+    expect(await screen.findByTestId('mobile-home')).toBeInTheDocument()
   })
 })
 
@@ -2309,8 +2380,8 @@ describe('B369.10 卡到会话双跳 seam', () => {
     renderShell('/cards?card=B1')
     expect(await screen.findByRole('dialog', { name: '工作项详情' })).toBeInTheDocument()
     fireEvent.click(await screen.findByTestId('card-jump-session'))
-    // 会话流反查命中 session:1 → 群聊 tab 开在中央区 + 下钻（返回条在场）
-    expect(await screen.findByRole('tab', { name: /架构物理化/ })).toBeInTheDocument()
-    expect(await screen.findByTestId('mobile-detail-bar')).toBeInTheDocument()
+    // 会话流反查命中 session:1 → 群聊 tab 开在中央区 + 下钻（S5：房间头部在场
+    // 即证明会话 tab 已开——TabBar 收敛后 tab 不再可见）
+    expect(await screen.findByTestId('mobile-room-header')).toBeInTheDocument()
   })
 })

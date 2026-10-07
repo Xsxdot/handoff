@@ -96,3 +96,15 @@
 - 形态对照（S2 ↔ `mobile-projects.html`）：apphead（标题 flex-1 + 右上「＋添加项目」pill）✓；卡=白底圆角块（top 行：36px 圆角图标块+名称+›）✓；第二行位置 chips（绿点/灰点+机器名+「N 活跃」amber/「离线」）✓；零活跃裸机器名（原型卡三）✓。
 - Shell.test compact 项目族 18 用例随语义更新（改期望不删断言意图）：下钻助手改 `openMobileProjectDetail`/`openWorkspaceTerminal`（卡→详情→wt 卡双动作）；离线用例改「卡 chip 离线 + 详情 pill disabled」承接不降级只读语义；:1585 改写为 S2 反例锁（树轨/worktree 计数/⌘K 搜索框/页脚/流程代码图死按钮全部不在场）；「工作项」行钮能力随树复用退役（原型形态无此钮，卡页走底栏），单独用例锁缺席；「浏览器返回键一致性」按详情层新路径验证 POP 落 `/?tab=projects&project=p1`。
 - 绿：`npx vitest run src/app/shell/ src/app/tree/` → `Test Files 20 passed (20) / Tests 374 passed (374)`。
+
+### Step 5（S5 会话房间头部收敛）
+
+- 红先于实现：`npx vitest run src/app/rooms/SessionTab.test.tsx` → `4 failed | 14 passed`（受控 paneDetail/无 tablist/详情头部/注册表投递 = 功能缺失）。
+- 实现：
+  - **判据与通道**：`sessionRoom = compact && nav.detail && focusedSessionId !== null`（focusedSessionId 从 Shell 既有 focusedTabOf 投影取）；WorkbenchPage 新 prop `sessionRoom` 下传（singleFocus 同款通道，组件不自判 nav/视口）；SessionTab 的 paneDetail **上提 Shell**（裁定：roomDetailOpen 真值源在 Shell——三条约束「⋯仅群聊态渲染/详情返回仅回群聊/任一时刻只渲染一条 header」要求 Shell 知道详情态，内部态+上报会让出房间再进时头部与内容失同步）。
+  - **Shell**：房间头部（群聊态）= ‹返回（分派复用同一 detailBack 回调）+ 房间标题 + ⋯（经 openSessionDetail 既有注册表投递，不新开缝）；详情态（roomDetailOpen=true）整个让位给 SessionTab 自渲染头部；既有「返回条+裁决横幅」容器原样保留给终端/任务下钻。roomDetailOpen 在焦点会话变化/出房间时重置（防「头部说群聊、内容在详情」失同步）。Shell.tsx 期间 2 处 JSX 括号配错（tsc 即红），当轮修正。
+  - **SessionTab**：「群聊|详情」tablist 删除；详情面板自渲染头部（sticky，左上返回→onPaneDetailChange(false)、无 ⋯）；注册表回调 compact→上报 true/桌面→setDrawerOpen(true) 原样；Esc→上报 false；paneDetail 受控、缺省 false 兼容既有调用点。
+  - **WorkbenchPage**：sessionRoom 为真不渲染 TabBar 组标签条与窗格标题行（含拖拽柄/⋯/窗格切换/×）；缺省 false 桌面与终端/任务下钻逐字节不动。已知代价（房间内无多 tab 切换条，切 tab 先出房间）写进组件注释。
+- 测试改写（改期望不删断言意图）：SessionTab.test 两态 describe 改受控语义（tablist 缺席/详情头部/注册表投递/Esc/草稿跨切换存活）；`role=tab` 断言在会话房间失效（TabBar 收敛的形态代价）——改由「房间头部在场」证明会话 tab 已开（其判据即焦点 tab 为会话）；from= 深链用例澄清两段路径：首击落在返回条（焦点 tab 未重建为会话→非房间分支），openOrFocus 重建后才是房间分支。
+- 录得既有债务：**main @95f90fa4 的 `tsc -b` 本就不绿（15 个 TS 错误）**——SessionChat.test 8（historyExpired 缺参）、SessionSidebar expired prop 缺声明 2、SessionTab.test Duplicate ApiError 2、Shell.test/其他 3；vitest 不跑类型检查故测试全绿。本分支同清单 15 个（SessionTab.test 的 detailPanel 未使用已修），**对 main 零新增**；词表外债务留协调者裁决（本卡不修，修了会扩 diff 面）。
+- 绿：`npx vitest run src/app/rooms/ src/app/workbench/ src/app/shell/ src/app/tree/` → `Test Files 50 passed (50) / Tests 825 passed (825)`，含 S5 承重断言（会话房间仅一条 header/⋯进详情/详情返回回群聊不出房间/header 返回出房间/终端下钻 chrome 反例四件套）。
