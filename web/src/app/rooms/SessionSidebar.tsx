@@ -15,6 +15,8 @@ export interface SessionSidebarProps {
   sessions: SessionSummary[]
   loading: boolean
   errorText: string
+  // B406：保留宿主传入的认证过期状态，和普通断线文案区分。
+  expired?: boolean
   needsOnly: boolean
   onToggleNeeds: () => void
   onOpen: (session: SessionSummary) => void

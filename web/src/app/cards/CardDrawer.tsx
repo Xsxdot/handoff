@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { X } from 'lucide-react'
-import { fetchTaskDetail, replyTicket } from '../../api/client'
+import { ApiError, fetchTaskDetail, replyTicket } from '../../api/client'
 import type { Task, TaskDetail, Ticket } from '../../api/types'
 import { acceptCard, answerDecision, attachFile, clearCardNeeds, detachFile, fetchCardDetail, moveCard, noteCard, patchCard } from '../../api/ledger'
 import type { CardDetail, Decision, LedgerEvent, NodeDef } from '../../api/ledger'
@@ -266,6 +266,8 @@ export interface CardDrawerProps {
   id: string
   onClose: () => void
   onOpenCard: (id: string) => void
+  /** Share successful detail metadata with the caller; this does not create another request. */
+  onDetailLoaded?: (detail: CardDetail) => void
   workflowStates?: string[]
   boardLayout?: BoardLayout
   initialSection?: 'merge'
@@ -279,6 +281,8 @@ export interface CardDrawerProps {
   // B369.10 T8：compact 双跳行第二跳「驾驶会话 → 群聊」的回调（CardsPage 经
   // onOpenSessionForCard 注入，Shell 会话流反查）。缺席不渲染——桌面永不渲染。
   onOpenDriverSession?: () => void
+  /** The caller owns session lookup readiness; unknown or expired data cannot be navigated. */
+  driverSessionReady?: boolean
   // S4（B426）：compact 抽屉顶部筛选区的内容槽（项目/工作流/搜索三件次级控件，
   // 由 CardsPage 注入 JSX——筛选 state 住调用方，抽屉关闭后筛选保留）。桌面不传
   // 不渲染，aside 结构与块序逐字节不动。
@@ -289,6 +293,7 @@ export function CardDrawer({
   id,
   onClose,
   onOpenCard,
+  onDetailLoaded,
   workflowStates,
   boardLayout,
   initialSection,
@@ -298,6 +303,7 @@ export function CardDrawer({
   onOpenCoordinatorTerminal,
   compact = false,
   onOpenDriverSession,
+  driverSessionReady = true,
   compactFilters,
 }: CardDrawerProps) {
   const [detail, setDetail] = useState<CardDetail | null>(null)
@@ -347,20 +353,33 @@ export function CardDrawer({
     if (compact) panelRef.current?.focus()
   }, [compact])
 
+  const detailCallback = useRef(onDetailLoaded)
+  detailCallback.current = onDetailLoaded
+  const detailRequest = useRef(0)
   const load = () => {
+    const request = ++detailRequest.current
     setError('')
-    void fetchCardDetail(id).then(setDetail).catch((err: unknown) => setError(errorMessage(err)))
+    console.info('cards.detail.start', { card: id })
+    void fetchCardDetail(id)
+      .then((next) => {
+        if (request !== detailRequest.current) return
+        setDetail(next)
+        if (next) detailCallback.current?.(next)
+        console.info('cards.detail.loaded', { card: id, workflow: next?.card.workflow, version: next?.card.workflow_version })
+      })
+      .catch((cause: unknown) => {
+        if (request !== detailRequest.current) return
+        console.error('cards.detail.error', { card: id, status: cause instanceof ApiError ? cause.status : 0, cause })
+        setError(errorMessage(cause))
+      })
   }
 
   useEffect(() => {
-    let cancelled = false
     setDetail(null)
-    setError('')
-    void fetchCardDetail(id)
-      .then((next) => { if (!cancelled) setDetail(next) })
-      .catch((err: unknown) => { if (!cancelled) setError(errorMessage(err)) })
-    return () => { cancelled = true }
-  }, [id])
+    load()
+    // A response for an old ID (or closed drawer) cannot publish metadata into the new target.
+    return () => { detailRequest.current += 1 }
+  }, [id]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (detail && initialSection === 'merge') mergeRef.current?.scrollIntoView({ block: 'start' })
@@ -1028,9 +1047,9 @@ export function CardDrawer({
           </button>
         )}
         {driverSession !== '' && onOpenDriverSession !== undefined && (
-          <button type="button" data-testid="card-jump-session" onClick={onOpenDriverSession}
-            className="flex min-h-11 w-full items-center gap-2 rounded-md border px-2.5 py-2 text-left text-xs">
-            <span className="shrink-0 font-semibold">💬 驾驶会话</span>
+          <button type="button" data-testid="card-jump-session" disabled={!driverSessionReady} onClick={onOpenDriverSession}
+            className="flex min-h-11 w-full items-center gap-2 rounded-md border px-2.5 py-2 text-left text-xs disabled:opacity-50">
+            <span className="shrink-0 font-semibold">💬 {driverSessionReady ? '驾驶会话' : '驾驶会话（尚未就绪）'}</span>
             <span className="ml-auto shrink-0 text-[11px] text-muted-foreground">{driverSession} · → 群聊</span>
           </button>
         )}

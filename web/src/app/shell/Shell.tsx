@@ -563,7 +563,13 @@ export function Shell() {
   // onOpenSessionForCard（B369.10 T8）：卡详情「驾驶会话」双跳的落点——会话流
   // 反查（SessionSummary.cards 含 card_id，零新端点），找不到静默返回（行已按
   // driverSession 渲染但无会话可开时点击不动作，不弹错不空转）。
+  // Detail can load before the session stream. Unknown/expired lookup is not a missing session.
+  const driverSessionReady = sessionsState.data !== null && !sessionsState.sessionExpired
   const onOpenSessionForCard = (cardId: string) => {
+    if (!driverSessionReady) {
+      console.debug('shell.session.for_card_not_ready', { cardId, expired: sessionsState.sessionExpired, disconnected: sessionsState.disconnected })
+      return
+    }
     const session = sessions.find((candidate) => (candidate.cards ?? []).some((card) => card.card_id === cardId))
     if (session) openSession(session)
     else console.debug('shell.session.for_card_missing', { cardId })
@@ -1228,6 +1234,8 @@ export function Shell() {
                     taskJumpHref={taskJumpHref}
                     compact={compact}
                     onOpenSessionForCard={onOpenSessionForCard}
+                    driverSessionReady={driverSessionReady}
+                    sharedData={{ cards: cardsState, decisions: decisionsState, tasks: tasksState }}
                   />
                 )}
                 {nav.tab === 'projects' && (

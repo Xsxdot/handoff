@@ -7,7 +7,6 @@ import { archiveSession, fetchRoomMessages, fetchSessionDetail, joinSessionCard,
 import { ApiError } from '../../api/client'
 import { fetchCards } from '../../api/ledger'
 import { openSessionDetail } from './sessionDetailOpener'
-import { ApiError } from '../../api/client'
 import type { RoomHistoryItem, SessionDetail, SessionSummary } from '../../api/rooms'
 import fixture from '../../api/testdata/RoomsFixture.json'
 import { SessionTab } from './SessionTab'

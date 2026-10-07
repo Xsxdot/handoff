@@ -1,0 +1,74 @@
+.worktrees/
+# Claude Code 的会话级配置与产物，属个人工具状态，不进仓库
+# （不忽略的话每次本地构建都会被判成「带未提交改动」）
+.claude/*
+!.claude/settings.json
+# gstack 会话产物（浏览审计日志等），属个人工具状态，不进仓库
+.gstack/
+# 单测在 taskDir="" 时会把 render.log 落到包目录（可见性落盘的测试副作用）
+render.log
+# 同一副作用也会把 frames.jsonl 落到包目录（结构化帧落盘的测试副作用）
+frames.jsonl
+
+# 归档的原型站：只保留源码与设计图，不入库依赖与构建产物
+prototypes/**/node_modules/
+prototypes/**/dist/
+
+# B95 形态确认用的 fork 副本（临时工作区，不入库；回流见 finishing-a-development-branch）
+prototypes/b95-project-edit/
+prototypes/b107-file-tree-menu/
+
+# 前端构建产物经 embedweb 标签嵌入，不入库（npm run build 的落盘目标）
+internal/webui/dist/
+prototypes/discipline-config/
+prototypes/codegraph/
+
+# macOS Finder 在每个被浏览过的目录里留的元数据，与仓库内容无关
+.DS_Store
+prototypes/desktop-update/
+
+# build-deploy.sh 的默认输出落点；构建产物不进仓库
+/dist/
+
+# 字面量 ~ 目录：载体 HOME 的 ~ 未展开时，子进程会把 $HOME 系文件相对 cwd 落盘
+# （如 ./~/.handoff/home/...），属运行事故产物，永不入库（2026-09-04 实测 2.2G）
+/~/
+
+# commandcode 会话产物（taste.md 等），属个人工具状态，不进仓库
+/.commandcode/
+
+# 仓根 node_modules：仓内依赖各自在 prototypes/**/node_modules（上面已忽略），
+# 根上这层只是工具在仓根跑 npm/vite/vitest 的落盘残留（.vite 缓存曾因此误入库）
+/node_modules/
+
+# ===== ↑ 以上同步自 .gitignore（「从 .gitignore 同步」只重写以上部分）=====
+.git/
+.hg/
+.svn/
+node_modules/
+bower_components/
+jspm_packages/
+__pycache__/
+site-packages/
+venv/
+coverage/
+htmlcov/
+lcov-report/
+cmakefiles/
+cmake-build-*/
+bazel-*/
+pods/
+deriveddata/
+storybook-static/
+playwright-report/
+test-results/
+allure-results/
+allure-report/
+cdk.out/
+*.egg-info/
+*.dist-info/
+eggs/
+pip-wheel-metadata/
+wheels/
+# ----- ↑ 以上为 ZCode 默认排除规则（自定义规则请写在本行下方，不会被同步/恢复改动）-----
+# 自定义规则写在下方（本行提示可删除）
