@@ -49,6 +49,25 @@
 //    修法：不去猜 xterm 的准入条件（那会随版本漂），而是**事后看它发没发**：
 //    在 xterm 处理完同一个 input 事件后，若一个字节都没发出去，就由我们补发。
 //
+// ③ Android IME 直接上屏的字母每个字符双发，且残渣在组合提交时整行重打
+//    （2026-10-07 真机取证，GBoard + Android 16 WebView，CDP 事件流与调用栈）：
+//        keydown  key="Unidentified" keyCode=229   ← IME 桥的占位键
+//        input    inputType=insertText data="h" composed=true
+//    xterm 的 `_inputEvent` 准入条件是 `(!e.composed || !this._keyDownSeen)`：
+//    composed 恒真、`_keyDownSeen` 又被 229 那一下置真 → 条件为假，**既不发送
+//    也不 preventDefault** → 字符留在 textarea 里。B369.6 的补发把字符送进
+//    PTY（PTY 因此收到一次 ✓），但 textarea 里的残渣没人清；而 `_keyDown`
+//    首行把 229 交给 CompositionHelper，其对每个 229 键调用
+//    `_handleAnyTextareaChanges()`，把 textarea 相对水位的增量整段
+//    `triggerDataEvent` 冲进 PTY——同一个字符于是到第二次，残渣攒多了还会在
+//    联想/滑行组合提交时把整段积累一次性重打（真机实录 49 字节整行重发）。
+//    修法：认出「229 占位键 + 直接上屏 insertText」这个 Android 形状，在
+//    **beforeinput**（可取消、先于默认插入）拦下：preventDefault 取消插入
+//    （textarea 零残渣）+ stopPropagation 挡住 xterm 的拒收路径 + 补发一次。
+//    判据钉在「本手势见过 229」上——macOS espanso（真键值多字符）与中文标点
+//    （keyCode 16 先行）都不带 229，原路径原样保留；Android 物理键（Backspace
+//    keyCode=8 实测）也不命中，照走 xterm 原通道。
+//
 // 判据「xterm 发没发」怎么取：`term.onData` 是 xterm 所有输入出口的汇合点，
 // 拿一个自增计数器在「xterm 看这个事件之前」和「之后」各读一次即可。
 // 这么做而不是复刻 `_inputEvent` 的条件，是为了让本模块对 xterm 升级免疫——
@@ -150,6 +169,9 @@ export function installTerminalInputFix(
   // optionHeld：Option 已经按下。字母 keydown 还没到时 WebKit 可能先丢
   // insertText；此时 optionMetaConsumed 还是 false，补发会先打出 ∫ 再跳词。
   let optionHeld = false
+  // androidImeGesture：本手势见过 keyCode=229 的占位键（Android IME 桥的
+  // 指纹）。形状判据见头部 ③——只有它命中 beforeinput 拦截，其余平台零接触。
+  let androidImeGesture = false
   // seqBeforeKeypress / seqBeforeInput 是 xterm 看到该事件之前的计数快照。
   let seqBeforeKeypress = 0
   let seqBeforeInput = 0
@@ -162,6 +184,7 @@ export function installTerminalInputFix(
   const onKeyDownCapture = (ev: KeyboardEvent): void => {
     keypressEmitted = false
     optionMetaConsumed = false
+    androidImeGesture = ev.keyCode === 229
     if (ev.altKey || isAltKey(ev)) optionHeld = true
   }
   const onKeyUpCapture = (ev: KeyboardEvent): void => {
@@ -190,6 +213,20 @@ export function installTerminalInputFix(
   // xterm 处理完 keypress 之后：它发了东西没有？
   const onKeyPressAfter = (): void => {
     keypressEmitted = dataSeq !== seqBeforeKeypress
+  }
+
+  // Android IME 形状拦截（③）：beforeinput 可取消、先于默认插入。在此取消
+  // textarea 插入（零残渣，CompositionHelper 的水位冲刷从此无东西可冲），
+  // stopPropagation 短路 xterm 的拒收路径，补发恰好一次。只认「本手势见过
+  // 229 + 直接上屏 insertText」；其余平台/形状零接触，原路径原样。
+  const onBeforeInputCapture = (ev: Event): void => {
+    const ie = ev as InputEvent
+    if (!androidImeGesture) return
+    if (ie.inputType !== 'insertText' || ie.isComposing || !ie.data) return
+    ev.preventDefault()
+    ev.stopPropagation()
+    logTermFix(label, 'Android IME', ie.data)
+    term.input(ie.data)
   }
 
   // xterm 处理完 input 之后：该补发吗？
@@ -322,6 +359,7 @@ export function installTerminalInputFix(
   host.addEventListener('keyup', onKeyUpCapture, true)
   host.addEventListener('keypress', onKeyPressCapture, true)
   host.addEventListener('input', onInputCapture, true)
+  host.addEventListener('beforeinput', onBeforeInputCapture, true)
   ta.addEventListener('keypress', onKeyPressAfter, true)
   ta.addEventListener('input', onInputAfter, true)
 
@@ -332,6 +370,7 @@ export function installTerminalInputFix(
       host.removeEventListener('keyup', onKeyUpCapture, true)
       host.removeEventListener('keypress', onKeyPressCapture, true)
       host.removeEventListener('input', onInputCapture, true)
+      host.removeEventListener('beforeinput', onBeforeInputCapture, true)
       ta.removeEventListener('keypress', onKeyPressAfter, true)
       ta.removeEventListener('input', onInputAfter, true)
       dataSub.dispose()

@@ -38,6 +38,11 @@ class WebviewActivity : AppCompatActivity() {
         val online = intent.getBooleanExtra(EXTRA_ONLINE, false)
 
         webView = findViewById(R.id.webview)
+        // B426 真机取证：debug 构开 WebView 远程调试（chrome://inspect / CDP），
+        // 供终端输入双发的现场取证用；release 构零开启，不扩攻击面。
+        if (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0) {
+            WebView.setWebContentsDebuggingEnabled(true)
+        }
         // 安全：JS 默认关闭；仅当导航目标是绑定面回环源时才开启（见 shouldOverrideUrlLoading 与导航器）。
         webView.settings.javaScriptEnabled = false
         // 安全：绝不对回环源暴露 JS 桥；不注入任何原生对象接口（源码 guard 词法禁止该 API 名）。

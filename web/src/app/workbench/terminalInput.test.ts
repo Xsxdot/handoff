@@ -525,3 +525,64 @@ describe('B369.10 粘滞 Ctrl：armed 期间字母键合成控制字符', () => 
     expect(r.data).toEqual(['a'])
   })
 })
+
+// ③ Android IME 直接上屏：每个字母双发 + 残渣整行重打
+// （trace: 2026-10-07 真机取证，GBoard + Android 16 WebView，CDP 事件流——
+//   keydown(229 "Unidentified") → beforeinput(insertText "h") → input → keyup(229)；
+//   多字符滑行提交 "from " 单事件整串 insertText。字段逐值抄自那份轨迹。）
+describe('③ Android IME 229 占位键 + insertText 直接上屏', () => {
+  // androidImeReplay 按 Chromium 真实次序派发：beforeinput 若被 preventDefault，
+  // 默认插入不发生（textarea 不动、input 事件不派）——这正是取消语义的真实现场。
+  const androidImeReplay = (r: Rig, text: string): void => {
+    r.ta.dispatchEvent(key('keydown', { key: 'Unidentified', keyCode: 229 }))
+    const before = new InputEvent('beforeinput', {
+      data: text, inputType: 'insertText', bubbles: true, cancelable: true, composed: true,
+    })
+    r.ta.dispatchEvent(before)
+    if (!before.defaultPrevented) {
+      // 默认插入发生了（无补漏时正是这条路径留下残渣）；input() 助手内建
+      // 「先改 textarea 再派事件」，派出的 input 即真实现场。
+      r.ta.dispatchEvent(input(r.ta, text))
+    }
+    r.ta.dispatchEvent(key('keyup', { key: 'Unidentified', keyCode: 229 }))
+  }
+
+  it('不装补漏时 xterm 拒收（一个字都不发），残渣留在 textarea 里', () => {
+    const r = makeRig(false)
+    androidImeReplay(r, 'h')
+    expect(r.data).toEqual([])
+    expect(r.ta.value).toBe('h')
+  })
+
+  it('不装补漏时残渣被 CompositionHelper 水位冲刷重发——这就是双发的第二股', async () => {
+    const r = makeRig(false)
+    androidImeReplay(r, 'h')
+    expect(r.data).toEqual([])
+    // 下一个手势的 keydown(229) 触发 _handleAnyTextareaChanges：残渣 'h' 整段冲进 PTY。
+    r.ta.dispatchEvent(key('keydown', { key: 'Unidentified', keyCode: 229 }))
+    // 该冲刷是 setTimeout(0) 的宏任务（真机上即双发之间的那 ~36ms），等它落地。
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(r.data).toEqual(['h'])
+  })
+
+  it('装上补漏后每个字符恰好一次，textarea 零残渣', () => {
+    const r = makeRig(true)
+    androidImeReplay(r, 'h')
+    androidImeReplay(r, 'i')
+    expect(r.data).toEqual(['h', 'i'])
+    expect(r.ta.value).toBe('')
+  })
+
+  it('多字符滑行提交（"from "）同样恰好一次整串', () => {
+    const r = makeRig(true)
+    androidImeReplay(r, 'from ')
+    expect(r.data).toEqual(['from '])
+    expect(r.ta.value).toBe('')
+  })
+
+  it('Android 物理键（Backspace keyCode=8）不命中形状，照走 xterm 原通道', () => {
+    const r = makeRig(true)
+    r.ta.dispatchEvent(key('keydown', { key: 'Backspace', keyCode: 8 }))
+    expect(r.data).toEqual(['\x7f'])
+  })
+})
