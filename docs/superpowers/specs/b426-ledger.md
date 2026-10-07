@@ -166,3 +166,17 @@ apphead（「项目」标题 flex-1 + 右上「＋添加项目」pill）✓；�
 **升级/停回报事项**：无触碰 plan §5 升级线（未动 S3 之外桌面 JSX、未动 API/端点、未触「代办」词表、S6 未加 JS 兜底、Step 0 基线绿）。唯一带出事项 = main 预存 typecheck 债（上表）。
 
 **未验证项**：S6 真机键盘行为（spec §4/§6 明定真机证据归用户设备走查，acceptance 节点补）；Android 壳 manifest 变更的壳侧构建（无 CI 构建接缝，plan §6 已记同因）。
+
+## acceptance 节点（2026-10-07 协调者，分支 b426-mobile-walkthrough @a74f3374）
+
+- 新鲜复跑：`cd web && npm test` → `Test Files 141 passed (141) / Tests 1727 passed (1727)`（18.6s，协调者本机独立跑，非转抄）。
+- 承重变异：CardsPage.tsx:275 归桶过滤改回 `card.status === statusFilter` 字面量等值（可编译、单点）→ `vitest run src/app/cards/CardsPage.test.tsx` **4 failed / 36 passed**（S3 归桶断言转红）；还原 → **40 passed**。工作树净（`git diff` 空）。
+- 行为实走（dev server 127.0.0.1:5199 + IAB 1280×720，页内覆写 innerWidth=390 + resize 事件触发真实 compact 分支；像素形态以真机为准）：
+  - S1：筛选单行 = `⚑ 需要你 1` + 项目 combobox（全部项目/charter/handoff/tk）+ `21 个会话`；无「全部」钮。点击往返：21 行 → 1 行（`1 个会话`）→ 21 行。testid `session-filter-chips` 保留。
+  - S3：chips = 代办/沟通中/进行中/审核中/结束（逐字）；点「沟通中」→ 恰为 B306+B401（status=spec 归桶）；点「结束」→ B394/B411/B425（status=finish）；取消回 20 张。
+  - S4：主面零 select、零搜索框；QueuePanel 收缩高 37px 单行（`⧗ 排队中 0⌄`）；抽屉（role=dialog）顶部 = 项目 select + 工作流 select + `搜 B 号 / 标题` input；筛 handoff 后列表即刻只剩 handoff 卡（tk/charter 卡消失），关抽屉重开 select 值 = `handoff`（保留）。
+  - S2：apphead `项目 / ＋ 添加项目`；项目卡流（图标两字符+名称+›+机器行）；无 ⌘K 搜索框、无「流程与代码图暂未适配移动端」页脚。
+  - S5：房间态单 header（testid `mobile-room-header` = `‹ 返回 | 会话 · 协调台-主agent值班 | ⋯`），无组标签条/无窗格标题行/无群聊详情 tabs；⋯ → 详情态（群聊 panel hidden、会话详情 panel 显、左上 `‹ 返回` aria-label=返回群聊）；返回 → 群聊态（room header 回归）；header 返回 → 出房间（URL `/?tab=sessions`、mobile-home 复归、21 行）。
+  - 截图：evidence/b426-s1-sessions.png（IAB 后台渲染限制该图为空白帧，DOM 级证据以上述读数为准；真机走查补像素证据）。
+- S6 配置逐字核对：`web/index.html:8` viewport 含 `interactive-widget=resizes-content`；`AndroidManifest.xml` WebviewActivity 含 `android:windowSoftInputMode="adjustResize"`。**真机（键盘上浮）未验——挂起待用户 Android 设备**；WebView ≥108 仅 meta 即生效，壳完整生效需重建 APK。
+- 残余：S6 真机 + 用户 7 项真机走查 → 卡保持 acceptance 列待用户确认；F1（任务下钻反例断言）与 F5（typecheck 预存债）记债不阻塞。
