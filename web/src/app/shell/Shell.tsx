@@ -1187,6 +1187,7 @@ export function Shell() {
                     taskJumpHref={taskJumpHref}
                     compact={compact}
                     onOpenSessionForCard={onOpenSessionForCard}
+                    sharedData={{ cards: cardsState, decisions: decisionsState, tasks: tasksState }}
                   />
                 )}
                 {nav.tab === 'projects' && (

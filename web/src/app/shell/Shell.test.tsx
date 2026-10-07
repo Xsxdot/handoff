@@ -51,6 +51,7 @@ vi.mock('../../api/ledger', async () => {
     // 空态，现在可断言也不外发请求）。用例内按需覆写。
     fetchCards: vi.fn().mockResolvedValue({ cards: [], unlinked: { count: 0, tasks: [], unknown_targets: [] } }),
     fetchCardDetail: vi.fn().mockResolvedValue(null),
+    fetchDecisions: vi.fn().mockResolvedValue([]),
   }
 })
 // —— B369.7：协调者状态/attach 入桩（默认未绑定；用例⑧在用例内覆写）。
@@ -233,6 +234,7 @@ beforeAll(() => {
 })
 
 afterEach(() => {
+  vi.useRealTimers()
   vi.unstubAllGlobals()
   // 紧凑视口用例会改写 innerWidth；每个用例后复位成 jsdom 默认（桌面档），
   // 否则后面的桌面断言会被上一个用例污染（用例顺序耦合是隐性假绿）。
@@ -1599,15 +1601,21 @@ describe('B369.7 紧凑导航统一', () => {
 
   it('compact 项目行「工作项」钮常驻可点 → /cards?project=<name> 且项目过滤生效', async () => {
     Object.defineProperty(window, 'innerWidth', { value: 375, configurable: true, writable: true })
+    await mockCardLedger()
+    const ledger = await import('../../api/ledger')
+    vi.mocked(ledger.fetchCards).mockResolvedValue({ cards: [b1CardView, { ...b1CardView, id: 'Bother', title: '其他项目卡', project: 'other' }], unlinked: { count: 0, tasks: [], unknown_targets: [] } })
     renderShell('/?tab=projects')
     const project = await screen.findByTestId('project-node-p1')
     fireEvent.click(within(project).getByRole('button', { name: '打开 handoff 工作项' }))
     await waitFor(() => expect(locationRef()).toBe('/cards?project=handoff'))
     expect(screen.getByTestId('mobile-tab-cards')).toHaveAttribute('aria-selected', 'true')
-    // B413：项目过滤值随轮询数据改经 startTransition 提交，晚一帧落 DOM——值断言改重试等待
-    // （与 CardsPage「从 URL 初始化项目筛选」同型同修法，扩展裁决 2026-09-28）
-    await screen.findByRole('combobox', { name: '项目' })
-    await waitFor(() => expect(screen.getByRole('combobox', { name: '项目' })).toHaveValue('handoff'))
+    fireEvent.click(await screen.findByText('卡甲'))
+    const drawer = await screen.findByRole('dialog', { name: '工作项详情' })
+    await waitFor(() => expect(within(drawer).getByRole('combobox', { name: '项目' })).toHaveValue('handoff'))
+    fireEvent.change(within(drawer).getByRole('combobox', { name: '项目' }), { target: { value: 'other' } })
+    fireEvent.click(within(drawer).getByRole('button', { name: '关闭' }))
+    expect(await screen.findByText('其他项目卡')).toBeInTheDocument()
+    expect(screen.queryByText('卡甲')).toBeNull()
   })
 
   it('桌面视口零漂移：行钮仍 hover-only，流程/代码图钮在场', async () => {
@@ -2312,11 +2320,98 @@ describe('B369.10 卡到会话双跳 seam', () => {
     ledger.fetchCardDetail.mockResolvedValue({
       ...b1CardDetail(), card: { ...b1CardView, driver_session: 'session:1' },
     } as never)
+    const sessionRequestsBefore = rooms.fetchSessions.mock.calls.length
     renderShell('/cards?card=B1')
     expect(await screen.findByRole('dialog', { name: '工作项详情' })).toBeInTheDocument()
+    // B427 restores detail directly by ID before the ledger gate's session first load.
+    // This seam assertion requires the real session stream to finish, not an incidental list delay.
+    await waitFor(() => expect(rooms.fetchSessions.mock.calls.length).toBeGreaterThan(sessionRequestsBefore))
+    await act(async () => {})
     fireEvent.click(await screen.findByTestId('card-jump-session'))
     // 会话流反查命中 session:1 → 群聊 tab 开在中央区 + 下钻（返回条在场）
     expect(await screen.findByRole('tab', { name: /架构物理化/ })).toBeInTheDocument()
     expect(await screen.findByTestId('mobile-detail-bar')).toBeInTheDocument()
+  })
+})
+
+// B427 uses the real Shell -> CardsPage chain; only HTTP boundaries are mocked.
+describe('B427 mobile shared ledger consumption', () => {
+  beforeEach(() => { vi.clearAllMocks() })
+  it('switching sessions/cards twice keeps one card, decision and task polling stream', async () => {
+    Object.defineProperty(window, 'innerWidth', { value: 375, configurable: true, writable: true })
+    await mockCardLedger()
+    const ledger = await import('../../api/ledger')
+    vi.stubGlobal('jest', { advanceTimersByTime: (ms: number) => vi.advanceTimersByTime(ms) })
+    vi.useFakeTimers()
+    renderShell('/?tab=sessions')
+    await waitFor(() => expect(ledger.fetchCards).toHaveBeenCalledTimes(1))
+    const initialTasks = vi.mocked(fetchTasks).mock.calls.length
+    const initialDecisions = vi.mocked(ledger.fetchDecisions).mock.calls.length
+    fireEvent.click(await screen.findByTestId('mobile-tab-cards'))
+    expect(await screen.findByText('卡甲')).toBeInTheDocument()
+    expect(ledger.fetchCards).toHaveBeenCalledTimes(1)
+    expect(fetchTasks).toHaveBeenCalledTimes(initialTasks)
+    expect(ledger.fetchDecisions).toHaveBeenCalledTimes(initialDecisions)
+    fireEvent.click(screen.getByTestId('mobile-tab-sessions'))
+    fireEvent.click(screen.getByTestId('mobile-tab-cards'))
+    expect(await screen.findByText('卡甲')).toBeInTheDocument()
+    expect(ledger.fetchCards).toHaveBeenCalledTimes(1)
+    expect(fetchTasks).toHaveBeenCalledTimes(initialTasks)
+    expect(ledger.fetchDecisions).toHaveBeenCalledTimes(initialDecisions)
+    await act(async () => { await vi.advanceTimersByTimeAsync(2500) })
+    expect(ledger.fetchCards).toHaveBeenCalledTimes(2)
+    expect(fetchTasks).toHaveBeenCalledTimes(initialTasks + 1)
+    expect(ledger.fetchDecisions).toHaveBeenCalledTimes(initialDecisions + 1)
+    vi.useRealTimers()
+  })
+})
+
+describe('B427 shared loading and recovery', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.stubGlobal('jest', { advanceTimersByTime: (ms: number) => vi.advanceTimersByTime(ms) })
+  })
+  it('an unfinished Shell first load stays loading, then renders without a local second fetch', async () => {
+    Object.defineProperty(window, 'innerWidth', { value: 375, configurable: true, writable: true })
+    const ledger = await import('../../api/ledger')
+    let resolve!: (value: Awaited<ReturnType<typeof ledger.fetchCards>>) => void
+    vi.mocked(ledger.fetchCards).mockImplementationOnce(() => new Promise((done) => { resolve = done }))
+    renderShell('/cards')
+    expect(await screen.findByText('正在读取账本…')).toBeInTheDocument()
+    expect(screen.queryByText('（没有匹配的工作项）')).toBeNull()
+    await waitFor(() => expect(ledger.fetchCards).toHaveBeenCalledTimes(1))
+    await act(async () => { resolve({ cards: [b1CardView], unlinked: { count: 0, tasks: [], unknown_targets: [] } }) })
+    expect(await screen.findByText('卡甲')).toBeInTheDocument()
+    expect(ledger.fetchCards).toHaveBeenCalledTimes(1)
+  })
+  it('network failure retains Shell snapshot and the same stream recovers on the next poll', async () => {
+    Object.defineProperty(window, 'innerWidth', { value: 375, configurable: true, writable: true })
+    await mockCardLedger()
+    const ledger = await import('../../api/ledger')
+    vi.useFakeTimers(); renderShell('/cards')
+    await screen.findByText('卡甲')
+    vi.mocked(ledger.fetchCards).mockRejectedValueOnce(new ApiError(0, 'offline'))
+    await act(async () => { await vi.advanceTimersByTimeAsync(2500) })
+    expect(screen.getByText('卡甲')).toBeInTheDocument()
+    expect(screen.getByText(/已断开：offline/)).toBeInTheDocument()
+    await act(async () => { await vi.advanceTimersByTimeAsync(2500) })
+    expect(screen.getByText('卡甲')).toBeInTheDocument()
+    expect(screen.queryByText(/已断开：offline/)).toBeNull()
+    expect(ledger.fetchCards).toHaveBeenCalledTimes(3)
+  })
+  it('401 stops the shared cards stream while preserving the last snapshot', async () => {
+    Object.defineProperty(window, 'innerWidth', { value: 375, configurable: true, writable: true })
+    await mockCardLedger()
+    const ledger = await import('../../api/ledger')
+    vi.useFakeTimers(); renderShell('/cards')
+    await screen.findByText('卡甲')
+    vi.mocked(ledger.fetchCards).mockRejectedValueOnce(new ApiError(401, 'expired'))
+    await act(async () => { await vi.advanceTimersByTimeAsync(7500) })
+    expect(screen.getByText('卡甲')).toBeInTheDocument()
+    expect(ledger.fetchCards).toHaveBeenCalledTimes(2)
+    fireEvent.click(screen.getByTestId('mobile-tab-sessions'))
+    fireEvent.click(screen.getByTestId('mobile-tab-cards'))
+    expect(await screen.findByText('卡甲')).toBeInTheDocument()
+    expect(ledger.fetchCards).toHaveBeenCalledTimes(2)
   })
 })

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { X } from 'lucide-react'
-import { fetchTaskDetail, replyTicket } from '../../api/client'
+import { ApiError, fetchTaskDetail, replyTicket } from '../../api/client'
 import type { Task, TaskDetail, Ticket } from '../../api/types'
 import { acceptCard, answerDecision, attachFile, clearCardNeeds, detachFile, fetchCardDetail, moveCard, noteCard, patchCard } from '../../api/ledger'
 import type { CardDetail, Decision, LedgerEvent, NodeDef } from '../../api/ledger'
@@ -266,6 +266,8 @@ export interface CardDrawerProps {
   id: string
   onClose: () => void
   onOpenCard: (id: string) => void
+  /** Share successful detail metadata with the caller; this does not create another request. */
+  onDetailLoaded?: (detail: CardDetail) => void
   workflowStates?: string[]
   boardLayout?: BoardLayout
   initialSection?: 'merge'
@@ -289,6 +291,7 @@ export function CardDrawer({
   id,
   onClose,
   onOpenCard,
+  onDetailLoaded,
   workflowStates,
   boardLayout,
   initialSection,
@@ -347,20 +350,33 @@ export function CardDrawer({
     if (compact) panelRef.current?.focus()
   }, [compact])
 
+  const detailCallback = useRef(onDetailLoaded)
+  detailCallback.current = onDetailLoaded
+  const detailRequest = useRef(0)
   const load = () => {
+    const request = ++detailRequest.current
     setError('')
-    void fetchCardDetail(id).then(setDetail).catch((err: unknown) => setError(errorMessage(err)))
+    console.info('cards.detail.start', { card: id })
+    void fetchCardDetail(id)
+      .then((next) => {
+        if (request !== detailRequest.current) return
+        setDetail(next)
+        if (next) detailCallback.current?.(next)
+        console.info('cards.detail.loaded', { card: id, workflow: next?.card.workflow, version: next?.card.workflow_version })
+      })
+      .catch((cause: unknown) => {
+        if (request !== detailRequest.current) return
+        console.error('cards.detail.error', { card: id, status: cause instanceof ApiError ? cause.status : 0, cause })
+        setError(errorMessage(cause))
+      })
   }
 
   useEffect(() => {
-    let cancelled = false
     setDetail(null)
-    setError('')
-    void fetchCardDetail(id)
-      .then((next) => { if (!cancelled) setDetail(next) })
-      .catch((err: unknown) => { if (!cancelled) setError(errorMessage(err)) })
-    return () => { cancelled = true }
-  }, [id])
+    load()
+    // A response for an old ID (or closed drawer) cannot publish metadata into the new target.
+    return () => { detailRequest.current += 1 }
+  }, [id]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (detail && initialSection === 'merge') mergeRef.current?.scrollIntoView({ block: 'start' })

@@ -272,7 +272,7 @@ describe('房间面板卡片深链', () => {
     expect(await screen.findByRole('dialog', { name: '工作项详情' })).toBeInTheDocument()
   })
 
-  it('终态卡的 /cards?card= 深链自动带 all=1 并打开抽屉', async () => {
+  it('终态卡的 /cards?card= 深链按ID打开抽屉，不扩大历史范围', async () => {
     const ledger = await import('../../api/ledger')
     const terminalCard = {
       id: 'Bdone', title: '已归档房间卡', status: '已完成', priority: '中', project: 'handoff', workflow: '',
@@ -292,7 +292,8 @@ describe('房间面板卡片深链', () => {
     })
     renderPage('/cards?card=Bdone')
     expect(await screen.findByRole('dialog', { name: '工作项详情' })).toBeInTheDocument()
-    expect(vi.mocked(ledger.fetchCards)).toHaveBeenCalledWith('all=1')
+    expect(vi.mocked(ledger.fetchCards)).not.toHaveBeenCalledWith('all=1')
+    expect(vi.mocked(ledger.fetchCardDetail)).toHaveBeenCalledWith('Bdone')
   })
 })
 

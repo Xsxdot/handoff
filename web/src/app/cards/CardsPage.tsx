@@ -1,14 +1,15 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import { ApiError } from '../../api/client'
 import { answerDecision, effectiveUnlinkedSummary, fetchCards, fetchDecisions, fetchFlow, fetchFlows, fetchLedgerHealth } from '../../api/ledger'
 import { getQueue } from '../../api/scheduling'
 import type { CoordinatorAttachInfo } from '../../api/scheduling'
 import type { QueueEntry } from '../../api/scheduling'
-import type { CardView, Decision, FlowDetail, FlowsResp, NodeDef, UnlinkedSummary } from '../../api/ledger'
-import { usePoll } from '../data/usePoll'
+import type { CardDetail, CardView, Decision, FlowDetail, FlowsResp, UnlinkedSummary } from '../../api/ledger'
+import { usePoll, type PollState } from '../data/usePoll'
 import { useUnlinkedSummaryClock } from '../data/useUnlinkedSummaryClock'
 import { useTasks } from '../data/useTasks'
+import type { Task } from '../../api/types'
 import { isDesktopShell, requestOpenCurrentPageInBrowser } from '../lib/desktopShell'
 import { errorMessage } from '../lib/format'
 import { TOUCH_BASELINE } from '@/lib/touch'
@@ -24,6 +25,7 @@ import { QueuePanel, queuePositionByCard } from './QueuePanel'
 
 const POLL_MS = 2500
 const EMPTY_QUEUE: QueueEntry[] = []
+const EMPTY_PINNED_WORKFLOWS: Record<string, FlowDetail> = {}
 
 function pinnedWorkflowKey(card: Pick<CardView, 'workflow' | 'workflow_version'>): string | null {
   if (!card.workflow || card.workflow_version === undefined || card.workflow_version <= 0) return null
@@ -116,6 +118,12 @@ function ProjectDecisions({ decisions, compact = false }: { decisions: Decision[
 /** 可选终端回调由 Shell 注入；工作项页不持有 Workbench 具体实现。 */
 export interface CardsPageProps {
   onOpenCoordinatorTerminal?: (info: CoordinatorAttachInfo) => void
+  /** Mobile Shell owns these polling streams; standalone routes retain local defaults. */
+  sharedData?: {
+    cards: PollState<Awaited<ReturnType<typeof fetchCards>>>
+    decisions: PollState<Decision[]>
+    tasks: PollState<Task[]>
+  }
   // B369.7 seam：抽屉开关上抛（Shell 紧凑下写 URL：open=nav.openCard、close=
   // nav.closeCard）。缺省不注入 = 桌面与既有单测零改动；注入方负责 URL 收口，
   // 本组件仍维护内部 selected state（URL→state 恢复 effect 不变）。
@@ -134,7 +142,7 @@ export interface CardsPageProps {
 }
 
 /** 参数：协调者终端回调与紧凑 seam；返回：工作项看板/列表与抽屉。 */
-export function CardsPage({ onOpenCoordinatorTerminal, onDrawerCardChange, taskJumpHref, compact = false, onOpenSessionForCard }: CardsPageProps = {}) {
+export function CardsPage({ onOpenCoordinatorTerminal, onDrawerCardChange, taskJumpHref, compact = false, onOpenSessionForCard, sharedData }: CardsPageProps = {}) {
   const [searchParams] = useSearchParams()
   const projectFromUrl = searchParams.get('project') ?? ''
   const [view, setView] = useState<'board' | 'list'>('board')
@@ -153,14 +161,29 @@ export function CardsPage({ onOpenCoordinatorTerminal, onDrawerCardChange, taskJ
   const [queueOpen, setQueueOpen] = useState(false)
   const [flows, setFlows] = useState<FlowsResp | null>(null)
   const [flowsError, setFlowsError] = useState('')
-  const [drawerNodes, setDrawerNodes] = useState<NodeDef[] | undefined>()
-  const [pinnedWorkflows, setPinnedWorkflows] = useState<Record<string, FlowDetail>>({})
+  const [drawerDetail, setDrawerDetail] = useState<CardDetail | null>(null)
+  // Same-origin APIs have no target selector. Switching between Shell and standalone
+  // ownership starts a local cache lifetime, so late requests cannot cross that boundary.
+  const sharedSource = !!sharedData
+  const workflowScope = useMemo(() => ({ missing: new Set<string>(), expired: new Set<string>(), pending: new Set<string>() }), [sharedSource])
+  const scopeRef = useRef(workflowScope)
+  scopeRef.current = workflowScope
+  useEffect(() => {
+    scopeRef.current = workflowScope
+    return () => { if (scopeRef.current === workflowScope) scopeRef.current = { missing: new Set(), expired: new Set(), pending: new Set() } }
+  }, [workflowScope])
+  const [pinnedCache, setPinnedCache] = useState<{ scope: typeof workflowScope; values: Record<string, FlowDetail> }>({ scope: workflowScope, values: {} })
+  const pinnedWorkflows = pinnedCache.scope === workflowScope ? pinnedCache.values : EMPTY_PINNED_WORKFLOWS
   const previousQueueCount = useRef(0)
   const navigate = useNavigate()
   const location = useLocation()
   const cardDeepLink = new URLSearchParams(location.search).get('card') ?? ''
-  const cardsPoll = usePoll(() => fetchCards(includeArchived || cardDeepLink !== '' ? 'all=1' : ''), POLL_MS)
-  const decisionsPoll = usePoll(() => fetchDecisions(true), POLL_MS)
+  // Sharing preserves loading/error/stale as well as data; an unfinished Shell first load
+  // must remain unknown. Explicit archived scope still belongs to this page.
+  const localCardsPoll = usePoll(() => fetchCards(includeArchived ? 'all=1' : ''), POLL_MS, { enabled: !sharedData || includeArchived })
+  const localDecisionsPoll = usePoll(() => fetchDecisions(true), POLL_MS, { enabled: !sharedData })
+  const cardsPoll = sharedData && !includeArchived ? sharedData.cards : localCardsPoll
+  const decisionsPoll = sharedData?.decisions ?? localDecisionsPoll
   const healthPoll = usePoll(fetchLedgerHealth, POLL_MS)
   const queuePoll = usePoll(async () => {
     console.info('queue.poll.start', { intervalMs: 5000 })
@@ -181,7 +204,11 @@ export function CardsPage({ onOpenCoordinatorTerminal, onDrawerCardChange, taskJ
   // 任务实况走页面级那条 2.5s 流（useTasks），抽屉只吃结果、不自起轮询：
   // 同页两条流会各自跳动，卡上与看板会在不同时刻更新（spec §5）。首拉未回
   // 时给 undefined，抽屉按「计数不可知」显示旧标题，不谎报「0 个在跑」。
-  const tasksPoll = useTasks()
+  const localTasksPoll = useTasks({ enabled: !sharedData })
+  const tasksPoll = sharedData?.tasks ?? localTasksPoll
+  useEffect(() => {
+    console.info('cards.data.source', { source: sharedData ? 'shell' : 'page' })
+  }, [!!sharedData])
 
   useEffect(() => {
     let cancelled = false
@@ -198,7 +225,14 @@ export function CardsPage({ onOpenCoordinatorTerminal, onDrawerCardChange, taskJ
     return () => { cancelled = true }
   }, [])
 
-  useEffect(() => { cardsPoll.refresh() }, [includeArchived, cardDeepLink]) // eslint-disable-line react-hooks/exhaustive-deps
+  // The poll owns first load. Only explicit historical scope changes need an immediate refresh;
+  // opening a deep link never expands the list to all historical cards.
+  const previousArchived = useRef(includeArchived)
+  useEffect(() => {
+    if (previousArchived.current === includeArchived) return
+    previousArchived.current = includeArchived
+    cardsPoll.refresh()
+  }, [includeArchived, cardsPoll.refresh])
 
   const cards = useMemo(() => cardsPoll.data?.cards ?? [], [cardsPoll.data])
   const queueEntries = useMemo(() => queuePoll.data?.queue ?? EMPTY_QUEUE, [queuePoll.data])
@@ -279,63 +313,54 @@ export function CardsPage({ onOpenCoordinatorTerminal, onDrawerCardChange, taskJ
   // 项目级请示不跟筛选走：它被算进了「需要你」徽标，只在筛选态显示等于
   // 徽标数字有一部分永远看不见（同一类毛病见 visibleColumns 的注释）
   const projectDecisions = decisions.filter((decision) => !decision.card_id)
-  const selectedCard = selected ? cards.find((card) => card.id === selected) : undefined
-  const selectedWorkflowName = selectedCard?.workflow ?? ''
-  const selectedWorkflowVersion = selectedCard?.workflow_version
+  // The drawer already fetches by ID, including terminal cards absent from the current list.
+  // Reuse its detail for pinned metadata instead of issuing a second parent detail request.
+  const selectedListCard = selected ? cards.find((card) => card.id === selected) : undefined
+  const selectedCard = selected ? selectedListCard ?? (drawerDetail?.card.id === selected ? drawerDetail.card : undefined) : undefined
+  const onDetailLoaded = useCallback((detail: CardDetail) => { setDrawerDetail(detail) }, [])
   const selectedPinnedKey = selectedCard ? pinnedWorkflowKey(selectedCard) : null
   const selectedPinnedWorkflow = selectedPinnedKey ? pinnedWorkflows[selectedPinnedKey] : undefined
 
   useEffect(() => {
-    const requested = new Map<string, { name: string; version: number }>()
-    for (const card of cards) {
+    const requested = new Map<string, { name: string; version: number; card: string }>()
+    // Deep-linked terminal metadata comes from the successful drawer response, not all=1.
+    for (const card of selectedCard ? [...cards, selectedCard] : cards) {
       const key = pinnedWorkflowKey(card)
-      if (key && !pinnedWorkflows[key]) requested.set(key, { name: card.workflow, version: card.workflow_version as number })
+      if (key && !pinnedWorkflows[key] && !workflowScope.missing.has(key) && !workflowScope.expired.has(key) && !workflowScope.pending.has(key)) {
+        requested.set(key, { name: card.workflow, version: card.workflow_version as number, card: card.id })
+      }
     }
-    if (requested.size === 0) return
-    let cancelled = false
-    void Promise.all([...requested.entries()].map(async ([key, target]) => [key, await fetchFlow(target.name, target.version)] as const))
-      .then((details) => {
-        if (cancelled) return
-        setPinnedWorkflows((current) => Object.fromEntries([...Object.entries(current), ...details]))
-        console.info('cards.workflow.pinned.done', { count: details.length })
-      })
-      .catch((cause: unknown) => {
-        if (!cancelled) console.error('cards.workflow.pinned.error', { requested: [...requested.keys()], cause })
-      })
-    return () => { cancelled = true }
-  }, [cards, pinnedWorkflows])
+    for (const [key, target] of requested) {
+      workflowScope.pending.add(key)
+      const context = { card: target.card, workflow: target.name, version: target.version, source: sharedSource ? 'shell' : 'page' }
+      console.info('cards.workflow.pinned.start', context)
+      // Settle separately: one missing version must not discard successful pinned definitions.
+      void fetchFlow(target.name, target.version)
+        .then((flow) => {
+          if (scopeRef.current !== workflowScope) return
+          setPinnedCache((current) => ({ scope: workflowScope, values: { ...(current.scope === workflowScope ? current.values : {}), [key]: flow } }))
+          console.info('cards.workflow.pinned.loaded', context)
+        })
+        .catch((cause: unknown) => {
+          if (scopeRef.current !== workflowScope) return
+          const status = cause instanceof ApiError ? cause.status : 0
+          if (status === 404) workflowScope.missing.add(key)
+          // 401 remains terminal; network/server errors retry on the next card snapshot.
+          if (status === 401) workflowScope.expired.add(key)
+          console.error('cards.workflow.pinned.error', { ...context, status, cause })
+        })
+        .finally(() => { workflowScope.pending.delete(key) })
+    }
+  }, [cards, selectedCard, workflowScope, sharedSource]) // eslint-disable-line react-hooks/exhaustive-deps
 
+  const previousDeepLink = useRef(cardDeepLink)
   useEffect(() => {
-    if (!cardDeepLink || !cards.some((card) => card.id === cardDeepLink)) return
-    setSelected(cardDeepLink)
-  }, [cardDeepLink, cards])
-
-  useEffect(() => {
-    if (!selected || !selectedWorkflowName) {
-      setDrawerNodes(undefined)
-      return
-    }
-    let cancelled = false
-    setDrawerNodes(undefined)
-    if (selectedPinnedWorkflow) {
-      setDrawerNodes(selectedPinnedWorkflow.nodes)
-      return () => { cancelled = true }
-    }
-    if (selectedWorkflowVersion === undefined || selectedWorkflowVersion <= 0) {
-      console.warn('cards.workflow.drawer.unversioned', { card: selected, workflow: selectedWorkflowName })
-      return () => { cancelled = true }
-    }
-    // 抽屉节点动作同样必须使用卡片钉住的版本；没有版本的旧列表数据不猜节点集。
-    void fetchFlow(selectedWorkflowName, selectedWorkflowVersion)
-      .then((flow) => { if (!cancelled) setDrawerNodes(flow.nodes) })
-      .catch((cause: unknown) => {
-        if (!cancelled) {
-          console.error('cards.workflow.drawer.error', { card: selected, workflow: selectedWorkflowName, version: selectedWorkflowVersion, cause })
-          setDrawerNodes(undefined)
-        }
-      })
-    return () => { cancelled = true }
-  }, [selected, selectedWorkflowName, selectedWorkflowVersion, selectedPinnedWorkflow])
+    if (cardDeepLink) setSelected(cardDeepLink)
+    else if (previousDeepLink.current) setSelected(null)
+    previousDeepLink.current = cardDeepLink
+  }, [cardDeepLink])
+  // Only a successfully loaded pinned version supplies drawer actions; never substitute latest.
+  const drawerNodes = selectedPinnedWorkflow?.nodes
   // drawerTriggerRef 记「打开抽屉时焦点在哪」（B369.8 §4，compact-only）：
   // openDrawer 时记 document.activeElement，closeDrawer 归还（isConnected 守卫
   // 兜住触发钮已被重渲染/卸载摘走的情形）。桌面双栏非模态，不记不还（零变化）。
@@ -551,7 +576,7 @@ export function CardsPage({ onOpenCoordinatorTerminal, onDrawerCardChange, taskJ
           {surfaceContent}
         </>
       )}
-      {selected && <CardDrawer id={selected} onClose={closeDrawer} onOpenCard={(id) => openDrawer(id)} workflowStates={selectedPinnedWorkflow?.states ?? (selectedWorkflowVersion !== undefined && selectedWorkflowVersion > 0 ? workflowStates : undefined)} boardLayout={selectedCard ? cardLayoutResolver(selectedCard) : undefined} initialSection={drawerFocus} nodes={drawerNodes} tasks={tasksPoll.data ?? undefined} onJumpToTask={jumpToTask} onOpenCoordinatorTerminal={onOpenCoordinatorTerminal} compact={compact} compactFilters={compact ? drawerFilters : undefined} onOpenDriverSession={onOpenSessionForCard ? () => onOpenSessionForCard(selected) : undefined} />}
+      {selected && <CardDrawer key={selected} id={selected} onDetailLoaded={onDetailLoaded} onClose={closeDrawer} onOpenCard={(id) => openDrawer(id)} workflowStates={selectedPinnedWorkflow?.states} boardLayout={selectedListCard ? cardLayoutResolver(selectedListCard) : selectedCard ? mergedLayoutFor(selectedCard, layoutForWorkflow) : undefined} initialSection={drawerFocus} nodes={drawerNodes} tasks={tasksPoll.data ?? undefined} onJumpToTask={jumpToTask} onOpenCoordinatorTerminal={onOpenCoordinatorTerminal} compact={compact} compactFilters={compact ? drawerFilters : undefined} onOpenDriverSession={onOpenSessionForCard ? () => onOpenSessionForCard(selected) : undefined} />}
       <NewCardDialog
         open={newCardOpen} project={project} cardProjects={projectOptions} workflows={newCardWorkflows}
         onClose={() => setNewCardOpen(false)}

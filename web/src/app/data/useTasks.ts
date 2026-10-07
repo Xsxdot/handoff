@@ -5,6 +5,7 @@ import { fetchTasks } from '../../api/client'
 import type { Task } from '../../api/types'
 
 const TASKS_INTERVAL = 2500
-export function useTasks(): ReturnType<typeof usePoll<Task[]>> {
-  return usePoll(fetchTasks, TASKS_INTERVAL)
+/** Optional enabled lets a consumer reuse its owner's stream; default keeps independent consumers live. */
+export function useTasks(opts?: { enabled?: boolean }): ReturnType<typeof usePoll<Task[]>> {
+  return usePoll(fetchTasks, TASKS_INTERVAL, opts)
 }
