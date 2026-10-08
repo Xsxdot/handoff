@@ -12,7 +12,9 @@
       -sdk iphonesimulator -configuration Debug -derivedDataPath build \
       CODE_SIGNING_ALLOWED=NO build
 
-产物：`build/Build/Products/Debug-iphonesimulator/HandoffMobile.app`（内含 `Frameworks/Handoff-Mobile.framework`）。
+产物：`build/Build/Products/Debug-iphonesimulator/HandoffMobile.app`。
+`Handoff-Mobile.xcframework` 的设备切片是未签名静态库，只链接进 `HandoffMobile.debug.dylib`。
+不要放进 Embed Frameworks：真机安装会把二进制换成临时签名的空壳，报 `0xe8008014`。
 
 ## 测试
 

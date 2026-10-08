@@ -8,7 +8,6 @@
 
 /* Begin PBXBuildFile section */
 		A1B2C3D4000000000000BF02 /* Handoff-Mobile.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = A1B2C3D4000000000000FR12 /* Handoff-Mobile.xcframework */; };
-		A1B2C3D4000000000000BF03 /* Handoff-Mobile.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = A1B2C3D4000000000000FR12 /* Handoff-Mobile.xcframework */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -21,19 +20,7 @@
 		};
 /* End PBXContainerItemProxy section */
 
-/* Begin PBXCopyFilesBuildPhase section */
-		A1B2C3D4000000000000PH04 /* Embed Frameworks */ = {
-			isa = PBXCopyFilesBuildPhase;
-			buildActionMask = 2147483647;
-			dstPath = "";
-			dstSubfolderSpec = 10;
-			files = (
-				A1B2C3D4000000000000BF03 /* Handoff-Mobile.xcframework in Embed Frameworks */,
-			);
-			name = "Embed Frameworks";
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-/* End PBXCopyFilesBuildPhase section */
+
 
 /* Begin PBXFileReference section */
 		A1B2C3D4000000000000FR12 /* Handoff-Mobile.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = "Handoff-Mobile.xcframework"; path = "../../dist/mobile/handoff-mobile.xcframework"; sourceTree = "<group>"; };
@@ -110,7 +97,6 @@
 				A1B2C3D4000000000000PH01 /* Sources */,
 				A1B2C3D4000000000000PH02 /* Frameworks */,
 				A1B2C3D4000000000000PH03 /* Resources */,
-				A1B2C3D4000000000000PH04 /* Embed Frameworks */,
 			);
 			buildRules = (
 			);

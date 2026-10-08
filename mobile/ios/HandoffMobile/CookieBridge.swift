@@ -78,6 +78,8 @@ final class CookieBridge {
     convenience init(core: ConnectCore) {
         let config = WKWebViewConfiguration()
         let webView = WKWebView(frame: .zero, configuration: config)
+        // 页面在控制台控制器出现之前就开始加载。视口锁必须赶在这次加载前挂上。
+        ViewportLock.install(on: webView)
         self.init(core: core,
                   jar: WebKitCookieJar(store: config.websiteDataStore.httpCookieStore),
                   loader: WKWebViewOriginLoader(webView: webView),

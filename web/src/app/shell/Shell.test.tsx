@@ -1314,6 +1314,7 @@ describe('B369.6 移动断点谱系', () => {
     Object.defineProperty(window, 'innerWidth', { value: 375, configurable: true, writable: true })
     renderShell()
     await screen.findByTestId('mobile-home')
+    expect(screen.getByTestId('app-shell').className).toContain('handoff-viewport')
     for (const tab of ['sessions', 'cards', 'projects', 'settings']) {
       expect(screen.getByTestId(`mobile-tab-${tab}`)).toBeInTheDocument()
     }

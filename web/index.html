@@ -3,9 +3,12 @@
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
-    <!-- interactive-widget=resizes-content（S6/B426）：键盘弹出时布局视口收缩上浮，
-         聊天 composer 与新建会话弹层输入框不被遮挡；Android WebViewChrome 语义。 -->
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, interactive-widget=resizes-content" />
+    <!-- interactive-widget=resizes-content（S6/B426）：浏览器里键盘弹出时布局视口收缩。
+         App 内的 WKWebView 会改写这条：自己缩短网页高度，不再叠一层 interactive-widget。
+         maximum-scale=1：iOS 聚焦字号 <16px 会放大整页，放大后页面比屏宽就能左右滑。
+         viewport-fit=cover：底栏的 safe-area-inset-bottom 才不是 0，主屏幕条盖在底栏里而不是一条黑边。
+         桌面 Ctrl/Cmd 缩放不走 maximum-scale。 -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content" />
     <title>handoff 控制台</title>
   </head>
   <body>

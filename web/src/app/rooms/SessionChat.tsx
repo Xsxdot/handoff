@@ -63,8 +63,8 @@ function MessageRow({ event, referenced, highlight, archived, selfMember, onJump
       )}
       <div className={`flex max-w-[74%] items-center gap-1 ${self ? 'flex-row-reverse' : ''}`}>
         <div className={`rounded-2xl px-3 py-2 text-sm shadow-sm ${self ? 'bg-slate-900 text-white' : 'border bg-white/65 backdrop-blur-[12px]'}`}>
-          <div className={`mb-0.5 text-[10px] ${self ? 'text-white/60' : 'text-muted-foreground'}`}>{signatureText(event.actor, payload.device)} · #{event.seq}</div>
-          <p className="whitespace-pre-wrap">
+          <div className={`mb-0.5 break-all text-[10px] ${self ? 'text-white/60' : 'text-muted-foreground'}`}>{signatureText(event.actor, payload.device)} · #{event.seq}</div>
+          <p className="whitespace-pre-wrap break-words">
             {segmentBody(body, payload.mentions).map((segment, index) => (
               segment.mention
                 ? <span key={index} data-testid={`mention-${event.seq}-${index}`} className="font-semibold text-amber-600">{segment.text}</span>
@@ -219,11 +219,11 @@ export function SessionChat({ sessionId, summary, events, historyError, historyL
   }
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden">
       {archived && (
         <div className="shrink-0 border-b bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-700">会话已归档，只读。</div>
       )}
-      <div className="min-h-0 flex-1 space-y-2 overflow-y-auto bg-slate-50/60 p-3">
+      <div data-testid="session-transcript" className="min-h-0 min-w-0 flex-1 space-y-2 overflow-x-hidden overflow-y-auto bg-slate-50/60 p-3">
         {/* B369.10 T7：群聊顶部「本会话的卡」chiprow（compact 且未归档且有卡）。
             琥珀判定如实降级：wire 无逐卡 needs 位（SessionCard 只有 id/title/
             status/seat，会话级 needs_human 是「任意一张卡」的合取），可证实的
@@ -303,7 +303,7 @@ export function SessionChat({ sessionId, summary, events, historyError, historyL
           )}
           <textarea ref={textareaRef} aria-label="发送消息" value={draft} onChange={(event) => setDraft(event.target.value)}
             onKeyDown={mentionKeyDown} disabled={archived} rows={2}
-            className="min-w-0 flex-1 resize-none border-0 bg-transparent px-1.5 py-1 text-sm outline-none"
+            className={cn('min-w-0 flex-1 resize-none border-0 bg-transparent px-1.5 py-1 outline-none', compact ? 'text-base' : 'text-sm')}
             placeholder={archived ? '' : '发消息…（要谁办就 @ 谁；没 @ 的发言不唤醒任何人）'} />
           <button type="button" aria-label="发送" onClick={() => void send()} disabled={archived || sending || draft.trim() === ''}
             className={cn('rounded-xl bg-slate-900 px-3 py-1.5 text-xs text-white disabled:opacity-50', compact && 'min-h-11')}>发送</button>

@@ -42,6 +42,30 @@ beforeEach(() => {
 })
 
 describe('SessionChat', () => {
+  it('compact 发言框 16px，长身份在气泡内折行，消息区不横滑', () => {
+    // iOS 聚焦字号 <16px 会放大整页，放大后页面比屏宽就能左右滑出屏幕。
+    // 长身份串（cli:opencode#ses_…）默认不折行，会把消息区的最小宽度撑过屏幕。
+    render(
+      <SessionChat
+        sessionId="session:1" summary={summary()} compact
+        events={[event(1, 'hi', { actor: 'cli:opencode#ses_f45bc164affebNHHlbcxaGAxC5' })]}
+        historyExpired={false} historyError="" onSent={() => {}}
+      />,
+    )
+    const input = screen.getByRole('textbox', { name: '发送消息' })
+    expect(input.className).toContain('text-base')
+    expect(input.className).not.toMatch(/(^|\s)text-sm(\s|$)/)
+    const transcript = screen.getByTestId('session-transcript')
+    expect(transcript.className).toContain('overflow-x-hidden')
+    expect(transcript.className).toContain('min-w-0')
+    expect(screen.getByText(/cli:opencode#ses_f45bc164affebNHHlbcxaGAxC5/).className).toContain('break-all')
+  })
+
+  it('桌面发言框仍是 text-sm', () => {
+    render(<SessionChat sessionId="session:1" summary={summary()} events={[]} historyExpired={false} historyError="" onSent={() => {}} />)
+    expect(screen.getByRole('textbox', { name: '发送消息' }).className).toMatch(/(^|\s)text-sm(\s|$)/)
+  })
+
   it('群主行与卡 chips 行不再渲染（B358.8 #3 反例：两块迁详情抽屉）', () => {
     render(<SessionChat sessionId="session:1" summary={summary()} events={[]} historyExpired={false} historyError="" onSent={() => {}} />)
     expect(screen.queryByTestId('session-card-chip')).toBeNull()

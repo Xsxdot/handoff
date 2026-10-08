@@ -27,6 +27,8 @@ final class MachineListViewController: UIViewController, UITableViewDataSource, 
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
+        // 控制台会藏起导航条。回到本页时放回来，不依赖弹出动画是否走完。
+        navigationController?.setNavigationBarHidden(false, animated: animated)
         reload()
     }
 

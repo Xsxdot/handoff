@@ -985,7 +985,7 @@ export function Shell() {
     : null
 
   return (
-    <div className="flex h-dvh flex-col overflow-hidden bg-background">
+    <div data-testid="app-shell" className="handoff-viewport flex min-h-0 flex-col overflow-hidden bg-background">
       {desktop && <DesktopTitleBar base={focusedBase} />}
       <div className="flex min-h-0 flex-1">
       {/* 左栏自身不滚：滚动交给 ProjectTree 内部的树区，好让底部入口钉在底部。
