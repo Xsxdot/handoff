@@ -5,6 +5,7 @@ import { needsAttention } from './columns'
 
 export interface CardItemProps {
   card: CardView
+  compact?: boolean
   onOpen: (focus?: 'merge') => void
   onMigrate?: () => void
   mergedCount?: number
@@ -31,10 +32,19 @@ function Chip({ children, className, title, onClick }: {
   return <span title={title} className={cn('rounded-full border px-1.5 text-[10px]', className)}>{children}</span>
 }
 
-export function CardItem({ card, onOpen, onMigrate, mergedCount = card.merged_count, verified, queuePosition, nodeTag }: CardItemProps) {
+export function CardItem({ card, onOpen, onMigrate, mergedCount = card.merged_count, verified, queuePosition, nodeTag, compact = false }: CardItemProps) {
   const needs = needsAttention(card)
   const attachments = card.attachments ?? []
   const blockedBy = card.blocked_by ?? []
+  // B429 cut-2：compact 卡行整行进详情，⋯/迁移不在列表露出（进详情「更多工作项操作」）。
+  if (compact) return <article className="mobile-card-row">
+    <button type="button" className="mobile-card-main" aria-label={`${card.id} ${card.title}`} onClick={() => onOpen()}>
+      <span className="mobile-card-identity"><small className="font-mono">{card.id}</small><span className="rounded-full border px-2 py-0.5 text-[11px]">{nodeTag ?? card.status}</span></span>
+      <strong className="mobile-card-title">{card.title}</strong>
+      <small className="block truncate text-muted-foreground">{card.project || '未关联项目'}{card.priority ? ` · ${card.priority}` : ''}</small>
+      {(card.needs !== '' || card.open_decisions > 0 || card.open_tickets > 0 || card.blocked || card.conflict) && <small className="mobile-card-needs-preview block">{card.needs || [card.open_decisions > 0 ? `裁决 ${card.open_decisions}` : '', card.open_tickets > 0 ? `工单 ${card.open_tickets}` : '', card.blocked ? '被阻塞' : '', card.conflict ? '状态冲突' : ''].filter(Boolean).join(' · ')}</small>}
+    </button>
+  </article>
   return (
     <article
       role="button"

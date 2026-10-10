@@ -19,6 +19,7 @@ vi.mock('../../api/ledger', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../api/ledger')>()),
   fetchCards: vi.fn().mockResolvedValue({ cards: [], unlinked: { count: 0, tasks: [], unknown_targets: [] } }),
   fetchCardDetail: vi.fn(),
+  answerDecision: vi.fn().mockResolvedValue(undefined),
   fetchFlow: vi.fn(),
   fetchFlows: vi.fn().mockResolvedValue({ workflows: [], templates: [] }),
   fetchLedgerHealth: vi.fn().mockResolvedValue({ mirror: [] }),
@@ -52,6 +53,29 @@ const renderPage = (entry = '/cards') =>
   )
 
 describe('项目级请示横幅', () => {
+  afterEach(async () => {
+    const ledger = await import('../../api/ledger')
+    vi.mocked(ledger.fetchDecisions).mockResolvedValue([
+      { id: 2, card_id: '', body: '要不要先把 acc/ 临时分支清掉？', options: null, status: 'open', answer: '', created_by: 'cli:me@box' },
+    ])
+    vi.mocked(ledger.answerDecision).mockClear()
+  })
+
+  it('compact 项目级裁决选项只填多行草稿，显式答复才提交', async () => {
+    const ledger = await import('../../api/ledger')
+    vi.mocked(ledger.fetchDecisions).mockResolvedValue([
+      { id: 91, card_id: '', body: '是否保留当前范围？', options: ['保留范围', '缩小范围'], status: 'open', answer: '', created_by: 'cli:me@box' },
+    ] as never)
+    render(<MemoryRouter><CardsPage compact /></MemoryRouter>)
+    const textarea = await screen.findByPlaceholderText('答复这条请示…')
+    expect(textarea.tagName).toBe('TEXTAREA')
+    await userEvent.click(screen.getByRole('button', { name: '保留范围' }))
+    expect(textarea).toHaveValue('保留范围')
+    expect(vi.mocked(ledger.answerDecision)).not.toHaveBeenCalled()
+    await userEvent.click(screen.getByRole('button', { name: '答复' }))
+    await waitFor(() => expect(vi.mocked(ledger.answerDecision)).toHaveBeenCalledWith(91, '保留范围'))
+  })
+
   it('不开「需要你」筛选也要显示——它被算进了徽标，藏起来等于数字对不上', async () => {
     renderPage()
     expect(await screen.findByText(/要不要先把 acc\/ 临时分支清掉？/)).toBeInTheDocument()
@@ -142,6 +166,19 @@ describe('未挂账观测状态', () => {
     vi.mocked(ledger.fetchCards).mockResolvedValue({
       cards: [],
       unlinked: { status: 'latest', observed_at: new Date().toISOString(), count: 0, tasks: [], unknown_targets: [] },
+    })
+    renderPage()
+    await waitFor(() => expect(ledger.fetchCards).toHaveBeenCalled())
+    expect(screen.queryByTestId('unlinked-summary-row')).not.toBeInTheDocument()
+  })
+
+  it('stale 零值也不刷主面（过 TTL 的空观测别冒「未挂账 task 0」）', async () => {
+    const ledger = await import('../../api/ledger')
+    vi.mocked(ledger.fetchCards).mockResolvedValue({
+      cards: [],
+      unlinked: {
+        status: 'stale', observed_at: '2020-01-01T00:00:00Z', count: 0, tasks: [], unknown_targets: [],
+      },
     })
     renderPage()
     await waitFor(() => expect(ledger.fetchCards).toHaveBeenCalled())
@@ -676,7 +713,7 @@ describe('B412 合并视图按各流当前版本看板配置归列', () => {
   })
 })
 
-// —— S4（B426）：卡页头部收敛——行 3 次级筛选收进抽屉顶部、+ 新建升行 1、
+// —— S4（B426）+ B429：次级筛选收进抽屉；项目筛回主面状态栏下；+ 新建升行 1、
 // 「从浏览器打开」保留（落点=行 1 尾，执行者裁量记台账）、QueuePanel 细横条。 ——
 describe('S4 卡页头部收敛（B426）', () => {
   const compactCard = (over: Partial<import('../../api/ledger').CardView> = {}) => ({
@@ -712,46 +749,58 @@ describe('S4 卡页头部收敛（B426）', () => {
     await screen.findByTestId('cards-single-column')
   }
 
-  it('compact 主面无行 3 三件控件；+ 新建升行 1；「从浏览器打开」保留（行 1 尾）', async () => {
+  it('compact queue count remains unknown until CardsPage receives its first snapshot; confirmed empty hides strip', async () => {
+    const scheduling = await import('../../api/scheduling')
+    let resolveQueue!: (value: { queue: [] }) => void
+    vi.mocked(scheduling.getQueue).mockReturnValue(new Promise((resolve) => { resolveQueue = resolve }))
+    await renderCompactWithCards([{}])
+    expect(screen.getByRole('button', { name: '⧗ 排队中 …' })).toBeInTheDocument()
+    resolveQueue({ queue: [] })
+    await waitFor(() => expect(screen.queryByRole('button', { name: /⧗ 排队中/ })).toBeNull())
+    vi.mocked(scheduling.getQueue).mockResolvedValue({ queue: [] })
+  })
+
+  it('compact 主面有弱项目下拉；无工作流/搜索/「筛选与执行工具」；+ 新建升行 1；「从浏览器打开」保留', async () => {
     setUA(DESKTOP_UA)
     await renderCompactWithCards([{}])
-    // 主面无三件次级控件
-    expect(screen.queryByRole('combobox', { name: '项目' })).toBeNull()
+    // B429：项目筛在顶栏（与需要你/＋一排）；工作流/搜索仍不在主面；无筛选与执行工具入口
+    const row1 = screen.getByTestId('cards-primary-actions')
+    expect(within(row1).getByTestId('cards-project-filter')).toBeInTheDocument()
+    expect(within(row1).getByRole('combobox', { name: '项目' })).toBeInTheDocument()
     expect(screen.queryByRole('combobox', { name: '工作流' })).toBeNull()
     expect(screen.queryByPlaceholderText('搜 B 号 / 标题')).toBeNull()
+    expect(screen.queryByRole('button', { name: '筛选与执行工具' })).toBeNull()
     // + 新建升行 1
-    const newButton = screen.getByRole('button', { name: '+ 新建' })
+    const newButton = screen.getByRole('button', { name: '新建工作项' })
     expect(newButton.closest('div')!.textContent).toContain('工作项')
-    // 「从浏览器打开」能力保留（spec 未点名，落点行 1 尾=页面级控制留在页面级）
+    expect(screen.getByTestId('cards-primary-actions').closest('main')).toHaveClass('mobile-cards-page')
+    expect(screen.getByRole('button', { name: /需要你处理|正在读取需要你/ })).toHaveClass('mobile-needs-action')
+    // 「从浏览器打开」落行 1（桌面壳 UA）
     expect(screen.getByRole('button', { name: '从浏览器打开' })).toBeInTheDocument()
   })
 
-  it('抽屉顶部筛选区三件生效：设筛选 → 关抽屉 → 背后列表 filtered 反映；重开抽屉筛选保留', async () => {
+  it('主面弱项目下拉未开卡可筛；次级（工作流/搜索）只在抽屉；关闭后筛选 state 保留', async () => {
     const user = userEvent.setup()
-    await renderCompactWithCards([
-      { id: 'B1', title: '甲项目卡', project: 'alpha' },
-      { id: 'B2', title: '乙项目卡', project: 'beta' },
-    ])
-    // 开抽屉（点第一张卡）
-    fireEvent.click(screen.getByText('甲项目卡'))
-    const drawer = await screen.findByRole('dialog', { name: '工作项详情' })
-    // 三件都在抽屉顶部筛选区
-    const filters = within(drawer).getByTestId('card-drawer-filters')
-    expect(within(filters).getByRole('combobox', { name: '项目' })).toBeInTheDocument()
-    expect(within(filters).getByRole('combobox', { name: '工作流' })).toBeInTheDocument()
-    expect(within(filters).getByPlaceholderText('搜 B 号 / 标题')).toBeInTheDocument()
-    // 改值作用于背后列表（state 住 CardsPage）
-    await user.selectOptions(within(filters).getByRole('combobox', { name: '项目' }), 'beta')
-    // 关抽屉
-    fireEvent.click(within(drawer).getByRole('button', { name: '关闭' }))
-    await waitFor(() => expect(screen.queryByRole('dialog', { name: '工作项详情' })).toBeNull())
-    // 列表 filtered 反映：alpha 卡消失、beta 卡在场
+    await renderCompactWithCards([{ id:'B1',title:'甲项目卡',project:'alpha' },{ id:'B2',title:'乙项目卡',project:'beta' }])
+    expect(screen.queryByRole('button', { name: '筛选与执行工具' })).toBeNull()
+    // B429：项目在顶栏，未开卡即可筛
+    const row1 = screen.getByTestId('cards-primary-actions')
+    const projectSelect = within(row1).getByRole('combobox', { name: '项目' })
+    expect(projectSelect.closest('[data-testid="cards-project-filter"]')).toBeTruthy()
+    await user.selectOptions(projectSelect, 'beta')
     expect(screen.queryByText('甲项目卡')).toBeNull()
     expect(screen.getByText('乙项目卡')).toBeInTheDocument()
-    // 筛选在抽屉关闭后保留：重开抽屉，select 值仍是 beta
+    // 次级仍在抽屉；项目不在抽屉顶
     fireEvent.click(screen.getByText('乙项目卡'))
-    const drawerAgain = await screen.findByRole('dialog', { name: '工作项详情' })
-    expect(within(drawerAgain).getByRole('combobox', { name: '项目' })).toHaveValue('beta')
+    const drawer = await screen.findByRole('dialog', { name: '工作项详情' })
+    expect(within(drawer).queryByRole('combobox', { name: '项目' })).toBeNull()
+    expect(within(drawer).getByRole('combobox', { name: '工作流' })).toBeInTheDocument()
+    expect(within(drawer).getByPlaceholderText('搜 B 号 / 标题')).toBeInTheDocument()
+    fireEvent.click(within(drawer).getByRole('button', { name: '返回工作项' }))
+    // 关闭后顶栏项目筛仍保留
+    expect(within(screen.getByTestId('cards-primary-actions')).getByRole('combobox', { name: '项目' })).toHaveValue('beta')
+    expect(screen.queryByText('甲项目卡')).toBeNull()
+    expect(screen.getByText('乙项目卡')).toBeInTheDocument()
   })
 
   it('QueuePanel compact 细横条：收缩态无大边框盒；展开仍列完整队列', async () => {
@@ -785,9 +834,9 @@ describe('B369.8 compact 单列', () => {
     conflict: false, open_tickets: 0, ...over,
   })
 
-  async function renderCompact(entry = '/cards') {
+  async function renderCompact(entry = '/cards', cardOverrides: Partial<import('../../api/ledger').CardView> = {}) {
     const ledger = await import('../../api/ledger')
-    vi.mocked(ledger.fetchCards).mockResolvedValue({ cards: [compactCard()], unlinked: { count: 0, tasks: [], unknown_targets: [] } })
+    vi.mocked(ledger.fetchCards).mockResolvedValue({ cards: [compactCard(cardOverrides)], unlinked: { count: 0, tasks: [], unknown_targets: [] } })
     render(
       <MemoryRouter initialEntries={[entry]}>
         <Routes>
@@ -808,34 +857,73 @@ describe('B369.8 compact 单列', () => {
     expect(document.querySelector('main .overflow-x-auto')).toBeNull()
   })
 
-  it('「⚑ 需要你」在行 1 且计数含项目级请示（默认 mock 1 条不挂卡裁决）', async () => {
+  it('「需要你」在行 1 且计数含项目级请示；健康态不占扫描面', async () => {
+    const ledger = await import('../../api/ledger')
+    vi.mocked(ledger.fetchLedgerHealth).mockResolvedValue({ enabled: true, mirror: [] })
     await renderCompact()
-    const needsButton = await screen.findByRole('button', { name: /⚑ 需要你 1/ })
-    const row1 = needsButton.closest('div')!
-    // 行 1（主控）= 工作项标题 + 健康灯 + 需要你；ml-auto 推到行尾
+    const needsButton = await screen.findByRole('button', { name: /需要你处理 1/ })
+    const row1 = screen.getByTestId('cards-primary-actions')
     expect(row1.textContent).toContain('工作项')
-    expect(needsButton.className).toContain('min-h-11')
-    expect(needsButton.className).toContain('ml-auto')
+    expect(row1.textContent).not.toContain('事件流滞后')
+    await waitFor(() => expect(screen.queryByTestId('cards-ledger-health')).toBeNull())
+    expect(needsButton.className).toContain('mobile-needs-action')
+    expect(needsButton.className).toContain('whitespace-nowrap')
+    expect(screen.getByRole('button', { name: '新建工作项' })).toBeVisible()
   })
 
-  it('行 2 状态 chips 逐值渲染看板五列（S3 后与 displayedColumns 同源）；S4 后 + 新建升行 1、行 3 三件次级控件撤出主面', async () => {
+  it('行 2 状态 chips 逐值渲染看板五列；+ 新建升行 1；顶栏弱项目下拉，工作流/搜索仍不在主面', async () => {
     await renderCompact()
     for (const column of DEFAULT_BOARD_COLUMNS) {
       expect(screen.getByTestId(`card-status-${column}`)).toBeInTheDocument()
     }
     // S4：+ 新建升行 1（与「工作项」标题同一行容器）
-    const newButton = screen.getByRole('button', { name: '+ 新建' })
+    const newButton = screen.getByRole('button', { name: '新建工作项' })
     expect(newButton.closest('div')!.textContent).toContain('工作项')
-    // S4：行 3 次级三件不再渲染于主面（移抽屉顶部筛选区，行为见 S4 describe）
+    // B429：顶栏有弱项目下拉；五字独占下行；工作流/搜索仍不在主面
     expect(screen.queryByTestId('cards-controls-secondary')).toBeNull()
-    expect(screen.queryByRole('combobox', { name: '项目' })).toBeNull()
+    const row1 = screen.getByTestId('cards-primary-actions')
+    expect(within(row1).getByTestId('cards-project-filter')).toBeInTheDocument()
+    expect(within(row1).getByRole('combobox', { name: '项目' })).toBeInTheDocument()
+    expect(within(row1).queryByTestId('card-status-filter')).toBeNull()
     expect(screen.queryByRole('combobox', { name: '工作流' })).toBeNull()
     expect(screen.queryByPlaceholderText('搜 B 号 / 标题')).toBeNull()
   })
 
   it('main 根挂触点基线类（24px 次级底线）', async () => {
     await renderCompact()
-    expect(document.querySelector('main')!.className).toContain('button:not(.min-h-11)')
+    expect(document.querySelector('main')!.className).toContain('touch-baseline')
+  })
+
+  it('列表把较长的等人原文保留为两行预览；卡行无⋯，迁移进详情更多操作', async () => {
+    const longNeeds = '需要先阅读完整验收描述并确认服务事件流保持一致；这一段原文要完整保留供详情查看。'.repeat(3)
+    const ledger = await import('../../api/ledger')
+    const card = { id: 'B1', title: '单列卡', status: '进行中', priority: '中', project: 'handoff', workflow: '', parent: '', base_branch: '', attachments: [], following: '', blocked: false, blocked_by: [], merged_count: 0, needs: longNeeds, open_decisions: 0, children_total: 0, children_done: 0, conflict: false, open_tickets: 0 }
+    vi.mocked(ledger.fetchCards).mockResolvedValue({ cards: [card], unlinked: { count: 0, tasks: [], unknown_targets: [] } })
+    vi.mocked(ledger.fetchCardDetail).mockResolvedValue({
+      card, relations: [], events: [], task_states: [], effective_base_branch: '', decisions: [], needs: longNeeds,
+    } as never)
+    render(<MemoryRouter initialEntries={['/cards']}><Routes><Route path="/cards" element={<CardsPage compact />} /></Routes></MemoryRouter>)
+    await screen.findByTestId('cards-single-column')
+    const preview = screen.getByText(longNeeds)
+    expect(preview.className).toContain('mobile-card-needs-preview')
+    expect(preview.closest('article')!.querySelector('details.mobile-card-actions')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: `B1 ${card.title}` }))
+    const drawer = await screen.findByRole('dialog', { name: '工作项详情' })
+    fireEvent.click(within(drawer).getByText('更多工作项操作'))
+    expect(within(drawer).getByRole('button', { name: '迁移工作项' })).toBeInTheDocument()
+  })
+
+  it('列表把卡号/状态放在标题上方，标题可读两行且主按钮不再带冗余箭头', async () => {
+    const longTitle = '移动工作项标题在窄屏上完整阅读并保留关键上下文'
+    await renderCompact('/cards', { title: longTitle })
+    const main = screen.getByRole('button', { name: `B1 ${longTitle}` })
+    const article = main.closest('article')!
+    const title = article.querySelector('.mobile-card-title')!
+    expect(title.textContent).toBe(longTitle)
+    expect(title.className).toContain('mobile-card-title')
+    expect(article.querySelector('.mobile-card-identity')?.textContent).toContain('B1')
+    expect(article.querySelector('.mobile-card-identity')?.textContent).toContain('进行中')
+    expect(main.querySelector('svg')).toBeNull()
   })
 })
 
@@ -871,11 +959,11 @@ describe('B369.8 compact 抽屉 a11y（cards-surface 与焦点归还）', () => 
     // 覆盖前：aria-hidden="false"（与 WorkbenchPage 先例同款 boolean 写法）、无 inert
     expect(surface.getAttribute('aria-hidden')).toBe('false')
     expect(surface.hasAttribute('inert')).toBe(false)
-    fireEvent.click(screen.getByText('面卡'))
+    fireEvent.click(screen.getByRole('button', { name: 'B1 面卡' }))
     expect(await screen.findByRole('dialog', { name: '工作项详情' })).toBeInTheDocument()
     expect(surface.getAttribute('aria-hidden')).toBe('true')
     expect(surface.hasAttribute('inert')).toBe(true)
-    fireEvent.click(screen.getByRole('button', { name: '关闭' }))
+    fireEvent.click(screen.getByRole('button', { name: '返回工作项' }))
     await waitFor(() => expect(screen.queryByRole('dialog', { name: '工作项详情' })).toBeNull())
     expect(surface.getAttribute('aria-hidden')).toBe('false')
     expect(surface.hasAttribute('inert')).toBe(false)
@@ -884,13 +972,13 @@ describe('B369.8 compact 抽屉 a11y（cards-surface 与焦点归还）', () => 
   it('关闭归还焦点到打开抽屉的触发钮（isConnected 守卫路径）', async () => {
     await renderCompactSurface()
     // 触发钮先取（抽屉开后卡标题在抽屉里重复出现，getByText 会撞多元素）
-    const trigger = screen.getByText('面卡').closest('article')!
+    const trigger = screen.getByRole('button', { name: 'B1 面卡' })
     trigger.focus()
     fireEvent.click(trigger)
     const drawer = await screen.findByRole('dialog', { name: '工作项详情' })
     // 开抽屉焦点移入面板（compact aria-modal 档）
     expect(document.activeElement).toBe(drawer)
-    fireEvent.click(screen.getByRole('button', { name: '关闭' }))
+    fireEvent.click(screen.getByRole('button', { name: '返回工作项' }))
     await waitFor(() => expect(screen.queryByRole('dialog', { name: '工作项详情' })).toBeNull())
     expect(document.activeElement).toBe(trigger)
   })
@@ -912,7 +1000,7 @@ describe('B369.8 compact 抽屉 a11y（cards-surface 与焦点归还）', () => 
     fireEvent.click(await screen.findByText('面卡'))
     expect(await screen.findByRole('dialog', { name: '工作项详情' })).toBeInTheDocument()
     expect(screen.queryByTestId('cards-surface')).toBeNull()
-    expect(document.querySelector('main')!.className).not.toContain('button:not(.min-h-11)')
+    expect(document.querySelector('main')!.className).not.toContain('touch-baseline')
   })
 })
 
@@ -941,18 +1029,18 @@ describe('B369.8 compact 头部硬闸（review round 2）', () => {
     await screen.findByTestId('cards-single-column')
     const surface = screen.getByTestId('cards-surface')
     // 头部控件在包装内且此时闸未挂（可查 → 未覆盖）
-    const newBtn = within(surface).getByRole('button', { name: '+ 新建' })
-    const needsBtn = within(surface).getByRole('button', { name: /⚑ 需要你/ })
+    const newBtn = within(surface).getByRole('button', { name: '新建工作项' })
+    const needsBtn = within(surface).getByRole('button', { name: /需要你处理/ })
     expect(surface.getAttribute('aria-hidden')).toBe('false')
     expect(surface.hasAttribute('inert')).toBe(false)
-    fireEvent.click(screen.getByText('闸卡'))
+    fireEvent.click(screen.getByRole('button', { name: 'B1 闸卡' }))
     await screen.findByRole('dialog', { name: '工作项详情' })
     // 覆盖期：同一包装挂上三件套，头部控件就在其内——读屏/键盘/指针三路同断
     expect(surface.getAttribute('aria-hidden')).toBe('true')
     expect(surface.hasAttribute('inert')).toBe(true)
     expect(surface.contains(newBtn)).toBe(true)
     expect(surface.contains(needsBtn)).toBe(true)
-    fireEvent.click(screen.getByRole('button', { name: '关闭' }))
+    fireEvent.click(screen.getByRole('button', { name: '返回工作项' }))
     await waitFor(() => expect(screen.queryByRole('dialog', { name: '工作项详情' })).toBeNull())
     expect(surface.getAttribute('aria-hidden')).toBe('false')
     expect(surface.hasAttribute('inert')).toBe(false)
@@ -985,5 +1073,17 @@ describe('B369.10 卡到会话双跳 seam', () => {
     fireEvent.click(await screen.findByText('跳卡'))
     fireEvent.click(await screen.findByTestId('card-jump-session'))
     expect(onOpenSessionForCard).toHaveBeenCalledWith('B1')
+  })
+})
+
+describe('mobile data availability guard', () => {
+  it('disables new work items before first load and during disconnected or expired state', () => {
+    const refresh = vi.fn()
+    const poll = { data:null, disconnected:false, sessionExpired:false, errorText:'', refresh }
+    render(<MemoryRouter><CardsPage compact sharedData={{cards:poll,decisions:poll,tasks:poll}}/></MemoryRouter>)
+    expect(screen.getByRole('button',{name:'新建工作项'})).toBeDisabled()
+    expect(screen.getByRole('button',{name:'正在读取需要你处理状态'})).toBeDisabled()
+    expect(screen.getByTestId('cards-primary-actions').textContent).toContain('…')
+    expect(screen.queryByTestId('cards-ledger-health')).toBeNull()
   })
 })

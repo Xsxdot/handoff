@@ -300,7 +300,31 @@ describe('TerminalTab', () => {
     await waitFor(() => expect(connectPty).toHaveBeenCalled())
     unmount()
     expect(handle.close).toHaveBeenCalled()
-    expect(termInstance.dispose).toHaveBeenCalled()
+    await waitFor(() => expect(termInstance.dispose).toHaveBeenCalled())
+  })
+
+  it('lets xterm finish its queued viewport initialization before terminal disposal', async () => {
+    let viewportInitialized = false
+    let disposedBeforeViewportInitialization = false
+    let resolveViewportInitialization!: () => void
+    const initialized = new Promise<void>((resolve) => { resolveViewportInitialization = resolve })
+    termInstance.open.mockImplementationOnce(() => {
+      // xterm 5.5.0 Viewport schedules this unowned setTimeout from its constructor.
+      window.setTimeout(() => {
+        viewportInitialized = true
+        resolveViewportInitialization()
+      }, 0)
+    })
+    termInstance.dispose.mockImplementationOnce(() => {
+      disposedBeforeViewportInitialization = !viewportInitialized
+    })
+
+    const { unmount } = render(<TerminalTab base={WS} seq={1} sessionId="s" onSession={vi.fn()} />)
+    unmount()
+
+    await initialized
+    expect(disposedBeforeViewportInitialization).toBe(false)
+    await waitFor(() => expect(termInstance.dispose).toHaveBeenCalled())
   })
 
   it('建会话的过程中被卸载：把这个没人知道的会话删掉，不留孤儿 shell', async () => {

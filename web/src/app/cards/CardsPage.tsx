@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom'
+import { Flag, Plus } from 'lucide-react'
 import { ApiError } from '../../api/client'
 import { answerDecision, effectiveUnlinkedSummary, fetchCards, fetchDecisions, fetchFlow, fetchFlows, fetchLedgerHealth } from '../../api/ledger'
 import { getQueue } from '../../api/scheduling'
@@ -45,7 +46,9 @@ function UnlinkedRow({ summary }: { summary: UnlinkedSummary }) {
   const status = effective.status
   const tasks = effective.tasks
   const count = effective.count
-  if (status === 'latest' && count === 0 && !hasUnknown) return null
+  // B429：0 且无未知目标时主面不刷（含 latest 过 TTL 变 stale 的零值）；
+  // unavailable（无法确认是否为零）仍露；count>0 或有未知目标仍露。
+  if (count === 0 && !hasUnknown && status !== 'unavailable') return null
 
   const groups = new Map<string, number>()
   for (const task of tasks) groups.set(task.target, (groups.get(task.target) ?? 0) + 1)
@@ -90,13 +93,13 @@ function unlinkedObservedLabel(observedAt?: string | null, now = Date.now()): st
   return `${absolute}（已过 ${age}）`
 }
 
-function ProjectDecisions({ decisions, compact = false }: { decisions: Decision[]; compact?: boolean }) {
+function ProjectDecisions({ decisions, compact = false, disabled = false }: { decisions: Decision[]; compact?: boolean; disabled?: boolean }) {
   const [answers, setAnswers] = useState<Record<number, string>>({})
   const [busy, setBusy] = useState<number | null>(null)
   const [error, setError] = useState('')
   const answer = async (decision: Decision) => {
     const text = answers[decision.id]?.trim()
-    if (!text) return
+    if (!text || disabled) return
     setBusy(decision.id)
     setError('')
     try {
@@ -110,7 +113,7 @@ function ProjectDecisions({ decisions, compact = false }: { decisions: Decision[
   }
   return (
     <div className="mx-4 mt-2 space-y-1.5">
-      {decisions.map((decision) => <div key={decision.id} className="flex flex-wrap items-center gap-2 rounded-md border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-xs text-amber-900"><span className="shrink-0 rounded-full border border-amber-300 px-1.5 py-0.5 text-[10px]">项目级请示 · 不挂卡</span><span className="font-mono">⚖ #{decision.id}</span><span className="min-w-0 flex-1">{decision.body}</span>{decision.created_by && <span className="shrink-0 text-[10px] text-amber-700/70">{decision.created_by}</span>}<input value={answers[decision.id] ?? ''} onChange={(event) => setAnswers((current) => ({ ...current, [decision.id]: event.target.value }))} placeholder="答复这条请示…" className="w-40 rounded border bg-background px-2 py-1 text-xs" /><button type="button" disabled={busy === decision.id || !(answers[decision.id] ?? '').trim()} onClick={() => void answer(decision)} className={cn('rounded border px-2 py-1 text-xs disabled:opacity-50', compact && 'min-h-11')}>答复</button></div>)}
+      {decisions.map((decision) => <div key={decision.id} className={cn('rounded-md border border-amber-200 bg-amber-50 px-2.5 py-2 text-xs text-amber-900', compact ? 'mx-3 mt-2' : 'mx-4 mt-2 flex flex-wrap items-center gap-2 py-1.5')}><div className="flex items-start gap-2"><span className="shrink-0 rounded-full border border-amber-300 px-1.5 py-0.5 text-[10px]">项目级请示 · 不挂卡</span><span className="font-mono">⚖ #{decision.id}</span></div><p className="mt-2 whitespace-pre-wrap break-words leading-5">{decision.body}</p>{decision.created_by && <p className="mt-1 text-[10px] text-amber-700/70">{decision.created_by}</p>}{compact && (decision.options ?? []).length > 0 && <div className="mt-2 flex flex-wrap gap-2">{(decision.options ?? []).map((option) => <button key={option} type="button" disabled={disabled || decision.status !== 'open'} onClick={() => setAnswers((current) => ({ ...current, [decision.id]: option }))} className="min-h-11 rounded-full border bg-background px-3 py-1 text-sm disabled:opacity-50">{option}</button>)}</div>}{compact ? <textarea rows={3} value={answers[decision.id] ?? ''} onChange={(event) => setAnswers((current) => ({ ...current, [decision.id]: event.target.value }))} placeholder="答复这条请示…" className="mt-2 min-h-20 w-full resize-y rounded border bg-background px-3 py-2 text-sm leading-5" /> : <input value={answers[decision.id] ?? ''} onChange={(event) => setAnswers((current) => ({ ...current, [decision.id]: event.target.value }))} placeholder="答复这条请示…" className="w-40 rounded border bg-background px-2 py-1 text-xs" />}<button type="button" disabled={disabled || decision.status !== 'open' || busy === decision.id || !(answers[decision.id] ?? '').trim()} onClick={() => void answer(decision)} className="mt-2 min-h-11 rounded border px-3 py-2 text-sm disabled:opacity-50">答复</button></div>)}
       {error && <p role="alert" className="text-xs text-destructive">{error}</p>}
     </div>
   )
@@ -142,10 +145,12 @@ export interface CardsPageProps {
   onOpenSessionForCard?: (cardId: string) => void
   /** Session lookup must finish before a fast detail can offer the driver-session jump. */
   driverSessionReady?: boolean
+  onOpenTaskBoard?: () => void
+  onOpenTickets?: () => void
 }
 
 /** 参数：协调者终端回调与紧凑 seam；返回：工作项看板/列表与抽屉。 */
-export function CardsPage({ onOpenCoordinatorTerminal, onDrawerCardChange, taskJumpHref, compact = false, onOpenSessionForCard, driverSessionReady = true, sharedData }: CardsPageProps = {}) {
+export function CardsPage({ onOpenCoordinatorTerminal, onDrawerCardChange, taskJumpHref, compact = false, onOpenSessionForCard, driverSessionReady = true, sharedData, onOpenTaskBoard, onOpenTickets }: CardsPageProps = {}) {
   const [searchParams] = useSearchParams()
   const projectFromUrl = searchParams.get('project') ?? ''
   const [view, setView] = useState<'board' | 'list'>('board')
@@ -210,6 +215,7 @@ export function CardsPage({ onOpenCoordinatorTerminal, onDrawerCardChange, taskJ
   const localTasksPoll = useTasks({ enabled: !sharedData })
   const tasksPoll = sharedData?.tasks ?? localTasksPoll
   const sessionExpired = cardsPoll.sessionExpired || decisionsPoll.sessionExpired || tasksPoll.sessionExpired
+  const mobileReadOnly = compact && (cardsPoll.data === null || cardsPoll.disconnected || decisionsPoll.disconnected || tasksPoll.disconnected || sessionExpired)
   useEffect(() => {
     console.info('cards.data.source', { source: sharedData ? 'shell' : 'page' })
   }, [!!sharedData])
@@ -314,6 +320,7 @@ export function CardsPage({ onOpenCoordinatorTerminal, onDrawerCardChange, taskJ
     return filterNeeds(byStatus, needsOnly)
   }, [cards, needsOnly, project, search, workflow, statusFilter, cardLayoutResolver])
   const attentionCount = cards.filter(needsAttention).length + projectDecisionCount(decisions)
+  const attentionKnown = cardsPoll.data !== null && decisionsPoll.data !== null
   // 项目级请示不跟筛选走：它被算进了「需要你」徽标，只在筛选态显示等于
   // 徽标数字有一部分永远看不见（同一类毛病见 visibleColumns 的注释）
   const projectDecisions = decisions.filter((decision) => !decision.card_id)
@@ -391,14 +398,18 @@ export function CardsPage({ onOpenCoordinatorTerminal, onDrawerCardChange, taskJ
     if (!onDrawerCardChange && new URLSearchParams(location.search).has('card')) navigate('/cards', { replace: true })
   }
   const newCardWorkflows = flows?.workflows.map((item) => item.name) ?? []
-  // S4（B426）：compact 抽屉顶部筛选区——行 3 三件次级控件移驻于此，绑定本组件
-  // 既有 state（project/workflow/search 住 CardsPage、不随抽屉卸载，「关闭后
-  // 筛选保留」由 state 住所天然满足，不新造持久化）。桌面抽屉不传不渲染。
+  // S4（B426）+ B429 复验：项目筛回主面状态栏下（未开卡可筛）；抽屉顶部
+  // 仅留工作流/搜索/任务看板/执行工单等次级控件。state 仍住 CardsPage。
   const drawerFilters = (
     <div data-testid="card-drawer-filters" className="flex flex-wrap items-center gap-2 border-b px-4 py-2">
-      <select aria-label="项目" value={project} onChange={(event) => setProject(event.target.value)} className="min-h-11 rounded-md border bg-background px-2 py-1 text-xs"><option value="">全部项目</option>{projectOptions.map((item) => <option key={item} value={item}>{item}</option>)}</select>
       <select aria-label="工作流" value={workflow} onChange={(event) => setWorkflow(event.target.value)} className="min-h-11 rounded-md border bg-background px-2 py-1 text-xs"><option value="">全部工作流</option>{workflowOptions.map((item) => <option key={item.name} value={item.name}>{item.name} v{item.version}</option>)}</select>
       <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜 B 号 / 标题" className="min-h-11 min-w-0 flex-1 rounded-md border bg-background px-2 py-1 text-xs" />
+      {(onOpenTaskBoard || onOpenTickets) && (
+        <div className="flex w-full flex-wrap gap-2">
+          {onOpenTaskBoard && <button type="button" className="min-h-11 rounded border px-3 text-xs" onClick={onOpenTaskBoard}>任务看板</button>}
+          {onOpenTickets && <button type="button" className="min-h-11 rounded border px-3 text-xs" onClick={onOpenTickets}>执行工单</button>}
+        </div>
+      )}
     </div>
   )
   // 卡到任务的唯一出口是 /tasks/:id 深链：目录解析、开 TUI tab、跨机全由
@@ -422,10 +433,10 @@ export function CardsPage({ onOpenCoordinatorTerminal, onDrawerCardChange, taskJ
       <CardItem
         key={card.id}
         card={card}
+        compact={compact}
         queuePosition={queuePositions.get(card.id)}
         nodeTag={detail ? nodeLabelFor(card.status, cardNodes, cardBoard) : undefined}
         onOpen={(focus) => openDrawer(card.id, focus)}
-        onMigrate={() => setMigrateCardId(card.id)}
       />
     )
   }
@@ -440,6 +451,7 @@ export function CardsPage({ onOpenCoordinatorTerminal, onDrawerCardChange, taskJ
         entries={queueEntries}
         open={queueOpen}
         loading={queuePoll.data === null && !queuePoll.disconnected && !queuePoll.sessionExpired}
+        hasSnapshot={queuePoll.data !== null}
         disconnected={queuePoll.disconnected}
         sessionExpired={queuePoll.sessionExpired}
         errorText={queuePoll.errorText}
@@ -450,7 +462,7 @@ export function CardsPage({ onOpenCoordinatorTerminal, onDrawerCardChange, taskJ
       {sessionExpired && <SessionExpiredBanner />}
       {sessionExpired && cardsPoll.data !== null && <p className="px-4 py-1.5 text-xs text-muted-foreground">保留上次获取的数据，当前状态尚未确认。</p>}
       {flowsError && <p role="alert" className="mx-4 mt-2 text-xs text-destructive">流程读取失败：{flowsError}</p>}
-      {projectDecisions.length > 0 && <ProjectDecisions decisions={projectDecisions} compact={compact} />}
+      {projectDecisions.length > 0 && <ProjectDecisions decisions={projectDecisions} compact={compact} disabled={mobileReadOnly} />}
       {cardsPoll.data?.unlinked && <UnlinkedRow summary={cardsPoll.data.unlinked} />}
       {cardsPoll.data === null ? (
         sessionExpired ? null : <p className="p-4 text-sm text-muted-foreground">正在读取账本…</p>
@@ -468,7 +480,7 @@ export function CardsPage({ onOpenCoordinatorTerminal, onDrawerCardChange, taskJ
   )
 
   return (
-    <main className={cn('relative flex h-full min-h-0 w-full flex-col bg-background', compact && TOUCH_BASELINE)}>
+    <main className={cn('relative flex h-full min-h-0 w-full flex-col bg-background', compact && 'mobile-cards-page', compact && TOUCH_BASELINE)}>
       {compact ? (
         // B369.8 review 必修：头部三行与内容面同在 cards-surface 硬闸内。
         // compact 抽屉全宽不透明覆盖，覆盖期头部控件（⚑需要你/chips/两个
@@ -482,40 +494,37 @@ export function CardsPage({ onOpenCoordinatorTerminal, onDrawerCardChange, taskJ
           aria-hidden={selected !== null}
           {...(selected !== null ? { inert: true } : {})}
         >
-          {/* S4（B426）：compact 头部收敛为两行——行 1（主控：工作项/健康指示/
-              ⚑需要你/＋新建/从浏览器打开）、行 2（状态列 chips）。原行 3 三件
-              次级控件移驻抽屉顶部筛选区（drawerFilters），「+ 新建」按原型
-              apphead「＋记一张」同位升行 1。「从浏览器打开」spec 未点名但不得
-              无删：保留为页面级控制、落行 1 尾（仅桌面薄壳 UA 渲染，移动 WebView
-              不可见）；桌面 header（下方分支）逐字节不动。 */}
-          <div className="flex min-h-11 flex-wrap items-center gap-2 border-b px-3 py-1.5">
-            <span className="text-sm font-semibold">工作项</span>
-            <span
-              className={`flex items-center gap-1 text-[11px] ${healthStale ? 'text-amber-700' : 'text-green-600'}`}
-              title={healthStale ? `${healthLabel}——该机器的事件已停止镜像，卡上的 task 实况可能是陈的` : '镜像正常'}
-            >{healthStale ? healthLabel : '●'}</span>
+          {/* S4（B426）+ B429：行 1 = 工作项 · 弱「全部项目」· 需要你 · ＋；
+              行 2 = 状态五字独占。工作流/搜索等次级仍在抽屉顶部；「筛选与执行
+              工具」不上主面。桌面 header 逐字节不动。 */}
+          <div data-testid="cards-primary-actions" className="mobile-page-header mobile-cards-header flex items-center gap-2 border-b">
+            <h1 className="min-w-0 shrink-0 font-semibold">工作项</h1>
+            <div data-testid="cards-project-filter" className="mobile-project-select-wrap min-w-0">
+              <select aria-label="项目" value={project} onChange={(event) => setProject(event.target.value)} className="mobile-project-select">
+                <option value="">全部项目</option>
+                {projectOptions.map((item) => <option key={item} value={item}>{item}</option>)}
+              </select>
+            </div>
             <button
               type="button"
               onClick={() => setNeedsOnly((current) => !current)}
-              className={`ml-auto inline-flex min-h-11 items-center rounded-md border px-2.5 py-1 text-xs ${needsOnly ? 'border-amber-400 bg-amber-50 text-amber-800' : 'text-amber-700'}`}
-            >⚑ 需要你 {attentionCount}</button>
-            <button type="button" onClick={() => setNewCardOpen(true)} className="min-h-11 rounded-md border px-2.5 py-1 text-xs">+ 新建</button>
+              disabled={!attentionKnown}
+              aria-pressed={needsOnly}
+              aria-label={attentionKnown ? `需要你处理 ${attentionCount}` : '正在读取需要你处理状态'}
+              className="mobile-needs-action inline-flex shrink-0 items-center gap-1 whitespace-nowrap"
+            ><Flag className="size-3.5" aria-hidden="true" /><span className="mobile-needs-count">{attentionKnown ? attentionCount : '…'}</span></button>
+            <button type="button" aria-label="新建工作项" title="新建工作项" disabled={mobileReadOnly} onClick={() => setNewCardOpen(true)} className="mobile-plus-weak inline-flex shrink-0 items-center justify-center disabled:opacity-50"><Plus className="size-4" aria-hidden="true" /></button>
             {showOpenInBrowser && (
-              <button
-                type="button"
-                aria-label="从浏览器打开"
-                title="从浏览器打开当前工作项页"
-                onClick={() => { requestOpenCurrentPageInBrowser() }}
-                className="min-h-11 rounded-md border px-2.5 py-1 text-xs"
-              >
-                从浏览器打开
-              </button>
+              <button type="button" aria-label="从浏览器打开" title="从浏览器打开当前工作项页" onClick={() => { requestOpenCurrentPageInBrowser() }} className="mobile-plus-weak inline-flex shrink-0 items-center justify-center px-2 text-[11px] text-muted-foreground">浏览器</button>
             )}
           </div>
+          {healthStale && (
+            <div data-testid="cards-ledger-health" className="flex min-h-8 items-center gap-2 border-b px-3 py-1 text-xs text-amber-700" title={`${healthLabel}——该机器的事件已停止镜像，卡上的 task 实况可能是陈的`}><span aria-hidden="true">◷</span><span>{healthLabel}</span></div>
+          )}
           {/* 行 2（状态列 chips）：S3（B426）后列序 = displayedColumns（看板五列，
               与桌面看板同源），label 逐字跟列名（「代办」是现行词表，修正另立卡）；
               过滤语义见 filtered 内注释。这是「桌面零改动」承诺的唯一双端例外。 */}
-          <span data-testid="card-status-filter" className="flex flex-wrap items-center gap-1 border-b px-3 py-1.5">
+          <span data-testid="card-status-filter" role="toolbar" aria-label="状态筛选" className="flex w-full flex-nowrap items-center border-b">
             {displayedColumns.map((column) => (
               <button
                 key={column}
@@ -527,7 +536,7 @@ export function CardsPage({ onOpenCoordinatorTerminal, onDrawerCardChange, taskJ
                   console.debug('cards.status_filter', { column: next })
                   setStatusFilter(next)
                 }}
-                className={`rounded-full border px-2 py-0.5 text-[11px] ${statusFilter === column ? 'border-foreground bg-accent font-medium' : 'text-muted-foreground'}`}
+                className={`min-h-11 flex-1 rounded-none border-0 bg-transparent px-0 py-2 text-center text-xs whitespace-nowrap ${statusFilter === column ? 'font-semibold text-foreground underline underline-offset-[6px]' : 'font-normal text-muted-foreground'}`}
               >
                 {column}
               </button>
@@ -582,9 +591,9 @@ export function CardsPage({ onOpenCoordinatorTerminal, onDrawerCardChange, taskJ
           {surfaceContent}
         </>
       )}
-      {selected && <CardDrawer key={selected} id={selected} onDetailLoaded={onDetailLoaded} onClose={closeDrawer} onOpenCard={(id) => openDrawer(id)} workflowStates={selectedPinnedWorkflow?.states} boardLayout={selectedListCard ? cardLayoutResolver(selectedListCard) : selectedCard ? mergedLayoutFor(selectedCard, layoutForWorkflow) : undefined} initialSection={drawerFocus} nodes={drawerNodes} tasks={tasksPoll.data ?? undefined} onJumpToTask={jumpToTask} onOpenCoordinatorTerminal={onOpenCoordinatorTerminal} compact={compact} compactFilters={compact ? drawerFilters : undefined} driverSessionReady={driverSessionReady} onOpenDriverSession={onOpenSessionForCard ? () => onOpenSessionForCard(selected) : undefined} />}
+      {selected && <CardDrawer key={selected} id={selected} onDetailLoaded={onDetailLoaded} onClose={closeDrawer} onOpenCard={(id) => openDrawer(id)} workflowStates={selectedPinnedWorkflow?.states} boardLayout={selectedListCard ? cardLayoutResolver(selectedListCard) : selectedCard ? mergedLayoutFor(selectedCard, layoutForWorkflow) : undefined} initialSection={drawerFocus} nodes={drawerNodes} tasks={tasksPoll.data ?? undefined} onJumpToTask={jumpToTask} onOpenCoordinatorTerminal={onOpenCoordinatorTerminal} compact={compact} compactFilters={compact ? drawerFilters : undefined} readOnly={mobileReadOnly} driverSessionReady={driverSessionReady} onOpenDriverSession={onOpenSessionForCard ? () => onOpenSessionForCard(selected) : undefined} onMigrate={compact && !mobileReadOnly ? () => setMigrateCardId(selected) : undefined} />}
       <NewCardDialog
-        open={newCardOpen} project={project} cardProjects={projectOptions} workflows={newCardWorkflows}
+        open={newCardOpen} disabled={mobileReadOnly} project={project} cardProjects={projectOptions} workflows={newCardWorkflows}
         onClose={() => setNewCardOpen(false)}
         onCreated={(id) => { setNewCardOpen(false); cardsPoll.refresh(); openDrawer(id) }}
       />

@@ -34,6 +34,7 @@ import { findBaseOfTask } from '../tree/ProjectTree'
 import type { BaseDir } from '../workbench/useWorkbench'
 
 export interface BoardPageProps {
+  compact?: boolean
   tasksState: PollState<Task[]>
   tree: ProjectTreeResp | null
   // onOpenTask 的首参是任务所在目录（在树上 join 得到），null = 未归属或目录已不在
@@ -45,7 +46,8 @@ export interface BoardPageProps {
   ledgerEnabled?: boolean
 }
 
-export function BoardPage({ tasksState, tree, unlinkedTaskIds = null, ledgerEnabled = false, onOpenTask }: BoardPageProps) {
+export function BoardPage({ tasksState, tree, unlinkedTaskIds = null, ledgerEnabled = false, onOpenTask, compact = false }: BoardPageProps) {
+  const [mobileColumn, setMobileColumn] = useState<BoardColumn>('active')
   const [filter, setFilter] = useState<BoardFilter>(EMPTY_FILTER)
   // 默认只看未挂账**仅在账本启用时成立**：那时工作项看板（/cards）是主入口，
   // 本页降级为「账本管不到的 task」的兜底。账本没启用时本页就是主入口，必须显示全部。
@@ -111,8 +113,9 @@ export function BoardPage({ tasksState, tree, unlinkedTaskIds = null, ledgerEnab
               只看未挂账（挂了卡的去工作项看板看）
             </label>
           )}
-          <div className="flex min-h-0 flex-1 items-stretch gap-3 overflow-x-auto pb-2">
-            {BOARD_COLUMNS.map((col) => (
+          <div data-testid={compact ? 'mobile-board' : undefined} className={compact ? 'flex min-h-0 flex-1 flex-col overflow-y-auto' : 'flex min-h-0 flex-1 items-stretch gap-3 overflow-x-auto pb-2'}>
+            {compact && <div role="tablist" aria-label="执行状态" className="flex shrink-0 justify-between border-b">{BOARD_COLUMNS.map(col=><button key={col} role="tab" aria-selected={mobileColumn===col} onClick={()=>setMobileColumn(col)} className="px-2 text-sm">{COLUMN_LABELS[col]}</button>)}</div>}
+            {(compact ? [mobileColumn] : BOARD_COLUMNS).map((col) => (
               <BoardColumn
                 key={col}
                 column={col}

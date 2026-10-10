@@ -72,9 +72,9 @@ export function SettingsPage({ onClose, compact = false, sub, onSubChange }: {
   )
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      <header className="flex items-center gap-3 border-b px-4 py-2.5">
-        <h1 className="text-sm font-semibold">设置</h1>
+    <div className={cn('flex h-full min-h-0 flex-col', compact && 'mobile-settings')}>
+      {(!compact || !sub) && <header className="flex items-center gap-3 border-b px-4 py-2.5">
+        <h1 className={compact ? 'text-2xl font-semibold' : 'text-sm font-semibold'}>设置</h1>
         <button
           type="button"
           onClick={onClose}
@@ -87,7 +87,7 @@ export function SettingsPage({ onClose, compact = false, sub, onSubChange }: {
           <ArrowLeft className="size-3.5" />
           返回工作台
         </button>
-      </header>
+      </header>}
 
       {compact ? (
         <div className="min-h-0 flex-1 overflow-auto">

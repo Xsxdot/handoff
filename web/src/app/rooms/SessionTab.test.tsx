@@ -227,13 +227,15 @@ describe('S5 compact 房间两态（B426，受控 paneDetail）', () => {
     expect(panelByLabel('会话详情').hasAttribute('hidden')).toBe(true)
   })
 
-  it('受控 true=详情态：详情头部（返回钮、无 ⋯）在场、五块全宽、群聊 hidden；点返回回调 false（仅回群聊不出房间）', async () => {
+  it('受控 true=详情态：详情头部在场、成员/卡与折叠历史可达、群聊 hidden；点返回回调 false', async () => {
     const onPaneDetailChange = vi.fn()
     render(<SessionTab sessionId="session:7" title="架构物理化" compact paneDetail onPaneDetailChange={onPaneDetailChange} />)
     await within(panelByLabel('会话详情')).findByRole('region', { name: '成员' })
-    for (const name of ['会话卡', '任务节点', '会话 timeline', '会话管理']) {
+    for (const name of ['会话卡', '历史记录', '会话管理']) {
       expect(within(panelByLabel('会话详情')).getByRole('region', { name })).toBeInTheDocument()
     }
+    expect(within(panelByLabel('会话详情')).getByTestId('session-execution-history')).toBeInTheDocument()
+    expect(within(panelByLabel('会话详情')).getByTestId('session-structure-history')).toBeInTheDocument()
     // 详情态头部：左上返回、不渲染 ⋯（房间任一时刻只渲染一条 header 的另一半）
     expect(screen.getByTestId('session-detail-back')).toBeInTheDocument()
     expect(within(panelByLabel('会话详情')).queryByRole('button', { name: '会话详情' })).toBeNull()

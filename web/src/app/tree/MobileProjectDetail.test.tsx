@@ -172,16 +172,15 @@ describe('MobileProjectDetail 终端会话区', () => {
     expect(props.onReopenPtySession).toHaveBeenCalledWith('s1', expect.objectContaining({ key: '/r/handoff', kind: 'workspace' }))
   })
 
-  it('会话列表缺席（null）与空列表同款空态，不报错', () => {
+  it('会话列表仍在读取（null）时显示独立加载状态', () => {
     renderDetail({ ptySessions: null })
-    expect(screen.getByText('这台机器上没有活着的终端会话。')).toBeInTheDocument()
+    expect(screen.getByText('正在读取终端…')).toBeInTheDocument()
   })
 
-  it('home 落点会话解析回该机主目录；连主目录都不在树上时落机器 home 基准', () => {
+  it('home 会话没有项目工作目录身份，不冒充项目终端或提供项目恢复动作', () => {
     const homeSession: PtySession = { ...pty[0]!, id: 's9', base_path: '', base_kind: 'home' }
     const props = renderDetail({ ptySessions: [homeSession] })
-    fireEvent.click(screen.getByTestId('project-pty-resume'))
-    // 本机主目录 /r/handoff 在树上，home 会话回落到它
-    expect(props.onReopenPtySession).toHaveBeenCalledWith('s9', expect.objectContaining({ key: '/r/handoff' }))
+    expect(screen.queryByTestId('project-pty-row')).toBeNull()
+    expect(props.onReopenPtySession).not.toHaveBeenCalled()
   })
 })

@@ -27,15 +27,29 @@ const SORT_LABELS: { value: ProjectSort; label: string }[] = [
 // GeneralPage 渲染当前浏览器的显示偏好。tree 为 null 表示项目树还没到。
 // title（B369.8）：标题可换——桌面「常规」分区原样（缺省零变化）；compact 设置
 // 中心以「显示与可访问性」名义复用同一内容面（内容单一来源，只换名义）。
-export function GeneralPage({ tree, title = '常规' }: { tree: ProjectTreeResp | null; title?: string }) {
+export function GeneralPage({
+  tree,
+  title = '常规',
+  mode = 'all',
+  onOpenProjects,
+}: {
+  tree: ProjectTreeResp | null
+  title?: string
+  mode?: 'all' | 'display' | 'projects'
+  onOpenProjects?: () => void
+}) {
   const [prefs, update] = useTreePrefs()
   const hidden = new Set(prefs.hiddenProjects)
   const projects = tree?.projects ?? []
 
+  if (mode === 'projects') {
+    return <ProjectVisibility tree={tree} prefs={prefs} update={update} />
+  }
+
   return (
     <div className="flex flex-col gap-5 p-4">
       <div className="border-b pb-3">
-        <h2 className="text-sm font-semibold">{title}</h2>
+        <h2 className={mode === 'all' ? 'text-sm font-semibold' : 'text-2xl font-bold'}>{title}</h2>
         <p className="mt-1 text-xs text-muted-foreground">
           这些设置只保存在当前浏览器里，不同步到其他设备，也不影响任何一台开发机。
         </p>
@@ -43,7 +57,7 @@ export function GeneralPage({ tree, title = '常规' }: { tree: ProjectTreeResp 
 
       <section>
         <h3 className="text-xs font-medium text-muted-foreground">显示</h3>
-        <label className="mt-2 flex items-center gap-2 text-sm">
+        <label className="mt-1 flex min-h-11 items-center gap-3 border-b py-1 text-sm">
           <input
             type="checkbox"
             checked={prefs.hideIdleWorktrees}
@@ -51,7 +65,7 @@ export function GeneralPage({ tree, title = '常规' }: { tree: ProjectTreeResp 
           />
           隐藏无活跃任务的工作树
         </label>
-        <label className="mt-2 flex items-center gap-2 text-sm">
+        <label className="mt-1 flex min-h-11 items-center gap-3 border-b py-1 text-sm">
           <input
             type="checkbox"
             checked={prefs.hideArchived}
@@ -59,7 +73,7 @@ export function GeneralPage({ tree, title = '常规' }: { tree: ProjectTreeResp 
           />
           隐藏已结束分组
         </label>
-        <label className="mt-2 flex items-center gap-2 text-sm">
+        <label className="mt-1 flex min-h-11 items-center gap-3 py-1 text-sm">
           <input
             type="checkbox"
             checked={prefs.hideDirCounts}
@@ -73,7 +87,7 @@ export function GeneralPage({ tree, title = '常规' }: { tree: ProjectTreeResp 
         <h3 className="text-xs font-medium text-muted-foreground">项目排序</h3>
         <div className="mt-2 flex flex-col gap-1.5">
           {SORT_LABELS.map((s) => (
-            <label key={s.value} className="flex items-center gap-2 text-sm">
+            <label key={s.value} className="flex min-h-11 items-center gap-3 border-b py-1 text-sm last:border-b-0">
               <input
                 type="radio"
                 name="project-sort"
@@ -87,7 +101,18 @@ export function GeneralPage({ tree, title = '常规' }: { tree: ProjectTreeResp 
         </div>
       </section>
 
-      <section>
+      {mode === 'display' && (
+        <section className="border-t pt-4">
+          <h3 className="text-xs font-medium text-muted-foreground">项目可见性</h3>
+          <button type="button" onClick={onOpenProjects}
+            className="mt-2 flex min-h-11 w-full items-center justify-between rounded-md border px-3 text-sm">
+            <span>显示哪些项目</span>
+            <span className="text-muted-foreground">{projects.length ? `${projects.length} 个项目` : '全部项目'} ›</span>
+          </button>
+        </section>
+      )}
+
+      {mode === 'all' && <section>
         <h3 className="text-xs font-medium text-muted-foreground">左栏显示哪些项目</h3>
         {projects.length === 0 ? (
           // 空分区也要有话说：一块空白会让人以为页面坏了
@@ -96,7 +121,7 @@ export function GeneralPage({ tree, title = '常规' }: { tree: ProjectTreeResp 
           <>
             <div className="mt-2 flex flex-col gap-1.5">
               {projects.map((p) => (
-                <label key={p.project_id} className="flex items-center gap-2 text-sm">
+                <label key={p.project_id} className="flex min-h-11 items-center gap-3 border-b py-1 text-sm last:border-b-0">
                   <input
                     type="checkbox"
                     aria-label={p.name}
@@ -122,7 +147,49 @@ export function GeneralPage({ tree, title = '常规' }: { tree: ProjectTreeResp 
             </div>
           </>
         )}
-      </section>
+      </section>}
+    </div>
+  )
+}
+
+function ProjectVisibility({
+  tree,
+  prefs,
+  update,
+}: {
+  tree: ProjectTreeResp | null
+  prefs: ReturnType<typeof useTreePrefs>[0]
+  update: ReturnType<typeof useTreePrefs>[1]
+}) {
+  const hidden = new Set(prefs.hiddenProjects)
+  const projects = tree?.projects ?? []
+  return (
+    <div className="flex flex-col p-4">
+      <p className="mt-1 text-sm text-muted-foreground">选择在项目列表中显示的项目</p>
+      {projects.length === 0 ? (
+        <p className="mt-4 text-sm text-muted-foreground">项目树还没加载出来。</p>
+      ) : (
+        <>
+          <div className="mt-4 flex gap-4 border-b pb-3 text-sm">
+            <button type="button" className="text-primary" onClick={() => update({ ...prefs, hiddenProjects: [] })}>全选</button>
+            <button type="button" className="text-primary" onClick={() => update({ ...prefs, hiddenProjects: projects.map((p) => p.project_id) })}>全不选</button>
+          </div>
+          <div className="flex flex-col">
+            {projects.map((p) => (
+              <label key={p.project_id} className="flex min-h-11 items-center gap-3 border-b text-sm">
+                <input type="checkbox" aria-label={p.name} checked={!hidden.has(p.project_id)}
+                  onChange={() => {
+                    const next = new Set(prefs.hiddenProjects)
+                    if (next.has(p.project_id)) next.delete(p.project_id)
+                    else next.add(p.project_id)
+                    update({ ...prefs, hiddenProjects: [...next] })
+                  }} />
+                {p.name}
+              </label>
+            ))}
+          </div>
+        </>
+      )}
     </div>
   )
 }

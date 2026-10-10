@@ -1,10 +1,21 @@
-import { createEvent, fireEvent, render, screen, within } from '@testing-library/react'
+import { createEvent, fireEvent, render as renderRaw, screen, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { PreviewSession, ProjectNode, ProjectTreeResp, Task } from '../../api/types'
 import type { BaseDir } from '../workbench/useWorkbench'
 import { ProjectTree, type OpenItem } from './ProjectTree'
 import { __resetTreePrefsForTest } from './useTreePrefs'
 import { DRAG_BASE_MIME, DRAG_TAB_MIME, DRAG_TASK_MIME } from '../workbench/paneDrop'
+
+// Existing directory-operation tests enter the explicit worktree management view first.
+// Initial compact/default-disclosure behaviour is tested with renderRaw below.
+const render = (ui: Parameters<typeof renderRaw>[0], options?: Parameters<typeof renderRaw>[1]) => {
+  const result = renderRaw(ui, options)
+  for (const button of screen.queryAllByRole('button', { name: /^选择 .+ 终端位置$/ })) {
+    fireEvent.click(button)
+    fireEvent.click(screen.getByRole('menuitem', { name: '管理工作树…' }))
+  }
+  return result
+}
 
 beforeEach(() => {
   localStorage.clear()
@@ -124,19 +135,15 @@ function props(over: {
 }
 
 describe('ProjectTree 层级', () => {
-  it('项目行存在，折叠箭头在进行中计数之后（DOM 顺序）', () => {
+  it('desktop project hierarchy starts with disclosure, uses a neutral folder and has no project status dot', () => {
     const { container } = render(<ProjectTree {...props({})} />)
     const node = container.querySelector('[data-testid="project-node-p1"]') as HTMLElement
-    const head = within(node).getByRole('button', { name: /handoff/ })
-    const marker = within(node).getByTestId('project-marker-p1')
-    const count = within(head).getByTestId('project-running-count')
-    // 默认全展开，箭头语义是「收起」
+    const head = screen.getByText('handoff').closest('button')!
+    expect(within(node).queryByTestId('project-marker-p1')).toBeNull()
+    expect(within(head).queryByTestId('project-running-count')).toBeNull()
     const arrow = within(head).getByLabelText('收起')
-    expect(head.contains(count)).toBe(true)
-    expect(head.contains(arrow)).toBe(true)
-    expect(marker).toHaveClass('absolute', '-left-[15px]', 'top-[11px]', 'size-[9px]')
-    // 箭头在计数之后：计数在箭头前面
-    expect(count.compareDocumentPosition(arrow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    const folder = head.querySelector('[data-project-color="neutral"]')!
+    expect(arrow.compareDocumentPosition(folder) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
   it('「任务」小标题已移除，「目录」小标题行存在（2026-08-29 用户裁定）', () => {
@@ -914,11 +921,11 @@ describe('ProjectTree 结构细节', () => {
     expect(container.querySelector('[data-testid="machine-row"]')?.textContent).not.toContain('开发目录')
   })
 
-  it('项目图标统一使用原型绿色', () => {
+  it('桌面项目图标无在线色', () => {
     render(<ProjectTree {...props()} />)
     const icons = Array.from(document.querySelectorAll('[data-project-color]'))
     expect(icons.length).toBeGreaterThan(0)
-    expect(new Set(icons.map((icon) => icon.getAttribute('data-project-color')))).toEqual(new Set(['green']))
+    expect(new Set(icons.map((icon) => icon.getAttribute('data-project-color')))).toEqual(new Set(['neutral']))
   })
 
   it('右键机器行弹出菜单，含「编辑」「注销」两项', () => {
@@ -1302,7 +1309,7 @@ describe('B369.8 compact 项目折叠与 hover', () => {
     const p = props({ onOpenProjectCards: vi.fn(), onWorktreeCreated: vi.fn() })
     render(<ProjectTree {...p} />)
     // 缺省全展开（桌面语义）
-    expect(within(screen.getByTestId('project-node-p1')).getByRole('button', { expanded: true })).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByText('handoff').closest('button')!).toHaveAttribute('aria-expanded', 'true')
     fireEvent.click(await screen.findByTestId('machine-row'))
     const wsBtns = await screen.findAllByRole('button', { name: '在此打开终端' })
     expect(wsBtns.length).toBe(2)
@@ -1322,7 +1329,7 @@ describe('B369.8 compact 项目折叠与 hover', () => {
     const onOpenProjectDetail = vi.fn()
     const p = props({ onOpenProjectDetail })
     render(<ProjectTree {...p} />)
-    const row = within(screen.getByTestId('project-node-p1')).getByRole('button', { expanded: true })
+    const row = screen.getByText('handoff').closest('button')!
     fireEvent.click(row)
     expect(onOpenProjectDetail).not.toHaveBeenCalled()
     expect(screen.queryByTestId('machine-row')).toBeNull()
@@ -1350,5 +1357,242 @@ describe('B369.8 compact 项目折叠与 hover', () => {
     expect(closeBtn.className).toBe('absolute right-1 top-1/2 flex size-5 -translate-y-1/2 translate-x-1 items-center justify-center rounded text-muted-foreground opacity-0 transition-[opacity,transform] duration-150 hover:bg-accent/60 hover:text-foreground focus-visible:opacity-100 focus-visible:translate-x-0 group-hover:translate-x-0 group-hover:opacity-100')
     const machineLabel = closeBtn.parentElement!.querySelector('[data-testid="task-machine"] span:last-child')!
     expect(machineLabel.className).toContain('group-hover:opacity-0')
+  })
+})
+
+describe('desktop project actions', () => {
+  it('hides repeated machines and exposes draggable default terminal', () => {
+    const onTerminal = vi.fn()
+    const onDirectory = vi.fn()
+    renderRaw(<ProjectTree {...props({ onOpenTerminalAt: onTerminal, onOpenDirectory: onDirectory })} />)
+    expect(screen.queryByTestId('directory-group')).not.toBeInTheDocument()
+    const terminal = screen.getByRole('button', { name: '在 handoff 新建终端' })
+    expect(terminal).toHaveAttribute('draggable', 'true')
+    fireEvent.click(terminal)
+    expect(onTerminal).toHaveBeenCalledWith(expect.objectContaining({ path: '/w', machine: '' }))
+    fireEvent.click(screen.getByRole('button', { name: '浏览 handoff 文件' }))
+    expect(onDirectory).toHaveBeenCalledWith(expect.objectContaining({ path: '/w' }))
+    fireEvent.click(screen.getByRole('button', { name: '选择 handoff 终端位置' }))
+    expect(screen.getByRole('menuitemradio', { name: '本机' })).toBeInTheDocument()
+    expect(screen.queryByTestId('directory-group')).toBeNull()
+  })
+})
+
+describe('desktop project collaboration', () => {
+  it('retains all linked resources when searching the owning project name', () => {
+    renderRaw(<ProjectTree {...props()} sessions={[{ id: 's1', title: '协作者评审', projectIds: ['p1'] }]} onOpenSession={vi.fn()} />)
+    fireEvent.change(screen.getByPlaceholderText('搜索项目、机器或任务'), { target: { value: 'handoff' } })
+    expect(screen.getByText('协作者评审')).toBeInTheDocument()
+  })
+  it('places uniquely linked rooms under projects and keeps cross-project/unresolved rooms separate', () => {
+    const onOpenSession = vi.fn()
+    const p = props()
+    renderRaw(<ProjectTree {...p} sessions={[
+      { id: 's1', title: 'handoff讨论', projectIds: ['p1'] },
+      { id: 's2', title: '跨项目讨论', projectIds: ['p1', 'p2'] },
+      { id: 's3', title: '关联待解析', projectIds: ['p1'], unresolved: true },
+    ]} onOpenSession={onOpenSession} onOpenArchive={vi.fn()} />)
+    expect(within(screen.getByTestId('project-node-p1')).getByText('handoff讨论')).toBeInTheDocument()
+    expect(within(screen.getByTestId('project-node-p1')).queryByText('跨项目讨论')).not.toBeInTheDocument()
+    expect(screen.getByTestId('cross-project-sessions')).toHaveTextContent('跨项目讨论')
+    expect(screen.getByTestId('unassociated-sessions')).toHaveTextContent('关联待解析')
+    fireEvent.click(screen.getByText('handoff讨论'))
+    expect(onOpenSession).toHaveBeenCalledWith('s1', 'handoff讨论')
+    expect(screen.getByRole('button', { name: '归档会话' })).toBeInTheDocument()
+    fireEvent.change(screen.getByPlaceholderText('搜索项目、机器或任务'), { target: { value: 'handoff讨论' } })
+    expect(screen.getByText('handoff讨论')).toBeInTheDocument()
+  })
+})
+
+describe('desktop exact project ownership', () => {
+  it('does not duplicate an open item under a different project with the same display name', () => {
+    const p = props({ openItems: [openItem()] })
+    p.tree.projects.push({
+      ...p.tree.projects[0], project_id: 'p2',
+      locations: [{
+        machine: '', name: 'handoff', path: '/other', probe_error: '',
+        workspaces: [{ path: '/other', branch: 'main', head: 'def', is_main: true, managed: false, created_at: '' }],
+      }],
+    })
+    renderRaw(<ProjectTree {...p} />)
+    expect(within(screen.getByTestId('project-node-p1')).getByText('bash · main')).toBeInTheDocument()
+    expect(within(screen.getByTestId('project-node-p2')).queryByText('bash · main')).not.toBeInTheDocument()
+  })
+})
+
+describe('desktop location memory', () => {
+  it('keeps terminal creation separate from directory browsing across remounts and display-name changes', () => {
+    const p = props()
+    const project = p.tree.projects[0]
+    localStorage.setItem('handoff.desktop.terminal-locations', JSON.stringify({ p1: '/w/b2-b3' }))
+    localStorage.setItem('handoff.desktop.browse-locations', JSON.stringify({ p1: '/w' }))
+    const view = renderRaw(<ProjectTree {...p} />)
+    fireEvent.click(screen.getByRole('button', { name: '在 handoff 新建终端' }))
+    expect(p.onOpenTerminalAt).toHaveBeenCalledWith(expect.objectContaining({ path: '/w/b2-b3' }))
+    fireEvent.click(screen.getByRole('button', { name: '浏览 handoff 文件' }))
+    expect(p.onOpenDirectory).toHaveBeenCalledWith(expect.objectContaining({ path: '/w' }))
+    view.unmount()
+    project.name = 'renamed'
+    renderRaw(<ProjectTree {...p} />)
+    fireEvent.click(screen.getByRole('button', { name: '在 renamed 新建终端' }))
+    expect(p.onOpenTerminalAt).toHaveBeenLastCalledWith(expect.objectContaining({ path: '/w/b2-b3', projectName: 'renamed' }))
+  })
+  it('cannot create or drag a terminal when every location is unavailable', () => {
+    const p = props()
+    p.tree.projects[0].locations[0].probe_error = 'offline'
+    renderRaw(<ProjectTree {...p} />)
+    const button = screen.getByRole('button', { name: '在 handoff 新建终端' })
+    expect(button).toBeDisabled()
+    expect(button).toHaveAttribute('draggable', 'false')
+    fireEvent.click(button)
+    expect(p.onOpenTerminalAt).not.toHaveBeenCalled()
+  })
+  it('remembers a remote terminal location under the project id and machine-qualified base key', () => {
+    const p = props({ onOpenTerminalAt: vi.fn() })
+    p.tree.projects[0].locations.push({
+      machine: 'linux-01', name: 'handoff', path: '/w', probe_error: '',
+      workspaces: [{ path: '/w', branch: 'main', head: 'def', is_main: true, managed: false, created_at: '' }],
+    })
+    localStorage.setItem('handoff.desktop.terminal-locations', JSON.stringify({ p1: '/w@linux-01' }))
+    renderRaw(<ProjectTree {...p} />)
+    fireEvent.click(screen.getByRole('button', { name: '在 handoff 新建终端' }))
+    expect(p.onOpenTerminalAt).toHaveBeenCalledWith(expect.objectContaining({ key: '/w@linux-01', path: '/w', machine: 'linux-01' }))
+  })
+  it('does not save a project preference when identical machine/path registrations are ambiguous', () => {
+    const p = props()
+    p.tree.projects.push({ ...p.tree.projects[0], project_id: 'p2' })
+    renderRaw(<ProjectTree {...p} />)
+    fireEvent.click(screen.getAllByRole('button', { name: '在 handoff 新建终端' })[0])
+    expect(localStorage.getItem('handoff.desktop.terminal-locations')).toBeNull()
+  })
+})
+
+describe('desktop idle project disclosure', () => {
+  it('sorts projects with an open resource ahead of unused projects in active mode', () => {
+    const p = props({ openItems: [openItem()] })
+    p.tree.projects.push({ ...p.tree.projects[0], project_id: 'p2', name: 'aaa-unused', locations: [] })
+    const { container } = renderRaw(<ProjectTree {...p} tasks={[]} />)
+    expect(Array.from(container.querySelectorAll('[data-testid^="project-node-"]')).map((node) => node.getAttribute('data-testid')))
+      .toEqual(['project-node-p1', 'project-node-p2'])
+  })
+  it('shows an unused project as one row and can still reveal its archive and locations', () => {
+    const p = props()
+    renderRaw(<ProjectTree {...p} tasks={[]} />)
+    const project = screen.getByText('handoff').closest('button')!
+    expect(project).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByTestId('task-empty-row')).not.toBeInTheDocument()
+    fireEvent.click(project)
+    expect(project).toHaveAttribute('aria-expanded', 'true')
+    fireEvent.click(screen.getByRole('button', { name: '选择 handoff 终端位置' }))
+    expect(screen.getByRole('menuitemradio', { name: '本机' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('menuitem', { name: '管理工作树…' }))
+    expect(screen.getByTestId('machine-row')).toBeInTheDocument()
+  })
+})
+
+describe('desktop project secondary actions', () => {
+  it('retains project cards/codegraph/edit in a keyboard-accessible menu without covering creation controls', () => {
+    const cards = vi.fn(), graph = vi.fn(), edit = vi.fn()
+    renderRaw(<ProjectTree {...props({ onOpenProjectCards: cards, onOpenProjectCodegraph: graph, onEdit: edit })} />)
+    const row = screen.getByText('handoff').closest('button')!
+    fireEvent.keyDown(row, { key: 'F10', shiftKey: true })
+    fireEvent.click(screen.getByRole('menuitem', { name: '项目工作项' }))
+    expect(cards).toHaveBeenCalledWith(expect.objectContaining({ project_id: 'p1' }))
+    fireEvent.contextMenu(row)
+    fireEvent.click(screen.getByRole('menuitem', { name: '项目代码图' }))
+    expect(graph).toHaveBeenCalledWith(expect.objectContaining({ project_id: 'p1' }))
+    fireEvent.contextMenu(row)
+    fireEvent.click(screen.getByRole('menuitem', { name: '编辑项目位置' }))
+    expect(edit).toHaveBeenCalledWith(expect.objectContaining({ project_id: 'p1' }))
+  })
+})
+
+describe('desktop terminal machine chooser', () => {
+  function remoteProps() {
+    const p = props()
+    p.tree.projects[0].locations.push({ machine: 'linux-01', name: 'handoff', path: '/remote', probe_error: '', workspaces: [
+      { path: '/remote/feature', branch: 'feature', head: 'def', is_main: false, managed: true, created_at: '' },
+      { path: '/remote', branch: 'main', head: 'abc', is_main: true, managed: false, created_at: '' },
+    ] })
+    return p
+  }
+  it('位置箭头打开机器选择菜单，不折叠/展开项目，也不创建终端或打开目录', () => {
+    const p = remoteProps()
+    renderRaw(<ProjectTree {...p} tasks={[]} />)
+    const header = screen.getByText('handoff').closest('button')!
+    expect(header).toHaveAttribute('aria-expanded', 'false')
+    fireEvent.click(screen.getByRole('button', { name: '选择 handoff 终端位置' }))
+    const menu = screen.getByRole('menu', { name: 'handoff 的终端机器' })
+    expect(within(menu).getByRole('menuitemradio', { name: '本机' })).toHaveAttribute('aria-checked', 'true')
+    expect(within(menu).getByRole('menuitemradio', { name: 'linux-01' })).toHaveAttribute('aria-checked', 'false')
+    expect(within(menu).getByRole('menuitemradio', { name: 'linux-01' })).toHaveAccessibleDescription('main · /remote')
+    expect(header).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByTestId('directory-group')).toBeNull()
+    expect(p.onOpenTerminalAt).not.toHaveBeenCalled()
+    expect(p.onOpenDirectory).not.toHaveBeenCalled()
+  })
+  it('选择只记住机器主目录；后续点击、拖拽及重挂载都使用此机器，浏览偏好保持独立', () => {
+    const p = remoteProps()
+    const view = renderRaw(<ProjectTree {...p} />)
+    fireEvent.click(screen.getByRole('button', { name: '选择 handoff 终端位置' }))
+    fireEvent.click(screen.getByRole('menuitemradio', { name: 'linux-01' }))
+    expect(p.onOpenTerminalAt).not.toHaveBeenCalled()
+    expect(p.onOpenDirectory).not.toHaveBeenCalled()
+    expect(screen.queryByRole('menu')).toBeNull()
+    expect(JSON.parse(localStorage.getItem('handoff.desktop.terminal-locations')!)).toEqual({ p1: '/remote@linux-01' })
+    const create = screen.getByRole('button', { name: '在 handoff 新建终端' })
+    expect(create.title).toContain('linux-01')
+    fireEvent.click(create)
+    expect(p.onOpenTerminalAt).toHaveBeenLastCalledWith(expect.objectContaining({ machine: 'linux-01', path: '/remote', key: '/remote@linux-01' }))
+    const setData = vi.fn()
+    fireEvent.dragStart(create, { dataTransfer: { setData, effectAllowed: '' } })
+    const payload = JSON.parse(setData.mock.calls.find(([mime]) => mime === DRAG_BASE_MIME)![1])
+    expect(payload).toMatchObject({ machine: 'linux-01', path: '/remote', key: '/remote@linux-01' })
+    fireEvent.click(screen.getByRole('button', { name: '浏览 handoff 文件' }))
+    expect(p.onOpenDirectory).toHaveBeenLastCalledWith(expect.objectContaining({ machine: '', path: '/w' }))
+    view.unmount()
+    renderRaw(<ProjectTree {...p} />)
+    fireEvent.click(screen.getByRole('button', { name: '在 handoff 新建终端' }))
+    expect(p.onOpenTerminalAt).toHaveBeenLastCalledWith(expect.objectContaining({ machine: 'linux-01', path: '/remote' }))
+    fireEvent.click(screen.getByRole('button', { name: '选择 handoff 终端位置' }))
+    expect(screen.getByRole('menuitemradio', { name: 'linux-01' })).toHaveAttribute('aria-checked', 'true')
+  })
+  it('记住的机器离线时不能偷偷回落本机创建或拖拽，菜单仍显示所选机与原因', () => {
+    const p = remoteProps()
+    p.tree.projects[0].locations[1].probe_error = 'offline'
+    localStorage.setItem('handoff.desktop.terminal-locations', JSON.stringify({ p1: '/remote@linux-01' }))
+    renderRaw(<ProjectTree {...p} />)
+    const create = screen.getByRole('button', { name: '在 handoff 新建终端' })
+    expect(create).toBeDisabled()
+    expect(create).toHaveAttribute('draggable', 'false')
+    fireEvent.click(create)
+    expect(p.onOpenTerminalAt).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: '选择 handoff 终端位置' }))
+    const remote = screen.getByRole('menuitemradio', { name: 'linux-01' })
+    expect(remote).toBeDisabled()
+    expect(remote).toHaveAttribute('aria-checked', 'true')
+    expect(remote.title).toContain('offline')
+  })
+  it('无历史选择时菜单勾选与按钮默认主目录相同，不受机器数组首项影响', () => {
+    const p = remoteProps()
+    p.tree.projects[0].locations[0].workspaces.forEach((ws) => { ws.is_main = false })
+    renderRaw(<ProjectTree {...p} />)
+    expect(screen.getByRole('button', { name: '在 handoff 新建终端' }).title).toContain('linux-01')
+    fireEvent.click(screen.getByRole('button', { name: '选择 handoff 终端位置' }))
+    expect(screen.getByRole('menuitemradio', { name: 'linux-01' })).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByRole('menuitemradio', { name: '本机' })).toHaveAttribute('aria-checked', 'false')
+  })
+  it('Esc取消与方向键选择不触发创建，关闭后焦点回到机器选择按钮', () => {
+    const p = remoteProps()
+    renderRaw(<ProjectTree {...p} />)
+    const toggle = screen.getByRole('button', { name: '选择 handoff 终端位置' })
+    fireEvent.click(toggle)
+    expect(screen.getByRole('menuitemradio', { name: '本机' })).toHaveFocus()
+    fireEvent.keyDown(document.activeElement!, { key: 'ArrowDown' })
+    expect(screen.getByRole('menuitemradio', { name: 'linux-01' })).toHaveFocus()
+    fireEvent.keyDown(document.activeElement!, { key: 'Escape' })
+    expect(screen.queryByRole('menu')).toBeNull()
+    expect(toggle).toHaveFocus()
+    expect(p.onOpenTerminalAt).not.toHaveBeenCalled()
   })
 })

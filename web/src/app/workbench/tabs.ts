@@ -345,15 +345,22 @@ export function activateGroup(wb: Workbench, groupId: string): Workbench {
   return wb.activeGroupId === groupId ? wb : { ...wb, activeGroupId: groupId }
 }
 
-/** 只替换 tab 内容，不改变焦点；重复目标会关闭当前 tab 并聚焦已有目标。 */
+/** 只替换 tab 内容，不改变焦点；身份变更撞到已打开资源时才关闭当前 tab。 */
 export function setTabContent(wb: Workbench, groupId: string, tabId: string, content: TabContent): Workbench {
   const loc = locationOf(wb, tabId, groupId)
   if (loc === null) return wb
   const current = wb.groups[loc.group].columns[loc.column].panes[loc.row]
   if (!current) return wb
   const key = dedupKey(current.base.key, content)
-  const existing = key ? findByKey(wb, key) : null
-  if (existing && existing.tab.id !== tabId) return activateTab(closeTab(wb, groupId, tabId), wb.groups[existing.group].id, existing.tab.id)
+  // Draft/baseSha updates do not change resource identity. Explicitly opened split
+  // panes may share that identity, so metadata writes must never collapse the pane.
+  const identityChanged = dedupKey(current.base.key, current.content) !== key
+  const existing = identityChanged && key ? findByKey(wb, key) : null
+  if (existing && existing.tab.id !== tabId) {
+    const existingGroupId = wb.groups[existing.group].id
+    console.debug('workbench.set_content.deduplicated', { groupId, tabId, existingGroupId, existingTabId: existing.tab.id, kind: content.kind })
+    return activateTab(closeTab(wb, groupId, tabId), existingGroupId, existing.tab.id)
+  }
   const next = cloneWorkbench(wb)
   next.groups[loc.group].columns[loc.column].panes[loc.row] = {
     id: tabId, base: { ...current.base }, content: { ...content } as TabContent,
@@ -613,4 +620,21 @@ export function tabTitle(content: TabContent, baseLabel: string, taskName?: (tas
     case 'session': return `会话 · ${content.title}`
     case 'blank': return '新建标签页'
   }
+}
+
+/** Explicit new top-level tab destination; existing pane bases are immutable. */
+export function openInNewGroup(wb: Workbench, base: BaseDir, content: TabContent): Workbench {
+  const next = createGroup(wb)
+  console.debug('workbench.open.new_group', { groupId: next.activeGroupId, baseKey: base.key, content: content.kind })
+  return openTab(next, base, content, next.activeGroupId)
+}
+/** Explicit split destination within the active group. */
+export function openInRightSplit(wb: Workbench, base: BaseDir, content: TabContent): Workbench {
+  const group = wb.groups.find((item) => item.id === wb.activeGroupId)
+  if (!group) { console.warn('workbench.open.split_missing_group', { groupId: wb.activeGroupId }); return wb }
+  const [column, row] = group.focus
+  // Empty workspaces need a first pane, not an empty neighbour created merely by the label.
+  if (group.columns.every((item) => item.panes.every((pane) => pane === null))) return openTab(wb, base, content, group.id)
+  console.debug('workbench.open.right_split', { groupId: group.id, column, row, baseKey: base.key, content: content.kind })
+  return placeSource(wb, { kind: 'new', base, content }, { groupId: group.id, column, row, zone: 'right' })
 }

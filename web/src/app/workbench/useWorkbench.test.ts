@@ -116,6 +116,71 @@ describe('useWorkbench', () => {
     expect(result.current.wb.groups[0].columns[0].panes[0]).toMatchObject({ base: b })
   })
 
+  it('restore lock closes every layout mutation route, including tab movement and PTY restore', () => {
+    const { result } = renderHook(() => useWorkbench())
+    act(() => {
+      result.current.select(a)
+      result.current.open({ kind: 'file', rel: 'one.ts' }, a)
+      result.current.openInRightSplit({ kind: 'file', rel: 'two.ts' }, a)
+      result.current.openInNewGroup({ kind: 'tui', taskId: 'T1' }, b)
+    })
+    const before = result.current.wb
+    const firstTab = before.groups[0].columns[0].panes[0]!
+    const firstGroup = before.groups[0].id
+    const secondGroup = before.groups[1]
+    act(() => {
+      result.current.lockLayout()
+      result.current.open({ kind: 'file', rel: 'three.ts' }, a)
+      result.current.openInNewGroup({ kind: 'file', rel: 'new-group.ts' }, a)
+      result.current.openInRightSplit({ kind: 'file', rel: 'right.ts' }, a)
+      result.current.openOrFocus({ kind: 'session', sessionId: 'S1', title: 'session' }, a)
+      result.current.openTerminal(a)
+      result.current.openTerminalWithCommand('sh', a)
+      result.current.close(firstGroup, firstTab.id)
+      result.current.activate(firstGroup, firstTab.id)
+      result.current.focusTab(b, firstGroup, firstTab.id)
+      result.current.activateGroup(firstGroup)
+      result.current.setContent(firstGroup, firstTab.id, { kind: 'file', rel: 'changed.ts' })
+      result.current.addGroup()
+      result.current.closeGroup(secondGroup.id)
+      result.current.place({ kind: 'tab', groupId: firstGroup, tabId: firstTab.id }, {
+        groupId: secondGroup.id, column: 0, row: 0, zone: 'center',
+      })
+      result.current.closePane(firstGroup, 0, 0)
+      result.current.closeById(firstTab.id)
+      result.current.resize(firstGroup, 0, 0.1, 0.2)
+      result.current.restoreTerminal(b, 'pty-1')
+    })
+    expect(result.current.wb).toEqual(before)
+    // Selection is separate from the authoritative layout and remains available.
+    expect(result.current.base).toEqual(b)
+    // Authoritative hydration is the one intentional bypass; it replaces state then unlocks.
+    act(() => result.current.hydrate(before))
+    expect(result.current.wb).toEqual(before)
+    act(() => result.current.openInRightSplit({ kind: 'file', rel: 'after-restore.ts' }, a))
+    expect(result.current.wb.groups[1].columns).toHaveLength(2)
+  })
+
+  it('右侧分栏落入刚建立的文件组，即使同一个文件已在旧组中', () => {
+    const { result } = renderHook(() => useWorkbench())
+    act(() => result.current.openInNewGroup({ kind: 'file', rel: 'README.md' }, a))
+    const originalGroup = result.current.wb.activeGroupId
+    act(() => result.current.openInNewGroup({ kind: 'file', rel: 'README.zh-CN.md' }, a))
+    const destinationGroup = result.current.wb.activeGroupId
+    expect(destinationGroup).not.toBe(originalGroup)
+
+    act(() => result.current.openInRightSplit({ kind: 'file', rel: 'README.md' }, a))
+
+    expect(result.current.wb.activeGroupId).toBe(destinationGroup)
+    const active = result.current.wb.groups.find((group) => group.id === destinationGroup)!
+    expect(active.columns).toHaveLength(2)
+    expect(active.columns.map((column) => column.panes[0]?.content)).toEqual([
+      { kind: 'file', rel: 'README.zh-CN.md' },
+      { kind: 'file', rel: 'README.md' },
+    ])
+    expect(result.current.wb.groups.find((group) => group.id === originalGroup)?.columns).toHaveLength(1)
+  })
+
   it('restoreTerminal 聚焦被点的 pty：离开上次打开的会话或终端，重复点击不复制 tab', () => {
     const { result } = renderHook(() => useWorkbench())
     const room = (id: string): BaseDir => ({

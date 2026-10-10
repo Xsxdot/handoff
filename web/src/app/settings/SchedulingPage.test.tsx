@@ -35,6 +35,32 @@ beforeEach(() => {
 })
 
 describe('SchedulingPage', () => {
+  it('compact 载体和小队采用可展开分段列表，说明折叠且详情按行展开', async () => {
+    const user = userEvent.setup()
+    vi.mocked(getSquads).mockResolvedValue({
+      carriers: [{ name: 'mbp', machine: '本机', cli: 'opencode', home_dir: '/Users/dev', model: 'sonnet', credential: 'standalone', status: 'online', max_concurrency: 2, version: 3 }],
+      squads: [{ name: '执行队', role: 'executor', members: [{ carrier: 'mbp', max_concurrency: 1 }], version: 4 }],
+      running: [],
+    })
+    render(<SchedulingPage compact />)
+    const help = await screen.findByText('自动化说明')
+    expect(help.closest('details')).not.toHaveAttribute('open')
+    expect(screen.getByRole('tablist', { name: '自动化类别' })).toBeVisible()
+    expect(screen.getByRole('tab', { name: '载体' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('button', { name: '查看载体 mbp' })).toBeVisible()
+    expect(screen.queryByTestId('automation-squad-row-执行队')).not.toBeInTheDocument()
+    expect(screen.queryByText('sonnet')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '检测' })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '查看载体 mbp' }))
+    expect(await screen.findByText('/Users/dev')).toBeVisible()
+    expect(screen.getByText('sonnet')).toBeVisible()
+    await user.click(screen.getByText('操作'))
+    expect(screen.getByRole('button', { name: '检测 mbp' })).toBeVisible()
+    await user.click(screen.getByRole('tab', { name: '小队' }))
+    expect(screen.getByRole('button', { name: '查看小队 执行队' })).toBeVisible()
+    expect(screen.queryByTestId('automation-carrier-row-mbp')).not.toBeInTheDocument()
+  })
+
   it('表单对齐原型：准入说明、机器/CLI/凭据枚举和主 HOME 同步提示完整', async () => {
     const user = userEvent.setup()
     render(<SchedulingPage />)

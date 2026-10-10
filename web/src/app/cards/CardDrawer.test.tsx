@@ -692,6 +692,38 @@ const following = (a: Element, b: Element) =>
   (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0
 
 describe('B369.8 compact 三层分组', () => {
+  it('compact 头部保留卡号、完整标题与当前态，低频改标题/优先级藏在操作区', async () => {
+    const ledger = await import('../../api/ledger')
+    vi.mocked(ledger.fetchCardDetail).mockResolvedValue(fullDetail as never)
+    render(<CardDrawer id="Bfull" compact onClose={() => {}} onOpenCard={() => {}} />)
+    await screen.findByText('全块卡')
+    expect(screen.getByTestId('card-drawer-header').textContent).toContain('Bfull')
+    expect(screen.getByTestId('card-drawer-header').textContent).toContain('进行中')
+    const titleButton = screen.getByRole('button', { name: '改标题' })
+    const priorityButton = screen.getByRole('button', { name: '改优先级' })
+    expect(titleButton).not.toBeVisible()
+    expect(priorityButton).not.toBeVisible()
+    fireEvent.click(screen.getByText('更多工作项操作'))
+    expect(titleButton).toBeVisible()
+    expect(priorityButton).toBeVisible()
+  })
+
+  it('compact 优先显示需要你，验收/历史归入默认收起的证据区', async () => {
+    const ledger = await import('../../api/ledger')
+    vi.mocked(ledger.fetchCardDetail).mockResolvedValue(fullDetail as never)
+    render(<CardDrawer id="Bfull" compact onClose={() => {}} onOpenCard={() => {}} />)
+    const attention = await screen.findByTestId('card-attention')
+    const needsText = screen.getByText('等人原因')
+    expect(needsText.parentElement?.className).toContain('flex-col')
+    expect(within(needsText.parentElement!).getByRole('button', { name: '已处理' }).className).toContain('self-start')
+    const evidence = screen.getByTestId('card-evidence-details')
+    expect(attention).toBeInTheDocument()
+    expect(evidence).not.toHaveAttribute('open')
+    expect(following(screen.getByTestId('card-tier-action'), attention)).toBe(true)
+    fireEvent.click(evidence.querySelector('summary')!)
+    expect(within(evidence).getByRole('heading', { name: '验收' })).toBeInTheDocument()
+  })
+
   it('三层标题 DOM 序：工作项 → 当前动作 → 证据', async () => {
     const ledger = await import('../../api/ledger')
     vi.mocked(ledger.fetchCardDetail).mockResolvedValue(fullDetail as never)
@@ -699,15 +731,18 @@ describe('B369.8 compact 三层分组', () => {
     const work = await screen.findByTestId('card-tier-work')
     const action = screen.getByTestId('card-tier-action')
     const evidence = screen.getByTestId('card-tier-evidence')
+    const evidenceDetails = screen.getByTestId('card-evidence-details')
     expect(following(work, action)).toBe(true)
     expect(following(action, evidence)).toBe(true)
-    // 层内归属抽查：验收在工作项层内（work 与 action 之间）、关联执行在当前动作层内
-    const acceptance = screen.getByRole('heading', { name: '验收' })
+    // 层内归属抽查：当前动作先展示需要你与任务，证据区默认折叠
     const running = screen.getByRole('heading', { name: /关联执行/ })
-    const timeline = screen.getByRole('heading', { name: 'Timeline' })
-    expect(following(work, acceptance) && following(acceptance, action)).toBe(true)
-    expect(following(action, running) && following(running, evidence)).toBe(true)
-    expect(following(evidence, timeline)).toBe(true)
+    const attention = screen.getByTestId('card-attention')
+    expect(following(work, action)).toBe(true)
+    expect(following(action, attention) && following(attention, running)).toBe(true)
+    expect(following(running, evidence)).toBe(true)
+    expect(evidenceDetails).not.toHaveAttribute('open')
+    fireEvent.click(evidenceDetails.querySelector('summary')!)
+    expect(following(evidence, screen.getByRole('heading', { name: 'Timeline' }))).toBe(true)
   })
 
   it('13 块逐块在场（合并/关系/子任务按 fixture 条件）', async () => {
@@ -748,10 +783,31 @@ describe('B369.8 compact 三层分组', () => {
     const drawer = await screen.findByRole('dialog', { name: '工作项详情' })
     expect(drawer.className).toContain('inset-x-0')
     expect(drawer.className).not.toContain('w-[560px]')
-    expect(drawer.className).toContain('button:not(.min-h-11)')
+    expect(drawer.className).toContain('touch-baseline')
     expect(drawer.getAttribute('aria-modal')).toBe('true')
     await waitFor(() => expect(document.activeElement).toBe(drawer))
-    expect(screen.getByRole('button', { name: '关闭' }).className).toContain('min-h-11')
+    expect(screen.getByRole('button', { name: '返回工作项' }).className).toContain('size-11')
+    expect(within(drawer).getByTestId('card-drawer-header').firstElementChild).toBe(screen.getByRole('button', { name: '返回工作项' }))
+  })
+
+  it('compact 将已终态执行折叠为历史，保留短名与展开后的完整任务 ID', async () => {
+    vi.mocked((await import('../../api/ledger')).fetchCardDetail).mockResolvedValue(detailWithRows([
+      { Target: 'linux-01', TaskID: 'task-12345678-full-id', Purpose: 'implement', LastType: 'completed', LastSeq: 12 },
+      { Target: 'linux-01', TaskID: 'task-87654321-full-id', Purpose: 'repair', LastType: 'failed', LastSeq: 11 },
+      { Target: 'linux-01', TaskID: 'missing1-task-123', Purpose: 'inspect', LastType: 'question', LastSeq: 10 },
+    ]) as never)
+    render(<CardDrawer id="B30" compact tasks={[
+      task({ id: 'task-12345678-full-id', name: 'Completed task', state: 'completed' }),
+      task({ id: 'task-87654321-full-id', name: 'Failed task', state: 'failed' }),
+    ]} onClose={() => {}} onOpenCard={() => {}} />)
+    const history = await screen.findByTestId('card-task-history')
+    expect(history).not.toHaveAttribute('open')
+    expect(within(history).getByText('Completed task')).not.toBeVisible()
+    expect(screen.getByText('missing1')).toBeVisible()
+    fireEvent.click(within(history).getByText(/历史执行 2/))
+    expect(await within(history).findByText('Completed task')).toBeInTheDocument()
+    fireEvent.click(within(history).getByRole('button', { name: /Completed task/ }))
+    expect(within(history).getByText('完整任务 ID：task-12345678-full-id')).toBeInTheDocument()
   })
 
   it('桌面反例锁：aside 类串逐字节、无 aria-modal、不 tabindex、不抢焦点', async () => {

@@ -270,8 +270,14 @@ export function FileTab({
         }
       }}
     >
+      {compact && (
+        <div data-testid="file-preview-location" className="border-b px-4 py-3 text-sm">
+          <div>{base.machine || '本机'} · {base.label}</div>
+          <div className="mt-1 break-all font-mono text-xs text-muted-foreground">{base.path ? `${base.path.replace(/\/$/, '')}/${rel}` : rel}</div>
+        </div>
+      )}
       <div className="flex items-center gap-2 border-b px-3 py-1.5 text-xs text-muted-foreground">
-        <span className="truncate font-mono text-foreground">{rel}</span>
+        <span className="truncate font-mono text-foreground">{compact ? '文件内容' : rel}</span>
         <span className="ml-auto shrink-0">{headerNote(read, dirty)}</span>
         {compact ? (
           // B369.10 T9：只读徽标替换保存钮（原型 mobile-file note ③「编辑不做、
