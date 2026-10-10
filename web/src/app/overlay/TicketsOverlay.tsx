@@ -18,12 +18,13 @@ import { Overlay } from './Overlay'
 import type { GlobalTickets } from './useGlobalTickets'
 
 export interface TicketsOverlayProps {
+  disabled?: boolean
   tickets: GlobalTickets
   onOpenTask: (base: BaseDir | null, taskId: string) => void
   onClose: () => void
 }
 
-export function TicketsOverlay({ tickets, onOpenTask, onClose }: TicketsOverlayProps) {
+export function TicketsOverlay({ tickets, onOpenTask, onClose, disabled = false }: TicketsOverlayProps) {
   return (
     <Overlay title={`工单（${tickets.count}）`} onClose={onClose}>
       {tickets.items.length === 0 ? (
@@ -53,9 +54,10 @@ export function TicketsOverlay({ tickets, onOpenTask, onClose }: TicketsOverlayP
               </div>
               <TicketsPanel
                 tickets={[ticket]}
-                disabled={false}
+                disabled={disabled}
                 bare
                 onReply={async (t, answer) => {
+                  if (disabled) return
                   await replyTicket(task.id, { ticket_id: t.id, answer })
                   tickets.refresh()
                 }}

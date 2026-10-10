@@ -9,13 +9,16 @@
 //
 // 为什么自己写而不是引依赖：`components/ui/` 只有 badge/button/card，本仓库
 // 至今零处右键菜单。为了一个单项菜单引一整套 dropdown 依赖不划算。
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { cn } from '@/lib/utils'
 
 export interface ContextMenuItem {
   label: string
   onSelect: () => void
   danger?: boolean
+  checked?: boolean
+  icon?: ReactNode
+  description?: string
   disabled?: boolean
   // 置灰**必须**给理由，否则用户只会以为是 bug
   disabledReason?: string
@@ -25,14 +28,16 @@ export interface ContextMenuItem {
 export type ContextMenuEntry = ContextMenuItem | { separator: true }
 
 export interface ContextMenuProps {
+  ariaLabel?: string
   x: number
   y: number
   items: ContextMenuEntry[]
   onClose: () => void
 }
 
-export function ContextMenu({ x, y, items, onClose }: ContextMenuProps) {
+export function ContextMenu({ x, y, items, onClose, ariaLabel }: ContextMenuProps) {
   const ref = useRef<HTMLDivElement>(null)
+  const menuId = useId()
   // pos 先用点击坐标，挂载后按实测尺寸向内翻转。
   // 为什么不在渲染前算：菜单宽高取决于最长的那条文案，只有量过才知道
   const [pos, setPos] = useState({ left: x, top: y })
@@ -46,7 +51,7 @@ export function ContextMenu({ x, y, items, onClose }: ContextMenuProps) {
       left: x + width > window.innerWidth ? Math.max(4, x - width) : x,
       top: y + height > window.innerHeight ? Math.max(4, y - height) : y,
     })
-    el.querySelector<HTMLButtonElement>('[role="menuitem"]:not(:disabled)')?.focus()
+    el.querySelector<HTMLButtonElement>('[role="menuitem"]:not(:disabled), [role="menuitemradio"]:not(:disabled)')?.focus()
   }, [x, y])
 
   useEffect(() => {
@@ -59,7 +64,7 @@ export function ContextMenu({ x, y, items, onClose }: ContextMenuProps) {
       // 上下键在可用项之间循环移动焦点，跳过分隔线与置灰项
       if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
         const el = ref.current
-        const focusable = el?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not(:disabled)') ?? []
+        const focusable = el?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not(:disabled), [role="menuitemradio"]:not(:disabled)') ?? []
         if (focusable.length === 0) return
         e.preventDefault()
         const current = document.activeElement
@@ -86,6 +91,7 @@ export function ContextMenu({ x, y, items, onClose }: ContextMenuProps) {
     <div
       ref={ref}
       role="menu"
+      aria-label={ariaLabel}
       style={{ left: pos.left, top: pos.top }}
       className="fixed z-50 min-w-32 rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-lg"
     >
@@ -96,7 +102,10 @@ export function ContextMenu({ x, y, items, onClose }: ContextMenuProps) {
           <button
             key={it.label}
             type="button"
-            role="menuitem"
+            role={it.checked === undefined ? "menuitem" : "menuitemradio"}
+            aria-checked={it.checked}
+            aria-label={it.description || it.checked !== undefined ? it.label : undefined}
+            aria-describedby={it.description ? `${menuId}-description-${i}` : undefined}
             disabled={it.disabled}
             title={it.disabledReason}
             onClick={() => {
@@ -111,7 +120,12 @@ export function ContextMenu({ x, y, items, onClose }: ContextMenuProps) {
               it.disabled && 'disabled:opacity-50 disabled:cursor-not-allowed',
             )}
           >
-            {it.label}
+            {it.icon && <span aria-hidden="true" className="mr-2 flex shrink-0 items-center">{it.icon}</span>}
+            <span className="min-w-0 flex-1">
+              <span>{it.label}</span>
+              {it.description && <span id={`${menuId}-description-${i}`} className="block max-w-60 truncate text-[11px] text-muted-foreground" title={it.description}>{it.description}</span>}
+            </span>
+            {it.checked !== undefined && <span aria-hidden="true" className="ml-3 w-3 text-center">{it.checked ? '✓' : ''}</span>}
           </button>
         ),
       )}

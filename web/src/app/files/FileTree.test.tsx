@@ -56,6 +56,7 @@ afterEach(() => {
 // 默认目录列举：一个目录 internal + 一个文件 go.mod。想覆盖的用例自己再设
 // mock；没设的（右键菜单那批）走这里。
 beforeEach(() => {
+  window.localStorage.clear()
   vi.mocked(fetchWorkspaceDir).mockResolvedValue(
     dir([
       { name: 'internal', is_dir: true },
@@ -101,6 +102,28 @@ function renderTree(opts?: { machine?: string; revealSupported?: boolean | null 
 }
 
 describe('FileTree', () => {
+  it('展开目录按机器和完整基准路径本地恢复，另一机器不串用', async () => {
+    vi.mocked(fetchWorkspaceDir).mockImplementation(async (_path, rel) =>
+      !rel ? dir([{ name: 'internal', is_dir: true }]) : dir([{ name: 'cached.go', is_dir: false }]))
+    const props = { base, taskId: null, onOpenFile: vi.fn(), onOpenTerminal: vi.fn(), revealSupported: true }
+    const a = render(<FileTree {...props} />)
+    fireEvent.click(await screen.findByText('internal'))
+    expect(await screen.findByText('cached.go')).toBeInTheDocument()
+    a.unmount()
+    const b = render(<FileTree {...props} base={{ ...base, machine: 'remote' }} />)
+    await screen.findByText('internal')
+    expect(screen.queryByText('cached.go')).toBeNull()
+    b.unmount()
+    const c = render(<FileTree {...props} />)
+    expect(await screen.findByText('cached.go')).toBeInTheDocument()
+    fireEvent.click(screen.getByText('internal'))
+    expect(screen.queryByText('cached.go')).toBeNull()
+    c.unmount()
+    render(<FileTree {...props} />)
+    await screen.findByText('internal')
+    expect(screen.queryByText('cached.go')).toBeNull()
+  })
+
   it('头部有「文件」与刷新，根标题是当前目录名', async () => {
     vi.mocked(fetchWorkspaceDir).mockResolvedValue(dir([{ name: 'Makefile', is_dir: false }]))
     render(<FileTree base={base} taskId={null} onOpenFile={vi.fn()} onOpenTerminal={vi.fn()} revealSupported={true} />)
@@ -514,8 +537,7 @@ describe('B369.10 FileTree compact 行式', () => {
     const { onOpenFile, container } = renderCompact()
     await waitFor(() => expect(screen.getByText('go.mod')).toBeInTheDocument())
     const aside = container.querySelector('aside')
-    expect(aside?.className).toContain('[&_button:not(.min-h-11)]:min-h-6')
-    expect(aside?.className).toContain('[&_button]:min-w-6')
+    expect(aside?.className).toContain('touch-baseline')
     // 行式行高：文件行与目录行同档（触点 44px），不是桌面那条约 26px 的行
     expect(rowOf('go.mod').className).toContain('min-h-11')
     expect(rowOf('internal').className).toContain('min-h-11')
@@ -532,7 +554,7 @@ describe('B369.10 FileTree compact 行式', () => {
       <FileTree base={base} taskId={null} onOpenFile={vi.fn()} onOpenTerminal={vi.fn()} revealSupported={true} />,
     )
     await waitFor(() => expect(screen.getByText('go.mod')).toBeInTheDocument())
-    expect(container.querySelector('aside')?.className).toBe(ASIDE_DESKTOP)
+    expect(container.querySelector('aside')?.className).toBe(ASIDE_DESKTOP + ' desktop-file-tree')
     expect(rowOf('go.mod').className).toBe(ROW_DESKTOP)
     expect(screen.queryAllByTestId('file-size')).toHaveLength(0)
   })
@@ -570,5 +592,39 @@ describe('B369.10 FileTree compact 行式', () => {
     const desktopMark = await screen.findByText('M')
     expect(desktopMark.className).toContain('ml-auto')
     expect(screen.queryAllByTestId('file-size')).toHaveLength(0)
+  })
+})
+
+describe('desktop file destinations', () => {
+  it('offers different destinations and retains existing actions', async () => {
+    const newTab = vi.fn()
+    const split = vi.fn()
+    render(<FileTree base={base} taskId={null} onOpenFile={vi.fn()} onOpenTerminal={vi.fn()} revealSupported={true} onOpenFileInNewTab={newTab} onOpenFileInSplit={split} />)
+    fireEvent.contextMenu(await screen.findByText('go.mod'))
+    fireEvent.click(screen.getByText('在新标签页打开'))
+    expect(newTab).toHaveBeenCalledWith('go.mod')
+    expect(split).not.toHaveBeenCalled()
+    fireEvent.contextMenu(screen.getByText('go.mod'))
+    expect(screen.getByText('重命名')).toBeInTheDocument()
+    fireEvent.click(screen.getByText('在右侧分栏打开'))
+    expect(split).toHaveBeenCalledWith('go.mod')
+  })
+})
+
+describe('directory context stability', () => {
+  it('retains the currently browsed base when a refreshed project tree omits that location', async () => {
+    const onSelectDirectory = vi.fn()
+    render(<FileTree base={base} taskId={null} onOpenFile={vi.fn()} onOpenTerminal={vi.fn()} revealSupported={true} directoryChoices={[]} onSelectDirectory={onSelectDirectory} />)
+    const select = screen.getByRole('combobox', { name: '浏览目录位置' })
+    expect(select).toHaveValue(base.key)
+    expect(screen.getByRole('option')).toHaveTextContent('handoff · 本机 · integration/b2-b3')
+    expect(onSelectDirectory).not.toHaveBeenCalled()
+  })
+  it('distinguishes same-label directory choices by their actual path', () => {
+    const other = { ...base, key: '/w/other', path: '/w/other' }
+    render(<FileTree base={base} taskId={null} onOpenFile={vi.fn()} onOpenTerminal={vi.fn()} revealSupported={true} directoryChoices={[base, other]} onSelectDirectory={vi.fn()} />)
+    const options = screen.getAllByRole('option')
+    expect(options[0]).toHaveTextContent('/w/b2-b3')
+    expect(options[1]).toHaveTextContent('/w/other')
   })
 })

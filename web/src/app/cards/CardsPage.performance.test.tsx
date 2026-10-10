@@ -39,7 +39,7 @@ describe('B427 bounded detail requests', () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(2500) })
     expect(ledger.fetchCards).toHaveBeenCalledTimes(2)
     expect(ledger.fetchCards).not.toHaveBeenCalledWith('all=1')
-    fireEvent.click(screen.getByRole('button', { name: '关闭' }))
+    fireEvent.click(screen.getByRole('button', { name: '返回工作项' }))
     expect(screen.getByText('现役工作项')).toBeInTheDocument(); expect(ledger.fetchCards).toHaveBeenCalledTimes(2)
   })
   it('terminal deep link fetches one detail without scanning historical cards', async () => {
@@ -48,7 +48,7 @@ describe('B427 bounded detail requests', () => {
     expect(await within(drawer).findByText('终态工作项')).toBeInTheDocument()
     expect(ledger.fetchCardDetail).toHaveBeenCalledTimes(1); expect(ledger.fetchCardDetail).toHaveBeenCalledWith('Bdone')
     expect(ledger.fetchCards).not.toHaveBeenCalledWith('all=1')
-    fireEvent.click(within(drawer).getByRole('button', { name: '关闭' })); expect(screen.getByText('现役工作项')).toBeInTheDocument()
+    fireEvent.click(within(drawer).getByRole('button', { name: '返回工作项' })); expect(screen.getByText('现役工作项')).toBeInTheDocument()
   })
   it('unknown deep link renders the existing detail error', async () => {
     vi.mocked(ledger.fetchCardDetail).mockRejectedValue(new ApiError(404, 'card missing')); mount('/cards?card=missing')
@@ -93,7 +93,7 @@ describe('B427 pinned workflow partial failure', () => {
     fireEvent.click(await within(drawer).findByRole('button', { name: '转移状态…' }))
     expect(await within(drawer).findByRole('option', { name: '钉版本独有' })).toBeInTheDocument()
     expect(ledger.fetchFlow).toHaveBeenCalledTimes(2)
-    fireEvent.click(within(drawer).getByRole('button', { name: '关闭' }))
+    fireEvent.click(within(drawer).getByRole('button', { name: '返回工作项' }))
     fireEvent.click(screen.getByText('缺工作流'))
     await screen.findByRole('dialog', { name: '工作项详情' })
     await act(async () => {})

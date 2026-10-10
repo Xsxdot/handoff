@@ -16,6 +16,7 @@ import { createUntitledFile } from './newFile'
 import { errorMessage } from '../lib/format'
 import { openSessionDetail } from '../rooms/sessionDetailOpener'
 import { cn } from '@/lib/utils'
+import './desktop-workspace.css'
 
 export interface WorkbenchPageProps {
   api: WorkbenchApi
@@ -44,6 +45,10 @@ export interface WorkbenchPageProps {
   // 已知代价：房间内无多 tab 切换条，切 tab 先出房间（用户裁决接受）。缺省
   // false = 终端/任务下钻与桌面零改动。
   sessionRoom?: boolean
+  /** Phone file preview owns its close/switch controls in the Shell header. */
+  filePreviewHeader?: ReactNode
+  /** Startup restore must settle before the retained layout is made interactive. */
+  restoring?: boolean
 }
 
 type DragOver = {
@@ -58,8 +63,9 @@ function tabCount(group: { columns: Array<{ panes: Array<Tab | null> }> }): numb
 }
 
 export function WorkbenchPage({
-  api, onAddProject, renderContent, terminalUnavailable, onBeforeClose, tree, tasks, onFileCreated, launchers = [], taskName, singleFocus = false, sessionRoom = false,
+  api, onAddProject, renderContent, terminalUnavailable, onBeforeClose, tree, tasks, onFileCreated, launchers = [], taskName, singleFocus = false, sessionRoom = false, filePreviewHeader, restoring = false,
 }: WorkbenchPageProps) {
+  const filePreview = Boolean(filePreviewHeader)
   const { wb, base } = api
   const activeGroup = wb.groups.find((group) => group.id === wb.activeGroupId) ?? wb.groups[0]
   const [picking, setPicking] = useState<{ groupId: string; tabId: string | null } | null>(null)
@@ -402,7 +408,7 @@ export function WorkbenchPage({
                 )}
                 {/* S5（B426）：会话房间不渲染窗格标题行（含拖拽柄/⋯/窗格切换/×）——
                     房间只留一条 header；终端/任务下钻 sessionRoom=false 原样。 */}
-                {!sessionRoom && (
+                {!sessionRoom && !filePreview && (
                 <div className="flex min-h-8 shrink-0 items-center gap-2 border-b px-2 text-xs">
                   <div
                     draggable={tab !== null}
@@ -479,10 +485,13 @@ export function WorkbenchPage({
   )
 
   return (
-    <div className="relative flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-border">
+    <div className={cn('relative flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-border', !singleFocus && !sessionRoom && 'desktop-workspace-pane')} aria-busy={restoring}>
+      {restoring && <div role="status" className="absolute inset-x-0 top-0 z-50 bg-muted px-3 py-2 text-center text-xs text-muted-foreground">正在恢复工作台…</div>}
+      <div className={cn('flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden', restoring && 'pointer-events-none')} aria-hidden={restoring} {...(restoring ? { inert: true } : {})}>
+      {filePreviewHeader}
       {/* S5（B426）：会话房间不渲染 TabBar（组标签条）——切 tab 先出房间（用户
           裁决接受）；终端/任务下钻 sessionRoom=false 原样。 */}
-      {!sessionRoom && (
+      {!sessionRoom && !filePreview && (
       <div className="flex min-h-0 items-stretch">
         <div className="min-w-0 flex-1">
           <TabBar
@@ -533,6 +542,7 @@ export function WorkbenchPage({
         onClose={() => setPicking(null)}
       />}
       <button type="button" className="sr-only" onClick={onAddProject}>添加项目</button>
+      </div>
     </div>
   )
 }

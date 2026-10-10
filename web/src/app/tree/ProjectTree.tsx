@@ -43,8 +43,9 @@
 // 计数只用于排序与折叠判据（counts.ts / wsMetrics），行上不再渲染计数控件——
 // 原型把行留给了名字与机器归属（spec §5 功能保留清单）。
 import { useEffect, useMemo, useRef, useState } from 'react'
+import '../workbench/desktop-workspace.css'
 import {
-  AppWindow, Archive, ChevronRight, FileText, FolderGit2, GitBranch, LayoutGrid, Monitor, Plus, Search, Server, Settings, SquareKanban, Terminal, Ticket, WifiOff, Workflow, X,
+  AppWindow, Archive, ChevronDown, ChevronRight, FolderOpen, FileText, FolderGit2, GitBranch, LayoutGrid, MessagesSquare, Monitor, Plus, Search, Server, Settings, SquareKanban, SquareTerminal, Terminal, Ticket, WifiOff, Workflow, X,
 } from 'lucide-react'
 import dispatchTaskUrl from '../../assets/dispatch-task.png'
 import { filterTree, taskMatchesQuery } from './search'
@@ -61,7 +62,7 @@ import { StateDot } from '../board/StateDot'
 import { stateTone, type StateTone } from '../board/columns'
 import { cn } from '@/lib/utils'
 import { TOUCH_BASELINE } from '@/lib/touch'
-import { DRAG_BASE_MIME, DRAG_DIR_MIME, DRAG_TAB_MIME, DRAG_TASK_MIME } from '../workbench/paneDrop'
+import { DRAG_BASE_MIME, DRAG_DIR_MIME, DRAG_SESSION_MIME, DRAG_TAB_MIME, DRAG_TASK_MIME } from '../workbench/paneDrop'
 import { TreePrefsMenu } from './TreePrefsMenu'
 import { sortProjects, splitHiddenProjects, splitIdleWorkspaces } from './treePrefs'
 import { useTreePrefs } from './useTreePrefs'
@@ -90,7 +91,21 @@ export interface OpenItem {
   tone?: StateTone
 }
 
+/** Collaboration projection derived by Shell from real card links, never from a guessed machine. */
+export interface ProjectSessionRow {
+  id: string
+  title: string
+  projectIds: string[]
+  unresolved?: boolean
+  archived?: boolean
+  needsHuman?: boolean
+}
+
 export interface ProjectTreeProps {
+  sessions?: ProjectSessionRow[]
+  onOpenSession?: (id: string, title: string) => void
+  onOpenArchive?: () => void
+  currentBrowseBase?: BaseDir | null
   tree: ProjectTreeResp
   tasks: Task[]
   selectedKey: string | null            // 当前选中目录的 BaseDir.key
@@ -152,6 +167,43 @@ export interface ProjectTreeProps {
   previewOpenKeys?: ReadonlySet<string>
   previewOpeningKeys?: ReadonlySet<string>
   onOpenPreview?: (id: string, machine: string) => void
+}
+
+// Creation and browsing keep separate device-local preferences. Neither rewrites existing BaseDir values.
+function readLocationPrefs(kind: 'terminal' | 'browse'): Record<string, string> {
+  try {
+    const value: unknown = JSON.parse(localStorage.getItem(`handoff.desktop.${kind}-locations`) ?? '{}')
+    return value && typeof value === 'object' && !Array.isArray(value)
+      ? Object.fromEntries(Object.entries(value).filter((entry) => typeof entry[1] === 'string')) : {}
+  } catch (error) { console.warn('project_tree.location_preferences.read_failed', { kind, error }); return {} }
+}
+function saveLocationPref(kind: 'terminal' | 'browse', previous: Record<string, string>, project: string, key: string): Record<string, string> {
+  const next = { ...previous, [project]: key }
+  try { localStorage.setItem(`handoff.desktop.${kind}-locations`, JSON.stringify(next)) }
+  catch (error) { console.warn('project_tree.location_preferences.save_failed', { kind, project, error }) }
+  return next
+}
+
+// One resolver serves the action and its radio menu. A missing/offline remembered
+// location never falls back to a different machine; the user must choose again.
+function terminalDefaultBase(project: ProjectNode, remembered: string | undefined, machines: MachineStatus[] | undefined): BaseDir | undefined {
+  if (remembered) return project.locations.flatMap((loc) => loc.workspaces.map((ws) => workspaceBase(project, loc.machine, ws))).find((base) => base.key === remembered)
+  const available = project.locations.filter((loc) => locationProblem(loc, machines) === '').flatMap((loc) => loc.workspaces.map((ws) => ({ base: workspaceBase(project, loc.machine, ws), isMain: ws.is_main })))
+  return (available.find((entry) => entry.isMain) ?? available[0])?.base
+}
+
+// Resolve by the stable location tuple. projectName is only a tie-breaker when
+// multiple registered projects point at the exact same machine/path; it is never
+// used as an identity fallback because labels can collide or change.
+function projectIDForBase(tree: ProjectTreeResp, base: BaseDir): string {
+  const candidates = tree.projects.filter((project) => project.locations.some((location) =>
+    location.machine === base.machine && location.workspaces.some((workspace) => workspace.path === base.path),
+  ))
+  if (candidates.length === 1) return candidates[0].project_id
+  const named = candidates.filter((project) => project.name === base.projectName ||
+    project.locations.some((location) => location.name === base.projectName),
+  )
+  return named.length === 1 ? named[0].project_id : ''
 }
 
 // MACHINE_LABEL 给机器名做人话标签：""=本机。B369.10 导出：详情面/位置芯片复用。
@@ -342,11 +394,22 @@ function TaskIconSlot({ kind }: { kind: 'tui' | 'terminal' | 'file' | 'preview' 
   )
 }
 
-export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDir, openItems, focusedTaskId, onFocusOpenItem, onCloseOpenItem, onOpenTerminalAt, onOpenDirectory, onOpenTask, onOpenBoard, onOpenCards, onOpenProjectCards, ledgerEnabled = false, onOpenFlows, cardNeedsCount = 0, unlinkedCount = 0, onOpenTickets, onOpenSettings, onOpenCodegraph, onOpenProjectCodegraph, compact = false, onAddProject, onUnregister, onEdit, onOpenProjectDetail, onWorktreeCreated, previews = [], previewMachines = [], previewOpenKeys = new Set<string>(), previewOpeningKeys = new Set<string>(), onOpenPreview = () => {} }: ProjectTreeProps) {
+export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDir, openItems, focusedTaskId, onFocusOpenItem, onCloseOpenItem, onOpenTerminalAt, onOpenDirectory, onOpenTask, onOpenBoard, onOpenCards, onOpenProjectCards, ledgerEnabled = false, onOpenFlows, cardNeedsCount = 0, unlinkedCount = 0, onOpenTickets, onOpenSettings, onOpenCodegraph, onOpenProjectCodegraph, compact = false, onAddProject, onUnregister, onEdit, onOpenProjectDetail, onWorktreeCreated, previews = [], previewMachines = [], previewOpenKeys = new Set<string>(), previewOpeningKeys = new Set<string>(), onOpenPreview = () => {}, sessions = [], onOpenSession, onOpenArchive, currentBrowseBase }: ProjectTreeProps) {
   // collapsed：空集 = 全展开。为什么用「收起集合」而不是「展开集合」：默认全展开
   // 意味着初值空集，渲染时 `!collapsed.has(key)` 天然为真，不用为每个节点预填。
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
+  const [desktopDisclosure, setDesktopDisclosure] = useState<Record<string, boolean>>({})
   const [query, setQuery] = useState('')
+  const [locationMenus, setLocationMenus] = useState<Set<string>>(new Set())
+  const [terminalMenu, setTerminalMenu] = useState<{ project: ProjectNode; x: number; y: number; trigger: HTMLButtonElement } | null>(null)
+  const [terminalDefaults, setTerminalDefaults] = useState<Record<string, string>>(() => readLocationPrefs('terminal'))
+  const [browseDefaults, setBrowseDefaults] = useState<Record<string, string>>(() => readLocationPrefs('browse'))
+  const browseProjectID = currentBrowseBase ? projectIDForBase(tree, currentBrowseBase) : ''
+  useEffect(() => {
+    if (compact || !currentBrowseBase || !browseProjectID) return
+    setBrowseDefaults((previous) => previous[browseProjectID] === currentBrowseBase.key ? previous
+      : saveLocationPref('browse', previous, browseProjectID, currentBrowseBase.key))
+  }, [compact, currentBrowseBase, browseProjectID])
   const [directoryOpen, setDirectoryOpen] = useState<Set<string>>(new Set())
   // 显示偏好走共享层：设置页的「常规」分区改的是同一份，两处即时同步（B160 §4.3）
   const [prefs, updatePrefs] = useTreePrefs()
@@ -365,6 +428,19 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
   // 过滤结果。tasks 每 2.5s 刷新一次，useMemo 避免每次任务流心跳都重算整棵树。
   const filtered = useMemo(() => filterTree(tree, tasks, query, openItems, previews), [tree, tasks, query, openItems, previews])
   const searching = filtered.query !== ''
+  const visibleSessions = sessions.filter((session) => !session.archived && (!searching
+    || session.title.toLowerCase().includes(filtered.query)
+    || tree.projects.some((project) => session.projectIds.includes(project.project_id) && project.name.toLowerCase().includes(filtered.query))))
+  const singleProjectSessions = visibleSessions.filter((session) => session.projectIds.length === 1 && !session.unresolved && tree.projects.some((project) => project.project_id === session.projectIds[0]))
+  const crossProjectSessions = visibleSessions.filter((session) => session.projectIds.length > 1 && !session.unresolved)
+  const otherSessions = visibleSessions.filter((session) => !singleProjectSessions.includes(session) && !crossProjectSessions.includes(session))
+  const sessionRow = (session: ProjectSessionRow) => <button key={session.id} type="button" className="desktop-session-row" data-drag-session="1" draggable
+    onDragStart={(event) => { event.dataTransfer.setData(DRAG_SESSION_MIME, JSON.stringify({ sessionId: session.id, title: session.title })); event.dataTransfer.effectAllowed = 'copy' }}
+    onClick={() => onOpenSession?.(session.id, session.title)} title={session.title}>
+    <MessagesSquare size={14} /><span className="truncate">{session.title}</span>{session.needsHuman && <StateDot tone="intervention" />}
+  </button>
+  const sessionProjectMatches = searching ? tree.projects.filter((project) => singleProjectSessions.some((session) => session.projectIds[0] === project.project_id)) : []
+  const projectsWithSessions = [...filtered.projects, ...sessionProjectMatches.filter((project) => !filtered.projects.some((candidate) => candidate.project_id === project.project_id))]
 
   // 「已结束」分组的数据源：项目内全部终态任务（B288 口径，见 archived.ts 文件头）。
   const archived = useMemo(() => archivedTasks(tasks), [tasks])
@@ -408,14 +484,24 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
   // 同时只允许一个右键菜单，所以状态挂在树这一层而不是每行一份。
   // null = 没有菜单打开。project 一并记下：编辑弹层要以**整个项目**为输入，
   // 而菜单锚在机器行——闭包里只有 loc，得把所在 project 一起带进菜单状态。
+  const [projectMenu, setProjectMenu] = useState<{ x: number; y: number; project: ProjectNode } | null>(null)
   const [menu, setMenu] = useState<{ x: number; y: number; name: string; machine: string; project: ProjectNode } | null>(null)
-  const toggle = (key: string) =>
-    setCollapsed((prev) => {
-      const next = new Set(prev)
-      if (next.has(key)) next.delete(key)
-      else next.add(key)
-      return next
-    })
+  const hasLiveResource = (project: ProjectNode) =>
+    tasks.some((task) => task.project_id === project.project_id && (!isTerminalState(task.state) || recentlyCompleted(task, Date.now()))) ||
+    openItems.some((item) => projectIDForBase(tree, item.base) === project.project_id) ||
+    previews.some((session) => previewBelongsToProject(session, project)) ||
+    sessions.some((session) => !session.archived && !session.unresolved && session.projectIds.length === 1 && session.projectIds[0] === project.project_id)
+  const defaultExpanded = (key: string) => {
+    const project = tree.projects.find((item) => 'p:' + item.project_id === key)
+    return project ? hasLiveResource(project) : false
+  }
+  const toggle = (key: string) => {
+    if (!compact) {
+      setDesktopDisclosure((previous) => ({ ...previous, [key]: !(previous[key] ?? defaultExpanded(key)) }))
+      return
+    }
+    setCollapsed((previous) => { const next = new Set(previous); if (next.has(key)) next.delete(key); else next.add(key); return next })
+  }
   // 搜索期间旁路 collapsed：搜到了却折叠着等于没搜到。
   // 注意是「旁路」不是「清空」——collapsed 原样保留，查询清空后用户手动
   // 折起来的布局立刻回来，搜索不破坏布局。
@@ -423,17 +509,21 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
   // 「已展开」键（空集 = 全折叠，位置摘要代替铺开的内容面），桌面存「已收起」
   // 键（空集 = 全展开）。toggle 的翻转动作两档同形零改动（翻转成员资格即可，
   // 语义由本判定解释）；搜索旁路两档一致。
-  const expanded = (key: string) => searching || (compact ? collapsed.has(key) : !collapsed.has(key))
+  const expanded = (key: string) => searching || (compact ? collapsed.has(key) : (desktopDisclosure[key] ?? defaultExpanded(key)))
   const openDirectory = (base: BaseDir) => {
     console.debug('project_tree.directory.open', {
       project: base.projectName, machine: base.machine, baseKey: base.key, path: base.path,
     })
+    const projectID = projectIDForBase(tree, base)
+    if (!compact && projectID) setBrowseDefaults((prev) => saveLocationPref('browse', prev, projectID, base.key))
     onOpenDirectory(base)
   }
   const openTerminalAt = (base: BaseDir) => {
     console.debug('project_tree.terminal.open', {
       project: base.projectName, machine: base.machine, baseKey: base.key, path: base.path,
     })
+    const projectID = projectIDForBase(tree, base)
+    if (!compact && projectID) setTerminalDefaults((prev) => saveLocationPref('terminal', prev, projectID, base.key))
     onOpenTerminalAt(base)
   }
   const toggleDirectory = (key: string) =>
@@ -447,7 +537,7 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
   // 搜索期间旁路「隐藏」类偏好：搜到了却被偏好过滤掉，等于搜索坏了。
   // 排序不旁路——排序不会让东西消失，跟着当前档反而更连贯
   const projectSplit = searching
-    ? { shown: filtered.projects, hiddenCount: 0 }
+    ? { shown: projectsWithSessions, hiddenCount: 0 }
     : splitHiddenProjects(filtered.projects, (p) => p.project_id, prefs.hiddenProjects)
   // 项目的「最近活动」= 该项目下任务 updated_at 的最大值；一条任务都没有时为空串
   const lastActivity = (projectID: string) =>
@@ -456,7 +546,11 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
     projectSplit.shown,
     (p) => {
       const c = countsForProject(tasks, p, previews)
-      return { active: c.running + c.pending + c.previews, updatedAt: lastActivity(p.project_id), name: p.name }
+      // Desktop active sorting includes device-local open content and linked
+      // conversations. These are resources, not execution-count badges.
+      const resources = compact ? 0 : openItems.filter((item) => projectIDForBase(tree, item.base) === p.project_id).length
+        + singleProjectSessions.filter((session) => session.projectIds[0] === p.project_id).length
+      return { active: c.running + c.pending + c.previews + resources, updatedAt: lastActivity(p.project_id), name: p.name }
     },
     prefs.projectSort,
   )
@@ -532,7 +626,7 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
     // 为什么不让整个 aside 滚：项目一多，「添加项目」会被推到 scrollHeight
     // 的最下面（实测 top:1100 / 视口 1024），要滚到底才找得到入口
     // B369.8：compact 根挂触点基线类（树三钮/× 等 24px 次级底线）；桌面零接触。
-    <div className={cn('flex min-h-0 flex-1 flex-col py-[13px] pr-[18px] pl-[26px]', compact && TOUCH_BASELINE)}>
+    <div className={cn('flex min-h-0 flex-1 flex-col py-[13px] pr-[18px] pl-[26px]', compact ? TOUCH_BASELINE : 'desktop-project-tree')}>
       {/* 第一段：不滚——搜索框 + 「项目 N」。 */}
 
       {/* 搜索框与「项目 N」。N 跟随过滤，搜索时它就是「找到几个」的即时反馈；
@@ -619,6 +713,19 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
         )
         const allProject = tree.projects.find((candidate) => candidate.project_id === project.project_id) ?? project
         const allLocations = allProject.locations
+        const availableBases = allLocations.flatMap((loc) => locationProblem(loc, tree.machines) === ''
+          ? loc.workspaces.map((ws) => workspaceBase(allProject, loc.machine, ws)) : [])
+        const mainKeys = new Set(allLocations.flatMap((loc) => loc.workspaces.filter((ws) => ws.is_main).map((ws) => workspaceBase(allProject, loc.machine, ws).key)))
+        // A remembered unavailable machine must not silently become a local terminal.
+        const remembered = terminalDefaults[project.project_id]
+        const preferredBase = terminalDefaultBase(allProject, remembered, tree.machines)
+        const terminalProblem = preferredBase
+          ? locationProblem(allLocations.find((loc) => loc.machine === preferredBase.machine)!, tree.machines)
+          : remembered ? '上次选择的位置已不存在，请重新选择机器' : '没有可用目录'
+        const terminalAvailable = !!preferredBase && terminalProblem === ''
+        // Directory browsing has its own default; selecting a terminal machine cannot move it.
+        const browsingBase = availableBases.find((base) => base.key === browseDefaults[project.project_id]) ?? availableBases.find((base) => mainKeys.has(base.key)) ?? availableBases[0]
+        const locationsVisible = compact || locationMenus.has(pKey) || searching
         // 位置状态原料（B369.8 T6）：断开数 = 探测失败或机器探活失败的位置数
         //（locationProblem 同机器行 StateDot 的判据）
         const locationProblemCount = allLocations.filter((loc) => locationProblem(loc, tree.machines) !== '').length
@@ -627,7 +734,7 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
         // 不随聚焦/切基准重排）。搜索时按行名/机器/基准字段放行——与 filterTree
         // 留住项目祖先的口径互补。
         const projectOpenRows = openItems.filter((item) =>
-          item.base.projectName === project.name &&
+          projectIDForBase(tree, item.base) === project.project_id &&
           (!searching || projectHit || openItemMatches(item, filtered.query)),
         )
         // 终端/文件已打开行留在任务组最前：它们不是任务流成员，没有「原位」可言，
@@ -684,24 +791,31 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
             )}
           >
             {/* 项目圆点把主树干锚定到项目行；没有它，竖线会被误读成普通分隔线。 */}
-            <span
+            {compact && <span
               aria-hidden
               data-testid={'project-marker-' + project.project_id}
               className={cn(
                 'absolute -left-[15px] top-[11px] size-[9px] rounded-full border-2 bg-background',
                 projectIndex === 0 ? 'border-[#737373]' : 'border-[#a3a3a3]',
               )}
-            />
+            />}
             {/* 项目行（option-1 .project-head）：常规字重项目名（2026-08-29 用户裁定
                 去掉加粗，18px 本身已有层级），右侧簇 = 派发任务图标 +
                 进行中计数 + 折叠箭头（箭头在计数之后，原型 chev 位置） */}
-            <div className="group relative">
+            <div className={cn('group relative', !compact && 'desktop-project-header')} onContextMenu={(event) => {
+              if (compact || (!onOpenProjectCards && !onOpenProjectCodegraph && !onEdit)) return
+              event.preventDefault(); setMenu(null); setProjectMenu({ x: event.clientX, y: event.clientY, project })
+            }} onKeyDown={(event) => {
+              if (compact || (!onOpenProjectCards && !onOpenProjectCodegraph && !onEdit) || !(event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10'))) return
+              event.preventDefault(); const rect = event.currentTarget.getBoundingClientRect(); setMenu(null); setProjectMenu({ x: rect.left, y: rect.bottom, project })
+            }}>
               <button
                 type="button"
                 // B369.10 T3：compact 且能进详情时，行 button 不再是折叠开关——
                 // aria-expanded 不再挂它（折叠语义收窄到行内 Arrow 的 aria-label），
                 // 否则读屏会把它报成「可展开的按钮」而点下去是跳页面。
-                aria-expanded={project.locations.length > 0 && openDetail === undefined ? pOpen : undefined}
+                aria-expanded={(!compact || project.locations.length > 0) && openDetail === undefined ? pOpen : undefined}
+                title={!compact ? project.name + ' · 右键打开项目操作' : undefined}
                 onClick={() => (openDetail ? openDetail(project) : toggle(pKey))}
                 className={cn(
                   'flex min-h-[31px] w-full items-center justify-between gap-2.5 rounded-lg px-0 text-left text-[18px] font-normal hover:bg-[#fafafa]',
@@ -714,9 +828,10 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
                 )}
               >
                 <span className="flex min-w-0 items-center gap-2.5">
+                  {!compact && <Arrow open={pOpen} onToggle={() => toggle(pKey)} />}
                   <FolderGit2
-                    data-project-color="green"
-                    className="size-[17px] shrink-0 text-[#16a34a]"
+                    data-project-color={compact ? 'green' : 'neutral'}
+                    className={cn('size-[17px] shrink-0', compact ? 'text-[#16a34a]' : 'text-foreground')}
                   />
                   <span className="min-w-0 truncate">{project.name}</span>
                   {/* B369.8：compact 位置状态摘要——「项目优先、位置为状态信息」。
@@ -737,11 +852,11 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
                   )}
                 </span>
                 <span className="flex shrink-0 items-center gap-[7px] text-[15px] font-medium text-muted-foreground">
-                  <span data-testid="project-running-count" className="flex items-center gap-[7px]">
+                  {compact && <span data-testid="project-running-count" className="flex items-center gap-[7px]">
                     <img src={dispatchTaskUrl} className="size-4" alt="" />
                     <span className="text-[16px]">{pCounts.running + pCounts.pending + pCounts.previews}</span>
-                  </span>
-                  {project.locations.length > 0 && <Arrow open={pOpen} onToggle={() => toggle(pKey)} />}
+                  </span>}
+                  {compact && project.locations.length > 0 && <Arrow open={pOpen} onToggle={() => toggle(pKey)} />}
                 </span>
                 {chipsLine && (
                   // 整行芯片：w-full 让它在 flex-wrap 的父里独占一行；pr-20 预备
@@ -776,6 +891,35 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
                   </span>
                 )}
               </button>
+              {!compact && <div className="desktop-project-actions">
+                <div className="desktop-terminal-control" role="group" aria-label={`${project.name} 新建终端与机器选择`}>
+                  <button type="button" aria-label={`在 ${project.name} 新建终端`}
+                    title={terminalAvailable ? `新建终端 · ${machineLabel(preferredBase!.machine)} / ${preferredBase!.label}；拖入工作区分屏` : `新建终端不可用：${terminalProblem}；请从右侧选择机器`}
+                    disabled={!terminalAvailable} draggable={terminalAvailable} data-drag-task="1"
+                    onClick={() => terminalAvailable && preferredBase && openTerminalAt(preferredBase)}
+                    onDragStart={(event) => {
+                      if (!terminalAvailable || !preferredBase) { event.preventDefault(); return }
+                      console.debug('project_tree.terminal.drag', { projectID: project.project_id, machine: preferredBase.machine, baseKey: preferredBase.key })
+                      event.dataTransfer.setData(DRAG_DIR_MIME, JSON.stringify(preferredBase))
+                      event.dataTransfer.setData(DRAG_BASE_MIME, JSON.stringify(preferredBase))
+                      event.dataTransfer.effectAllowed = 'copy'
+                    }}>
+                    <span className="desktop-new-terminal-icon" aria-hidden="true"><SquareTerminal size={15} /><Plus size={8} /></span>
+                  </button>
+                  <button type="button" aria-label={`选择 ${project.name} 终端位置`}
+                    aria-haspopup="menu" aria-expanded={terminalMenu?.project.project_id === project.project_id}
+                    title={preferredBase ? `选择终端机器 · 当前 ${machineLabel(preferredBase.machine)}` : '选择终端机器'}
+                    onClick={(event) => {
+                      if (terminalMenu?.project.project_id === project.project_id) { setTerminalMenu(null); return }
+                      const trigger = event.currentTarget
+                      const rect = trigger.getBoundingClientRect()
+                      setProjectMenu(null); setMenu(null)
+                      setTerminalMenu({ project: allProject, x: rect.left, y: rect.bottom + 4, trigger })
+                      console.debug('project_tree.terminal_machine_menu.open', { projectID: project.project_id })
+                    }}><ChevronDown size={11} /></button>
+                </div>
+                <button type="button" aria-label={`浏览 ${project.name} 文件`} title={browsingBase ? `浏览文件 · ${machineLabel(browsingBase.machine)} / ${browsingBase.label}` : '没有可用目录'} disabled={!browsingBase} onClick={() => browsingBase && openDirectory(browsingBase)}><FolderOpen size={14} /></button>
+              </div>}
               {/* B369.7：桌面 hidden group-hover:flex 逐字节保留；compact 下容器
                   常驻 flex（触屏无 hover），「代码图」子钮不渲染（/codegraph 整页
                   只在桌面注册，compact 点了就是死入口），「工作项」钮触点与底栏
@@ -783,7 +927,7 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
                   right-20（桌面 right-14）：compact 行宽 390 下两位数进行中计数
                   （图标 16 + 间距 7 + 两位数字 ≈19 + 间距 7 + 箭头 16 ≈ 65px）
                   比 right-14 的 56px 让位更宽，常驻钮不与计数/箭头挤压。 */}
-              {(onOpenProjectCards || onOpenProjectCodegraph) && (
+              {compact && (onOpenProjectCards || onOpenProjectCodegraph) && (
                 <span className={cn(
                   'absolute top-1/2 -translate-y-1/2 items-center gap-0.5 bg-background',
                   compact ? 'right-20 flex' : 'right-14 hidden group-hover:flex',
@@ -817,6 +961,7 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
               )}
             </div>
 
+            {!compact && pOpen && singleProjectSessions.filter((session) => session.projectIds[0] === project.project_id).map(sessionRow)}
             {pOpen && (
               // option-1 的 .project-content：margin-left 7px、padding 6px 0 0 16px，
               // 左轨线（::before，1px var(--rail)=#dedede，bottom 让位 25px）用真实元素实现
@@ -977,7 +1122,7 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
                   </div>
                 </div>
 
-                <div data-testid="directory-group" className="mt-[7px]">
+                {locationsVisible && <div data-testid="directory-group" className="mt-[7px]">
                   {/* 「目录」小标题（option-1 .section-label）：任务组不再有小标题，
                       这行是组与组之间仅存的节奏锚 */}
                   <div data-testid="dir-group-head" className="flex min-h-6 items-center gap-2 text-[15px] font-medium text-muted-foreground">
@@ -1159,6 +1304,7 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
                   </div>
                 </div>
 
+                }
                 {/* 「已结束」行（b288 .archive-row）：label + 计数 + 右侧箭头。
                     2026-08-29 用户裁定挂项目块最底——目录组之后，不再夹在任务列表
                     与目录之间 */}
@@ -1267,6 +1413,8 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
         <p className="px-3 py-4 text-[13px] text-muted-foreground">没有匹配的项目或任务</p>
       )}
         </div>
+        {!compact && crossProjectSessions.length > 0 && <section data-testid="cross-project-sessions" className="desktop-session-group"><h3>跨项目会话</h3>{crossProjectSessions.map(sessionRow)}</section>}
+        {!compact && otherSessions.length > 0 && <section data-testid="unassociated-sessions" className="desktop-session-group"><h3>其他会话</h3>{otherSessions.map(sessionRow)}</section>}
       </div>
 
       {/* 第三段：钉在底部 */}
@@ -1277,6 +1425,8 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
           工单数为 0 时按钮仍在、角标不显示——按钮消失会让人以为功能没了。
           justify-around 而非左对齐：少了占主位的文字按钮后，一排图标挤在
           左半边会让右半边看起来像渲染缺了东西 */}
+      {!compact && onOpenArchive && <button className="desktop-archive-entry" type="button" onClick={onOpenArchive}><Archive size={14} />归档会话</button>}
+
       <div className="mt-1 flex items-center justify-around gap-0.5 border-t px-2 pt-2">
         {ledgerEnabled && (
           <button
@@ -1368,6 +1518,48 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
           流程与代码图暂未适配移动端，请在桌面宽屏使用。
         </p>
       )}
+
+      {terminalMenu && (() => {
+        const project = tree.projects.find((item) => item.project_id === terminalMenu.project.project_id) ?? terminalMenu.project
+        const savedKey = terminalDefaults[project.project_id]
+        const preferred = terminalDefaultBase(project, savedKey, tree.machines)
+        const savedBase = savedKey ? preferred : undefined
+        const selectedMachine = preferred?.machine
+        return <ContextMenu x={terminalMenu.x} y={terminalMenu.y} ariaLabel={`${project.name} 的终端机器`}
+          onClose={() => { terminalMenu.trigger.focus(); setTerminalMenu(null) }}
+          items={[
+            ...project.locations.map((loc) => {
+              const main = loc.workspaces.find((ws) => ws.is_main) ?? loc.workspaces[0]
+              const base = main ? workspaceBase(project, loc.machine, main) : null
+              const problem = locationProblem(loc, tree.machines) || (base ? '' : '没有可用目录')
+              return { label: machineLabel(loc.machine), checked: loc.machine === selectedMachine,
+                icon: <><StateDot tone={problem ? 'failed' : 'active'} />{loc.machine === '' ? <Monitor size={14} className="ml-1" /> : <Server size={14} className="ml-1" />}</>,
+                description: problem || `${savedBase?.machine === loc.machine ? savedBase.label : base?.label} · ${savedBase?.machine === loc.machine ? savedBase.path : base?.path}`,
+                disabled: problem !== '', disabledReason: problem || undefined,
+                onSelect: () => {
+                  if (!base || problem) { console.warn('project_tree.terminal_machine.select_unavailable', { projectID: project.project_id, machine: loc.machine, problem }); return }
+                  // Selecting changes the default only. Existing tabs retain their own BaseDir.
+                  const chosen = savedBase?.machine === loc.machine ? savedBase : base
+                  setTerminalDefaults((previous) => saveLocationPref('terminal', previous, project.project_id, chosen.key))
+                  console.debug('project_tree.terminal_machine.selected', { projectID: project.project_id, machine: chosen.machine, baseKey: chosen.key })
+                },
+              }
+            }),
+            { separator: true },
+            { label: '管理工作树…', onSelect: () => {
+              const key = 'p:' + project.project_id
+              setDesktopDisclosure((previous) => ({ ...previous, [key]: true }))
+              setLocationMenus((previous) => new Set(previous).add(key))
+              console.debug('project_tree.worktrees.manage', { projectID: project.project_id })
+            } },
+          ]} />
+      })()}
+
+      {projectMenu && <ContextMenu x={projectMenu.x} y={projectMenu.y} onClose={() => setProjectMenu(null)} items={[
+        ...(onOpenProjectCards ? [{ label: '项目工作项', onSelect: () => onOpenProjectCards(projectMenu.project) }] : []),
+        ...(onOpenProjectCodegraph ? [{ label: '项目代码图', onSelect: () => onOpenProjectCodegraph(projectMenu.project) }] : []),
+        ...(onEdit ? [{ label: '编辑项目位置', onSelect: () => onEdit(projectMenu.project) }] : []),
+      ]} />}
 
       {onUnregister && (
         <ConfirmDialog
@@ -1512,7 +1704,7 @@ function TaskRow({
       )}
     >
       <TaskIconSlot kind={kind} />
-      <span data-testid={nameTestId} className="min-w-0 flex-1 truncate text-[15px] font-medium">
+      <span data-testid={nameTestId} className={cn('min-w-0 flex-1 truncate', compact ? 'text-[15px] font-medium' : 'text-[12px] font-normal')}>
         {label}
       </span>
       <span data-testid="task-machine" className="ml-auto flex max-w-[88px] shrink-0 items-center gap-[7px] truncate text-[14px] text-muted-foreground">

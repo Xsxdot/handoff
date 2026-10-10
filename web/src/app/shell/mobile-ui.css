@@ -1,0 +1,250 @@
+/* Compact production UI. All selectors are rooted in the mobile Shell; desktop tokens and layout stay intact. */
+.mobile-ui {
+  --background: #fff; --foreground: #202020; --card: #fff; --card-foreground: #202020;
+  --primary: #252525; --primary-foreground: #fff; --mobile-action: #252525;
+  --accent: #f3f3f3; --accent-foreground: #202020; --muted: #f3f3f3;
+  --muted-foreground: #777; --border: #e9e9e9; --ring: #292929;
+  --destructive: #303030; --state-active: #27a06d;
+  font-size: 14px; line-height: 1.55; color: #202020; background: #fff;
+  -webkit-text-size-adjust: 100%; accent-color: #252525;
+}
+.mobile-ui .mobile-settings { --primary:#252525; --ring:#292929; }
+.mobile-ui button, .mobile-ui [role=button], .mobile-ui select, .mobile-ui input:not([type=checkbox]):not([type=radio]) { min-height:44px; }
+.mobile-ui button { touch-action: manipulation; }
+.mobile-ui button:disabled { opacity:.42; cursor:default; }
+.mobile-ui button:focus-visible, .mobile-ui a:focus-visible { outline:2px solid #292929; outline-offset:2px; }
+.mobile-ui [class*="text-[10"], .mobile-ui [class*="text-[11"], .mobile-ui .text-xs { font-size:12px; line-height:1.5; }
+.mobile-ui .text-sm { font-size:14px; line-height:1.6; }
+.mobile-ui [class*="text-amber"],.mobile-ui [class*="text-green"],.mobile-ui [class*="text-emerald"],.mobile-ui [class*="text-rose"],.mobile-ui [class*="text-sky"],.mobile-ui [class*="text-red"],.mobile-ui [class*="text-slate"],.mobile-ui .text-state-active { color:#555; }
+.mobile-ui [class*="bg-amber"],.mobile-ui [class*="bg-green"],.mobile-ui [class*="bg-emerald"],.mobile-ui [class*="bg-rose"],.mobile-ui [class*="bg-sky"],.mobile-ui [class*="bg-red"],.mobile-ui [class*="bg-slate"] { background-color:#f4f4f4; }
+.mobile-ui [class*="border-amber"],.mobile-ui [class*="border-green"],.mobile-ui [class*="border-emerald"],.mobile-ui [class*="border-rose"],.mobile-ui [class*="border-sky"],.mobile-ui [class*="border-red"],.mobile-ui [class*="border-destructive"] { border-color:#ddd; }
+/* Keep color in actual, tiny state dots rather than semantic text or card fills. */
+.mobile-ui .rounded-full[class*="size-1"].bg-state-active { background:#27a06d; }
+.mobile-ui .rounded-full[class*="size-1"][class*="bg-amber"] { background:#d69b20; }
+.mobile-ui .shadow-sm, .mobile-ui .shadow-lg { box-shadow:none; }
+.mobile-ui .mobile-meta { font-size:12px; line-height:1.5; color:#777; }
+.mobile-ui .mobile-page-header { display:flex;align-items:center;gap:4px;padding:12px 14px 10px 18px;min-height:56px; }
+.mobile-ui .mobile-page-header h1 { font-size:22px;line-height:1.3;font-weight:650;flex:1; }
+.mobile-ui .mobile-page-header button { display:flex;align-items:center;justify-content:center;width:44px; }
+.mobile-ui .mobile-sub-header { display:flex;align-items:center;gap:8px;min-height:60px;border-bottom:1px solid #e9e9e9;padding:6px 14px; }
+.mobile-ui .mobile-sub-header h1 { flex:1;text-align:center;font-size:16px;font-weight:600; }
+.mobile-ui .mobile-sub-header button { display:flex;align-items:center;justify-content:center;padding:0 8px; }
+.mobile-ui .mobile-attention-row { display:flex;align-items:center;gap:10px;font-weight:600;width:calc(100% - 36px);margin:0 18px;padding:12px 0;border-bottom:1px solid #e9e9e9; min-height:48px; }
+.mobile-ui .mobile-count { display:inline-flex;background:#f0f0f0;border-radius:50px;min-width:24px;height:24px;padding:0 7px;justify-content:center;align-items:center;font-size:12px;font-weight:600; }
+.mobile-ui .mobile-count.is-bright { background:#252525;color:#fff; }
+.mobile-ui .mobile-attention-row.is-weak { font-weight:500;color:#888; }
+.mobile-ui .mobile-attention-row.is-weak svg { opacity:.45; }
+.mobile-ui .mobile-project-group { margin:0 18px;border-bottom:1px solid #eee; }
+/* Project folder+name left edge = attention-row text; disclose chevron sits inside folder icon. */
+.mobile-ui .mobile-project-heading { position:relative;display:flex;align-items:center;gap:2px;min-height:52px;margin-left:-18px;padding-left:18px; }
+.mobile-ui .mobile-project-heading > .mobile-disclose { position:absolute;left:0;top:50%;transform:translateY(-50%);display:flex;align-items:center;justify-content:flex-start;padding-left:18px;box-sizing:border-box;width:44px;height:44px;min-width:44px;min-height:44px;flex:none;z-index:1; }
+.mobile-ui .mobile-project-heading > .mobile-disclose svg { width:14px;height:14px;opacity:.75;flex:none; }
+.mobile-ui .mobile-project-heading > .mobile-project-name { display:flex;align-items:center;justify-content:flex-start;gap:8px;flex:1;min-width:0;min-height:44px;text-align:left;font-size:16px;font-weight:550; }
+.mobile-ui .mobile-project-heading > .mobile-project-actions { display:flex;align-items:center;justify-content:center;flex:0 0 44px;width:44px;min-width:44px;min-height:44px; }
+.mobile-ui .mobile-project-heading b { overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:550; }
+/* Child resources nest under project (spine), not under gutter chevron. */
+.mobile-ui .mobile-project-resources { position:relative;margin:0 0 4px 8px;padding:2px 0 6px 18px;border-left:1px solid #eee; }
+.mobile-ui .mobile-resource-row { display:flex;align-items:center;gap:10px;width:100%;padding:10px 4px 10px 2px;border-bottom:1px solid #eee;min-height:52px;text-align:left;font-size:14px; }
+.mobile-ui .mobile-resource-row > svg:first-child { width:18px;height:18px;opacity:.8;flex-shrink:0; }
+.mobile-ui .mobile-resource-row > svg:last-child { width:14px;height:14px;opacity:.5;flex-shrink:0; }
+.mobile-ui .mobile-resource-row:last-child { border-bottom:0; }
+.mobile-ui .mobile-empty-resource { display:flex;align-items:center;justify-content:space-between;width:100%;padding:6px 0 12px 2px;font-size:12px;color:#777; }
+/* Special heading peer of project: folder+label at same left edge; fold in gutter. */
+.mobile-ui .mobile-special-heading { position:relative;display:flex;align-items:center;gap:8px;width:calc(100% + 18px);margin-left:-18px;padding-left:18px;min-height:52px;text-align:left;font-size:15px;font-weight:550; }
+.mobile-ui .mobile-special-heading > .mobile-fold { position:absolute;left:13px;top:50%;transform:translateY(-50%);width:16px;height:16px;opacity:.75; }
+.mobile-ui .mobile-archive-row { display:flex;align-items:center;gap:10px;min-height:52px;padding:8px 18px 20px;width:100%;font-weight:500; }
+.mobile-ui .mobile-inline-menu { margin:0 18px;padding:6px 12px;border:1px solid #e9e9e9;border-radius:6px; }
+.mobile-ui .mobile-inline-menu button { display:flex;align-items:center;gap:12px;width:100%;text-align:left; }
+.mobile-ui .mobile-search { width:calc(100% - 36px);margin:0 18px 12px;padding:8px 12px;border:1px solid #ddd;border-radius:5px; }
+.mobile-ui .mobile-empty { padding:40px 20px;text-align:center;color:#777; }
+.mobile-ui .mobile-empty h2 { font-size:20px;color:#222;margin:12px 0; }
+.mobile-ui .mobile-empty button { border:1px solid #bbb;border-radius:5px;padding:8px 24px;margin-top:18px;color:#222; }
+.mobile-ui .mobile-data-notice { padding:12px 18px;border-bottom:1px solid #e9e9e9;font-size:13px; }
+.mobile-ui .mobile-data-notice p { overflow-wrap:anywhere; }
+.mobile-ui .mobile-sheet-backdrop { position:fixed;inset:0;z-index:60;background:#0004;display:flex;align-items:end; }
+.mobile-ui .mobile-action-sheet { background:#fff;width:100%;max-height:88%;overflow:auto;padding:14px 16px max(20px,env(safe-area-inset-bottom));border-radius:14px 14px 0 0; }
+.mobile-ui .mobile-action-sheet header { display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;padding:0 4px; }
+.mobile-ui .mobile-action-sheet h2 { margin:0;font-size:18px;font-weight:600; }
+.mobile-ui .mobile-sheet-group { display:flex;flex-direction:column;gap:8px; }
+.mobile-ui .mobile-sheet-group-primary { background:#f7f7f7;border:1px solid #e9e9e9;border-radius:12px;padding:12px;margin-bottom:10px; }
+.mobile-ui .mobile-sheet-group-label { font-size:12px;color:#777;font-weight:500;letter-spacing:.01em; }
+.mobile-ui .mobile-sheet-field { display:block;margin:0; }
+.mobile-ui .mobile-sheet-group-primary select { display:block;width:100%;border:1px solid #e0e0e0;border-radius:8px;padding:9px 10px;font-size:13px;color:#555;background:#fff;min-height:40px;font-weight:400;box-shadow:none; }
+.mobile-ui .mobile-sheet-action { display:flex;align-items:center;gap:10px;width:100%;text-align:left;font-size:15px;font-weight:500;border:0;background:none;padding:0;min-height:44px; }
+.mobile-ui .mobile-sheet-action svg { width:18px;height:18px;opacity:.75;flex-shrink:0; }
+.mobile-ui .mobile-sheet-action.primary { justify-content:center;gap:8px;min-height:48px;border-radius:10px;background:#252525;color:#fff;font-weight:600;font-size:15px;box-shadow:0 1px 2px rgba(0,0,0,.12); }
+.mobile-ui .mobile-sheet-action.primary svg { opacity:1;color:#fff; }
+.mobile-ui .mobile-sheet-group-secondary { margin-top:6px;padding-top:10px;border-top:1px solid #e9e9e9;gap:0;background:transparent; }
+.mobile-ui .mobile-sheet-action.secondary { min-height:44px;padding:0 4px;color:#666;font-weight:400;font-size:14px;border-bottom:1px solid #eee; }
+.mobile-ui .mobile-sheet-action.secondary:last-child { border-bottom:0; }
+.mobile-ui .mobile-sheet-action.secondary svg { opacity:.55;width:16px;height:16px; }
+.mobile-ui .mobile-sheet-note { margin:12px 4px 0;font-size:12px;color:#777;line-height:1.5; }
+.mobile-ui [data-testid=mobile-tabbar] { min-height:66px; }
+.mobile-ui [data-testid=mobile-tabbar] button { padding:10px 0 8px;font-size:12px; }
+.mobile-ui .mobile-session-list > div:first-child { padding:12px 18px; }
+.mobile-ui .mobile-session-list [data-testid=session-row] { border-radius:0;border-bottom:1px solid #e9e9e9;padding:14px 16px;background:white;gap:12px; }
+.mobile-ui .mobile-session-list [data-testid=session-row] > span:first-child { background:transparent;width:24px;height:28px; }
+.mobile-ui .mobile-session-list [data-testid=session-unread] { background:#252525;color:white; }
+.mobile-ui [aria-label="会话详情"] > section { border:0;border-radius:0;border-bottom:1px solid #e9e9e9;margin:0;padding:16px 4px; }
+.mobile-ui [aria-label="会话详情"] h3 { font-size:14px;color:#222; }
+.mobile-ui .mobile-settings > header { padding:16px 18px 8px;border:0; }
+.mobile-ui .mobile-settings > header h1 { font-size:22px; }
+.mobile-ui .mobile-settings > header button { display:none; }
+.mobile-ui .mobile-settings nav { border:0;border-radius:0; }
+.mobile-ui .mobile-settings [data-testid=native-current-machine],.mobile-ui .mobile-settings [data-testid=settings-sub-machines] { border:0;border-radius:0;border-bottom:1px solid #e9e9e9;padding:10px 0;background:#fff; }
+.mobile-ui .mobile-settings nav > button { padding:12px 0;background:#fff; }
+.mobile-ui .mobile-settings h3[data-testid] { font-weight:600;color:#222;padding-left:0; }
+.mobile-ui .mobile-settings [data-testid=settings-sub-back] { width:auto;flex:none;justify-content:flex-start;border:0;font-size:14px;color:#222; }
+.mobile-ui .mobile-sub-header h1 {min-width:0;white-space:nowrap;}
+.mobile-ui .mobile-sub-settings .p-4 { padding:16px 18px; }
+.mobile-ui .mobile-sub-settings > div > h2:first-child { display:none; }
+/* Existing editors/forms remain the real consumers. Compact sheet sizing prevents clipped fields. */
+.mobile-ui .fixed:has([role=dialog]) { padding:0;align-items:stretch; }
+.mobile-ui .fixed [role=dialog],.mobile-ui [role=dialog].fixed > div { max-width:none;width:100%;max-height:100%;height:100%;border-radius:0;box-shadow:none;overflow-y:auto; }
+.mobile-ui [role=dialog] input:not([type=checkbox]):not([type=radio]),.mobile-ui [role=dialog] select { min-height:44px;font-size:16px; }
+.mobile-ui [role=dialog] textarea { font-size:16px;line-height:1.65; }
+.mobile-ui [data-testid=cards-single-column] { padding:0 18px;gap:0; }
+.mobile-ui .mobile-card-row { display:flex;gap:12px;border-bottom:1px solid #e9e9e9;padding:16px 0;text-align:left; }
+.mobile-ui .mobile-card-row h3 { font-size:14px;font-weight:600;line-height:1.5;margin:4px 0; }
+.mobile-ui .mobile-card-row small { font-size:12px;color:#777; }
+/* Compact status chips: equal flex, no pill; selected = weight + underline. Desktop chips keep Tailwind pills. */
+.mobile-ui [data-testid=card-status-filter] { display:flex;width:100%;flex-wrap:nowrap;gap:0;justify-content:space-between;padding:4px 8px 8px;border-bottom:1px solid #e9e9e9; }
+.mobile-ui [data-testid=card-status-filter] button { flex:1 1 0;min-height:44px;padding:8px 0;border:0 !important;border-radius:0 !important;background:transparent !important;font-size:12px;color:#777;text-align:center;white-space:nowrap;box-shadow:none; }
+.mobile-ui [data-testid=card-status-filter] button[aria-pressed=true] { color:#202020;font-weight:600;text-decoration:underline;text-underline-offset:6px;background:transparent !important; }
+.mobile-ui [data-testid=card-drawer-header] { min-height:44px; }
+.mobile-ui .mobile-card-drawer-header { justify-content:flex-start; }
+.mobile-ui .mobile-card-drawer-header > button { flex:0 0 44px; width:44px; min-width:44px; }
+.mobile-ui .mobile-card-drawer-header > span { flex:0 0 auto; white-space:nowrap; }
+.mobile-ui .mobile-card-task-row { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:4px 8px; align-items:center; }
+.mobile-ui .mobile-card-task-label { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.mobile-ui .mobile-card-task-state { min-width:0; justify-self:end; white-space:nowrap; }
+.mobile-ui .mobile-card-task-target { grid-column:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.mobile-ui .mobile-card-task-row > button { grid-column:2; grid-row:2; min-width:44px; min-height:44px; }
+.mobile-ui [data-testid=card-drawer-header] + * { overflow-wrap:anywhere; }
+.mobile-ui [data-testid=project-wt-card],.mobile-ui [data-testid=project-pty-row] { border:0;border-radius:0;border-bottom:1px solid #e9e9e9;margin:0;padding:16px 0; }
+.mobile-ui [data-testid=project-new-worktree] { border:1px solid #ddd;border-radius:5px;margin-top:16px; }
+.mobile-ui [data-testid=mobile-dir] .text-xs { font-size:13px; }
+.mobile-ui [data-testid=mobile-dir] [role=treeitem] { min-height:44px; }
+.mobile-ui [data-testid=mobile-dir] { font-size:14px; }
+.mobile-ui .mobile-terminal-keys button { min-width:44px;min-height:44px;font-size:13px; }
+@media (max-width:380px) {
+  .mobile-ui .mobile-page-header {padding-inline:14px;}
+  .mobile-ui .mobile-project-group {margin-inline:14px;}
+  .mobile-ui .mobile-attention-row {width:calc(100% - 28px);margin-inline:14px;}
+  .mobile-ui .mobile-project-heading {margin-left:-14px;padding-left:14px;}
+  .mobile-ui .mobile-project-heading > .mobile-disclose {padding-left:14px;}
+  .mobile-ui .mobile-special-heading {width:calc(100% + 14px);margin-left:-14px;padding-left:14px;}
+  .mobile-ui .mobile-special-heading > .mobile-fold {left:11px;}
+}
+
+/* B429 cut-2 / A1：空项目进「其余 N」桶；桶内折叠行仍矮、分隔更弱。 */
+.mobile-ui .mobile-project-group.is-empty-collapsed { border-bottom-color:#f3f3f3; }
+.mobile-ui .mobile-project-group.is-empty-collapsed .mobile-project-heading { min-height:44px; }
+.mobile-ui .mobile-empty-bucket { border-bottom-color:#f0f0f0; }
+.mobile-ui .mobile-empty-bucket-heading { color:#888;font-weight:500;font-size:14px; }
+.mobile-ui .mobile-empty-bucket-heading b { font-weight:500; }
+.mobile-ui .mobile-empty-bucket-body > .mobile-project-group { margin:0; border-bottom-color:#f3f3f3; }
+.mobile-ui .mobile-empty-bucket-body > .mobile-project-group:last-child { border-bottom:0; }
+
+/* B429：弱「全部项目」进顶栏（与需要你/＋一排），非整行粗框。 */
+.mobile-ui .mobile-cards-page .mobile-cards-header .mobile-project-select-wrap {
+  padding: 0;
+  border: 0;
+  min-width: 0;
+  flex: 0 1 auto;
+  width: auto;
+  max-width: 42%;
+}
+.mobile-ui .mobile-cards-page .mobile-cards-header .mobile-project-select {
+  width: auto;
+  max-width: 100%;
+  min-height: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: 0;
+  padding: 0 12px 0 2px;
+  font-size: 13px;
+  font-weight: 400;
+  background: transparent;
+  color: #666;
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath fill='%23999' d='M0 0l5 6 5-6z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0 center;
+  text-overflow: ellipsis;
+}
+
+/* B429 cut-2：工作项头栏矮化——淡 chip / 弱＋，标题仍可读。 */
+.mobile-ui .mobile-cards-page .mobile-cards-header { min-height:52px; padding:8px 14px 8px 18px; gap:8px; }
+.mobile-ui .mobile-cards-page .mobile-cards-header h1 { font-size:17px; line-height:1.3; font-weight:600; }
+.mobile-ui .mobile-cards-page .mobile-needs-action {
+  min-height:36px; min-width:auto; padding:0 8px; gap:4px;
+  border:1px solid #e8ddd6; border-radius:8px; background:#f7f1ee; color:#6b4a3a;
+  font-size:12px; width:auto; max-width:none; flex:0 0 auto;
+}
+.mobile-ui .mobile-cards-page .mobile-needs-action[aria-pressed=true] {
+  border-color:#c9b5a8; background:#f0e6e0; font-weight:600;
+}
+.mobile-ui .mobile-cards-page .mobile-needs-action svg { flex:0 0 14px; width:14px; height:14px; opacity:.7; }
+.mobile-ui .mobile-cards-page .mobile-needs-count {
+  display:inline-flex; min-width:18px; height:18px; padding:0 5px; border-radius:999px;
+  border:1px solid #e8ddd6; align-items:center; justify-content:center; font-size:11px;
+}
+.mobile-ui .mobile-cards-page .mobile-plus-weak {
+  width:40px; height:40px; min-width:40px; min-height:40px;
+  border:0; border-radius:0; opacity:.85; background:transparent;
+}
+.mobile-ui .mobile-cards-page .mobile-plus-weak svg { width:18px; height:18px; }
+
+/* Compact card rows: whole-row hit; trailing ⋯ removed. */
+.mobile-ui .mobile-card-actions { display:none; }
+
+/* Dark neutral controls retain contrast after semantic color normalization. */
+.mobile-ui .bg-slate-900 { background-color:#252525;color:#fff; }
+.mobile-ui [data-testid=mobile-dir] select {padding:8px;font-size:14px;}
+
+/* Compact automation is an indexed list, not the desktop page's stacked editors. */
+.mobile-ui .mobile-automation-tabs { display:flex; gap:0; border-bottom:1px solid #e5e5e5; }
+.mobile-ui .mobile-automation-tabs [role=tab] { flex:1 1 0; min-height:44px; border:0; border-bottom:2px solid transparent; border-radius:0; background:transparent; padding:8px 12px; text-align:center; white-space:nowrap; }
+.mobile-ui .mobile-automation-tabs [role=tab][aria-selected=true] { border-bottom-color:#222; color:#222; font-weight:600; }
+.mobile-ui .mobile-automation-section > div:first-child { display:flex; align-items:center; gap:8px; min-height:44px; }
+.mobile-ui .mobile-automation-section > div:first-child h3 { font-size:15px; }
+.mobile-ui .mobile-automation-section > div:first-child > button { min-height:44px; white-space:nowrap; }
+.mobile-ui .mobile-automation-row { border-bottom:1px solid #e9e9e9; }
+.mobile-ui .mobile-automation-summary { display:grid; width:100%; min-width:0; min-height:64px; grid-template-columns:minmax(0,1fr) auto; align-items:center; gap:12px; border:0; border-radius:0; background:transparent; padding:8px 2px; text-align:left; }
+.mobile-ui .mobile-automation-primary { display:grid; min-width:0; grid-template-columns:minmax(0,1fr); gap:4px; text-align:left; }
+.mobile-ui .mobile-automation-trailing { display:flex; min-width:0; align-items:center; justify-content:flex-end; gap:8px; white-space:nowrap; }
+.mobile-ui .mobile-automation-detail { padding:8px 4px 14px; }
+.mobile-ui .mobile-automation-actions > summary { min-height:44px; display:flex; align-items:center; }
+.mobile-ui .mobile-automation-actions > div { display:flex; flex-wrap:wrap; gap:8px; }
+.mobile-ui .mobile-automation-actions button { min-height:44px; border:1px solid #ddd; border-radius:5px; padding:8px 12px; }
+.mobile-ui .mobile-env-machine-bar { display:flex !important; flex-wrap:nowrap !important; gap:8px; overflow-x:auto; white-space:nowrap; }
+.mobile-ui .mobile-env-machine-bar > * { flex:0 0 auto; }
+.mobile-ui [data-testid=workbench-underlay][aria-hidden=true] [role=status] { display:none; }
+
+.mobile-ui [data-testid=mobile-board] section {width:100%;border:0;border-radius:0;}
+.mobile-ui [data-testid=mobile-board] section article {border:0;border-bottom:1px solid #e9e9e9;border-radius:0;box-shadow:none;padding:14px 4px;}
+
+/* Compact work items: reserve the trailing hit target and show only a short needs preview. */
+.mobile-ui .mobile-card-row { display:grid; min-width:0; grid-template-columns:minmax(0,1fr); gap:0; border-bottom:1px solid #e9e9e9; padding:0; }
+.mobile-ui .mobile-card-main { display:flex; min-width:0; width:100%; min-height:44px; flex-direction:column; align-items:stretch; gap:4px; padding:12px 4px 8px; text-align:left; }
+.mobile-ui .mobile-card-identity { display:flex; min-width:0; align-items:center; gap:8px; color:#777; }
+.mobile-ui .mobile-card-title { display:-webkit-box; overflow:hidden; -webkit-box-orient:vertical; -webkit-line-clamp:2; white-space:normal; overflow-wrap:anywhere; font-size:16px; line-height:22px; font-weight:600; }
+.mobile-ui .mobile-card-needs-preview { display:-webkit-box; overflow:hidden; -webkit-box-orient:vertical; -webkit-line-clamp:2; white-space:normal; overflow-wrap:anywhere; line-height:19px; color:var(--muted-foreground); }
+.mobile-ui .mobile-card-actions { position:relative; justify-self:end; margin:0 4px 6px 0; }
+.mobile-ui .mobile-card-actions summary { display:flex; width:44px; height:44px; align-items:center; justify-content:center; border:1px solid #ddd; border-radius:6px; font-size:18px; }
+.mobile-ui .mobile-card-actions > button { position:absolute; z-index:2; right:0; top:48px; min-width:128px; min-height:44px; border:1px solid #ddd; border-radius:6px; background:var(--background); padding:8px 12px; text-align:left; }
+.mobile-ui .mobile-page-header { flex-wrap:nowrap; }
+.mobile-ui .mobile-needs-action { flex:0 0 auto; min-width:44px; white-space:nowrap; }
+.mobile-ui .mobile-cards-page [data-testid=cards-primary-actions] > .mobile-needs-action { width:max-content; min-width:44px; max-width:none; flex:0 0 auto; white-space:nowrap; padding-inline:8px; }
+.mobile-ui .mobile-cards-page [data-testid=cards-primary-actions] > .mobile-needs-action svg { flex:0 0 16px; }
+.mobile-ui [data-testid=cards-primary-actions] h1 { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.mobile-ui [data-testid=cards-ledger-health] { overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+
+/* Collaboration transcript: coordinator notes use the reading column; own replies stay compact/right aligned. */
+.mobile-ui .mobile-session-message:not(.items-end) { width:100%; align-items:stretch; }
+.mobile-ui .mobile-session-message:not(.items-end) > .items-center { width:100%; max-width:100%; align-items:flex-start; }
+.mobile-ui .mobile-session-message-body { overflow-wrap:anywhere; }
+.mobile-ui .mobile-session-message:not(.items-end) .mobile-session-message-body { border:0; border-radius:0; box-shadow:none; padding-left:0; padding-right:0; }
+.mobile-ui .mobile-session-message.items-end .mobile-session-message-body { max-width:calc(100vw - 48px); box-shadow:none; }

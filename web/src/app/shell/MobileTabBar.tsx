@@ -1,18 +1,17 @@
-// MobileTabBar —— 紧凑视口（phone/pad）下的底栏四个一级 tab（spec 实现决定）。
+// MobileTabBar —— 紧凑视口（phone/pad）下的底栏三个一级 tab（spec 实现决定）。
 //
-// 职责：渲染「会话 | 卡 | 项目 | 设置」四个切换钮与可选角标；选择动作经 onSelect 上抛。
+// 职责：渲染「工作台 | 工作项 | 设置」四个切换钮与可选角标；选择动作经 onSelect 上抛。
 // 边界：
 //   - 不取数、不路由、不判断视口：视口判定归 useShellViewport，内容渲染归 Shell
 //   - P1=A：它与桌面三栏是同一份 Shell 的条件渲染产物，不新开 /m 路由树；
 //     本组件自身不持有任何页面状态
-import { FolderGit2, MessagesSquare, Settings, SquareKanban, type LucideIcon } from 'lucide-react'
+import { FileText, LayoutGrid, Settings, type LucideIcon } from 'lucide-react'
 
 export type MobileTab = 'sessions' | 'cards' | 'projects' | 'settings'
 
 const TABS: { key: MobileTab; label: string; Icon: LucideIcon }[] = [
-  { key: 'sessions', label: '会话', Icon: MessagesSquare },
-  { key: 'cards', label: '卡', Icon: SquareKanban },
-  { key: 'projects', label: '项目', Icon: FolderGit2 },
+  { key: 'projects', label: '工作台', Icon: LayoutGrid },
+  { key: 'cards', label: '工作项', Icon: FileText },
   { key: 'settings', label: '设置', Icon: Settings },
 ]
 
@@ -33,21 +32,22 @@ export function MobileTabBar({ active, onSelect, needsCount = 0, unread = 0 }: M
       className="flex shrink-0 items-stretch border-t bg-background pb-[env(safe-area-inset-bottom)]"
     >
       {TABS.map(({ key, label, Icon }) => {
-        const badge = key === 'sessions' ? unread : key === 'cards' ? needsCount : 0
+        const selected = active === key || (key === 'projects' && active === 'sessions')
+        const badge = key === 'projects' ? unread : key === 'cards' ? needsCount : 0
         return (
           <button
             key={key}
             type="button"
             role="tab"
-            aria-selected={active === key}
+            aria-selected={selected}
             data-testid={`mobile-tab-${key}`}
             onClick={() => onSelect(key)}
-            className={`relative flex flex-1 flex-col items-center gap-0.5 py-2 text-[11px] ${active === key ? 'font-semibold text-foreground' : 'text-muted-foreground'}`}
+            className={`relative flex flex-1 flex-col items-center gap-0.5 py-2 text-[11px] ${selected ? 'font-semibold text-foreground' : 'text-muted-foreground'}`}
           >
             <Icon className="size-5" />
             <span>{label}</span>
             {badge > 0 && (
-              <span className="absolute right-4 top-1 min-w-4 rounded-full bg-red-500 px-1 text-center text-[10px] leading-4 text-white">
+              <span className="absolute right-4 top-1 min-w-4 rounded-full bg-foreground px-1 text-center text-[10px] leading-4 text-white">
                 {badge}
               </span>
             )}

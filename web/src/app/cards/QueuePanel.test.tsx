@@ -42,6 +42,7 @@ function renderPanel(overrides: Partial<React.ComponentProps<typeof QueuePanel>>
       entries={entries}
       open={false}
       loading={false}
+      hasSnapshot
       disconnected={false}
       sessionExpired={false}
       errorText=""
@@ -96,5 +97,22 @@ describe('QueuePanel', () => {
     expect(screen.getByText('B1')).toBeInTheDocument()
     expect(screen.getByText('拉起')).toBeInTheDocument()
     expect(screen.getByText('未就绪')).toBeInTheDocument()
+  })
+
+  it('compact collapsed count distinguishes loading, unavailable, stale and confirmed empty snapshots', () => {
+    const { rerender } = renderPanel({ compact: true, entries: [], loading: true, hasSnapshot: false })
+    expect(screen.getByRole('button', { name: '⧗ 排队中 …' })).toBeInTheDocument()
+
+    rerender(<QueuePanel entries={[]} open={false} loading={false} hasSnapshot={false} disconnected errorText="断开" sessionExpired={false} onToggle={vi.fn()} onOpenCard={vi.fn()} compact />)
+    expect(screen.getByRole('button', { name: '⧗ 排队中 — · 未确认' })).toBeInTheDocument()
+
+    rerender(<QueuePanel entries={[]} open={false} loading={false} hasSnapshot={false} disconnected={false} errorText="" sessionExpired onToggle={vi.fn()} onOpenCard={vi.fn()} compact />)
+    expect(screen.getByRole('button', { name: '⧗ 排队中 — · 未确认' })).toBeInTheDocument()
+
+    rerender(<QueuePanel entries={[]} open={false} loading={false} hasSnapshot onToggle={vi.fn()} onOpenCard={vi.fn()} disconnected={false} sessionExpired={false} errorText="" compact />)
+    expect(screen.queryByRole('button', { name: /⧗ 排队中/ })).toBeNull()
+
+    rerender(<QueuePanel entries={entries} open={false} loading={false} hasSnapshot disconnected onToggle={vi.fn()} onOpenCard={vi.fn()} sessionExpired={false} errorText="断开" compact />)
+    expect(screen.getByRole('button', { name: '⧗ 排队中 2 · 未确认' })).toBeInTheDocument()
   })
 })

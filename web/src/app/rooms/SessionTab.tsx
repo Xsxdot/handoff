@@ -195,7 +195,7 @@ export function SessionTab({ sessionId, title, onOpenCard, compact = false, pane
                 : detailPoll.disconnected
                   ? <p className="p-3 text-sm text-muted-foreground">详情读取失败：{detailPoll.errorText}</p>
                   : <p className="p-3 text-sm text-muted-foreground">正在读取…</p>
-              : <SessionDetail detail={detail} onOpenCard={onOpenCard}
+              : <SessionDetail detail={detail} onOpenCard={onOpenCard} compact={compact}
                   onArchive={() => setArchiveConfirm(true)} archiveBusy={archiveBusy} archiveError={archiveError} />}
           </div>
         </>

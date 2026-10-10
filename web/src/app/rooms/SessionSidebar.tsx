@@ -4,6 +4,7 @@
 // B358.8 #1：行可拖——dragstart 写 DRAG_SESSION_MIME，落点语义由 WorkbenchPage/
 // TabBar 的既有拖放面承接（拖出即分屏/开组），本组件只负责发载荷与拖源提示。
 import { useState } from 'react'
+import { Archive, MessageSquare } from 'lucide-react'
 import type { DragEvent } from 'react'
 import type { SessionSummary } from '../../api/rooms'
 import { formatRelative } from '../lib/format'
@@ -30,16 +31,11 @@ export interface SessionSidebarProps {
   // 原样在下，「原型未覆盖能力保留」）+ 行内成员横排（5 枚上限 + 溢出 +N）与
   // 群主行。缺省 false，桌面 toggle 行与行结构逐字节不动。
   compact?: boolean
+  archivedOnly?: boolean
 }
 
-// 成员头像底色轮换：原型 mobile-home.html .mv 五色逐值转写（岔口 8，字面量
-// 不引 token——横排只此一处消费，理由同键条暗色）。
-const MEMBER_COLORS = ['#fde68a', '#dbeafe', '#dcfce7', '#ede9fe', '#fce7f3']
-// 横排上限：第 6 枚起折成「+N」文本 chip（N = 总数 − 5）。
-const MEMBER_AVATAR_MAX = 5
-
 export function SessionSidebar({ sessions, loading, errorText, expired = false, needsOnly, onToggleNeeds, onOpen, onCreate,
-  projectFilter, onProjectFilter, projectOptions, projectOfCard, compact = false }: SessionSidebarProps) {
+  projectFilter, onProjectFilter, projectOptions, projectOfCard, compact = false, archivedOnly = false }: SessionSidebarProps) {
   const byProject = filterSessionsByProject(sessions, projectOfCard, projectFilter)
   const visible = needsOnly ? byProject.filter((session) => session.needs_human) : byProject
   const needsCount = sessions.filter((session) => session.needs_human).length
@@ -51,11 +47,11 @@ export function SessionSidebar({ sessions, loading, errorText, expired = false, 
     setDraggingId(session.id)
   }
   return (
-    <div className="flex min-h-0 flex-1 flex-col" data-testid="session-list">
+    <div className={compact ? "mobile-session-list flex min-h-0 flex-1 flex-col" : "flex min-h-0 flex-1 flex-col"} data-testid="session-list">
       {/* 未读徽章的聚合读数挂在列表头：tab 级徽章由 Shell 用同一数据另算 */}
       <div className="flex shrink-0 items-center justify-between px-3 py-2.5">
         <span className="text-sm font-semibold">会话</span>
-        <button type="button" aria-label="新建会话" onClick={onCreate} className="rounded-md border px-2 py-1 text-xs hover:bg-accent">＋ 新建会话</button>
+        <button type="button" aria-label="新建会话" onClick={onCreate} disabled={loading || expired || errorText !== '' || archivedOnly} className="rounded-md border px-2 py-1 text-xs hover:bg-accent">＋ 新建会话</button>
       </div>
       {/* 筛选单行（走查 09-17，对 board.html 原型 .im-filters）：项目下拉 + 需要你
           开关 + 计数同处一行，纯文字项不做成带边框表单控件。桌面随 main，只在
@@ -111,7 +107,7 @@ export function SessionSidebar({ sessions, loading, errorText, expired = false, 
             onClick={() => onOpen(session)}
             className={`flex w-full items-start gap-2 rounded-xl px-2.5 py-2 text-left transition-colors ${session.needs_human ? 'bg-amber-50 hover:bg-amber-100' : 'hover:bg-accent/60'} ${draggingId === session.id ? 'opacity-50' : ''}`}>
             <span className="relative flex size-10 shrink-0 items-center justify-center rounded-md bg-slate-200 text-[11px] font-semibold text-slate-700">
-              {session.title.slice(0, 2)}
+              {compact ? (session.archived ? <Archive className="size-5" /> : <MessageSquare className="size-5" />) : session.title.slice(0, 2)}
               {session.unread > 0 && <span data-testid="session-unread" className="absolute -right-1 -top-1 min-w-4 rounded-full bg-red-500 px-1 text-center text-[10px] leading-4 text-white">{session.unread}</span>}
             </span>
             <span className="min-w-0 flex-1">
@@ -124,28 +120,7 @@ export function SessionSidebar({ sessions, loading, errorText, expired = false, 
                 {session.archived && <span className="shrink-0 rounded-full border px-1.5 text-[10px] text-muted-foreground">已归档</span>}
                 <span className="truncate">{session.preview?.body ?? '暂无预览'}</span>
               </span>
-              {/* B369.10（岔口 8）：成员横排与群主行 compact-only——横排只报身份
-                  不报状态文字（memberStatusText 是详情态口径，390 行内放不下逐人
-                  状态）；上限 5 枚 + 溢出「+N」；owner 空串不渲染群主行。 */}
-              {compact && (session.members?.length ?? 0) > 0 && (
-                <span className="mt-1 flex min-w-0 items-center gap-1" data-testid="session-members">
-                  {session.members!.slice(0, MEMBER_AVATAR_MAX).map((member, index) => (
-                    <span key={`${member.identity}-${index}`} aria-label={member.identity}
-                      className="flex size-5 shrink-0 items-center justify-center rounded-full text-[9px] font-semibold text-slate-700"
-                      style={{ backgroundColor: MEMBER_COLORS[index % MEMBER_COLORS.length] }}>
-                      {member.identity.slice(0, 2)}
-                    </span>
-                  ))}
-                  {session.members!.length > MEMBER_AVATAR_MAX && (
-                    <span className="shrink-0 rounded-full border px-1.5 text-[10px] text-muted-foreground" data-testid="session-members-more">
-                      +{session.members!.length - MEMBER_AVATAR_MAX}
-                    </span>
-                  )}
-                </span>
-              )}
-              {compact && session.owner !== '' && (
-                <span className="mt-0.5 block truncate text-[11px] text-muted-foreground" data-testid="session-owner">群主：{session.owner}</span>
-              )}
+
             </span>
           </button>
         ))}

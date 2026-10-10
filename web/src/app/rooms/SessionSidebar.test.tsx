@@ -122,7 +122,7 @@ describe('SessionSidebar', () => {
   })
 })
 
-// —— B369.10 T6：compact 会话首页（chips 行 + 行内成员横排/群主行，岔口 5/8）——
+// —— compact 协作列表：成员详情只在会话详情页展示，不在列表行重复展开 ——
 describe('B369.10 compact 会话首页', () => {
   const golden = () => cases.find((c) => c.case === 'session-summary-golden')!.summary!
   const member = (identity: string): SessionMember => ({ identity, kind: 'agent', status: 'listening' })
@@ -151,24 +151,19 @@ describe('B369.10 compact 会话首页', () => {
     expect(onToggleNeeds).toHaveBeenCalledTimes(2)
   })
 
-  it('成员横排 ≤5 全显：逐枚身份染色块（aria-label=identity）+ 群主行', () => {
+  it('列表行不展开成员与群主，成员详情留在会话详情页', () => {
     const members = ['user:sy', 'cli:claude#1', 'cli:codex#2', 'cli:opencode#3', 'cli:grok#4'].map(member)
     render(<SessionSidebar sessions={[withMembers(members)]} {...defaultProps} compact />)
-    const row = screen.getByTestId('session-members')
-    const avatars = Array.from(row.querySelectorAll('span[aria-label]'))
-    expect(avatars).toHaveLength(5)
-    expect(avatars.map((a) => a.getAttribute('aria-label'))).toEqual(['user:sy', 'cli:claude#1', 'cli:codex#2', 'cli:opencode#3', 'cli:grok#4'])
-    expect(avatars[0].textContent).toBe('us')
-    expect(avatars[0].className).not.toContain('bg-amber')
-    expect(screen.getByTestId('session-owner')).toHaveTextContent('群主：user:sy')
-    expect(screen.queryByTestId('session-members-more')).toBeNull()
+    expect(screen.getByTestId('session-row')).toHaveAccessibleName('会话 架构物理化')
+    expect(screen.queryByTestId('session-members')).toBeNull()
+    expect(screen.queryByTestId('session-owner')).toBeNull()
   })
 
-  it('成员 >5 溢出「+N」：前 5 枚折后 N=总数−5', () => {
+  it('compact 列表不会因成员数增加而改变列表行结构', () => {
     const members = Array.from({ length: 8 }, (_, i) => member(`cli:agent-${i}`))
     render(<SessionSidebar sessions={[withMembers(members)]} {...defaultProps} compact />)
-    expect(screen.getAllByText('cl').length).toBeGreaterThanOrEqual(5)
-    expect(screen.getByTestId('session-members-more')).toHaveTextContent('+3')
+    expect(screen.getByTestId('session-row')).toHaveAccessibleName('会话 架构物理化')
+    expect(screen.queryByTestId('session-members-more')).toBeNull()
   })
 
   it('owner 空串不渲染群主行；无成员不渲染横排', () => {
