@@ -181,4 +181,45 @@ final class CookieBridgeTests: XCTestCase {
         XCTAssertEqual(rec.calls.last, "load:http://127.0.0.1:50000/", "暂存路由必须在进入时补上")
         XCTAssertEqual(entered, 1, "enter 成功必须回调 onEntered")
     }
+
+    // MARK: - 修刀（2026-10-10）：currentRoute 记账（前台横幅抑制的路由事实源）
+
+    // 进入机器（无暂存路由）→ currentRoute 为工作台首页 "/"。
+    func testEnterWithoutPendingRouteSetsCurrentRouteHome() {
+        let rec = CallRecorder()
+        let (bridge, _, _, _) = make(g: rec)
+        let e = expectation(description: "enter")
+        bridge.enter(machine: "A", online: true) { _ in e.fulfill() }
+        wait(for: [e], timeout: 2)
+        XCTAssertEqual(bridge.currentRoute, "/", "进入后未点通知：当前路由=工作台首页")
+    }
+
+    // 进入机器携带暂存深链 → currentRoute 落该深链。
+    func testEnterWithPendingRouteSetsCurrentRoute() {
+        let rec = CallRecorder()
+        let (bridge, _, _, _) = make(g: rec)
+        bridge.openRoute("/cards?card=B432")
+        let e = expectation(description: "enter")
+        bridge.enter(machine: "A", online: true) { _ in e.fulfill() }
+        wait(for: [e], timeout: 2)
+        XCTAssertEqual(bridge.currentRoute, "/cards?card=B432")
+    }
+
+    // 已进入后点通知 → currentRoute 跟随 openRoute。
+    func testOpenRouteAfterEnterUpdatesCurrentRoute() {
+        let rec = CallRecorder()
+        let (bridge, _, _, _) = make(g: rec)
+        let e = expectation(description: "enter")
+        bridge.enter(machine: "A", online: true) { _ in e.fulfill() }
+        wait(for: [e], timeout: 2)
+        bridge.openRoute("/cards?card=B999")
+        XCTAssertEqual(bridge.currentRoute, "/cards?card=B999")
+    }
+
+    // 未进入时 currentRoute 为空串（不是 "/"——还没有任何页面在场）。
+    func testCurrentRouteEmptyBeforeEnter() {
+        let rec = CallRecorder()
+        let (bridge, _, _, _) = make(g: rec)
+        XCTAssertEqual(bridge.currentRoute, "", "未进入时无路由可言")
+    }
 }

@@ -35,14 +35,17 @@ final class AppDelegate: UIResponder, UIApplicationDelegate, UNUserNotificationC
 
     // MARK: - 通知中心委托
 
-    // 前台呈现：前台且已在控制台 → 不重复弹横幅（spec 验收①）；否则交给系统。
+    // 前台呈现：前台且已在该通知的对应面（对应卡或工作台「需要你」入口）→
+    // 不重复弹横幅（spec 验收①）；别处前台仍弹（修刀 2026-10-10：按路由判定，
+    // 禁 currentMachine!=nil 近似——进了控制台但在别的卡/tab 仍须弹）。
     func userNotificationCenter(_ center: UNUserNotificationCenter,
                                 willPresent notification: UNNotification,
                                 withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
-        // 「对应面已打开」= 控制台已进入（活动机器在屏），此刻站内铃铛与角标可见。
-        let onRelevantScreen = AppComposition.current?.cookieBridge.currentMachine != nil
+        let route = PushDeepLink.route(from: notification.request.content.userInfo)
+        let current = AppComposition.current?.cookieBridge.currentRoute ?? ""
+        let onRelevantScreen = PushPresentation.isRelevantRoute(notificationRoute: route, currentRoute: current)
         let present = PushPresentation.shouldPresent(isForeground: true, onRelevantScreen: onRelevantScreen)
-        Log.shell.debug("前台通知呈现判定 decision=\(present ? "banner" : "suppress", privacy: .public)")
+        Log.shell.debug("前台通知呈现判定 route=\(route ?? "/", privacy: .public) current=\(current, privacy: .public) decision=\(present ? "banner" : "suppress", privacy: .public)")
         completionHandler(present ? [.banner, .list] : [])
     }
 

@@ -134,3 +134,32 @@
 
 - `git add -A && git commit` → 产出提交 **`849c72fe`**（44 文件，+3064/−36），分支 `cards/B432-charter-2`，`git status --short` 为空（工作树干净）。
 - 提交后追加本节并 `git commit --amend --no-edit`（HEAD 换 hash 属 git 事实，不回写台账 chase）。
+
+## L10 修刀（charter-3：抑横幅按路由判定对应面）
+
+- 修刀令（2026-10-10 产品+架构）：抑横幅必须按路由/对应面 onRelevantScreen（接到当前路由：对应卡或工作台「需要你」入口），禁止用 currentMachine!=nil 近似。别处前台仍弹系统横幅。基线 cards/B432-charter-2；只改 iOS 壳/桥接。
+- 图查询：`codegraph sym PushPresentation` / `sym currentRoute` / `sym CookieBridge` 均**未命中**（壳 mobile/ios 图外）——记图覆盖债，按纪律回落直接读文件。
+- 真码事实：`AppDelegate.swift:43` 现为 `let onRelevantScreen = AppComposition.current?.cookieBridge.currentMachine != nil`（进入控制台即抑制，别处前台也弹不了——正是修刀禁的近似）。
+- 路由事实：壳 SPA 走 BrowserRouter（`web/src/App.tsx:29`）；工作台首页 path=`/`（缺省 tab=projects，MobileWorkspace 顶部「需要你处理」行即聚合入口）；`/?tab=projects` 与 `/` 同面；卡对应面=`/cards?card=<id>`（`Shell.tsx:921` 深链形状）。WKWebView 的 `url` 属性随 SPA pushState 同步。
+- 判定语义（本刀）：onRelevantScreen = （当前路由与深链逐字一致）OR（当前路由是工作台首页 `/` 或 `/?tab=projects`——聚合对应面在场）。别处（别的卡、`/cards` 列表、`/?tab=settings`、未加载）前台仍弹。
+- XCTest 本机无 toolchain（`which swift swiftc xcodebuild` → command not found）——与 plan T7 同判：机内只做静态核对 + mobile Go 模块回归；XCTest 红绿归 Xcode/CI，如实记未验证。
+
+## L11 修刀落地与收口
+
+1. 测试先行（先红，未能本机见红——无 Xcode toolchain，如实记）：
+   - `PushPresentationTests` 增 8 支 `isRelevantRoute` 用例（对应卡/别的卡/工作台首页/无深链各处/空串/残参）。
+   - `CookieBridgeTests` 增 4 支 `currentRoute` 记账用例（进入无暂存=「/」、带暂存=深链、openRoute 跟随、未进入=空串）。
+   - **未验证**：`which swift swiftc xcodebuild` → command not found（linux 无 Apple toolchain）。XCTest 红绿与变异自验归 Xcode/CI，与 plan T7 同判。
+2. 实现：
+   - `PushPresentation.isRelevantRoute(notificationRoute:currentRoute:)`（纯函数）：空串→别处；`isWorkbenchHome`（path=/ 且 tab 缺省或 projects）→在场；否则深链与当前路由同为 /cards 宿主且 card 参数相等才算对应卡。
+   - `CookieBridge` 增 `private(set) var currentRoute`：enter 成功（inject）落「/」或暂存深链；openRoute 跟随；另挂 `webView.url` KVO 镜像 SPA pushState（`NSKeyValueObservation`，deinit 自动失效）。
+   - `AppDelegate.willPresent` 改为 `PushDeepLink.route(userInfo)` + `cookieBridge.currentRoute` → `isRelevantRoute` → `shouldPresent`；**删除** `currentMachine != nil` 近似。日志带 route/current/decision 三元。
+   - 修一处测试笔误：`/?card=B432` 宿主仍是首页（card 只在 /cards 宿主有语汇）→ 应判在场 true，已改断言并注释理由。
+3. 亲跑命令与原始输出：
+   - `go build ./...` → 退 0（BUILD_OK）。
+   - `go vet ./...` → 退 0（VET_EXIT=0）。
+   - `cd mobile && go test ./... -count=1` → `ok mobile 0.160s`、`ok mobile/bind 7.589s`；`go vet ./...` 退 0。
+   - 静态 SourceGuard（grep 复刻）：URLSession/JSONDecoder/JSONSerialization 零命中；Bind 符号全在白名单；Token 语境仅 APNs device；`handoff_session` 常量在场——四项 PASS。
+4. 逻辑桌核（isRelevantRoute 对 8 支用例逐条走查，全符预期；非执行证据，仅记推演）。
+5. 变异自验：**未验证**（Swift 测试本机不可执行）。
+6. 图覆盖债：`PushPresentation/isRelevantRoute/currentRoute/CookieBridge` 均不在图（壳图外）——本节点持续记债。

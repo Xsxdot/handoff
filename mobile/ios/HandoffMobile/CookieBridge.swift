@@ -74,14 +74,22 @@ final class CookieBridge {
     private let loader: OriginLoader
     private let onMain: MainQueueExecutor
 
-    // B432：最近一次成功进入的机器与它的回环源。深链落点（openRoute）与
-    // 「前台是否在对应面」（PushPresentation）都以它为准；未进入时为 nil。
+    // B432：最近一次成功进入的机器与它的回环源。深链落点（openRoute）以它为准；
+    // 未进入时为 nil。
     private(set) var currentMachine: String?
     private(set) var currentOrigin: String?
+    // B432 修刀（2026-10-10）：当前 SPA 路由（path+query）。前台横幅抑制
+    // （PushPresentation.isRelevantRoute）的路由事实源——不是 currentMachine
+    // 近似。未进入时为空串；进入成功后至少为 "/"（工作台首页）；openRoute
+    // 与 SPA 内部导航都会更新它。
+    private(set) var currentRoute: String = ""
     // 点通知时还没进过机器：先把路由存下来，enter 成功后一并加载（冷启动路径）。
     private var pendingRoute: String?
     // enter 成功后的回调（B432：补报暂存的 APNs device）。由装配点注入。
     var onEntered: (() -> Void)?
+    // SPA 内部导航（pushState）经 KVO 回写 currentRoute——壳不重造路由模型，
+    // 只镜像 webView.url 的 path+query。
+    private var urlObservation: NSKeyValueObservation?
 
     // 生产装配：本类拥有 webView 与其 cookie store。
     convenience init(core: ConnectCore) {
@@ -103,6 +111,13 @@ final class CookieBridge {
         self.loader = loader
         self.webView = webView
         self.onMain = onMain
+        // SPA 内部导航（pushState/replaceState）会更新 webView.url；镜像其
+        // path+query 到 currentRoute（修刀：横幅抑制的路由事实源）。
+        urlObservation = webView.observe(\.url, options: [.new]) { [weak self] webView, _ in
+            guard let self, let url = webView.url else { return }
+            let route = url.path + (url.query.map { "?\($0)" } ?? "")
+            self.currentRoute = route.isEmpty ? "/" : route
+        }
     }
 
     // I3 承载调用序：SwitchMachine → 清罐（等完成）→ SessionCookie → 注入（等完成）→ load。
@@ -171,9 +186,11 @@ final class CookieBridge {
                 self.currentMachine = machine
                 self.currentOrigin = origin
                 // 冷启动路径：先到的点通知路由在这里补上（无暂存时 route 为空，
-                // 加载串与原行为逐字相同）。
+                // 加载串与原行为逐字相同）。currentRoute 同步落账（不等 KVO——
+                // 测试夹具的假 loader 不触真实 webView）。
                 let route = self.pendingRoute ?? ""
                 self.pendingRoute = nil
+                self.currentRoute = route.isEmpty ? "/" : route
                 self.loader.load(origin: origin + route)
                 completion(.success(()))
                 self.onEntered?()
@@ -184,8 +201,8 @@ final class CookieBridge {
     // openRoute 打开一条站内路由（B432 spec 验收②：点系统通知进 App 的落点）。
     //
     // 参数：route 形如 `/cards?card=B432` 或 `/`（工作台「需要你处理」兜底）。
-    // 行为：已进入机器 → 立刻加载 origin+route；还没进入 → 暂存，enter 成功后
-    // 由 inject 一并加载（不丢这次点击）。
+    // 行为：已进入机器 → 立刻加载 origin+route，并同步落账 currentRoute；
+    //      还没进入 → 暂存，enter 成功后由 inject 一并加载（不丢这次点击）。
     // 注意：OriginLoader 的参数名是 origin，实际收的是完整 URL——这里直接拼
     // origin+route 交给它，避免为一个调用点改缝协议（既有假 loader 断言不变）。
     func openRoute(_ route: String) {
@@ -195,6 +212,7 @@ final class CookieBridge {
             return
         }
         Log.shell.info("点开推送导航 route=\(route, privacy: .public)")
+        currentRoute = route.isEmpty ? "/" : route
         loader.load(origin: origin + route)
     }
 }
