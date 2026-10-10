@@ -24,6 +24,9 @@ var wantBindSurface = []string{
 	"func MachineCount() int",
 	"func Origin(machine string) (string, error)",
 	"func Pair(bundleJSON string) error",
+	// B432：壳上报 APNs token 的唯一导出面（参数刻意命名 pushHandle 而非 token，
+	// 绑定面门禁禁 Token 字样）。
+	"func RegisterPushDevice(machine string, deviceID string, pushHandle string) error",
 	"func SessionCookie(machine string) (string, error)",
 	"func SwitchMachine(machine string) (string, error)",
 }

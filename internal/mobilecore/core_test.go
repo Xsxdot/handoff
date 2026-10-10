@@ -191,3 +191,91 @@ func TestPairPartialBundle(t *testing.T) {
 		t.Fatalf("离线机应标 offline: %+v", res.Machines)
 	}
 }
+
+// TestRegisterPushWalksAgentd 是缝 S1 经核的竖切：壳把 APNs token 交给核，
+// 核经该机已配对的 client（真 WSS + yamux）把登记 POST 打到上游 agentd。
+// 断言路径/方法/Bearer/请求体逐字——任何一环走样都当场红。
+func TestRegisterPushWalksAgentd(t *testing.T) {
+	const (
+		token   = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
+		account = "acc1"
+		node    = "devbox"
+	)
+	var (
+		mu       sync.Mutex
+		gotPath  string
+		gotAuth  string
+		gotBody  string
+		gotCount int
+	)
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/push/devices" {
+			// Pair 期间的 /api/status 探活照常应答，不参与登记断言。
+			if r.URL.Path == "/api/status" {
+				_, _ = io.WriteString(w, "pong")
+				return
+			}
+			http.NotFound(w, r)
+			return
+		}
+		b, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		gotPath, gotAuth, gotBody = r.URL.Path, r.Header.Get("Authorization"), string(b)
+		gotCount++
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	})
+	relayURL, cleanup := startFakeRelay(t, token, account, node, upstream)
+	defer cleanup()
+
+	bundle := proto.PairBundle{
+		Version: proto.PairVersion,
+		Relay:   &proto.PairRelay{URL: relayURL, Credential: "pipecred"},
+		Machines: []proto.PairMachine{
+			{Name: node, Token: token, Node: node},
+		},
+		ExpiresAt: time.Now().Add(time.Minute),
+	}
+	payload, err := proto.EncodePairBundle(bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	core := New(nil, slog.Default())
+	defer core.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if res, err := core.Pair(ctx, payload); err != nil || len(res.Machines) != 1 {
+		t.Fatalf("配对失败: res=%+v err=%v", res, err)
+	}
+
+	if err := core.RegisterPush(ctx, node, "iphone-15", "aabbccdd"); err != nil {
+		t.Fatalf("RegisterPush: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if gotCount != 1 {
+		t.Fatalf("上游收到登记请求 %d 次，期望 1", gotCount)
+	}
+	if gotPath != "/api/push/devices" {
+		t.Fatalf("路径 = %q，期望 /api/push/devices", gotPath)
+	}
+	if gotAuth != "Bearer "+token {
+		t.Fatalf("Authorization = %q，期望 Bearer <机令牌>", gotAuth)
+	}
+	for _, want := range []string{`"device_id":"iphone-15"`, `"platform":"ios"`, `"apns_token":"aabbccdd"`} {
+		if !strings.Contains(gotBody, want) {
+			t.Errorf("登记体缺 %s： %s", want, gotBody)
+		}
+	}
+}
+
+// TestRegisterPushUnknownMachine 锁失败闭合：未配对机器不得报成功。
+func TestRegisterPushUnknownMachine(t *testing.T) {
+	core := New(nil, slog.Default())
+	defer core.Close()
+	if err := core.RegisterPush(context.Background(), "ghost", "d1", "aabb"); err == nil {
+		t.Fatal("未配对机器登记必须报错")
+	}
+}

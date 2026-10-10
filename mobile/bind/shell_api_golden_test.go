@@ -32,6 +32,7 @@ var wantJavaShellAPI = []string{
 	"public static native long machineCount();",
 	"public static native String origin(String machine) throws Exception;",
 	"public static native void pair(String bundleJSON) throws Exception;",
+	"public static native void registerPushDevice(String machine, String deviceID, String pushHandle) throws Exception;",
 	"public static native String sessionCookie(String machine) throws Exception;",
 	"public static native String switchMachine(String machine) throws Exception;",
 }
@@ -50,6 +51,7 @@ var wantObjCShellAPI = []string{
 	"FOUNDATION_EXPORT long BindMachineCount(void);",
 	"FOUNDATION_EXPORT NSString* _Nonnull BindOrigin(NSString* _Nullable machine, NSError* _Nullable* _Nullable error);",
 	"FOUNDATION_EXPORT BOOL BindPair(NSString* _Nullable bundleJSON, NSError* _Nullable* _Nullable error);",
+	"FOUNDATION_EXPORT BOOL BindRegisterPushDevice(NSString* _Nullable machine, NSString* _Nullable deviceID, NSString* _Nullable pushHandle, NSError* _Nullable* _Nullable error);",
 	"FOUNDATION_EXPORT NSString* _Nonnull BindSessionCookie(NSString* _Nullable machine, NSError* _Nullable* _Nullable error);",
 	"FOUNDATION_EXPORT NSString* _Nonnull BindSwitchMachine(NSString* _Nullable machine, NSError* _Nullable* _Nullable error);",
 }

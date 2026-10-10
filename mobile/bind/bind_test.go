@@ -146,3 +146,22 @@ func TestBindResultTypesAreGomobileSafe(t *testing.T) {
 		}
 	}
 }
+
+// TestBindRegisterPushDeviceForwardsToCore 锁新导出面如实转发：参数逐字交给核，
+// 核侧错误上抛（缝 S1 经 bind 的最后一跳）。
+func TestBindRegisterPushDeviceForwardsToCore(t *testing.T) {
+	fc := newFakeCore()
+	defer swapCore(fc)()
+	if err := RegisterPushDevice("devbox", "iphone-15", "aabbccdd"); err != nil {
+		t.Fatalf("RegisterPushDevice: %v", err)
+	}
+	if fc.pushCalls != 1 || fc.lastPushMachine != "devbox" ||
+		fc.lastPushDevice != "iphone-15" || fc.lastPushHandle != "aabbccdd" {
+		t.Fatalf("未如实转发: calls=%d machine=%q device=%q handle=%q",
+			fc.pushCalls, fc.lastPushMachine, fc.lastPushDevice, fc.lastPushHandle)
+	}
+	fc.pushErr = errBoom
+	if err := RegisterPushDevice("devbox", "iphone-15", "aabbccdd"); err == nil {
+		t.Fatal("核侧错误必须上抛，不得吞成 nil")
+	}
+}

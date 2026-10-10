@@ -74,6 +74,15 @@ final class CookieBridge {
     private let loader: OriginLoader
     private let onMain: MainQueueExecutor
 
+    // B432：最近一次成功进入的机器与它的回环源。深链落点（openRoute）与
+    // 「前台是否在对应面」（PushPresentation）都以它为准；未进入时为 nil。
+    private(set) var currentMachine: String?
+    private(set) var currentOrigin: String?
+    // 点通知时还没进过机器：先把路由存下来，enter 成功后一并加载（冷启动路径）。
+    private var pendingRoute: String?
+    // enter 成功后的回调（B432：补报暂存的 APNs device）。由装配点注入。
+    var onEntered: (() -> Void)?
+
     // 生产装配：本类拥有 webView 与其 cookie store。
     convenience init(core: ConnectCore) {
         let config = WKWebViewConfiguration()
@@ -159,9 +168,33 @@ final class CookieBridge {
             self.onMain { [weak self] in
                 guard let self else { return }
                 Log.shell.info("cookie 注入完成并导航 name=\(machine, privacy: .public)")
-                self.loader.load(origin: origin)
+                self.currentMachine = machine
+                self.currentOrigin = origin
+                // 冷启动路径：先到的点通知路由在这里补上（无暂存时 route 为空，
+                // 加载串与原行为逐字相同）。
+                let route = self.pendingRoute ?? ""
+                self.pendingRoute = nil
+                self.loader.load(origin: origin + route)
                 completion(.success(()))
+                self.onEntered?()
             }
         }
+    }
+
+    // openRoute 打开一条站内路由（B432 spec 验收②：点系统通知进 App 的落点）。
+    //
+    // 参数：route 形如 `/cards?card=B432` 或 `/`（工作台「需要你处理」兜底）。
+    // 行为：已进入机器 → 立刻加载 origin+route；还没进入 → 暂存，enter 成功后
+    // 由 inject 一并加载（不丢这次点击）。
+    // 注意：OriginLoader 的参数名是 origin，实际收的是完整 URL——这里直接拼
+    // origin+route 交给它，避免为一个调用点改缝协议（既有假 loader 断言不变）。
+    func openRoute(_ route: String) {
+        guard let origin = currentOrigin else {
+            Log.shell.info("点开推送时无活动机器，深链暂存 route=\(route, privacy: .public)")
+            pendingRoute = route
+            return
+        }
+        Log.shell.info("点开推送导航 route=\(route, privacy: .public)")
+        loader.load(origin: origin + route)
     }
 }

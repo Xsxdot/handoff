@@ -15,6 +15,9 @@ final class FakeConnectCore: ConnectCore {
     var sessionError: Error?
     var switchOrigin = "http://127.0.0.1:50000"
     var cookieValue = "cookie-value-123"
+    // B432：设备登记上报的记账与可注入故障（防假送达断言用）。
+    var pushError: Error?
+    private(set) var registeredPushes: [(machine: String, deviceID: String, pushHandle: String)] = []
     private let recorder: CallRecorder?
 
     init(recorder: CallRecorder? = nil) { self.recorder = recorder }
@@ -39,6 +42,11 @@ final class FakeConnectCore: ConnectCore {
         recorder?.record("switchMachine:\(machine)")
         if let e = switchError { throw e }
         return switchOrigin
+    }
+    func registerPushDevice(_ machine: String, deviceID: String, pushHandle: String) throws {
+        recorder?.record("registerPushDevice:\(machine):\(deviceID)")
+        if let e = pushError { throw e }
+        registeredPushes.append((machine: machine, deviceID: deviceID, pushHandle: pushHandle))
     }
     func close() throws { recorder?.record("close") }
 }

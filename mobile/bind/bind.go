@@ -22,12 +22,14 @@ import (
 	"github.com/Xsxdot/handoff/internal/mobilecore"
 )
 
-// coreAPI 是绑定面对连接核的窄消费面（duck typing）。四方法 = contract §3.2
-// 已冻结的 Core 导出面，`*mobilecore.Core` 直接满足。
+// coreAPI 是绑定面对连接核的窄消费面（duck typing）。前四方法 = contract §3.2
+// 冻结的 Core 导出面；RegisterPushDevice 是 B432 新增的设备登记入口（spec
+// §契约面 1 经核通路），`*mobilecore.Core` 直接满足。
 type coreAPI interface {
 	Pair(ctx context.Context, bundleJSON string) (mobilecore.PairResult, error)
 	Origin(machine string) (string, error)
 	MachineNames() []string
+	RegisterPush(ctx context.Context, machine, deviceID, pushHandle string) error
 	Close() error
 }
 
@@ -52,6 +54,25 @@ func Pair(bundleJSON string) error {
 		return err
 	}
 	log.Info("绑定面配对完成", "machines", len(res.Machines))
+	return nil
+}
+
+// RegisterPushDevice 把 APNs device token 上报给指定机器（B432 缝 S1 的最后一跳）。
+//
+// 参数：machine 已配对机器名；deviceID 壳侧设备 id；pushHandle 是 APNs 的
+// device token（十六进制串）。参数刻意命名 pushHandle 而非 token：绑定面
+// 门禁禁 Token 字样（export_surface_test），且这里的 token 与 agentd 主令牌
+// 是两回事——主令牌只在核手里，壳永远碰不到。
+//
+// 返回：核侧错误（未配对/离线/HTTP 失败）原样上抛。
+// 注意：调用方（壳）不得自行拼 HTTP——SourceGuard 禁壳源码出现 URLSession。
+func RegisterPushDevice(machine string, deviceID string, pushHandle string) error {
+	log.Debug("绑定面收到推送登记", "machine", machine, "device", deviceID)
+	if err := core.RegisterPush(context.Background(), machine, deviceID, pushHandle); err != nil {
+		log.Error("绑定面推送登记失败", "machine", machine, "device", deviceID, "cause", err)
+		return err
+	}
+	log.Info("绑定面推送登记完成", "machine", machine, "device", deviceID)
 	return nil
 }
 

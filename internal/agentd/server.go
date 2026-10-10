@@ -186,6 +186,10 @@ type Server struct {
 	autoLedger *ledgerapi.Facade
 	ptyGate    *ptyapi.Host
 	hostAPI    *hostapi.Host
+	// B432 iOS 推送扇出：「需要你」事件 → APNs。NewServer 构造（凭据未配齐时
+	// sender 为 nil，投递静默降级站内），装配点经 StartPush 起 worker；
+	// 两条事件旁路（合成钩子 + 自动化循环）与 badge 同源计数都接在它上面。
+	pushFanout *PushFanout
 	// B156.2 协作房间：入站门面实例与换绑端口，cmd 组装点装配注入
 	// （B233.18：collab.New 构造上移 cmd，经 SetRooms 注入）。
 	rooms *collab.Service
@@ -333,6 +337,21 @@ func NewServer(cfg *config.Config, st *store.Store, log *slog.Logger) *Server {
 			return inst.FetchByTag(ctx, release.DefaultRepo, tag, goos, goarch, wantSum)
 		},
 	}
+	// B432 推送扇出：凭据配齐才构造 sender；任一缺失或私钥读不出都停用
+	//（不半开、不报错），fanout 保留但投递时静默降级站内。
+	var pushSender PushSender
+	if cfg.Push != (config.PushConfig{}) {
+		apns, err := NewAPNsSender(cfg.Push, nil, log)
+		if err != nil {
+			log.Error("APNs 配置不可用，推送停用（静默降级站内）", "cause", err)
+		} else {
+			pushSender = apns
+		}
+	}
+	s.pushFanout = NewPushFanout(st, pushSender, s.pushConsoleMember, log)
+	s.pushFanout.SetBadgeCounter(s.pushBadgeCount)
+	s.log.Info("推送扇出已构造", "push_enabled", pushSender != nil)
+
 	// 事件落库即派生一条 event 引用帧，让帧流能表达控制面事件的时序
 	s.registerEventFrameHook()
 	return s
@@ -346,8 +365,62 @@ func NewServer(cfg *config.Config, st *store.Store, log *slog.Logger) *Server {
 // B233.26：钩子本体 eventFrameHook 归域 orchestration（导出为 EventFrameHook），
 // 本装配方法留 gateway，改调编排包导出面。
 func (s *Server) registerEventFrameHook() {
-	s.st.SetEventHook(orchestration.EventFrameHook(s.conf().DataDir, s.log))
+	frame := orchestration.EventFrameHook(s.conf().DataDir, s.log)
+	// SetEventHook 是**单回调**（store.go）：新挂推送必须与帧钩子合成同一个
+	// 回调，直接 SetEventHook 会把帧钩子顶掉（plan 决策 D2）。
+	s.st.SetEventHook(func(e proto.Event) {
+		frame(e)
+		if s.pushFanout != nil {
+			s.pushFanout.OnTaskEvent(e)
+		}
+	})
 	s.log.Info("事件帧钩子已注册", "datadir", s.conf().DataDir)
+}
+
+// StartPush 启动推送扇出 worker；ctx 取消即停。装配点（setupLedger）随
+// 自动化循环一起调用——两条旁路共享同一个生命周期 ctx。
+func (s *Server) StartPush(ctx context.Context) {
+	if s.pushFanout == nil {
+		s.log.Warn("推送扇出未构造，跳过启动")
+		return
+	}
+	s.log.Info("推送扇出 worker 启动")
+	s.pushFanout.Start(ctx)
+}
+
+// pushConsoleMember 是 fanout 的 memberOf：只读配置里的 console_user 拼统一记法。
+//
+// 不复用 resolveConsoleIdentity——那个还要请求（取登录会话端戳），而推送是
+// 事件旁路、没有请求语境。缺名/非法名返回空串，分类据此静默不推（与
+// requireConsoleIdentity 的 fail-closed 同向：无从寻址就不推，绝不猜成员）。
+func (s *Server) pushConsoleMember() string {
+	cfg := s.conf()
+	if cfg == nil || cfg.ConsoleUser == "" {
+		return ""
+	}
+	member, err := proto.MemberIdentity(proto.IdentityKindUser, cfg.ConsoleUser)
+	if err != nil {
+		s.log.Debug("console_user 配置不合法，推送不寻址", "cause", err)
+		return ""
+	}
+	return member
+}
+
+// pushBadgeCount 是 APNs badge 的唯一取数源：复用收件箱三源聚合的条数，
+// 保证系统角标与工作台「需要你处理」计数一致（spec 验收②）。
+//
+// 参数：member 统一记法（空串 = 身份未解析，直接 0）。
+// 返回：未处理条数；依赖未装配或聚合失败一律 0（宁可少角标，不报假数）。
+func (s *Server) pushBadgeCount(member string) int {
+	if member == "" || s.mgr == nil || s.ledger == nil || s.rooms == nil {
+		return 0
+	}
+	items, err := s.collectInboxItems(member)
+	if err != nil {
+		s.log.Warn("推送角标计数失败，按 0 处理", "member", member, "cause", err)
+		return 0
+	}
+	return len(items)
 }
 
 // coordinatorLock 返回一张卡的控制面串行锁。锁只覆盖控制段，不把不同卡的
@@ -720,6 +793,7 @@ func (s *Server) swapConf(mutate func(*config.Config) error) error {
 //   - GET  /api/auth/sessions           列出会话（含已吊销）
 //   - DELETE /api/auth/sessions/{id}    吊销指定会话
 //   - POST /api/auth/logout             吊销当前 cookie 会话并清除 cookie
+//   - POST/DELETE /api/push/devices     iOS APNs 设备登记/注销（B432，成员服务端注入）
 //   - GET  /console                     兑换 ticket → Set-Cookie → 302 到 /（无主令牌/cookie 凭据）
 //   - GET/HEAD /（含深链接）             控制台 SPA 兜底：命中文件发文件，否则回落 index.html
 //     （/api、/ws 的未命中经前缀分派保持原生 404/405，不被 SPA 吞掉，见下方注册处）
@@ -832,6 +906,9 @@ func (s *Server) Handler() http.Handler {
 	s.registerLedgerRoutes(api)
 	s.registerSchedulingRoutes(api)
 	s.registerCoordRoutes(api)
+	// B432：iOS 推送设备登记（spec §契约面 1）。独立注册函数与 ledger/scheduling
+	// 同款，避免 Handler() 主表继续膨胀。
+	s.registerPushRoutes(api)
 
 	// 控制台静态资源兜底：一切未被更精确模式匹配的路径都到这里。
 	//

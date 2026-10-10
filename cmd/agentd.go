@@ -528,6 +528,9 @@ func setupLedger(cfg *config.Config, srv *agentd.Server, taskStore *store.Store,
 	// B156.3 K5：账本打开后才能启动自动化事件流。
 	// ctx 随 agentd 停机取消；首轮先重放事件与队列，再进入轮询。
 	srv.StartAutomation(ctx)
+	// B432 iOS 推送扇出与自动化循环同生命周期：card_events 侧的旁路挂在
+	// 自动化消费循环里，循环不跑推送就不跑，一起起一起停。
+	srv.StartPush(ctx)
 	// B409.6 脱敏红线：DSN URL/密码不进日志。诊断保留 dsn_configured 布尔
 	//（与 TestSetupLedgerFailureDoesNotLogDSNCredentials 同族，Wave 0 先例）。
 	logger.Info("自动化编排已挂载", "dsn_configured", ldsn != "", "poll", "2s")

@@ -9,4 +9,13 @@ final class ShellSmokeTests: XCTestCase {
         var err: NSError?
         _ = BindClose(&err)
     }
+
+    // B432：设备登记导出面可链接可调用（缝 S1 的壳烟测）。空核/已关核必须报错，
+    // 绝不返回 true 假装登记成功（防假送达）。
+    func testRegisterPushDeviceCallableFromTestBundle() {
+        var err: NSError?
+        let ok = BindRegisterPushDevice("ghost", "device-1", "00ab", &err)
+        XCTAssertFalse(ok, "未配对机器登记必须失败")
+        XCTAssertNotNil(err, "失败必须带可诊断错误")
+    }
 }

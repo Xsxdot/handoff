@@ -243,6 +243,19 @@ func Open(path string) (*Store, error) {
   key        TEXT PRIMARY KEY,   -- 'selected' | 'dock'
   value      TEXT NOT NULL,
   updated_at INTEGER NOT NULL)`,
+		// B432 APNs MVP：设备登记表（spec §契约面 1）。token 只落这里，绝不写
+		// Session.DeviceName（配对信封是另一张脸，spec §Out of scope）。
+		// 主键 (member, device_id)：同一成员同一设备登记两次是覆盖而非追加，
+		// 换 token / 换会话都是常态。平台列按 MVP 白名单只有 'ios'，校验在
+		// 接口层，叶子层不判平台合法性（store.go 文件头纪律）。
+		`CREATE TABLE IF NOT EXISTS push_devices (
+  member          TEXT NOT NULL,
+  device_id       TEXT NOT NULL,
+  platform        TEXT NOT NULL,
+  apns_token      TEXT NOT NULL,
+  auth_session_id TEXT NOT NULL DEFAULT '',
+  updated_at      TIMESTAMP NOT NULL,
+  PRIMARY KEY (member, device_id))`,
 	} {
 		if _, err := db.ExecContext(context.Background(), ddl); err != nil {
 			db.Close()

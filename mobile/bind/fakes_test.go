@@ -18,6 +18,11 @@ type fakeCore struct {
 	pairCalls       int
 	lastBundleBytes int
 	lastMachine     string
+	pushCalls       int
+	pushErr         error
+	lastPushMachine string
+	lastPushDevice  string
+	lastPushHandle  string
 }
 
 func newFakeCore() *fakeCore { return &fakeCore{} }
@@ -46,6 +51,16 @@ func (f *fakeCore) Origin(machine string) (string, error) {
 }
 
 func (f *fakeCore) MachineNames() []string { return []string{"devbox"} }
+
+func (f *fakeCore) RegisterPush(_ context.Context, machine, deviceID, pushHandle string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.pushCalls++
+	f.lastPushMachine = machine
+	f.lastPushDevice = deviceID
+	f.lastPushHandle = pushHandle
+	return f.pushErr
+}
 
 func (f *fakeCore) Close() error {
 	f.mu.Lock()

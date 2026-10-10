@@ -236,6 +236,7 @@
 		A1B2C3D4000000000000CF03 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = Support/HandoffMobile.entitlements;
 				CODE_SIGNING_ALLOWED = NO;
 				ENABLE_TESTABILITY = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -256,6 +257,7 @@
 		A1B2C3D4000000000000CF04 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = Support/HandoffMobile.entitlements;
 				CODE_SIGNING_ALLOWED = NO;
 				ENABLE_TESTABILITY = YES;
 				GENERATE_INFOPLIST_FILE = NO;

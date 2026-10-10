@@ -702,6 +702,12 @@ func (s *Server) consumeAutomationEventsOnce(ctx context.Context) (processed int
 				"type", ev.Type, "cause", mapErr)
 			return processed, escalated, mapErr
 		}
+		// B432 旁路（plan 决策 D1）：在唤醒分类与 seen 判定之外喂扇出——
+		// needs_human 这类不唤醒协调者的事件也要推。只入队不阻塞，唤醒路径
+		// 完全不感知它的存在（队满即丢，见 PushFanout.Notify）。
+		if s.pushFanout != nil {
+			s.pushFanout.OnLedgerEvent(ev)
+		}
 		if ev.Seq > maxProcessed {
 			maxProcessed = ev.Seq
 		}

@@ -15,13 +15,13 @@
 package mobilecore
 
 import (
-	"sort"
 	"context"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
+	"sort"
 	"sync"
 	"time"
 
@@ -345,6 +345,51 @@ func (c *Core) Origin(machine string) (string, error) {
 		return "", fmt.Errorf("机器 %q 当前离线", machine)
 	}
 	return m.origin, nil
+}
+
+// RegisterPush 把一台 iOS 设备的 APNs token 登记到指定机器（B432 缝 S1 经核）。
+//
+// 参数：machine 为已配对且在线的机器名；deviceID 为壳侧设备 id；token 为
+// APNs device token（十六进制串）。
+// 返回：核已关 / 未配对 / 离线的错误，或经该机 client 的 HTTP 错误。
+//
+// 注意：与 Origin 同源——用配对时建立的 client（主令牌 Bearer 在它手里，
+// 壳碰不到）；取到 client 立即解锁再发请求，不把网络往返压在核锁上。
+// 日志只落 machine/device，**不落 token 明文**。
+func (c *Core) RegisterPush(ctx context.Context, machine, deviceID, token string) error {
+	cl, err := c.clientFor(machine)
+	if err != nil {
+		return err
+	}
+	c.log.Debug("上报推送设备登记", "machine", machine, "device", deviceID)
+	if err := cl.RegisterPushDevice(ctx, proto.PushDeviceRegisterReq{
+		DeviceID: deviceID, Platform: proto.PushPlatformIOS, APNSToken: token,
+	}); err != nil {
+		c.log.Warn("推送设备登记失败", "machine", machine, "device", deviceID, "cause", err)
+		return err
+	}
+	c.log.Info("推送设备登记已上报", "machine", machine, "device", deviceID)
+	return nil
+}
+
+// clientFor 取一台在线机的 client 供调用方发请求；只做状态判定，不做 I/O。
+func (c *Core) clientFor(machine string) (*client.Client, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		return nil, errCoreClosed
+	}
+	m, ok := c.machines[machine]
+	if !ok {
+		return nil, fmt.Errorf("未配对的机器 %q", machine)
+	}
+	if !m.online {
+		return nil, fmt.Errorf("机器 %q 当前离线", machine)
+	}
+	if m.cl == nil {
+		return nil, fmt.Errorf("机器 %q 的客户端未就绪", machine)
+	}
+	return m.cl, nil
 }
 
 // MachineNames 返回已登记机器名（含离线机，供设置页配对清单）。

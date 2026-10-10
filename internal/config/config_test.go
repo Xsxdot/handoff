@@ -956,3 +956,39 @@ func TestConsoleUserRoundTrip(t *testing.T) {
 		t.Fatalf("未知键清单应含 console_user: %v", err)
 	}
 }
+
+// TestPushConfigOmitemptyRoundTrip 锁 B432 push 节的 omitempty 硬要求：
+// 未配置 APNs 时 Save 不得写出 push 键，否则旧版 agentd 的 KnownFields(true)
+// 读到未知键直接启动失败（与 proxy / path_dirs 同款教训）。
+// 同时验证配置了凭据时可往返读回（strict 解码认得这五个键）。
+func TestPushConfigOmitemptyRoundTrip(t *testing.T) {
+	empty := config.Defaults()
+	emptyPath := filepath.Join(t.TempDir(), "empty.yaml")
+	if err := config.Save(emptyPath, empty); err != nil {
+		t.Fatalf("Save empty: %v", err)
+	}
+	raw, err := os.ReadFile(emptyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "push") {
+		t.Fatalf("未配置时 push 键不得落盘（omitempty）: %s", raw)
+	}
+
+	full := config.Defaults()
+	full.Push = config.PushConfig{
+		APNsKeyID: "KEYID12345", APNsTeamID: "TEAMID1234", APNsBundleID: "dev.gosuper.handoff.mobile",
+		APNsKeyFile: "/etc/handoff/apns.p8", APNsHost: "https://api.sandbox.push.apple.com",
+	}
+	fullPath := filepath.Join(t.TempDir(), "full.yaml")
+	if err := config.Save(fullPath, full); err != nil {
+		t.Fatalf("Save full: %v", err)
+	}
+	got, err := config.Load(fullPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got.Push != full.Push {
+		t.Fatalf("push 节未往返: %+v", got.Push)
+	}
+}

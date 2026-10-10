@@ -149,6 +149,13 @@ type Config struct {
 	ProcFence ProcFenceConfig `yaml:"proc_fence,omitempty"`
 	// Web 是浏览器控制台相关配置。
 	Web WebConfig
+	// Push 是 iOS APNs MVP 的服务端凭据与开关（B432）。全空 = 不启用推送：
+	// agentd 不构造 sender，fanout 静默降级站内（不报错、不报假送达）。
+	//
+	// omitempty 是硬要求，不是风格：配置以 KnownFields(true) 严格解析，未知键让
+	// 旧版 agentd **启动失败**（path_dirs / proxy 同款教训）。空 PushConfig
+	// （五个键全零）必须整节不落盘。
+	Push PushConfig `yaml:"push,omitempty"`
 }
 
 // PlatformInvariantsEnabled 返回本机是否注入平台不变量恒在层。
@@ -272,6 +279,23 @@ type TerminalConfig struct {
 // 不加 tag 时 yaml.v3 会把它映射成 allowedhosts（同 RepoRoot 的处理）。
 type WebConfig struct {
 	AllowedHosts []string `yaml:"allowed_hosts"`
+}
+
+// PushConfig 是 B432 APNs MVP 的服务端凭据。全部 omitempty（strict 解码硬要求）。
+//
+// 五个键全空 = 推送停用（fanout 无 sender，静默降级站内）；任一缺失也不半开：
+// NewAPNsSender 一次性校验，缺一项即构造失败并整条链停用。
+// 值语义：
+//   - APNsKeyID / APNsTeamID：Apple 开发者后台的 Key ID 与 Team ID（.p8 的配对信息）
+//   - APNsBundleID：apns-topic（App bundle id）
+//   - APNsKeyFile：.p8 私钥（PKCS8 PEM）路径
+//   - APNsHost：空 = api.push.apple.com；测试指 httptest 地址（含 scheme 时原样用）
+type PushConfig struct {
+	APNsKeyID    string `yaml:"apns_key_id,omitempty"`
+	APNsTeamID   string `yaml:"apns_team_id,omitempty"`
+	APNsBundleID string `yaml:"apns_bundle_id,omitempty"`
+	APNsKeyFile  string `yaml:"apns_key_file,omitempty"` // .p8 私钥路径
+	APNsHost     string `yaml:"apns_host,omitempty"`     // 空=api.push.apple.com；测试指 httptest
 }
 
 // Target 描述一个可配对远端主机：Addr 为 agentd 地址，Token 为其访问令牌，

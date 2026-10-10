@@ -526,29 +526,31 @@ func (s *Server) handleRoomRead(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
-// handleInbox GET /api/inbox → 收件箱三源聚合（契约 §3.6 编排单元，位置冻结在
-// gateway 层）。decision/mention 源失败如实 500（承重）；ticket 源失败降级跳过
-// （与 handleCardsList 的 tickets 徽标同族，不吞主查询）。
-func (s *Server) handleInbox(w http.ResponseWriter, r *http.Request) {
-	id, ok := s.requireConsoleIdentity(w, r)
-	if !ok {
-		return
-	}
-	member := id.Member
-	items := make([]proto.InboxItem, 0, 8)
+// errInboxManagerNotReady 是三源聚合在 manager 未注入时的哨兵：HTTP 读面回 503，
+// fanout 的 badge 计数只记日志降级，两者不共用一个状态码也不互相吞错。
+var errInboxManagerNotReady = errors.New("manager 未就绪")
 
+// collectInboxItems 聚合收件箱三源（open 裁决 / 未答复工单 / @提及），按
+// member 寻址。契约 §3.6 编排单元，位置冻结在 gateway 层。
+//
+// 参数：member 统一记法（user:<name>），由调用方的服务端身份门解析。
+// 返回：条目（manager 未就绪时 errInboxManagerNotReady；decision/ticket/mention
+// 源读失败如实上抛——decision/mention 失败 500 承重，ticket 源失败降级跳过）。
+//
+// 注意：B432 推送的 badge 计数复用本函数（角标与未处理数一致的唯一来源），
+// 因此它的口径就是「需要你」的权威口径——改三源判定必须两处同步受益、零分叉。
+func (s *Server) collectInboxItems(member string) ([]proto.InboxItem, error) {
 	if s.mgr == nil {
 		s.log.Warn("收件箱请求到达但 manager 未注入")
-		writeErr(w, http.StatusServiceUnavailable, errors.New("manager 未就绪"))
-		return
+		return nil, errInboxManagerNotReady
 	}
+	items := make([]proto.InboxItem, 0, 8)
 
 	// 源① decision：open 裁决全量（含 CardID 为空的项目级），岔口二方案 A 直调面。
 	decisions, err := s.ledger.ListDecisions(true)
 	if err != nil {
 		s.log.Warn("收件箱 decision 源读取失败", "cause", err)
-		writeErr(w, http.StatusInternalServerError, err)
-		return
+		return nil, err
 	}
 	for _, d := range decisions {
 		payload, err := json.Marshal(ledgerDecisionWire(d))
@@ -567,8 +569,7 @@ func (s *Server) handleInbox(w http.ResponseWriter, r *http.Request) {
 	tasks, err := s.mgr.ListTasks()
 	if err != nil {
 		s.log.Warn("收件箱 ticket 源读取失败", "cause", err)
-		writeErr(w, http.StatusInternalServerError, err)
-		return
+		return nil, err
 	}
 	for _, task := range tasks {
 		if task.State != proto.TaskStateWaitingAnswer {
@@ -597,8 +598,7 @@ func (s *Server) handleInbox(w http.ResponseWriter, r *http.Request) {
 	mentions, err := s.rooms.Mentions(member, 0, 0)
 	if err != nil {
 		s.log.Warn("收件箱 mention 源读取失败", "member", member, "cause", err)
-		writeErr(w, http.StatusInternalServerError, err)
-		return
+		return nil, err
 	}
 	for _, ev := range mentions {
 		var msg proto.RoomMessage
@@ -611,7 +611,27 @@ func (s *Server) handleInbox(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	s.log.Info("收件箱已聚合", "member", member, "items", len(items))
+	return items, nil
+}
+
+// handleInbox GET /api/inbox → 收件箱三源聚合（契约 §3.6 编排单元，位置冻结在
+// gateway 层）。decision/mention 源失败如实 500（承重）；ticket 源失败降级跳过
+// （与 handleCardsList 的 tickets 徽标同族，不吞主查询）。
+func (s *Server) handleInbox(w http.ResponseWriter, r *http.Request) {
+	id, ok := s.requireConsoleIdentity(w, r)
+	if !ok {
+		return
+	}
+	items, err := s.collectInboxItems(id.Member)
+	if err != nil {
+		if errors.Is(err, errInboxManagerNotReady) {
+			writeErr(w, http.StatusServiceUnavailable, err)
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	s.log.Info("收件箱已聚合", "member", id.Member, "items", len(items))
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
@@ -645,7 +665,13 @@ func (s *Server) ticketDestructive(taskID, ticketID string) bool {
 
 // decisionTitle 收件箱 decision 条目标题 = 裁决正文首行（简报六段的第一段是「一句话」）。
 func decisionTitle(d ledger.Decision) string {
-	body := strings.TrimSpace(d.Body)
+	return bodyTitle(d.Body)
+}
+
+// bodyTitle 取正文首行并截到 80 个字符。收件箱条目与 B432 系统推送标题共用
+// 它：两处投影不一致，同一条待办会在横幅与工作台显示成两件事（同源判据）。
+func bodyTitle(body string) string {
+	body = strings.TrimSpace(body)
 	if i := strings.IndexByte(body, '\n'); i >= 0 {
 		body = body[:i]
 	}

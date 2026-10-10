@@ -150,4 +150,35 @@ final class CookieBridgeTests: XCTestCase {
         XCTAssertTrue(failures.isEmpty, "同机重复进入进入错误态：\(failures)")
         XCTAssertEqual(rec.calls.filter { $0 == "load:http://127.0.0.1:50000" }.count, 2)
     }
+
+    // B432 验收②：进入机器后点通知 → 立刻加载 origin+route。
+    func testOpenRouteAfterEnterLoadsOriginPlusRoute() {
+        let rec = CallRecorder()
+        let (bridge, _, _, _) = make(g: rec)
+        let e = expectation(description: "enter")
+        bridge.enter(machine: "A", online: true) { _ in e.fulfill() }
+        wait(for: [e], timeout: 2)
+        XCTAssertEqual(bridge.currentMachine, "A")
+
+        bridge.openRoute("/cards?card=B432")
+        XCTAssertEqual(rec.calls.last, "load:http://127.0.0.1:50000/cards?card=B432")
+    }
+
+    // B432 验收② 冷启动路径：还没进机器就点通知 → 路由暂存，enter 成功后补上；
+    // onEntered 必须触发（补报 APNs device 靠它）。
+    func testOpenRouteBeforeEnterIsPendingAndOnEnteredFires() {
+        let rec = CallRecorder()
+        let (bridge, _, _, _) = make(g: rec)
+        bridge.openRoute("/")
+        XCTAssertEqual(rec.calls.contains(where: { $0.hasPrefix("load:") }), false,
+                       "没有活动机器时不得空导航")
+
+        var entered = 0
+        bridge.onEntered = { entered += 1 }
+        let e = expectation(description: "enter")
+        bridge.enter(machine: "A", online: true) { _ in e.fulfill() }
+        wait(for: [e], timeout: 2)
+        XCTAssertEqual(rec.calls.last, "load:http://127.0.0.1:50000/", "暂存路由必须在进入时补上")
+        XCTAssertEqual(entered, 1, "enter 成功必须回调 onEntered")
+    }
 }

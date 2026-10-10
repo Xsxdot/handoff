@@ -1288,6 +1288,45 @@ func (c *Client) IssueAuthTicket(ctx context.Context, deviceName string) (*proto
 	return &out, nil
 }
 
+// RegisterPushDevice 登记一台 iOS 推送设备（POST /api/push/devices，B432 缝 S1）。
+//
+// 参数：
+//   - ctx: 请求上下文
+//   - req: device_id / platform(仅 ios) / apns_token 必填；member **不由客户端
+//     提供**——服务端按控制台身份注入（plan 决策 D3）
+//
+// 返回：nil（200）/ 连不上或非 200 的错误。Bearer 即主令牌（移动核持有它，
+// 壳经 bind 只传 APNs token，不碰主令牌——绑定面门禁禁 Token 字样）。
+//
+// 注意：本方法只表示「登记成功」，不代表 APNs 已送达（spec 验收③ 防假送达）。
+func (c *Client) RegisterPushDevice(ctx context.Context, req proto.PushDeviceRegisterReq) error {
+	resp, err := c.do(ctx, http.MethodPost, "/api/push/devices", req)
+	if err != nil {
+		return fmt.Errorf("连接 agentd %s 失败（它在运行吗？可先执行 handoff status 确认）: %w", c.baseURL, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return c.httpError("登记推送设备", resp)
+	}
+	return nil
+}
+
+// DeletePushDevice 注销一台已登记推送设备（DELETE /api/push/devices）。
+//
+// 返回：nil（200）/ 404（设备未登记，如实上抛）/ 连不上或其余非 200。
+func (c *Client) DeletePushDevice(ctx context.Context, deviceID string) error {
+	resp, err := c.do(ctx, http.MethodDelete, "/api/push/devices",
+		proto.PushDeviceDeleteReq{DeviceID: deviceID})
+	if err != nil {
+		return fmt.Errorf("连接 agentd %s 失败（它在运行吗？可先执行 handoff status 确认）: %w", c.baseURL, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return c.httpError("注销推送设备", resp)
+	}
+	return nil
+}
+
 // ListSessions 列出 agentd 上的全部浏览器会话（含已吊销）。
 func (c *Client) ListSessions(ctx context.Context) ([]proto.SessionInfo, error) {
 	resp, err := c.do(ctx, http.MethodGet, "/api/auth/sessions", nil)
