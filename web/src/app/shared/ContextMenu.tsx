@@ -9,7 +9,7 @@
 //
 // 为什么自己写而不是引依赖：`components/ui/` 只有 badge/button/card，本仓库
 // 至今零处右键菜单。为了一个单项菜单引一整套 dropdown 依赖不划算。
-import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useId, useLayoutEffect, useRef, useState, type DragEvent, type ReactNode } from 'react'
 import { cn } from '@/lib/utils'
 
 export interface ContextMenuItem {
@@ -22,6 +22,11 @@ export interface ContextMenuItem {
   disabled?: boolean
   // 置灰**必须**给理由，否则用户只会以为是 bug
   disabledReason?: string
+  // B431：菜单行可拖（如终端机器行拖到工作台右缘分屏）。载荷写什么由调用方
+  // 在 onDragStart 里定；菜单本身不关——dragstart 关掉会卸掉 drag source、
+  // 浏览器取消拖拽，所以拖拽结束（dragend）才关
+  draggable?: boolean
+  onDragStart?: (e: DragEvent<HTMLButtonElement>) => void
   separator?: never
 }
 
@@ -108,6 +113,10 @@ export function ContextMenu({ x, y, items, onClose, ariaLabel }: ContextMenuProp
             aria-describedby={it.description ? `${menuId}-description-${i}` : undefined}
             disabled={it.disabled}
             title={it.disabledReason}
+            draggable={it.draggable}
+            onDragStart={it.onDragStart}
+            // dragstart 不关菜单（会卸掉 drag source）；拖拽结束才关
+            onDragEnd={it.draggable ? () => onClose() : undefined}
             onClick={() => {
               // 先执行再关：反过来的话调用方在 onSelect 里 setState 会撞上
               // 本组件正在卸载，React 会警告「更新一个未挂载的组件」

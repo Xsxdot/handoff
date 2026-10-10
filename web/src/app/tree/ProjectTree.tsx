@@ -42,7 +42,7 @@
 //
 // 计数只用于排序与折叠判据（counts.ts / wsMetrics），行上不再渲染计数控件——
 // 原型把行留给了名字与机器归属（spec §5 功能保留清单）。
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type DragEvent } from 'react'
 import '../workbench/desktop-workspace.css'
 import {
   AppWindow, Archive, ChevronDown, ChevronRight, FolderOpen, FileText, FolderGit2, GitBranch, LayoutGrid, MessagesSquare, Monitor, Plus, Search, Server, Settings, SquareKanban, SquareTerminal, Terminal, Ticket, WifiOff, Workflow, X,
@@ -1536,6 +1536,14 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
                 icon: <><StateDot tone={problem ? 'failed' : 'active'} />{loc.machine === '' ? <Monitor size={14} className="ml-1" /> : <Server size={14} className="ml-1" />}</>,
                 description: problem || `${savedBase?.machine === loc.machine ? savedBase.label : base?.label} · ${savedBase?.machine === loc.machine ? savedBase.path : base?.path}`,
                 disabled: problem !== '', disabledReason: problem || undefined,
+                // B431：机器行可拖到工作台右缘分屏，MIME 载荷与侧栏机器行对齐
+                //（主工作区 base）；断开或无目录时不可拖
+                draggable: base !== null && problem === '',
+                onDragStart: base === null || problem !== '' ? undefined : (e: DragEvent<HTMLButtonElement>) => {
+                  e.dataTransfer.setData(DRAG_DIR_MIME, JSON.stringify(base))
+                  e.dataTransfer.setData(DRAG_BASE_MIME, JSON.stringify(base))
+                  e.dataTransfer.effectAllowed = 'copy'
+                },
                 onSelect: () => {
                   if (!base || problem) { console.warn('project_tree.terminal_machine.select_unavailable', { projectID: project.project_id, machine: loc.machine, problem }); return }
                   // Selecting changes the default only. Existing tabs retain their own BaseDir.
@@ -1549,8 +1557,15 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
             { label: '管理工作树…', onSelect: () => {
               const key = 'p:' + project.project_id
               setDesktopDisclosure((previous) => ({ ...previous, [key]: true }))
-              setLocationMenus((previous) => new Set(previous).add(key))
-              console.debug('project_tree.worktrees.manage', { projectID: project.project_id })
+              // B431：toggle——有 key 则删（收起目录组），无则加；只进不出关不掉
+              const open = !locationMenus.has(key)
+              setLocationMenus((previous) => {
+                const next = new Set(previous)
+                if (open) next.add(key)
+                else next.delete(key)
+                return next
+              })
+              console.debug('project_tree.worktrees.manage', { projectID: project.project_id, open })
             } },
           ]} />
       })()}

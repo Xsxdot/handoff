@@ -4,7 +4,7 @@ import type { PreviewSession, ProjectNode, ProjectTreeResp, Task } from '../../a
 import type { BaseDir } from '../workbench/useWorkbench'
 import { ProjectTree, type OpenItem } from './ProjectTree'
 import { __resetTreePrefsForTest } from './useTreePrefs'
-import { DRAG_BASE_MIME, DRAG_TAB_MIME, DRAG_TASK_MIME } from '../workbench/paneDrop'
+import { DRAG_BASE_MIME, DRAG_DIR_MIME, DRAG_TAB_MIME, DRAG_TASK_MIME } from '../workbench/paneDrop'
 
 // Existing directory-operation tests enter the explicit worktree management view first.
 // Initial compact/default-disclosure behaviour is tested with renderRaw below.
@@ -1594,5 +1594,59 @@ describe('desktop terminal machine chooser', () => {
     expect(screen.queryByRole('menu')).toBeNull()
     expect(toggle).toHaveFocus()
     expect(p.onOpenTerminalAt).not.toHaveBeenCalled()
+  })
+})
+
+// B431：目录组 toggle 关；终端菜单机器行可拖、载荷对齐侧栏机器行。
+describe('B431 管理工作树 toggle 与终端菜单机器行拖拽', () => {
+  function remoteProps() {
+    const p = props()
+    p.tree.projects[0].locations.push({ machine: 'linux-01', name: 'handoff', path: '/remote', probe_error: '', workspaces: [
+      { path: '/remote', branch: 'main', head: 'abc', is_main: true, managed: false, created_at: '' },
+    ] })
+    return p
+  }
+
+  it('管理工作树… 再点同项收起目录组（toggle 关，不只进不出）', () => {
+    const p = props()
+    renderRaw(<ProjectTree {...p} tasks={[]} />)
+    fireEvent.click(screen.getByText('handoff').closest('button')!)
+    fireEvent.click(screen.getByRole('button', { name: '选择 handoff 终端位置' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: '管理工作树…' }))
+    expect(screen.getByTestId('directory-group')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '选择 handoff 终端位置' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: '管理工作树…' }))
+    expect(screen.queryByTestId('directory-group')).toBeNull()
+  })
+
+  it('菜单机器行拖拽写入与侧栏对齐的 DRAG_DIR_MIME + DRAG_BASE_MIME，dragstart 不关菜单、dragend 才关', () => {
+    const p = remoteProps()
+    renderRaw(<ProjectTree {...p} tasks={[]} />)
+    fireEvent.click(screen.getByRole('button', { name: '选择 handoff 终端位置' }))
+    const row = screen.getByRole('menuitemradio', { name: 'linux-01' })
+    expect(row).toHaveAttribute('draggable', 'true')
+    const dataTransfer = { setData: vi.fn(), effectAllowed: '' }
+    fireEvent.dragStart(row, { dataTransfer })
+    expect(dataTransfer.effectAllowed).toBe('copy')
+    const dirPayload = JSON.parse(dataTransfer.setData.mock.calls.find(([mime]) => mime === DRAG_DIR_MIME)![1])
+    const basePayload = JSON.parse(dataTransfer.setData.mock.calls.find(([mime]) => mime === DRAG_BASE_MIME)![1])
+    expect(dirPayload).toMatchObject({ path: '/remote', machine: 'linux-01' })
+    expect(basePayload).toMatchObject({ path: '/remote', machine: 'linux-01' })
+    expect(screen.getByRole('menu')).toBeInTheDocument()
+    fireEvent.dragEnd(row)
+    expect(screen.queryByRole('menu')).toBeNull()
+  })
+
+  it('机器离线时菜单行禁用且不可拖，不写 MIME', () => {
+    const p = remoteProps()
+    p.tree.projects[0].locations[1].probe_error = 'offline'
+    renderRaw(<ProjectTree {...p} tasks={[]} />)
+    fireEvent.click(screen.getByRole('button', { name: '选择 handoff 终端位置' }))
+    const row = screen.getByRole('menuitemradio', { name: 'linux-01' })
+    expect(row).toBeDisabled()
+    expect(row).toHaveAttribute('draggable', 'false')
+    const setData = vi.fn()
+    fireEvent.dragStart(row, { dataTransfer: { setData, effectAllowed: '' } })
+    expect(setData).not.toHaveBeenCalled()
   })
 })
