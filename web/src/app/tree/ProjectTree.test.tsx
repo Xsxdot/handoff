@@ -4,7 +4,7 @@ import type { PreviewSession, ProjectNode, ProjectTreeResp, Task } from '../../a
 import type { BaseDir } from '../workbench/useWorkbench'
 import { ProjectTree, type OpenItem } from './ProjectTree'
 import { __resetTreePrefsForTest } from './useTreePrefs'
-import { DRAG_BASE_MIME, DRAG_DIR_MIME, DRAG_TAB_MIME, DRAG_TASK_MIME } from '../workbench/paneDrop'
+import { DRAG_BASE_MIME, DRAG_DIR_MIME, DRAG_TAB_MIME, DRAG_TASK_MIME, readDragBase } from '../workbench/paneDrop'
 
 // Existing directory-operation tests enter the explicit worktree management view first.
 // Initial compact/default-disclosure behaviour is tested with renderRaw below.
@@ -1625,11 +1625,17 @@ describe('B431 管理工作树 toggle 与终端菜单机器行拖拽', () => {
     fireEvent.click(screen.getByRole('button', { name: '选择 handoff 终端位置' }))
     const row = screen.getByRole('menuitemradio', { name: 'linux-01' })
     expect(row).toHaveAttribute('draggable', 'true')
+    // 放行谓词在 WorkbenchPage 只认 data-drag-task；菜单可拖行缺标记时右缘停靠失败
+    expect(row).toHaveAttribute('data-drag-task', '1')
     const dataTransfer = { setData: vi.fn(), effectAllowed: '' }
     fireEvent.dragStart(row, { dataTransfer })
     expect(dataTransfer.effectAllowed).toBe('copy')
     const dirPayload = JSON.parse(dataTransfer.setData.mock.calls.find(([mime]) => mime === DRAG_DIR_MIME)![1])
     const basePayload = JSON.parse(dataTransfer.setData.mock.calls.find(([mime]) => mime === DRAG_BASE_MIME)![1])
+    // 全字段 roundtrip：readDragBase 校验 key/kind/path/label/projectName/machine
+    // 六字段，只验 path/machine 会漏掉缺字段的坏载荷
+    expect(readDragBase(JSON.stringify(dirPayload))).toMatchObject({ path: '/remote', machine: 'linux-01' })
+    expect(readDragBase(JSON.stringify(basePayload))).toMatchObject({ path: '/remote', machine: 'linux-01' })
     expect(dirPayload).toMatchObject({ path: '/remote', machine: 'linux-01' })
     expect(basePayload).toMatchObject({ path: '/remote', machine: 'linux-01' })
     expect(screen.getByRole('menu')).toBeInTheDocument()

@@ -1529,7 +1529,8 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
           onClose={() => { terminalMenu.trigger.focus(); setTerminalMenu(null) }}
           items={[
             ...project.locations.map((loc) => {
-              const main = loc.workspaces.find((ws) => ws.is_main) ?? loc.workspaces[0]
+              const sortedMenu = sortWorkspaces(loc.workspaces, (ws) => wsMetrics(project, loc.machine, ws))
+              const main = sortedMenu.find((ws) => ws.is_main) ?? sortedMenu[0]
               const base = main ? workspaceBase(project, loc.machine, main) : null
               const problem = locationProblem(loc, tree.machines) || (base ? '' : '没有可用目录')
               return { label: machineLabel(loc.machine), checked: loc.machine === selectedMachine,
@@ -1537,8 +1538,10 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
                 description: problem || `${savedBase?.machine === loc.machine ? savedBase.label : base?.label} · ${savedBase?.machine === loc.machine ? savedBase.path : base?.path}`,
                 disabled: problem !== '', disabledReason: problem || undefined,
                 // B431：机器行可拖到工作台右缘分屏，MIME 载荷与侧栏机器行对齐
-                //（主工作区 base）；断开或无目录时不可拖
+                //（主工作区 base）；断开或无目录时不可拖。dataDragTask 置 1 才能让
+                // WorkbenchPage 关 pane pointer-events，否则 xterm 吃掉 dragover
                 draggable: base !== null && problem === '',
+                dataDragTask: base !== null && problem === '',
                 onDragStart: base === null || problem !== '' ? undefined : (e: DragEvent<HTMLButtonElement>) => {
                   e.dataTransfer.setData(DRAG_DIR_MIME, JSON.stringify(base))
                   e.dataTransfer.setData(DRAG_BASE_MIME, JSON.stringify(base))

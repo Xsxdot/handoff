@@ -26,6 +26,9 @@ export interface ContextMenuItem {
   // 在 onDragStart 里定；菜单本身不关——dragstart 关掉会卸掉 drag source、
   // 浏览器取消拖拽，所以拖拽结束（dragend）才关
   draggable?: boolean
+  // WorkbenchPage 放行谓词只认 [data-drag-task]；可拖行必须置 1 才能让
+  // pane pointer-events 关掉、右缘停靠生效
+  dataDragTask?: boolean
   onDragStart?: (e: DragEvent<HTMLButtonElement>) => void
   separator?: never
 }
@@ -114,6 +117,7 @@ export function ContextMenu({ x, y, items, onClose, ariaLabel }: ContextMenuProp
             disabled={it.disabled}
             title={it.disabledReason}
             draggable={it.draggable}
+            data-drag-task={it.dataDragTask ? '1' : undefined}
             onDragStart={it.onDragStart}
             // dragstart 不关菜单（会卸掉 drag source）；拖拽结束才关
             onDragEnd={it.draggable ? () => onClose() : undefined}
