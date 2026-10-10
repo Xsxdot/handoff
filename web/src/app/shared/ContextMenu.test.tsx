@@ -104,4 +104,15 @@ describe('ContextMenu', () => {
     await userEvent.keyboard('{ArrowDown}')
     expect(screen.getByRole('menuitem', { name: '甲' })).toHaveFocus()
   })
+
+  it('dataDragTask 项透传 data-drag-task=1，普通项不置位', () => {
+    // WorkbenchPage 放行谓词只认 [data-drag-task],[data-drag-session]；菜单可拖行
+    // 缺标记时 xterm 吃掉 dragover/drop，右缘停靠失败
+    render(<ContextMenu x={10} y={10} onClose={() => {}} items={[
+      { label: '可拖', onSelect: () => {}, draggable: true, dataDragTask: true },
+      { label: '不可拖', onSelect: () => {} },
+    ]} />)
+    expect(screen.getByRole('menuitem', { name: '可拖' })).toHaveAttribute('data-drag-task', '1')
+    expect(screen.getByRole('menuitem', { name: '不可拖' })).not.toHaveAttribute('data-drag-task')
+  })
 })
