@@ -147,6 +147,36 @@ func TestAPNsSenderMaps410(t *testing.T) {
 	}
 }
 
+// TestAPNsBadgeOnlyClearsWithoutAlert verifies the actual request body includes
+// badge=0 and neither a banner nor a sound when a pending item is handled.
+func TestAPNsBadgeOnlyClearsWithoutAlert(t *testing.T) {
+	var body []byte
+	ts := testhttp.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusOK)
+	}))
+	s := newTestAPNsSender(t, ts.URL)
+	if err := s.Send(context.Background(), "device-token", proto.PushNotification{EventType: "badge_update", Member: "user:sy"}, 0); err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatal(err)
+	}
+	var aps map[string]json.RawMessage
+	if err := json.Unmarshal(payload["aps"], &aps); err != nil {
+		t.Fatal(err)
+	}
+	if string(aps["badge"]) != "0" {
+		t.Fatalf("explicit badge=0 required: %s", body)
+	}
+	for _, key := range []string{"alert", "sound"} {
+		if _, ok := aps[key]; ok {
+			t.Errorf("badge update must omit %s: %s", key, body)
+		}
+	}
+}
+
 // TestAPNsSenderNon200IsError 锁非 200（非 410）为带 status 的错误，且不回显 token。
 func TestAPNsSenderNon200IsError(t *testing.T) {
 	ts := testhttp.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

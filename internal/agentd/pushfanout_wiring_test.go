@@ -146,3 +146,109 @@ func TestPushBadgeCountUsesInbox(t *testing.T) {
 		t.Fatalf("未装配环境 badge = %d，期望 0", got)
 	}
 }
+
+// TestAnsweredDecisionsRefreshBadgeToZero reproduces the device's stale 5 badge
+// through real ledger writes and the production event consumer, not a fake count.
+func TestAnsweredDecisionsRefreshBadgeToZero(t *testing.T) {
+	env := newRoomsEnv(t)
+	registerDevice(t, env.st, consoleMember, "d1", "tok-1")
+	sender := newFakePushSender()
+	env.srv.pushFanout.sender = sender
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	env.srv.StartPush(ctx)
+	var ids []int64
+	for i := 0; i < 5; i++ {
+		d, err := env.ledger.OpenDecision("", "badge regression", nil, "coord")
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, d.ID)
+	}
+	if _, _, err := env.srv.consumeAutomationEventsOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, call := range sender.wait(t, 5) {
+		if call.Badge != 5 {
+			t.Fatalf("initial badge=%d, want 5", call.Badge)
+		}
+	}
+	for i, id := range ids {
+		if err := env.ledger.AnswerDecision(id, "done", consoleMember); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := env.srv.consumeAutomationEventsOnce(ctx); err != nil {
+			t.Fatal(err)
+		}
+		call := sender.wait(t, 1)[0]
+		if call.Badge != 4-i || call.Note.EventType != "badge_update" || call.Note.Title != "" {
+			t.Fatalf("reply %d: got %+v; want badge %d with no alert", i+1, call, 4-i)
+		}
+	}
+	if len(inboxItems(t, env)) != 0 {
+		t.Fatal("all answered inbox must be empty")
+	}
+}
+
+// TestHandledTicketEventsRefreshBadge exercises the production store hook for
+// both human/automatic answers and task termination voiding pending tickets.
+func TestHandledTicketEventsRefreshBadge(t *testing.T) {
+	for _, kind := range []proto.EventType{proto.EventTypeTicketAnswered, proto.EventTypeTicketsVoided} {
+		t.Run(string(kind), func(t *testing.T) {
+			env := newRoomsEnv(t)
+			registerDevice(t, env.st, consoleMember, "d1", "tok-1")
+			sender := newFakePushSender()
+			env.srv.pushFanout.sender = sender
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			env.srv.StartPush(ctx)
+			if _, err := env.st.AppendEvent("t1", kind, map[string]any{"ticket_id": "t1:q1"}); err != nil {
+				t.Fatal(err)
+			}
+			call := sender.wait(t, 1)[0]
+			if call.Note.EventType != "badge_update" || call.Badge != 0 {
+				t.Fatalf("handled ticket: %+v", call)
+			}
+		})
+	}
+}
+
+// TestReplyConsumesMentionAndRefreshesBadge follows the existing consumption
+// rule: sending a reply consumes addressed mentions; MarkRead only sets unread.
+func TestReplyConsumesMentionAndRefreshesBadge(t *testing.T) {
+	env := newRoomsEnv(t)
+	session := mustConsoleSession(t, env, "badge read")
+	_, err := env.srv.rooms.Send(session.ID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "@you", Mentions: []string{consoleMember}}, sessionFixtureOwner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := env.srv.pushBadgeCount(consoleMember); got != 1 {
+		t.Fatalf("unread badge=%d, want 1", got)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	registerDevice(t, env.st, consoleMember, "d1", "tok-1")
+	sender := newFakePushSender()
+	env.srv.pushFanout.sender = sender
+	env.srv.StartPush(ctx)
+	if _, _, err := env.srv.consumeAutomationEventsOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	initial := sender.wait(t, 1)[0]
+	if initial.Note.EventType != proto.InboxOriginMention || initial.Badge != 1 {
+		t.Fatalf("initial mention: %+v", initial)
+	}
+	if _, err := env.srv.rooms.Send(session.ID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "handled"}, consoleMember); err != nil {
+		t.Fatal(err)
+	}
+	if got := env.srv.pushBadgeCount(consoleMember); got != 0 {
+		t.Fatalf("reply must consume mention, badge=%d", got)
+	}
+	if _, _, err := env.srv.consumeAutomationEventsOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	call := sender.wait(t, 1)[0]
+	if call.Note.EventType != "badge_update" || call.Badge != 0 {
+		t.Fatalf("consumed mention: %+v", call)
+	}
+}

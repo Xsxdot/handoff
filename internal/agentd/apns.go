@@ -52,10 +52,10 @@ type apsAlert struct {
 
 // apsPayload 是 APNs 载荷的 aps 节。
 type apsPayload struct {
-	Alert  apsAlert `json:"alert"`
-	Badge  int      `json:"badge"`
-	Sound  string   `json:"sound"`
-	Thread string   `json:"thread-id"`
+	Alert  *apsAlert `json:"alert,omitempty"`
+	Badge  int       `json:"badge"`
+	Sound  string    `json:"sound,omitempty"`
+	Thread string    `json:"thread-id,omitempty"`
 }
 
 // apnsPayload 是 APNs 载荷整体：aps + handoff（plan 决策 D5 的 custom key）。
@@ -206,13 +206,16 @@ func (s *APNsSender) Send(ctx context.Context, token string, n proto.PushNotific
 		s.log.Error("APNs JWT 签名失败", "host", s.host, "cause", err)
 		return fmt.Errorf("APNs JWT: %w", err)
 	}
+	aps := apsPayload{Badge: badge}
+	// A handled item is not another notification: omit alert and sound entirely.
+	// Keep badge=0 explicit, since omission leaves the last icon count unchanged.
+	if n.EventType != pushEventTypeBadgeUpdate {
+		aps.Alert = &apsAlert{Title: n.Title}
+		aps.Sound = "default"
+		aps.Thread = "handoff-needs-you"
+	}
 	body, err := json.Marshal(apnsPayload{
-		Aps: apsPayload{
-			Alert:  apsAlert{Title: n.Title},
-			Badge:  badge,
-			Sound:  "default",
-			Thread: "handoff-needs-you",
-		},
+		Aps:     aps,
 		Handoff: n,
 	})
 	if err != nil {

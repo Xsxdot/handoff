@@ -42,6 +42,10 @@ var ErrPushUnregistered = errors.New("push: 设备 token 已失效")
 // 用本常量避免散落字面量。
 const pushEventTypeNeedsHuman = "needs_human"
 
+// pushEventTypeBadgeUpdate is an internal delivery mode, not a new pending item.
+// Handling an item must update the icon without creating another alert or sound.
+const pushEventTypeBadgeUpdate = "badge_update"
+
 // pushQueueCap 是通知队列容量。64 条 ≈ 一次事件风暴的量级；满了就丢——
 // 推送是尽力而为的旁路，绝不能反压事件写。
 const pushQueueCap = 64
@@ -127,6 +131,13 @@ func (f *PushFanout) Notify(n proto.PushNotification) {
 // OnLedgerEvent 是 card_events 侧的分类入口（decision / mention / needs_human）。
 // 分类未命中不打日志（高频事件流）。
 func (f *PushFanout) OnLedgerEvent(ev proto.LedgerEvent) {
+	// Sending a reply consumes addressed mentions in the existing collab write;
+	// MarkRead only advances unread position and must not invent consumption.
+	if ev.Type == "decision_answered" || ev.Type == "needs_cleared" ||
+		(ev.Type == "room_message" && ev.Actor == f.member()) {
+		f.RefreshBadge(f.member())
+		return
+	}
 	n, ok := classifyLedgerEvent(ev, f.member())
 	if ok {
 		f.Notify(n)
@@ -135,10 +146,24 @@ func (f *PushFanout) OnLedgerEvent(ev proto.LedgerEvent) {
 
 // OnTaskEvent 是 store.events 侧的分类入口（permission / question 工单）。
 func (f *PushFanout) OnTaskEvent(e proto.Event) {
+	if e.Type == proto.EventTypeTicketAnswered || e.Type == proto.EventTypeTicketsVoided {
+		f.RefreshBadge(f.member())
+		return
+	}
 	n, ok := classifyTaskEvent(e, f.member())
 	if ok {
 		f.Notify(n)
 	}
+}
+
+// RefreshBadge queues the authenticated member's current inbox count. The count
+// is read at delivery time so queued updates cannot replay an old local snapshot.
+func (f *PushFanout) RefreshBadge(member string) {
+	if member == "" {
+		return
+	}
+	f.log.Debug("收件箱处理后同步图标角标", "member", member)
+	f.Notify(proto.PushNotification{EventType: pushEventTypeBadgeUpdate, Member: member})
 }
 
 // member 解析当前控制台成员；未配置返回空串（分类据此静默不推）。
