@@ -11,6 +11,7 @@ final class FakeConnectCore: ConnectCore {
     var machines: [MachineView] = []
     var nilIndices: Set<Int> = []   // 界内但 machineAt 返回 nil 的索引（模拟核的内存/平台缺口）
     var pairError: Error?
+    var onPair: (() -> Void)?
     var switchError: Error?
     var sessionError: Error?
     var switchOrigin = "http://127.0.0.1:50000"
@@ -25,6 +26,7 @@ final class FakeConnectCore: ConnectCore {
     func pair(_ bundleJSON: String) throws {
         recorder?.record("pair:\(bundleJSON)")
         if let e = pairError { throw e }
+        onPair?()
     }
     func machineCount() -> Int { machines.count }
     func machineAt(_ index: Int) -> MachineView? {
@@ -68,4 +70,20 @@ final class FakeSecureStore: SecureStore {
         return stored
     }
     func delete() throws { recorder?.record("delete"); stored = nil }
+}
+
+final class FakeCurrentMachineStore: CurrentMachineStore {
+    var stored: String?
+    var writeError: Error?
+    var clearError: Error?
+    init(_ stored: String? = nil) { self.stored = stored }
+    func read() -> String? { stored }
+    func write(_ name: String) throws {
+        if let writeError { throw writeError }
+        stored = name
+    }
+    func clear() throws {
+        if let clearError { throw clearError }
+        stored = nil
+    }
 }

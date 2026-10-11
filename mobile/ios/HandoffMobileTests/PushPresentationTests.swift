@@ -4,6 +4,22 @@ import XCTest
 // B432 验收①：前台且用户已在控制台（对应面已打开）→ 不弹系统横幅；
 // 其余情形交给系统弹。纯函数，三条分支逐条可判。
 final class PushPresentationTests: XCTestCase {
+    func testForegroundOnRelevantScreenAppliesBadgeWithoutBanner() {
+        let options = PushPresentation.foregroundOptions(notificationRoute: "/cards?card=B432",
+                                                          currentRoute: "/cards?card=B432")
+        XCTAssertTrue(options.contains(.badge), "抑制重复横幅时仍应用服务端未处理计数")
+        XCTAssertFalse(options.contains(.banner))
+        XCTAssertFalse(options.contains(.list))
+    }
+
+    func testForegroundElsewhereAppliesBadgeAndBanner() {
+        let options = PushPresentation.foregroundOptions(notificationRoute: "/cards?card=B432",
+                                                          currentRoute: "/?tab=sessions")
+        XCTAssertTrue(options.contains(.badge), "前台别处通知也须更新角标")
+        XCTAssertTrue(options.contains(.banner))
+        XCTAssertTrue(options.contains(.list))
+    }
+
     func testForegroundOnRelevantScreenSuppressesBanner() {
         XCTAssertFalse(PushPresentation.shouldPresent(isForeground: true, onRelevantScreen: true),
                        "前台且对应面已打开：不重复弹系统横幅（spec 验收①）")

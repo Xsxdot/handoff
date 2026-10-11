@@ -43,10 +43,10 @@ final class AppDelegate: UIResponder, UIApplicationDelegate, UNUserNotificationC
                                 withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
         let route = PushDeepLink.route(from: notification.request.content.userInfo)
         let current = AppComposition.current?.cookieBridge.currentRoute ?? ""
-        let onRelevantScreen = PushPresentation.isRelevantRoute(notificationRoute: route, currentRoute: current)
-        let present = PushPresentation.shouldPresent(isForeground: true, onRelevantScreen: onRelevantScreen)
+        let options = PushPresentation.foregroundOptions(notificationRoute: route, currentRoute: current)
+        let present = options.contains(.banner)
         Log.shell.debug("前台通知呈现判定 route=\(route ?? "/", privacy: .public) current=\(current, privacy: .public) decision=\(present ? "banner" : "suppress", privacy: .public)")
-        completionHandler(present ? [.banner, .list] : [])
+        completionHandler(options)
     }
 
     // 点通知进 App：有深链落对应会话/卡，无深链落工作台「需要你处理」（spec 验收②）。

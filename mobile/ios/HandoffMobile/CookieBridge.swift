@@ -73,6 +73,7 @@ final class CookieBridge {
     private let jar: CookieJar
     private let loader: OriginLoader
     private let onMain: MainQueueExecutor
+    private(set) var activeOrigin: String?
 
     // B432：最近一次成功进入的机器与它的回环源。深链落点（openRoute）以它为准；
     // 未进入时为 nil。
@@ -137,6 +138,7 @@ final class CookieBridge {
             completion(.failure(ErrorClassifier.classify(.switchMachine, machine: machine, online: online)))
             return
         }
+        activeOrigin = origin
         clearJar { [weak self] in
             self?.inject(machine: machine, origin: origin, completion: completion)
         }

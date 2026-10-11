@@ -8,6 +8,7 @@ final class AppComposition {
     let core: ConnectCore
     let store: SecureStore
     let pairingService: PairingService
+    let currentMachine: CurrentMachineStore
     let cookieBridge: CookieBridge
     let machineList: MachineListModel
     let pushRegistrar: PushRegistrar
@@ -19,22 +20,29 @@ final class AppComposition {
         return c
     }
 
-    private init() {
+    private convenience init() {
         let core = LiveConnectCore()
+        let store = KeychainSecureStore()
+        let currentMachine = UserDefaultsCurrentMachineStore()
+        self.init(core: core, store: store, currentMachine: currentMachine,
+                  cookieBridge: CookieBridge(core: core))
+    }
+
+    init(core: ConnectCore, store: SecureStore, currentMachine: CurrentMachineStore,
+         cookieBridge: CookieBridge) {
         self.core = core
-        self.store = KeychainSecureStore()
-        self.pairingService = PairingService(core: core, store: store)
-        let bridge = CookieBridge(core: core)
-        self.cookieBridge = bridge
-        self.machineList = MachineListModel(core: core, bridge: bridge)
-        // 活动机器 = 最近一次成功进入的机器（CookieBridge 记账）；nil 时登记器
-        // 只暂存不上报，进入后由 onEntered 补报。
-        let registrar = PushRegistrar(core: core, activeMachine: { [weak bridge] in
-            bridge?.currentMachine
+        self.store = store
+        self.currentMachine = currentMachine
+        self.pairingService = PairingService(core: core, store: store, selection: currentMachine)
+        self.cookieBridge = cookieBridge
+        self.machineList = MachineListModel(core: core, bridge: cookieBridge, selection: currentMachine)
+        // 推送登记以桥接成功进入的机器为准，保留新版壳的持久选择与 APNs 补报。
+        let registrar = PushRegistrar(core: core, activeMachine: { [weak cookieBridge] in
+            cookieBridge?.currentMachine
         })
         self.pushRegistrar = registrar
-        bridge.onEntered = { [weak registrar] in registrar?.retryPending() }
-        Log.shell.info("App 级装配完成（Go 核单例已建立）")
+        cookieBridge.onEntered = { [weak registrar] in registrar?.retryPending() }
+        Log.shell.info("App 级装配完成")
     }
 
     // startPushRegistration 申请通知授权并在获准后向系统注册远程通知（B432）。

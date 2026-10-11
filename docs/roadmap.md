@@ -951,3 +951,8 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 ## 来自 B383 acceptance（2026-10-05，本期不做、后续要做）
 
 - **带文本拒绝终局的兜底提问**：模型在被拒前输出过文字时，回合以文本终结走 git 兜底提问——一次拒绝仍产生第二次人工往返（两次探针实证）。v6 §S3 的收口范围是「空回合」；带文本形态若要收口（如「回合因被拒终结即转 result，不管文本」），需重走 spec 定语义（文本内容会丢给谁、与 B21 零文本报告的边界）。来源：`docs/superpowers/ledgers/ledger-b383-spec.md` #70。
+
+
+## 来自 B432 真机验收（2026-10-11，图覆盖债）
+
+- **iOS 原生壳图覆盖**：当前 codegraph 未命中 PushRegistrar，Swift 壳的机器选择、通知授权/呈现与点击路由仍靠真码、XCTest 和真机轨迹核对。本轮未将 Swift 纳入图扫描，不以 Go 图闸冒充原生调用关系已覆盖。来源：docs/superpowers/ledgers/b432-acceptance-ledger.md「图覆盖债」。

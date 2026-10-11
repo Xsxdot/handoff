@@ -1,4 +1,5 @@
 import Foundation
+import UserNotifications
 
 // PushPresentation —— 前台通知呈现策略（B432 spec 验收①）。
 //
@@ -11,6 +12,14 @@ import Foundation
 // tab、未进入）→ 交给系统弹。后台路径系统本就不回调 willPresent，这里仍
 // 返回 true 是为了让判据在单测里可独立覆盖。
 enum PushPresentation {
+    // foregroundOptions 是系统委托实际使用的前台呈现选项。抑制的是重复
+    // 横幅，角标仍须应用 APNs 的未处理计数，避免前台通知使图标计数落后。
+    static func foregroundOptions(notificationRoute: String?, currentRoute: String) -> UNNotificationPresentationOptions {
+        let relevant = isRelevantRoute(notificationRoute: notificationRoute, currentRoute: currentRoute)
+        let present = shouldPresent(isForeground: true, onRelevantScreen: relevant)
+        return present ? [.banner, .list, .badge] : [.badge]
+    }
+
     // shouldPresent 返回是否交给系统弹横幅。
     //
     // 参数：isForeground 当前是否前台；onRelevantScreen 是否已打开「需要你」

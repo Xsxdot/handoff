@@ -22,6 +22,21 @@ final class PairingServiceTests: XCTestCase {
         XCTAssertNil(store.stored)   // 条 9：Pair error 不落存储
     }
 
+    func testFailedReplacementPairKeepsPreviousMachineSelection() {
+        let core = FakeConnectCore(); core.pairError = NSError(domain: "x", code: 9)
+        let selection = FakeCurrentMachineStore("A")
+        let svc = PairingService(core: core, store: FakeSecureStore(), selection: selection)
+        XCTAssertThrowsError(try svc.pair(bundleJSON: "bad"))
+        XCTAssertEqual(selection.read(), "A")
+    }
+
+    func testSuccessfulReplacementPairClearsOldSelectionForOneTimeChoice() throws {
+        let selection = FakeCurrentMachineStore("A")
+        let svc = PairingService(core: FakeConnectCore(), store: FakeSecureStore(), selection: selection)
+        try svc.pair(bundleJSON: "new bundle")
+        XCTAssertNil(selection.read())
+    }
+
     func testStartupNoStoredGoesPairing() throws {
         let svc = PairingService(core: FakeConnectCore(), store: FakeSecureStore())
         XCTAssertFalse(try svc.pairFromStoredBundle())   // 条 15
@@ -31,6 +46,15 @@ final class PairingServiceTests: XCTestCase {
         let core = FakeConnectCore(); let store = FakeSecureStore(); store.stored = "raw-bundle"
         let svc = PairingService(core: core, store: store)
         XCTAssertTrue(try svc.pairFromStoredBundle())    // 条 15/17
+    }
+
+    func testStartupValidationPreservesPreviouslySelectedMachine() throws {
+        let core = FakeConnectCore()
+        let selection = FakeCurrentMachineStore("A")
+        let store = FakeSecureStore(); store.stored = "raw-bundle"
+        let svc = PairingService(core: core, store: store, selection: selection)
+        XCTAssertTrue(try svc.pairFromStoredBundle())
+        XCTAssertEqual(selection.read(), "A", "重启校验已有配对串不得清掉当前机器")
     }
 
     func testStartupStoredPairFailureThrowsPairing() {
