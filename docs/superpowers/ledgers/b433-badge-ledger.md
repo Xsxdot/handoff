@@ -39,3 +39,19 @@
 
 全量集成、race 与静态检查正在执行；尚未部署/真机验证，不宣告处理后角标已修好。
 公共 App 的 APNs 私钥应由官方服务持有；本卡不建设公共推送网关或分发 `.p8`。
+
+## 集成与部署结果
+
+- 修复提交 `5fc63bf8`；`go test ./... -count=1` exit 0，65 包通过（`/private/tmp/b433-full-tests.log`）。
+- Push/APNs/处理事件的 race 测试 exit 0（`/private/tmp/b433-push-race.log`）；`go vet ./...`
+  exit 0；全部 tracked Go `gofmt -l` 为空；diff check 通过。
+- `OUT=/private/tmp/b433-handoff ./scripts/build-deploy.sh` exit 0，产物内嵌 Web；version
+  验证 revision=`5fc63bf84d0f5a9cf72ca8efd2a0accbcc7a6d61`、modified=false。
+- SuperDev `list_services` 返回清单无本机 handoff agentd 的受管 deployment；经现有官方
+  `handoff service restart` 重载 launchd，PID 84583→36243，17:55:48 agentd 启动。
+  `handoff status --json` 新鲜 reachable=true、degraded=false、agentd revision=5fc63bf8。
+  旧 CLI 二进制备份 `/private/tmp/b433-handoff-before-reload`；配置、密钥与手机 App 未改。
+- 尚待真实 iPhone 对处理后归零的反馈；main 仍为 18c5c5fd，修复分支未合并/推送。
+- 17:56:45 经官方 `handoff decision open` 创建测试裁决 #22，挂 B433，正文「B433 角标归零复验」，
+  选项「已处理」。测试前新鲜 inbox=0；已请用户在 App 答复后返回桌面确认无角标、无多余横幅/声音。
+  未代答该裁决，未将等待反馈记成真机通过。
