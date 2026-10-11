@@ -35,11 +35,6 @@
   编译，五裁决测试第一条答复超时，exit 1；finally 已恢复原字节。变异确实有牙。
 - codegraph 未覆盖 PushFanout，沿 B432 已落 roadmap 的图覆盖债，不伪造视图。
 
-## 待完成
-
-全量集成、race 与静态检查正在执行；尚未部署/真机验证，不宣告处理后角标已修好。
-公共 App 的 APNs 私钥应由官方服务持有；本卡不建设公共推送网关或分发 `.p8`。
-
 ## 集成与部署结果
 
 - 修复提交 `5fc63bf8`；`go test ./... -count=1` exit 0，65 包通过（`/private/tmp/b433-full-tests.log`）。
@@ -51,7 +46,19 @@
   `handoff service restart` 重载 launchd，PID 84583→36243，17:55:48 agentd 启动。
   `handoff status --json` 新鲜 reachable=true、degraded=false、agentd revision=5fc63bf8。
   旧 CLI 二进制备份 `/private/tmp/b433-handoff-before-reload`；配置、密钥与手机 App 未改。
-- 尚待真实 iPhone 对处理后归零的反馈；main 仍为 18c5c5fd，修复分支未合并/推送。
+- main 仍为 18c5c5fd，修复分支未合并/推送；正式集成方式待用户选择。
 - 17:56:45 经官方 `handoff decision open` 创建测试裁决 #22，挂 B433，正文「B433 角标归零复验」，
   选项「已处理」。测试前新鲜 inbox=0；已请用户在 App 答复后返回桌面确认无角标、无多余横幅/声音。
-  未代答该裁决，未将等待反馈记成真机通过。
+  未代答该裁决。
+
+## 真机归零复验
+
+- 裁决 #22 的 decision_answered 为 seq 23349，18:16:32，答复「已处理」来自 WebSocket/App 路径。
+- 用户返回桌面后确认：「已无角标，也无多余提示」。手机仍为 build 43203，本机 agentd 为 5fc63bf8。
+- 18:16:48 新鲜 `handoff room inbox` count=0，与手机归零相符。
+- 此证据证明处理后的归零与无额外提示；未抓取 APNs HTTP 成功响应，不把用户观察写成服务端 HTTP 日志证据。
+- 真机确认后当前树再次执行 `go test ./... -count=1`，exit 0（`/private/tmp/b433-finish-tests.log`）；
+  `go vet ./...` exit 0（`/private/tmp/b433-finish-vet.log`），全部 tracked Go 格式通过。
+- 已以 `handoff card accept B433 --evidence ...` 落正式验收记录，卡推进 finish；主线集成仍待选择。
+- 本卡未修改公共发布架构。用户另已明确统一 App、各用户连接各自电脑；公共推送应由官方服务器持有私钥，
+  不向用户电脑分发 `.p8`，该后续能力尚未设计批准/实现/部署。

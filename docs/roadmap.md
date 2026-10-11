@@ -957,3 +957,7 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 
 - **iOS 原生壳图覆盖**：当前 codegraph 未命中 PushRegistrar，Swift 壳的机器选择、通知授权/呈现与点击路由仍靠真码、XCTest 和真机轨迹核对。本轮未将 Swift 纳入图扫描，不以 Go 图闸冒充原生调用关系已覆盖。来源：docs/superpowers/ledgers/b432-acceptance-ledger.md「图覆盖债」。
 - **APNs Go 路径图覆盖**：实现轮已记录 `PushFanout`、`PushSender`、`APNsSender`、`registerPushRoutes`、`pushBadgeCount`、`collectInboxItems`、`RegisterPush` 未入图，且 baseline 的 `handleInbox` 读数陈旧。本卡没有产出图视图 diff，收尾不作空 absorb；后续按真实调用关系补覆盖。来源：docs/superpowers/ledgers/b432-implement-ledger.md「图覆盖债」。
+
+## 来自 B433 真机复验（2026-10-11，公共发布缺口）
+
+- **统一 iOS App 的官方推送服务**：用户已明确统一 App、各用户连接各自电脑。当前实现由每台 agentd 直接持有 APNs 配置，只完成本机开发环境验证；普通用户无配置时仍使用站内兜底。后续应由官方服务持有私钥，核验电脑与设备绑定后代发，不能分发官方 `.p8`。现有 handoff-server 已有账户/节点认证，但未有 APNs 接线；设计尚未批准，未实现/部署。公开发布还需验证 Production 环境。来源：docs/superpowers/ledgers/b433-badge-ledger.md「真机归零复验」。
