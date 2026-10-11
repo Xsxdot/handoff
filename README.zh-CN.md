@@ -5,7 +5,7 @@
 <h1 align="center">handoff</h1>
 
 <p align="center">
-  <a href="README.md">English</a> · <a href="README.zh-CN.md">简体中文</a>
+  <a href="README.md">English</a> · <a href="README.zh-CN.md">简体中文</a> · <a href="PRIVACY.md">隐私政策</a>
 </p>
 
 <p align="center">
