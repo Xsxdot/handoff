@@ -46,7 +46,7 @@
   `handoff service restart` 重载 launchd，PID 84583→36243，17:55:48 agentd 启动。
   `handoff status --json` 新鲜 reachable=true、degraded=false、agentd revision=5fc63bf8。
   旧 CLI 二进制备份 `/private/tmp/b433-handoff-before-reload`；配置、密钥与手机 App 未改。
-- main 仍为 18c5c5fd，修复分支未合并/推送；正式集成方式待用户选择。
+- 验收时 main 为 18c5c5fd；正式集成结果见下方收尾记录，未推送远端。
 - 17:56:45 经官方 `handoff decision open` 创建测试裁决 #22，挂 B433，正文「B433 角标归零复验」，
   选项「已处理」。测试前新鲜 inbox=0；已请用户在 App 答复后返回桌面确认无角标、无多余横幅/声音。
   未代答该裁决。
@@ -59,6 +59,22 @@
 - 此证据证明处理后的归零与无额外提示；未抓取 APNs HTTP 成功响应，不把用户观察写成服务端 HTTP 日志证据。
 - 真机确认后当前树再次执行 `go test ./... -count=1`，exit 0（`/private/tmp/b433-finish-tests.log`）；
   `go vet ./...` exit 0（`/private/tmp/b433-finish-vet.log`），全部 tracked Go 格式通过。
-- 已以 `handoff card accept B433 --evidence ...` 落正式验收记录，卡推进 finish；主线集成仍待选择。
+- 已以 `handoff card accept B433 --evidence ...` 落正式验收记录，卡推进 finish。
 - 本卡未修改公共发布架构。用户另已明确统一 App、各用户连接各自电脑；公共推送应由官方服务器持有私钥，
   不向用户电脑分发 `.p8`，该后续能力尚未设计批准/实现/部署。
+
+## 本地主线集成
+
+- 用户选择「本地合并进 main」，以 `git merge --ff-only 66f7b430` 将 main 从 18c5c5fd 快进到 66f7b430。
+- 合并前两棵工作树均干净；本次无合并冲突，未推送远端。
+- 本卡无前端形态改动与图视图 diff，未作空原型回灌或空图 absorb；既有图覆盖债与公共发布缺口已落 roadmap。
+- 首次合并后全量 exit 1（`/private/tmp/b433-main-tests.log`）：`TestBundleEndToEndCarriesCommit`
+  临时目录清理报 `.git/objects/pack: directory not empty`；没有角标/APNs 行为断言失败。未将该轮记成通过。
+- 同一树该用例局部复跑 5 次、带 Git trace 再跑 10 次均通过；Git 2.55.0 trace 证明 fetch 启动
+  `maintenance --detach` 并运行 repack，父 fetch 退出后后台进程仍继续约 27ms，存在与 TempDir 清理竞争的窗口。
+  该轮错误未直接捕获后台进程，竞争归因是由新鲜 trace 支持的推断；未顺手修改 bundle 代码或禁用检查。
+  证据：`/private/tmp/b433-main-bundle-reprobe.log`、`/private/tmp/b433-bundle-trace-probe.log`、
+  `/private/tmp/b433-bundle-git-trace.jsonl`。此独立测试稳定性问题已落 roadmap。
+- 未改代码、未加 Git 配置覆盖、未跳过用例，原命令 `go test ./... -count=1` 在 main 重跑 exit 0，
+  65 包通过（`/private/tmp/b433-main-tests-retry.log`）；`go vet ./...` exit 0（`/private/tmp/b433-main-vet.log`），
+  全部 tracked Go 格式检查及 `git diff --check` 通过。手机运行的已验二进制仍为同一修复源 5fc63bf8。
