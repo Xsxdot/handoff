@@ -154,4 +154,15 @@ error: reference to property 'deviceID' in closure requires explicit use of 'sel
 - mobile 子模块 go test ./... -count=1：exit 0，mobile 与 mobile/bind 均 ok，日志 /private/tmp/b432-final-mobile-tests.log。
 - iOS 全套 78 passed / 0 failed / 0 skipped 与真机构建、签名证据见 17:09 节；检查期间没有进一步代码修改。
 - 图覆盖债仍为既有 iOS 壳图外覆盖缺口；不声称 Swift 新文件已被 codegraph 纳入。代码变动仅在 mobile/ios；APNs 服务端与绑定契约沿用已审 46c77cd9，未新增 REST/Go/export 字段。
+
+## 本地 main 集成与收尾（2026-10-11）
+
+- 用户选择「本地合并进 main」。主工作区 `/Users/xushixin/workspace/handoff` 合前干净，`git merge --ff-only codex/b432-native-apns` 成功，main 从 `845a7e80` 快进到 `2ed0e1f1`；未推送远端。
+- 合后根模块 `go test ./... -count=1` exit 0，65 个包通过；`go vet ./...` exit 0；全部 tracked Go 文件 `gofmt -l` 为空；`git diff --check` 通过。日志 `/private/tmp/b432-merged-go-tests.log`、`/private/tmp/b432-merged-go-vet.log`。
+- 合后 mobile 模块 `go test ./... -count=1` exit 0，mobile 与 bind 两包通过。日志 `/private/tmp/b432-merged-mobile-tests.log`。
+- 首轮合后 iOS 测试 exit 65，原因为 main 工作区忽略的旧 XCFramework 缺少 `BindRegisterPushDevice`，两切片头文件均确认缺失。先备份到 `/private/tmp/b432-main-xcframework-before-merge`，再从当前 main 执行 `PATH="$HOME/go/bin:$PATH" ./mobile/build.sh ios`，exit 0，两切片均生成该接口。未为产物问题修改源代码。
+- 重建后同一 main 上完整 `xcodebuild ... test` exit 0，`TEST SUCCEEDED`，78 测试通过、0 失败。日志 `/private/tmp/b432-merged-ios-tests-rebuilt.log`；xcresult `/private/tmp/b432-merged-ios-tests/Logs/Test/Test-HandoffMobile-2026.10.11_17-41-11-+0800.xcresult`。
+- 本卡没有 codegraph 视图 diff，按卡流直接 acceptance → finish；没有可 absorb 的本卡图增量。Go 推送路径与 Swift 壳的已知图覆盖债均已收进 `docs/roadmap.md`。未变更 Web 页面或原型副本，不做原型基准回灌。
+- 文档事实对齐：mobile 绑定契约列表补 `RegisterPushDevice`，iOS README 的 Bind 函数计数由七改为八。收尾只有文档改动，业务源代码仍为已验 `2ed0e1f1`。
+- 五个挂卡远程任务均经 `handoff show --target linux-01` 确認 state=completed，无待归档任务。原有移动端工作树与签名/密钥现场保留；设备继续使用已验 build 43203，通知已由用户恢复。
 - 整体仍未合并主线或归档；集成方式须由用户裁定。本地生产配置与私钥不入 Git，原生 UI 来源工作树未改动。

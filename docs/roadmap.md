@@ -956,3 +956,4 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 ## 来自 B432 真机验收（2026-10-11，图覆盖债）
 
 - **iOS 原生壳图覆盖**：当前 codegraph 未命中 PushRegistrar，Swift 壳的机器选择、通知授权/呈现与点击路由仍靠真码、XCTest 和真机轨迹核对。本轮未将 Swift 纳入图扫描，不以 Go 图闸冒充原生调用关系已覆盖。来源：docs/superpowers/ledgers/b432-acceptance-ledger.md「图覆盖债」。
+- **APNs Go 路径图覆盖**：实现轮已记录 `PushFanout`、`PushSender`、`APNsSender`、`registerPushRoutes`、`pushBadgeCount`、`collectInboxItems`、`RegisterPush` 未入图，且 baseline 的 `handleInbox` 读数陈旧。本卡没有产出图视图 diff，收尾不作空 absorb；后续按真实调用关系补覆盖。来源：docs/superpowers/ledgers/b432-implement-ledger.md「图覆盖债」。

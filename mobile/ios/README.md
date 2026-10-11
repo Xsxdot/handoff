@@ -1,7 +1,7 @@
 # mobile/ios —— handoff iOS 原生壳（B417.2）
 
 薄壳：WKWebView 容器 + 配对入口（粘贴/扫码）+ 原始 bundle 入 Keychain + webview cookie 桥接。
-零协议逻辑，全部经 `Handoff-Mobile.framework` 的七个 `Bind*` C 函数。
+零协议逻辑，全部经 `Handoff-Mobile.framework` 的八个 `Bind*` C 函数。
 
 ## 构建（先核心，后壳；无 GUI）
 

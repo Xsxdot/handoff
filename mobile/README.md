@@ -15,6 +15,7 @@
 ## 绑定面（壳的契约面）
 
     func Pair(bundleJSON string) error
+    func RegisterPushDevice(machine string, deviceID string, pushHandle string) error
     func MachineCount() int
     func MachineAt(index int) *Machine      // Machine{Name, Origin string; Online bool}
     func Origin(machine string) (string, error)
