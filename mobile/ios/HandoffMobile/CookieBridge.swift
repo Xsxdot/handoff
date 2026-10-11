@@ -73,6 +73,8 @@ final class CookieBridge {
     private let jar: CookieJar
     private let loader: OriginLoader
     private let onMain: MainQueueExecutor
+    private let displayPreferences = WebDisplayPreferences()
+    private let recoveryQueue = DispatchQueue(label: "dev.handoff.connection-recovery")
     private(set) var activeOrigin: String?
 
     // B432：最近一次成功进入的机器与它的回环源。深链落点（openRoute）以它为准；
@@ -144,6 +146,39 @@ final class CookieBridge {
         }
     }
 
+    // Restore native sockets before waking the existing document; keep its origin,
+    // cookie jar and open work. A machine switch while this runs cancels the wake.
+    func resumeConnection(completion: @escaping (Bool) -> Void = { _ in }) {
+        guard let machine = currentMachine, let origin = currentOrigin else {
+            completion(false)
+            return
+        }
+        Log.shell.info("前台连接恢复开始 machine=\(machine, privacy: .public)")
+        recoveryQueue.async { [weak self] in
+            guard let self else { return }
+            do {
+                try self.core.resume(machine)
+            } catch {
+                Log.shell.error("前台连接恢复失败 machine=\(machine, privacy: .public) cause=\(String(describing: error), privacy: .public)")
+                self.onMain { completion(false) }
+                return
+            }
+            self.onMain { [weak self] in
+                guard let self, self.currentMachine == machine, self.currentOrigin == origin,
+                      self.activeOrigin == origin else {
+                    Log.shell.info("连接恢复后机器已切换，跳过旧页面通知")
+                    completion(false)
+                    return
+                }
+                self.webView.evaluateJavaScript("document.dispatchEvent(new Event('handoff-foreground'))") { _, error in
+                    if error != nil { Log.shell.error("前台恢复通知网页失败") }
+                    else { Log.shell.info("前台连接恢复完成，已通知网页恢复轮询") }
+                    completion(error == nil)
+                }
+            }
+        }
+    }
+
     private func clearJar(completion: @escaping () -> Void) {
         jar.allCookies { [weak self] cookies in
             guard let self else { return }
@@ -193,6 +228,7 @@ final class CookieBridge {
                 let route = self.pendingRoute ?? ""
                 self.pendingRoute = nil
                 self.currentRoute = route.isEmpty ? "/" : route
+                self.displayPreferences.install(on: self.webView, origin: origin)
                 self.loader.load(origin: origin + route)
                 completion(.success(()))
                 self.onEntered?()

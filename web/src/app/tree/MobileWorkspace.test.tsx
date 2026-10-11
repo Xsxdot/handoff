@@ -1,14 +1,35 @@
 // Real workspace projection guards: card association and directory identity, not machine proximity.
-import { describe, it, expect, vi } from 'vitest'
+import { beforeEach, describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import type { ProjectNode } from '../../api/types'
 import type { SessionSummary } from '../../api/rooms'
 import { MobileWorkspace } from './MobileWorkspace'
+import { GeneralPage } from '../settings/GeneralPage'
+import { __resetTreePrefsForTest } from './useTreePrefs'
+import { PREFS_KEY } from './treePrefs'
+
+beforeEach(() => { localStorage.clear(); __resetTreePrefsForTest() })
 
 const project = { project_id: 'p', name: 'handoff', locations: [{ machine: '', name: 'handoff', path: '/repo', workspaces: [{ path: '/repo', branch: 'main', is_main: true }] }] } as ProjectNode
 const room = (id: string, cards: string[]): SessionSummary => ({ id, kind:'session', title:id, owner:'user:a', archived:false, unread:0, needs_human:false, last_activity:'', cards:cards.map(card_id => ({card_id})) })
 const props = () => ({ projects:[project], machines:[], tasks:[], sessions:[room('same-project',['B1']),room('cross-project',['B1','B2']),room('unmapped',['missing'])], projectOfCard:(id:string)=>id==='B1'?'handoff':id==='B2'?'other':'', openedItems:[], ptySessions:[], needsCount:2, ready:true, errorText:'', expired:false, onOpenSession:vi.fn(), onOpenItem:vi.fn(), onRestoreTerminal:vi.fn(), onOpenTerminal:vi.fn(), onOpenDirectory:vi.fn(), onOpenProject:vi.fn(), onEditProject:vi.fn(), onAddProject:vi.fn(), onOpenSessions:vi.fn(), onOpenCards:vi.fn() })
 describe('MobileWorkspace',()=>{
+ it('applies settings project checkboxes immediately and after page restart',()=>{
+  const input = props()
+  const tree = {projects: input.projects, machines: []} as never
+  const first = render(<><GeneralPage tree={tree} mode="projects"/><MobileWorkspace {...input}/></>)
+  expect(screen.getByTestId('mobile-project-card')).toBeInTheDocument()
+  fireEvent.click(screen.getByRole('checkbox'))
+  expect(screen.queryByTestId('mobile-project-card')).not.toBeInTheDocument()
+  expect(JSON.parse(localStorage.getItem(PREFS_KEY)!).hiddenProjects).toEqual(['p'])
+  first.unmount()
+  __resetTreePrefsForTest()
+  render(<><GeneralPage tree={tree} mode="projects"/><MobileWorkspace {...input}/></>)
+  expect(screen.getByRole('checkbox')).not.toBeChecked()
+  expect(screen.queryByTestId('mobile-project-card')).not.toBeInTheDocument()
+  fireEvent.click(screen.getByRole('checkbox'))
+  expect(screen.getByTestId('mobile-project-card')).toBeInTheDocument()
+ })
  it('toggles expand from the project name; detail opens via ⋯ sheet 「工作树与项目目录」',()=>{
   const input={...props(),sessions:[]}; render(<MobileWorkspace {...input}/>);
   // Empty project lives in 其余 bucket until opened

@@ -312,7 +312,9 @@ func (d *Dialer) ensureTunnel(ctx context.Context) error {
 		d.account = response.Account
 	}
 	d.log.Debug("relay connect_ok received", "node", d.node, "account", d.account)
-	raw := websocket.NetConn(ctx, ws, websocket.MessageBinary)
+	// ctx bounds the handshake, not the shared tunnel's lifetime. Pairing probes
+	// cancel it on return; Dialer.Close owns the established connection instead.
+	raw := websocket.NetConn(context.Background(), ws, websocket.MessageBinary)
 	// coordinator 的这条 WSS 连接与 executor 的一个 session 流由 relay 1:1 撮合，
 	// 因此它本身就是「一个 session」——这里绝不能再套 session-mux yamux：relay 只做
 	// 纯字节拷贝、不会解掉这层帧，套了会把 yamux 帧头漏进 executor 的 SecureServer

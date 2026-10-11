@@ -68,6 +68,8 @@ func (f *fakeCore) Close() error {
 	return f.closeErr
 }
 
+func (f *fakeCore) Resume(_ context.Context, _ string) error { return nil }
+
 // fakeSessions 是 sessionAPI 的替身：记录切机/取 cookie 的调用序与当前罐内容，
 // 用于锁「切机清罐、一罐只装一机、失败上抛」三条语义（不重实现协议）。
 type fakeSessions struct {

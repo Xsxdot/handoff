@@ -10,6 +10,7 @@ protocol ConnectCore: AnyObject {
     func origin(_ machine: String) throws -> String
     func sessionCookie(_ machine: String) throws -> String
     func switchMachine(_ machine: String) throws -> String
+    func resume(_ machine: String) throws
     func registerPushDevice(_ machine: String, deviceID: String, pushHandle: String) throws
     func close() throws
 }
@@ -51,6 +52,12 @@ final class LiveConnectCore: ConnectCore {
         let s = BindSwitchMachine(machine, &err)
         if let e = err { throw e }
         return s
+    }
+
+    func resume(_ machine: String) throws {
+        var err: NSError?
+        let ok = BindResume(machine, &err)
+        if !ok { throw err ?? NSError(domain: "BindResume", code: -1) }
     }
 
     // pushHandle 是 APNs device 的十六进制串（命名刻意避开绑定面的主令牌门禁）。

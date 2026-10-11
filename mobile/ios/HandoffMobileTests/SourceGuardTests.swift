@@ -8,6 +8,7 @@ final class SourceGuardTests: XCTestCase {
         "BindSessionCookie", "BindSwitchMachine", "BindClose", "BindMachine",
         // B432：壳上报 APNs device 的唯一导出面。
         "BindRegisterPushDevice",
+        "BindResume",
     ]
 
     private var appSources: [String] {

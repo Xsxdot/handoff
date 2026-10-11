@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/coder/websocket"
 	"github.com/hashicorp/yamux"
@@ -23,6 +24,40 @@ func TestEnsureOnClosedDialerFails(t *testing.T) {
 	_ = d.Close()
 	if err := d.Ensure(context.Background()); err == nil {
 		t.Fatal("已关闭的 Dialer 不该还能建隧道")
+	}
+}
+
+// The handshake context ends when pairing/probing completes; the shared tunnel
+// must still carry requests until Dialer.Close, including after app suspension.
+func TestTunnelOutlivesHandshakeContext(t *testing.T) {
+	url, cleanup := startFakeRelay(t, "tok", "acc1", "devbox")
+	defer cleanup()
+	d := NewDialer(url, "cred", "devbox", "tok", "acc1", slog.Default())
+	defer d.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := d.Ensure(ctx); err != nil {
+		t.Fatal(err)
+	}
+	d.mu.Lock()
+	session := d.session
+	d.mu.Unlock()
+	cancel()
+	hc := &http.Client{Transport: d.Transport(), Timeout: time.Second}
+	resp, err := hc.Get("http://relay-devbox/ping")
+	if err != nil {
+		t.Fatalf("tunnel lost after handshake cancellation: %v", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil || string(body) != "pong" {
+		t.Fatalf("body=%q err=%v", body, err)
+	}
+	d.mu.Lock()
+	same := d.session == session
+	d.mu.Unlock()
+	if !same || session.IsClosed() {
+		t.Fatal("handshake cancellation closed the shared tunnel")
 	}
 }
 

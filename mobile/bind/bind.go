@@ -30,6 +30,7 @@ type coreAPI interface {
 	Origin(machine string) (string, error)
 	MachineNames() []string
 	RegisterPush(ctx context.Context, machine, deviceID, pushHandle string) error
+	Resume(ctx context.Context, name string) error
 	Close() error
 }
 
@@ -110,6 +111,12 @@ func Origin(machine string) (string, error) {
 		return "", err
 	}
 	return origin, nil
+}
+
+// Resume restores the active machine's native sockets at its existing origin.
+// It neither exchanges a session nor exposes any credentials to the shell.
+func Resume(machine string) error {
+	return core.Resume(context.Background(), machine)
 }
 
 // Close 收掉全部回环反代与客户端（幂等）。

@@ -29,6 +29,48 @@ describe('usePoll', () => {
   beforeEach(() => vi.useFakeTimers())
   afterEach(() => vi.useRealTimers())
 
+  it('恢复前台时丢弃挂起请求，立即重拉且旧结果不能覆盖新数据', async () => {
+    Object.defineProperty(document, 'hidden', { value: false, configurable: true })
+    let resolveOld!: (value: string) => void
+    let oldSignal!: AbortSignal
+    const fetcher = vi.fn().mockImplementationOnce((signal: AbortSignal) => {
+      oldSignal = signal
+      return new Promise<string>((resolve) => { resolveOld = resolve })
+    }).mockResolvedValue('fresh')
+    const { result } = renderHook(() => usePoll(fetcher, 1000))
+    Object.defineProperty(document, 'hidden', { value: true, configurable: true })
+    act(() => document.dispatchEvent(new Event('visibilitychange')))
+    Object.defineProperty(document, 'hidden', { value: false, configurable: true })
+    await act(async () => document.dispatchEvent(new Event('visibilitychange')))
+    expect(fetcher).toHaveBeenCalledTimes(2)
+    expect(oldSignal.aborted).toBe(true)
+    expect(result.current.data).toBe('fresh')
+    await act(async () => resolveOld('stale'))
+    expect(result.current.data).toBe('fresh')
+  })
+
+  it('会话过期后恢复前台也不重试', async () => {
+    Object.defineProperty(document, 'hidden', { value: false, configurable: true })
+    const fetcher = vi.fn().mockRejectedValue(new ApiError(401, 'expired'))
+    const { result } = renderHook(() => usePoll(fetcher, 1000))
+    await act(async () => { await Promise.resolve() })
+    expect(result.current.sessionExpired).toBe(true)
+    act(() => document.dispatchEvent(new Event('visibilitychange')))
+    await act(async () => { await Promise.resolve() })
+    expect(fetcher).toHaveBeenCalledTimes(1)
+  })
+
+  it('iOS 原生前台通知无需等待 WebKit visibility 也能恢复挂起请求', async () => {
+    const fetcher = vi.fn().mockImplementationOnce(() => new Promise<string>(() => {})).mockResolvedValue('resumed')
+    const { result, unmount } = renderHook(() => usePoll(fetcher, 1000))
+    await act(async () => document.dispatchEvent(new Event('handoff-foreground')))
+    expect(fetcher).toHaveBeenCalledTimes(2)
+    expect(result.current.data).toBe('resumed')
+    unmount()
+    await act(async () => document.dispatchEvent(new Event('handoff-foreground')))
+    expect(fetcher).toHaveBeenCalledTimes(2)
+  })
+
   it('立即首拉，然后按间隔续拉', async () => {
     const fetcher = vi.fn().mockResolvedValue('v1')
     const { result } = renderHook(() => usePoll(fetcher, 1000))

@@ -14,6 +14,8 @@ final class FakeConnectCore: ConnectCore {
     var onPair: (() -> Void)?
     var switchError: Error?
     var sessionError: Error?
+    var resumeError: Error?
+    var onResume: (() -> Void)?
     var switchOrigin = "http://127.0.0.1:50000"
     var cookieValue = "cookie-value-123"
     // B432：设备登记上报的记账与可注入故障（防假送达断言用）。
@@ -44,6 +46,11 @@ final class FakeConnectCore: ConnectCore {
         recorder?.record("switchMachine:\(machine)")
         if let e = switchError { throw e }
         return switchOrigin
+    }
+    func resume(_ machine: String) throws {
+        recorder?.record("resume:\(machine)")
+        onResume?()
+        if let error = resumeError { throw error }
     }
     func registerPushDevice(_ machine: String, deviceID: String, pushHandle: String) throws {
         recorder?.record("registerPushDevice:\(machine):\(deviceID)")

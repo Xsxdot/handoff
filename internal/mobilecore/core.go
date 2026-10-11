@@ -21,6 +21,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"sort"
 	"sync"
 	"time"
@@ -159,7 +160,7 @@ func (c *Core) registerLocked(ctx context.Context, b proto.PairBundle, m proto.P
 		c.replaceMachine(m.Name, offline)
 		return PairedMachine{Name: m.Name, Online: false}
 	}
-	origin, ln, srv, lerr := c.startLoopback(m.Name, cl)
+	origin, ln, srv, lerr := c.startLoopback(m.Name, cl, "127.0.0.1:0")
 	if lerr != nil {
 		cleanup()
 		c.log.Warn("机器回环反代起不来，标离线待补配", "machine", m.Name, "cause", lerr)
@@ -199,6 +200,46 @@ func (c *Core) Retry(ctx context.Context, machine string) (PairedMachine, error)
 	pm := c.registerLocked(ctx, b, old.reg)
 	c.log.Info("离线补配重试结束", "machine", machine, "online", pm.Online)
 	return pm, nil
+}
+
+// Resume replaces sockets that iOS may reclaim while the app is suspended.
+// It keeps the existing origin and session slot: an open document can reconnect
+// without navigation, ticket exchange, or any new credential in the proxy.
+// ctx bounds transport construction; only the currently active machine is allowed.
+func (c *Core) Resume(ctx context.Context, name string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		return errCoreClosed
+	}
+	m, ok := c.machines[name]
+	if !ok || !m.online || c.active != name {
+		return fmt.Errorf("机器 %q 不是当前在线活动机器，拒绝恢复", name)
+	}
+	u, err := url.Parse(m.origin)
+	if err != nil {
+		return fmt.Errorf("恢复回环源: %w", err)
+	}
+	c.log.Info("前台连接恢复开始", "machine", name, "origin", m.origin)
+	cl, cleanup, err := c.dial(ctx, proto.PairBundle{Version: proto.PairVersion, Relay: m.relay}, m.reg)
+	if err != nil {
+		c.log.Warn("前台传输构造失败", "machine", name, "cause", err)
+		return err
+	}
+	stopMachine(m)
+	// Ownership has ended even if rebinding fails. A later resume must not run
+	// this generation's cleanup again (DialFunc does not promise idempotence).
+	m.cleanup, m.srv, m.ln = nil, nil, nil
+	m.cl.HTTPClient().CloseIdleConnections()
+	_, ln, srv, err := c.startLoopback(name, cl, u.Host)
+	if err != nil {
+		cleanup()
+		c.log.Warn("前台回环监听恢复失败", "machine", name, "origin", m.origin, "cause", err)
+		return err
+	}
+	m.cl, m.cleanup, m.ln, m.srv = cl, cleanup, ln, srv
+	c.log.Info("前台连接恢复完成", "machine", name, "origin", m.origin)
+	return nil
 }
 
 // Activate 把某台机器的会话罐置为当前：切机即清掉旧机器的 cookie，程序化
@@ -439,12 +480,16 @@ func stopMachine(m *machine) {
 // startLoopback 为单台机器起一个独立 loopback 端口与透传反代。每机独立端口是
 // 多机会话域语义的承载：cookie 不按端口隔离（RFC 6265），切机由上层清 webview
 // 会话罐并重兑换，任何时刻一罐只装一机的 cookie。
-func (c *Core) startLoopback(machineName string, cl *client.Client) (string, net.Listener, *http.Server, error) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+func (c *Core) startLoopback(machineName string, cl *client.Client, address string) (string, net.Listener, *http.Server, error) {
+	ln, err := net.Listen("tcp", address)
 	if err != nil {
 		return "", nil, nil, fmt.Errorf("回环监听: %w", err)
 	}
 	srv := &http.Server{Handler: newReverseProxy(machineName, cl, c.log)}
-	go func() { _ = srv.Serve(ln) }()
+	go func() {
+		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			c.log.Warn("回环监听退出", "machine", machineName, "cause", err)
+		}
+	}()
 	return "http://" + ln.Addr().String(), ln, srv, nil
 }

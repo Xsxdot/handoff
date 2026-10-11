@@ -45,6 +45,8 @@ export function usePoll<T>(
   // 避免上一轮慢请求尚未结束时又启动同一数据流的下一轮。新的 effect 可订阅同一
   // Promise，兼容 StrictMode 的 effect 重放而不丢首拉结果。
   const inFlightRef = useRef<Promise<T> | null>(null)
+  const controllerRef = useRef<AbortController | null>(null)
+  const requestEpochRef = useRef(0)
   // 在飞请求所属的 nonce。refresh（nonce+1）之后，旧 nonce 的在飞请求内容
   // 不含有本次要看的变更，等它等于把新数据推迟一个周期——显式刷新改起一只
   // 新请求；旧请求走完后由各自 effect 的 stopped 守卫丢弃，不重复 setData。
@@ -56,16 +58,20 @@ export function usePoll<T>(
   useEffect(() => {
     if (!enabled) return
     let stopped = false
+    let expired = false
     let timer: number | undefined
     const stopTimer = () => { if (timer !== undefined) { window.clearInterval(timer); timer = undefined } }
 
     const poll = async (subscribe = false) => {
+      if (expired || stopped) return
+      const epoch = requestEpochRef.current
       let request = inFlightRef.current
       if (request && !subscribe) return
       if (request && inFlightNonceRef.current !== nonce) request = null
       try {
         if (!request) {
           const controller = new AbortController()
+          controllerRef.current = controller
           const pending = fetcherRef.current(controller.signal)
           // 无上限的在飞请求会让后续每轮直接跳过；到点释放轮询槽，并取消支持
           // AbortSignal 的 HTTP 请求。即使旧 fetcher 忽略取消，也不能阻塞恢复。
@@ -83,7 +89,7 @@ export function usePoll<T>(
           inFlightNonceRef.current = nonce
         }
         const v = await request
-        if (stopped) return
+        if (stopped || epoch !== requestEpochRef.current) return
         // 轮询续帧是非紧急数据（B413）：写入包 startTransition 进 transition lane，
         // 与导航 transition 合帧提交，拆掉「sync 续帧在让出窗口打断重启 transition
         // 渲染」的下钻饥饿回路。成功对两写同回调，data 与断线标志同帧一致。
@@ -92,11 +98,12 @@ export function usePoll<T>(
           setDisconnected(false)
         })
       } catch (err) {
-        if (stopped) return
+        if (stopped || epoch !== requestEpochRef.current) return
         if (err instanceof ApiError && err.status === 401) {
           // 会话失效是终止态：继续轮询只会刷 401。stopTimer 是定时器控制、
           // 非 React 状态写入，留在 transition 外。
           stopTimer()
+          expired = true
           startTransition(() => { setSessionExpired(true) })
           return
         }
@@ -106,23 +113,43 @@ export function usePoll<T>(
           setErrorText(errorMessage(err))
         })
       } finally {
-        if (request && inFlightRef.current === request) inFlightRef.current = null
+        if (request && inFlightRef.current === request) {
+          inFlightRef.current = null
+          controllerRef.current = null
+        }
       }
     }
 
-    const startTimer = () => { if (timer === undefined) timer = window.setInterval(() => { void poll() }, intervalMs) }
+    // iOS may suspend a fetch indefinitely. Release the slot before resuming;
+    // the epoch also rejects late results from fetchers that ignore cancellation.
+    const cancelPending = () => {
+      requestEpochRef.current++
+      controllerRef.current?.abort()
+      controllerRef.current = null
+      inFlightRef.current = null
+    }
+    const startTimer = () => { if (!expired && timer === undefined) timer = window.setInterval(() => { void poll() }, intervalMs) }
     const onVisibility = () => {
-      if (document.hidden) stopTimer()
-      else { startTimer(); void poll(true) }
+      if (document.hidden) { stopTimer(); cancelPending() }
+      else if (!expired) { startTimer(); void poll(true) }
+    }
+    const onNativeResume = () => {
+      if (expired) return
+      console.debug('poll.foreground_resume', { intervalMs })
+      cancelPending()
+      startTimer()
+      void poll(true)
     }
 
     void poll(true)
     startTimer()
     document.addEventListener('visibilitychange', onVisibility)
+    document.addEventListener('handoff-foreground', onNativeResume)
     return () => {
       stopped = true
       stopTimer()
       document.removeEventListener('visibilitychange', onVisibility)
+      document.removeEventListener('handoff-foreground', onNativeResume)
     }
   }, [enabled, intervalMs, nonce, timeoutMs])
 

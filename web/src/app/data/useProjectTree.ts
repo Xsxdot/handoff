@@ -8,5 +8,5 @@ import type { ProjectTreeResp } from '../../api/types'
 
 const TREE_INTERVAL = 30000
 export function useProjectTree(): ReturnType<typeof usePoll<ProjectTreeResp>> {
-  return usePoll(() => fetchProjectTree('all'), TREE_INTERVAL)
+  return usePoll((signal) => fetchProjectTree('all', signal), TREE_INTERVAL)
 }

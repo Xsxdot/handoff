@@ -247,8 +247,8 @@ export function startDownload(): Promise<void> {
 //
 // 信封里的 machines（每台机器的快照新旧）本函数丢弃：任务流的消费方只要任务。
 // 机器可达性另有 useMachines / 树流的同名字段负责，这里再抄一份只会有两份漂移。
-export function fetchTasks(): Promise<Task[]> {
-  return request<TasksResp>('/api/tasks?scope=all').then((r) => r.tasks ?? [])
+export function fetchTasks(signal?: AbortSignal): Promise<Task[]> {
+  return request<TasksResp>('/api/tasks?scope=all', { signal }).then((r) => r.tasks ?? [])
 }
 
 // fetchTaskDetail 取任务详情（GET /api/tasks/{id}）：任务 + 待办工单 + 最近事件，
@@ -333,8 +333,8 @@ function machineQuery(machine?: string, sep: '?' | '&' = '?'): string {
 //   - scope: 传 'all' 取跨机汇总版（响应多一个 machines 字段，见 §5.3）
 //
 // 注意：本接口带 git worktree 现场探测，**不要放进 2.5s 热路径**。
-export function fetchProjectTree(scope?: 'all'): Promise<ProjectTreeResp> {
-  return request<ProjectTreeResp>(`/api/projects/tree${scope === 'all' ? '?scope=all' : ''}`)
+export function fetchProjectTree(scope?: 'all', signal?: AbortSignal): Promise<ProjectTreeResp> {
+  return request<ProjectTreeResp>(`/api/projects/tree${scope === 'all' ? '?scope=all' : ''}`, { signal })
 }
 
 // fetchMachines 取机器投影与探活结果（GET /api/machines）。

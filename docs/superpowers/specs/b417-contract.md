@@ -1,5 +1,10 @@
 # B417 契约增量：Android/iOS 原生移动壳（WebView + 配对 + 安全存储）
 
+> 后续消费面修订：B432 增加 RegisterPushDevice；2026-10-11 iOS 重连修复增加 Resume。
+> 下文「七函数／B417零修改」保留本卡历史基线；当前增量语义与精确生成签名见
+> [iOS 前台恢复增量](../../debug/2026-10-11-ios-resume-surface.md)，当前可执行面以
+> `mobile/bind/export_surface_test.go` 和 `mobile/bind/shell_api_golden_test.go` 为准。
+
 **上游状态：已批准**（源 spec：`docs/superpowers/specs/b417.md`，头部「**状态：已批准（2026-09-28）**」——
 本轮复核一致，无需回写）
 **级别：L3 重档**（contract → breakdown → 拆 Android/iOS 两子卡 → 父卡 integrate）

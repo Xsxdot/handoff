@@ -1,5 +1,10 @@
 # Roadmap（仓库级残余账本）
 
+## 2026-10-11 iOS 修复验收残余
+
+- **显示项目设置的手机完整故事**：组件勾选立即影响工作台、真实 WebKit 跨端口持久化与同源重载已通过；尚未记录 iPhone 上实际点击勾选后强退重开的完整结果。锁屏恢复已在同一进程、同一文档实际通过，不能抵替设置故事。用户在锁屏恢复验收后授权合并当前修复；这条保留待验。来源：`docs/debug/2026-10-11-ios-settings-reconnect.md`。
+- **原生绑定与壳的图覆盖**：本轮补齐 Core.Resume、startLoopback 地址参数、Web 请求签名和恢复回调的增量图；mobile/bind 的 Resume、Swift ConnectCore.resume/CookieBridge.resumeConnection/SceneDelegate 与 WebDisplayPreferences 尚无原生/嵌套模块图容器，本轮保留源码、导出面和真实消费测试证据，不伪造跨语言调用边。来源：同上及 `docs/debug/2026-10-11-ios-resume-surface.md`。
+
 一行一条的有序期队列。每条注明来源（哪份 spec / 哪个缺口）。排序判据两行：
 先骨架后血肉；每期以可真机验收为界。下一期开工 = 从这里取条目重走 spec 门。
 

@@ -522,3 +522,29 @@ func TestRealCoreConcurrentNoCrossMachine(t *testing.T) {
 		t.Error("并发补充测试应至少有一次成功读取（全部被错机拒绝则覆盖为空）")
 	}
 }
+
+// Native resume must use the same live Core and leave its auth slot intact.
+func TestResumePreservesActiveSessionAndOrigin(t *testing.T) {
+	rc := newRealChain(t, "phone")
+	rc.pair(t, "phone")
+	origin, err := SwitchMachine("phone")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cookie, err := SessionCookie("phone")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Resume("phone"); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := Origin("phone"); err != nil || got != origin {
+		t.Fatalf("origin drift: %v", err)
+	}
+	if got, err := SessionCookie("phone"); err != nil || got != cookie {
+		t.Fatalf("session drift: %v", err)
+	}
+	if err := Resume("another-machine"); err == nil {
+		t.Fatal("must reject unrelated machine")
+	}
+}

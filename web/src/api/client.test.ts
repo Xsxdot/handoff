@@ -8,6 +8,7 @@ import {
   fetchDisciplineFile,
   fetchProjectBranches,
   fetchProjects,
+  fetchProjectTree,
   fetchTasks,
   saveDisciplineFile,
   saveDisciplineMapping,
@@ -41,6 +42,14 @@ function mockFetchJSON(body: unknown) {
 }
 
 describe('fetchTasks', () => {
+  it('前台取消信号传到任务与项目树的真实 HTTP 请求', async () => {
+    const fetchMock = mockFetchJSON({ tasks: [], projects: [] })
+    const signal = new AbortController().signal
+    await fetchTasks(signal)
+    await fetchProjectTree('all', signal)
+    expect(fetchMock.mock.calls[0][1].signal).toBe(signal)
+    expect(fetchMock.mock.calls[1][1].signal).toBe(signal)
+  })
   // 这条钉的是「看板能看见远端机器上正在跑的任务」这件事本身：不带 scope=all
   // 时 agentd 只回本机任务，跨机任务（含唯一一条 running）永远进不了看板。
   it('必须带 ?scope=all —— 否则远端机器的任务在看板上完全不存在', async () => {

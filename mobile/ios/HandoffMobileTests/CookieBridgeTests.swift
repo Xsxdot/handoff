@@ -223,3 +223,90 @@ final class CookieBridgeTests: XCTestCase {
         XCTAssertEqual(bridge.currentRoute, "", "未进入时无路由可言")
     }
 }
+
+extension CookieBridgeTests {
+    private func resumeFixture(_ rec: CallRecorder, jar: FakeCookieJar? = nil) -> (CookieBridge, FakeConnectCore) {
+        let core = FakeConnectCore(recorder: rec)
+        let bridge = CookieBridge(core: core, jar: jar ?? FakeCookieJar(recorder: rec),
+                                  loader: FakeOriginLoader(recorder: rec))
+        let entered = expectation(description: "entered")
+        bridge.enter(machine: "A", online: true) { _ in entered.fulfill() }
+        wait(for: [entered], timeout: 2)
+        let ready = expectation(description: "event listener ready")
+        bridge.webView.evaluateJavaScript("window.resumeCount=0; document.addEventListener('handoff-foreground',()=>window.resumeCount++)") { _, error in
+            XCTAssertNil(error); ready.fulfill()
+        }
+        wait(for: [ready], timeout: 3)
+        return (bridge, core)
+    }
+
+    private func assertResumeEvents(_ bridge: CookieBridge, count: Int) {
+        let event = expectation(description: "event observed")
+        bridge.webView.evaluateJavaScript("window.resumeCount") { value, error in
+            XCTAssertNil(error); XCTAssertEqual(value as? Int, count); event.fulfill()
+        }
+        wait(for: [event], timeout: 3)
+    }
+
+    func testResumeKeepsDocumentAndEmitsForegroundAfterCoreRecovery() {
+        let rec = CallRecorder()
+        let (bridge, _) = resumeFixture(rec)
+        let before = rec.calls.count
+        let resumed = expectation(description: "core and web resumed")
+        bridge.resumeConnection { success in XCTAssertTrue(success); resumed.fulfill() }
+        wait(for: [resumed], timeout: 5)
+        XCTAssertEqual(Array(rec.calls.dropFirst(before)), ["resume:A"])
+        XCTAssertEqual(bridge.currentOrigin, "http://127.0.0.1:50000")
+        assertResumeEvents(bridge, count: 1)
+    }
+
+    func testFailedCoreResumeDoesNotWakeTheDocument() {
+        let (bridge, core) = resumeFixture(CallRecorder())
+        core.resumeError = NSError(domain: "resume failed", code: 1)
+        let resumed = expectation(description: "resume rejected")
+        bridge.resumeConnection { success in XCTAssertFalse(success); resumed.fulfill() }
+        wait(for: [resumed], timeout: 5)
+        assertResumeEvents(bridge, count: 0)
+    }
+
+    func testMachineSwitchWhileResumingDiscardsTheOldWake() {
+        let (bridge, core) = resumeFixture(CallRecorder())
+        core.onResume = {
+            let entered = DispatchSemaphore(value: 0)
+            DispatchQueue.main.async {
+                core.switchOrigin = "http://127.0.0.1:50001"
+                bridge.enter(machine: "B", online: true) { _ in entered.signal() }
+            }
+            XCTAssertEqual(entered.wait(timeout: .now() + 2), .success)
+        }
+        let resumed = expectation(description: "old wake discarded")
+        bridge.resumeConnection { success in XCTAssertFalse(success); resumed.fulfill() }
+        wait(for: [resumed], timeout: 5)
+        XCTAssertEqual(bridge.currentMachine, "B")
+        XCTAssertEqual(bridge.currentOrigin, "http://127.0.0.1:50001")
+        assertResumeEvents(bridge, count: 0)
+    }
+
+    func testMachineSwitchStillClearingCookiesDiscardsTheOldWake() {
+        let rec = CallRecorder()
+        let jar = FakeCookieJar(recorder: rec)
+        let (bridge, core) = resumeFixture(rec, jar: jar)
+        jar.deleteCompletionHangs = true
+        core.onResume = {
+            let switching = DispatchSemaphore(value: 0)
+            DispatchQueue.main.async {
+                core.switchOrigin = "http://127.0.0.1:50001"
+                bridge.enter(machine: "B", online: true) { _ in XCTFail("cookie clear should still be pending") }
+                switching.signal()
+            }
+            XCTAssertEqual(switching.wait(timeout: .now() + 2), .success)
+        }
+        let resumed = expectation(description: "in-flight switch rejects old wake")
+        bridge.resumeConnection { success in XCTAssertFalse(success); resumed.fulfill() }
+        wait(for: [resumed], timeout: 5)
+        // Public context still describes A until B's cookie transaction finishes.
+        XCTAssertEqual(bridge.currentMachine, "A")
+        XCTAssertEqual(bridge.currentOrigin, "http://127.0.0.1:50000")
+        assertResumeEvents(bridge, count: 0)
+    }
+}
