@@ -127,3 +127,6 @@ codegraph sym Shell 命中 n_web_app_shell_Shell；MobileWorkspace、WebviewActi
 - 图对账新增3节点、3处签名修改及6条实际同语言调用边；Core.Resume 和 cancelPending 查询均命中。系统 devel codegraph 拒绝既有嵌套 cards/B233.28-charter.json，改用仓库钉版 graph v0.10.2，validate issues=null；原文件保持不变。图 check 的 fails=[]、28条 warn 与修复前逐项相同。
 - 设置手机点击/强退故事及原生壳/绑定图覆盖残余已落 docs/roadmap.md；不把锁屏结果外推为全部移动端验收。本轮没有前端形态变化，无需修改原型基准。
 - 合并前 Go 全量 -count=1 -p 2 最终 exit0（/private/tmp/handoff-finish-pre-go-recheck.log），此前偶发红保留原始日志；此次完整复跑没有任何失败。图对账代码改动与视图核对通过，校验使用仓库钉版工具。
+- main 快进至 8313377d 后重新跑 Go 全仓 -count=1 -p 2、mobile/bind、iOS 全量84条、Web生产build、Windows两架构build与amd64vet、gofmt、desktop tidy，均 exit0。Web全量首次一个既有Shell用例触发5000ms超时；独立复跑842ms通过，全量限定maxWorkers=2且保留原断言/超时后144 files/1855 tests通过。原始红保留 /private/tmp/handoff-finish-post-web.log，最终绿 /private/tmp/handoff-finish-post-web-recheck.log。
+- 检查期间另一个任务将远端隐私政策文档合入main，主线至5d90b1c3；与已测8313377d比较，仅PRIVACY.md及两份README变化，internal/mobile/web/desktop/go.mod/go.sum/.github/scripts逐项diff为空，保留该任务提交。
+- 图增量在main按实际HEAD 5d90b1c3 absorb；基线新增3节点、改3处签名、补6边，临时视图删除。回灌前后check fails均为空、warn逐项相同，钉版validate issues=null。业务源码没有回灌变动。

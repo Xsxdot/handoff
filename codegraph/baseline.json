@@ -1,8 +1,8 @@
 {
  "meta": {
   "project": "handoff",
-  "branch": "cards/B379-charter-1",
-  "commit": "55a914bc4a78067d722e1371f8a422b3b7507616",
+  "branch": "main",
+  "commit": "5d90b1c3578ab275d4ccc101e71e18b972f46c47",
   "scannedAt": "2026-09-14",
   "generator": "handoff-executor/b233.26-full-rescan"
  },
@@ -72617,6 +72617,34 @@
    "returns": "(PairResult, error)",
    "summary": "解析配对 bundle 并登记全部机器：可达机起回环反代，不可达机标 offline（部分 bundle）；重复扫码幂等。"
   },
+  "n_mobilecore_Core_Resume": {
+   "kind": "func",
+   "container": "k_mobilecore_Core",
+   "name": "Core.Resume",
+   "file": "internal/mobilecore/core.go",
+   "line": 209,
+   "signature": "func (c *Core) Resume(ctx context.Context, name string) error",
+   "params": [
+    [
+     "ctx",
+     "context.Context",
+     ""
+    ],
+    [
+     "name",
+     "string",
+     ""
+    ]
+   ],
+   "returns": "error",
+   "summary": "Resume replaces sockets that iOS may reclaim while the app is suspended. It keeps the existing origin and session slot: an open document can reconnect without navigation, ticket exchange, or any new credential in the proxy. ctx bounds transport construction; only the currently active machine is allowed.",
+   "tests": [
+    {
+     "name": "TestResumeReopensLostListenerAtSameOrigin",
+     "file": "internal/mobilecore/resume_test.go:19"
+    }
+   ]
+  },
   "n_mobilecore_Core_replaceMachine": {
    "kind": "func",
    "container": "k_mobilecore_Core",
@@ -72645,8 +72673,8 @@
    "order": 6,
    "name": "Core.startLoopback",
    "file": "internal/mobilecore/core.go",
-   "line": 223,
-   "signature": "func (c *Core) startLoopback(machineName string, cl *client.Client) (string, net.Listener, *http.Server, error)",
+   "line": 483,
+   "signature": "func (c *Core) startLoopback(machineName string, cl *client.Client, address string) (string, net.Listener, *http.Server, error)",
    "params": [
     [
      "machineName",
@@ -72656,6 +72684,11 @@
     [
      "cl",
      "*client.Client",
+     ""
+    ],
+    [
+     "address",
+     "string",
      ""
     ]
    ],
@@ -92720,8 +92753,20 @@
    "order": 27,
    "name": "fetchProjectTree",
    "file": "web/src/api/client.ts",
-   "line": 312,
-   "signature": "export function fetchProjectTree(scope?: 'all'): Promise\u003cProjectTreeResp\u003e"
+   "line": 336,
+   "signature": "export function fetchProjectTree(scope?: 'all', signal?: AbortSignal): Promise\u003cProjectTreeResp\u003e",
+   "params": [
+    [
+     "scope",
+     "'all'?",
+     ""
+    ],
+    [
+     "signal",
+     "AbortSignal?",
+     ""
+    ]
+   ]
   },
   "n_web_api_client_fetchProjects": {
    "kind": "func",
@@ -92801,8 +92846,15 @@
    "order": 14,
    "name": "fetchTasks",
    "file": "web/src/api/client.ts",
-   "line": 226,
-   "signature": "export function fetchTasks(): Promise\u003cTask[]\u003e"
+   "line": 250,
+   "signature": "export function fetchTasks(signal?: AbortSignal): Promise\u003cTask[]\u003e",
+   "params": [
+    [
+     "signal",
+     "AbortSignal?",
+     ""
+    ]
+   ]
   },
   "n_web_api_client_fetchWorkbenchState": {
    "kind": "func",
@@ -94627,6 +94679,14 @@
    "line": 15,
    "signature": "export function CodegraphFrame("
   },
+  "n_web_app_data_cancelPending": {
+   "kind": "func",
+   "container": "k_web_app_data",
+   "name": "cancelPending",
+   "file": "web/src/app/data/usePoll.ts",
+   "line": 125,
+   "signature": "    const cancelPending = () =\u003e"
+  },
   "n_web_app_data_load": {
    "kind": "func",
    "container": "k_web_app_data",
@@ -94662,6 +94722,14 @@
    "file": "web/src/app/data/usePreviews.ts",
    "line": 119,
    "signature": "const onEvent = (event: PreviewEvent) =\u003e"
+  },
+  "n_web_app_data_onNativeResume": {
+   "kind": "func",
+   "container": "k_web_app_data",
+   "name": "onNativeResume",
+   "file": "web/src/app/data/usePoll.ts",
+   "line": 136,
+   "signature": "    const onNativeResume = () =\u003e"
   },
   "n_web_app_data_onVisibility": {
    "kind": "func",
@@ -131439,6 +131507,30 @@
   [
    "n_opencode_runState_subscribeLoop",
    "n_opencode_Adapter_rediscoverPendingPermissions"
+  ],
+  [
+   "n_mobilecore_Core_Resume",
+   "n_mobilecore_stopMachine"
+  ],
+  [
+   "n_mobilecore_Core_Resume",
+   "n_mobilecore_Core_startLoopback"
+  ],
+  [
+   "n_web_app_data_onVisibility",
+   "n_web_app_data_cancelPending"
+  ],
+  [
+   "n_web_app_data_onNativeResume",
+   "n_web_app_data_cancelPending"
+  ],
+  [
+   "n_web_app_data_onNativeResume",
+   "n_web_app_data_startTimer"
+  ],
+  [
+   "n_web_app_data_onNativeResume",
+   "n_web_app_data_poll"
   ]
  ],
  "implements": [
