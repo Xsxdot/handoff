@@ -967,3 +967,7 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 
 - **统一 iOS App 的官方推送服务**：用户已明确统一 App、各用户连接各自电脑。当前实现由每台 agentd 直接持有 APNs 配置，只完成本机开发环境验证；普通用户无配置时仍使用站内兜底。后续应由官方服务持有私钥，核验电脑与设备绑定后代发，不能分发官方 `.p8`。现有 handoff-server 已有账户/节点认证，但未有 APNs 接线；设计尚未批准，未实现/部署。公开发布还需验证 Production 环境。来源：docs/superpowers/ledgers/b433-badge-ledger.md「真机归零复验」。
 - **bundle 测试临时 Git 仓库清理竞争**：B433 主线首轮全量中 `TestBundleEndToEndCarriesCommit` 的 TempDir 清理偶发报 pack 目录非空；局部复跑 15 次通过。Git 2.55.0 trace 显示 fetch 返回后 detach maintenance/repack 仍运行，支持后台写入与清理竞争的推断。尚未实现测试稳定性修复；不将角标修复扩大到 bundle 路径。来源：docs/superpowers/ledgers/b433-badge-ledger.md「本地主线集成」。
+
+## 来自 2026-10-12 顶部终端组关闭修复
+
+- 2026-10-12 R2 已部署本机 agentd：顶部 × 改为一次组级确认，取消保留全组，确认后尝试结束全部终端；失败/已移动/新增内容保留。1868 项 Web 测试通过。同服务浏览器真实点验：两个新建本机终端仅一次确认，取消后会话不变，确认后整组与两个后台会话消失。原生桌面已刷新加载新版，另亲跑单项远端终端关闭；原生顶部 × 未完成自动点验，iPhone 列表刷新亦未验证。此前跨机9个遗留条目已清理（7个结束、2个无进程陈旧登记重扫移除）；本轮测试终端均清理，最终只保留原有 Linux 活跃会话。证据见 `docs/superpowers/ledgers/2026-10-12-terminal-group-close.ledger`。自动回收策略仍延续 B322 的独立产品闸。

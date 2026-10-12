@@ -153,6 +153,8 @@ export function Shell() {
   const previewsState = usePreviews()
   const previews = useMemo(() => previewsState.data?.sessions ?? [], [previewsState.data])
   const wb = useWorkbench()
+  const workbenchSnapshotRef = useRef(wb.wb)
+  workbenchSnapshotRef.current = wb.wb
   // crumbTaskName 把 taskId 解析成任务原名（与左栏任务行同口径）；解析不到时
   // tabTitle 自己回退 TUI · 前 8 位。标签条、面包屑、左栏已打开行共用同一份口径。
   const taskNameResolver = useCallback((id: string) => {
@@ -387,6 +389,7 @@ export function Shell() {
   // 只存 tabId 不存组下标：组下标在确认弹层打开期间会因为分屏/关栏而失效，
   // 而 tabId 在整个 workbench 内唯一。关闭走 wb.closeById 自己反查。
   const [closeBusy, setCloseBusy] = useState(false)
+  const closeRequestRef = useRef(false)
   const [closeError, setCloseError] = useState('')
   // closingBusyProc：这个会话里是不是还有前台命令。null = 还没问出来
   const [closingBusyProc, setClosingBusyProc] = useState<boolean | null>(null)
@@ -404,6 +407,26 @@ export function Shell() {
   // closingHome 记「哪个浮窗 tab 正在等确认」。与 closingPty 同构，只是归
   // 浮窗。为什么也要确认：关闭即终止不可逆，与中央 tab 同一条理由
   const [closingHome, setClosingHome] = useState<{ id: string; sessionId: string; machine: string } | null>(null)
+  // A group confirmation holds one immutable layout snapshot. Only failed terminal
+  // entries are retained for retry; the whole snapshot is never widened on re-render.
+  type GroupCloseItem = {
+    tabId: string
+    baseKey: string
+    machine: string
+    kind: TabContent['kind']
+    resourceId: string
+    draft?: string
+    sessionId?: string
+  }
+  type GroupCloseSnapshot = { groupId: string; items: GroupCloseItem[]; terminalCount: number; dirtyFiles: string[] }
+  const [groupClose, setGroupClose] = useState<GroupCloseSnapshot | null>(null)
+  const groupCloseRef = useRef<GroupCloseSnapshot | null>(null)
+  const [groupCloseError, setGroupCloseError] = useState('')
+  const [groupCloseNotice, setGroupCloseNotice] = useState('')
+  const setGroupCloseSnapshot = (snapshot: GroupCloseSnapshot | null) => {
+    groupCloseRef.current = snapshot
+    setGroupClose(snapshot)
+  }
 
   // ptyNote 把能力三态翻成一句给人看的话；空串 = 可用（或不知道，照常放行）
   const ptyNote = (machine: string): string => {
@@ -424,6 +447,15 @@ export function Shell() {
   // 进程」这个判据在用户点下 × 的那一瞬间可能刚好过期——宁可多问一句，也不
   // 静默杀掉跑了整个晚上的 build（这正是本设计不做空闲回收的同一条理由）。
   const beforeCloseTab = (c: TabContent, tabId: string, tabBase: BaseDir): boolean => {
+    const activeGroupClose = groupCloseRef.current
+    if (activeGroupClose) {
+      console.warn('shell.tab.close.held_for_group_confirmation', { groupId: activeGroupClose.groupId, tabId })
+      return false
+    }
+    console.debug('shell.tab.close.guard', {
+      tabId, kind: c.kind, machine: tabBase.machine,
+      sessionId: c.kind === 'terminal' ? c.sessionId : undefined,
+    })
     // 有草稿的文件 tab：关掉就是把用户唯一一份未保存的输入丢掉，且没有回收站。
     // 与终端那条分支同一个理由——不可逆操作先问一句。
     //
@@ -439,6 +471,49 @@ export function Shell() {
     setCloseError('')
     probeClosingSession(c.sessionId)
     return false
+  }
+
+  const closeWorkbenchGroup = (groupId: string) => {
+    if (sync.restoring) return
+    if (groupCloseRef.current || closeRequestRef.current || closeBusy || closingPty || closingHome || closingDirtyFile || closingDirtyHome) {
+      console.warn('shell.group.close.held_for_existing_close', {
+        groupId, activeGroupId: groupCloseRef.current?.groupId,
+        pendingTabId: closingPty?.tabId ?? closingHome?.id ?? closingDirtyFile?.tabId ?? closingDirtyHome?.id,
+        busy: closeRequestRef.current || closeBusy,
+      })
+      return
+    }
+    const group = wb.wb.groups.find((candidate) => candidate.id === groupId)
+    if (!group) {
+      console.warn('shell.group.close.missing', { groupId })
+      return
+    }
+    const tabs = group.columns.flatMap((column) => column.panes.filter((tab): tab is Tab => tab !== null))
+    const items = tabs.map((tab): GroupCloseItem => ({
+      tabId: tab.id,
+      baseKey: tab.base.key,
+      machine: tab.base.machine,
+      kind: tab.content.kind,
+      resourceId: tab.content.kind === 'terminal' ? tab.content.sessionId ?? `seq:${tab.content.seq}`
+        : tab.content.kind === 'file' ? tab.content.rel
+          : tab.content.kind === 'tui' ? tab.content.taskId
+            : tab.content.kind === 'session' ? tab.content.sessionId : '',
+      ...(tab.content.kind === 'file' && tab.content.draft !== undefined ? { draft: tab.content.draft } : {}),
+      ...(tab.content.kind === 'terminal' && tab.content.sessionId ? { sessionId: tab.content.sessionId } : {}),
+    }))
+    const terminalCount = items.filter((item) => item.kind === 'terminal' && item.sessionId).length
+    const dirtyFiles = items.filter((item) => item.kind === 'file' && item.draft !== undefined).map((item) => item.resourceId)
+    console.info('shell.group.close.start', { groupId, tabIds: tabs.map((tab) => tab.id), terminalCount, dirtyFiles })
+    if (terminalCount === 0 && dirtyFiles.length === 0) {
+      wb.closeGroup(groupId)
+      console.info('shell.group.close.clean_success', { groupId, tabCount: tabs.length })
+      return
+    }
+    const snapshot = { groupId, items, terminalCount, dirtyFiles }
+    console.info('shell.group.close.confirmation_required', { groupId, terminalCount, dirtyFileCount: dirtyFiles.length })
+    setGroupCloseError('')
+    setGroupCloseNotice('')
+    setGroupCloseSnapshot(snapshot)
   }
 
   // probeClosingSession 向服务端问一句「这个会话还在吗、忙不忙」，答案只用于
@@ -471,8 +546,10 @@ export function Shell() {
     machine: string | undefined,
     onError: (msg: string) => void,
   ): Promise<boolean> => {
+    console.info('shell.pty.delete.start', { sessionId, machine: machine ?? '' })
     try {
       await deletePtySession(sessionId, machine)
+      console.info('shell.pty.delete.success', { sessionId, machine: machine ?? '' })
       return true
     } catch (err) {
       // 404 是**成功**的一种：服务端根本没有这个会话。PTY 会话跨 agentd 重启存活，
@@ -480,14 +557,104 @@ export function Shell() {
       // 错误」那条纪律护的东西（别把还活着的 shell 从视野里抹掉）根本不存在——
       // 已经没有 shell 可留。照旧当失败处理的代价是这个 tab 被焊死：确认弹层每次
       // 都红字报「会话不存在」，关不掉，也没有第二个出口。删除对这一路是幂等的
-      if (err instanceof ApiError && err.status === 404) return true
-      onError(errorMessage(err))
+      if (err instanceof ApiError && err.status === 404) {
+        console.info('shell.pty.delete.already_gone', { sessionId, machine: machine ?? '', status: 404 })
+        return true
+      }
+      const message = errorMessage(err)
+      console.error('shell.pty.delete.failed', { sessionId, machine: machine ?? '', error: message })
+      onError(message)
       return false
     }
   }
 
+  const confirmCloseGroup = async () => {
+    const snapshot = groupCloseRef.current
+    if (!snapshot || closeRequestRef.current) return
+    closeRequestRef.current = true
+    setCloseBusy(true)
+    setGroupCloseError('')
+
+    const groupTabs = () => workbenchSnapshotRef.current.groups
+      .find((group) => group.id === snapshot.groupId)
+      ?.columns.flatMap((column) => column.panes) ?? []
+    const resourceId = (tab: Tab): string => tab.content.kind === 'terminal'
+      ? tab.content.sessionId ?? `seq:${tab.content.seq}`
+      : tab.content.kind === 'file' ? tab.content.rel
+        : tab.content.kind === 'tui' ? tab.content.taskId
+          : tab.content.kind === 'session' ? tab.content.sessionId : ''
+    const matches = (item: GroupCloseItem, tab: Tab | null | undefined): tab is Tab => Boolean(
+      tab && tab.id === item.tabId && tab.base.key === item.baseKey && tab.base.machine === item.machine &&
+      tab.content.kind === item.kind && resourceId(tab) === item.resourceId &&
+      (tab.content.kind !== 'file' || tab.content.draft === item.draft),
+    )
+
+    // Confirming accepts only tabs still in the original group and matching their
+    // captured identity/content. A moved pane belongs to its new group and stays there.
+    const initiallyValid = snapshot.items.filter((item) => matches(item, groupTabs().find((tab) => tab?.id === item.tabId)))
+    const initiallySkipped = snapshot.items.length - initiallyValid.length
+    const terminalItems = initiallyValid.filter((item) => item.kind === 'terminal' && item.sessionId)
+    console.info('shell.group.close.confirmed', {
+      groupId: snapshot.groupId, tabIds: snapshot.items.map((item) => item.tabId),
+      terminalCount: terminalItems.length, skippedCount: initiallySkipped,
+    })
+
+    const failures: Array<{ item: GroupCloseItem; message: string }> = []
+    await Promise.all(terminalItems.map(async (item) => {
+      const messages: string[] = []
+      const succeeded = await killPtySession(item.sessionId!, item.machine || undefined, (message) => messages.push(message))
+      if (!succeeded) failures.push({ item, message: messages[0] ?? '无法结束终端会话' })
+    }))
+
+    const succeededIds = new Set(terminalItems.filter((item) => !failures.some((failure) => failure.item.tabId === item.tabId)).map((item) => item.tabId))
+    const latestGroupTabs = workbenchSnapshotRef.current.groups.find((group) => group.id === snapshot.groupId)
+      ?.columns.flatMap((column) => column.panes) ?? []
+    const closable = initiallyValid.filter((item) => {
+      const stillMatches = matches(item, latestGroupTabs.find((tab) => tab?.id === item.tabId))
+      return stillMatches && (item.kind !== 'terminal' || !item.sessionId || succeededIds.has(item.tabId))
+    })
+    const changedDuringDelete = initiallyValid.length - closable.length - failures.length
+    const closingIds = new Set(closable.map((item) => item.tabId))
+    const liveGroup = workbenchSnapshotRef.current.groups.find((group) => group.id === snapshot.groupId)
+    const liveIds = liveGroup?.columns.flatMap((column) => column.panes).filter((tab): tab is Tab => tab !== null).map((tab) => tab.id) ?? []
+    const snapshotIds = new Set(snapshot.items.map((item) => item.tabId))
+    const outsideSnapshotCount = liveIds.filter((tabId) => !snapshotIds.has(tabId)).length
+    if (liveGroup && liveIds.length > 0 && liveIds.every((id) => closingIds.has(id)) && closingIds.size === liveIds.length && failures.length === 0) {
+      wb.closeGroup(snapshot.groupId)
+    } else {
+      for (const item of closable) wb.closeById(item.tabId)
+    }
+
+    const skippedCount = initiallySkipped + changedDuringDelete
+    const failureText = failures.map(({ item, message }) => `${item.sessionId}: ${message}`).join('\n')
+    const changedText = skippedCount > 0 ? `${skippedCount} 个内容在确认前或处理中发生变化，已保留。` : ''
+    const retainedOtherCount = skippedCount + outsideSnapshotCount
+    const retainedText = retainedOtherCount > 0 ? `其余 ${retainedOtherCount} 个窗口已保留。` : ''
+    const combinedError = [failureText, changedText, retainedText].filter(Boolean).join('\n')
+    console.info('shell.group.close.finished', {
+      groupId: snapshot.groupId, closedTabIds: closable.map((item) => item.tabId),
+      failedSessionIds: failures.map(({ item }) => item.sessionId), skippedCount, outsideSnapshotCount,
+    })
+    if (failures.length > 0) {
+      const retry = { ...snapshot, items: failures.map(({ item }) => item), terminalCount: failures.length, dirtyFiles: [] }
+      setGroupCloseSnapshot(retry)
+      setGroupCloseError(combinedError)
+    } else {
+      setGroupCloseSnapshot(null)
+      setGroupCloseError('')
+      setGroupCloseNotice(combinedError)
+    }
+    setCloseBusy(false)
+    closeRequestRef.current = false
+  }
+
   const confirmClosePty = async () => {
     if (!closingPty) return
+    if (closeRequestRef.current) {
+      console.warn('shell.pty.close.duplicate_confirmation', { tabId: closingPty.tabId, sessionId: closingPty.sessionId })
+      return
+    }
+    closeRequestRef.current = true
     setCloseBusy(true)
     setCloseError('')
     if (await killPtySession(closingPty.sessionId, closingPty.machine || undefined, setCloseError)) {
@@ -497,10 +664,13 @@ export function Shell() {
     // 删失败不关 tab：关掉就等于把一个还活着的会话从视野里抹掉，
     // 而它仍在占着进程（错误已由 killPtySession 塞进 ConfirmDialog）
     setCloseBusy(false)
+    closeRequestRef.current = false
   }
 
   const confirmCloseHome = async () => {
     if (!closingHome) return
+    if (closeRequestRef.current) return
+    closeRequestRef.current = true
     setCloseBusy(true)
     setCloseError('')
     if (await killPtySession(closingHome.sessionId, closingHome.machine || undefined, setCloseError)) {
@@ -508,11 +678,16 @@ export function Shell() {
       setClosingHome(null)
     }
     setCloseBusy(false)
+    closeRequestRef.current = false
   }
 
   // killHomeSession 是浮窗 tab × 的入口：找到会话、进确认弹层。为什么不吞错误：
   // 失败被吞掉的话，用户以为会话关了、实际服务端还留着一个 shell
   const killHomeSession = (id: string) => {
+    if (groupCloseRef.current) {
+      console.warn('shell.home.close.held_for_group_confirmation', { groupId: groupCloseRef.current.groupId, tabId: id })
+      return
+    }
     const tab = dock.tabs.find((t) => t.id === id)
     if (!tab) return
     if (tab.kind === 'file') {
@@ -1200,6 +1375,7 @@ export function Shell() {
               terminalUnavailable={wb.base ? ptyNote(wb.base.machine) : ''}
               launchers={launchersSupported ? (launchersData?.launchers ?? []) : []}
               onBeforeClose={beforeCloseTab}
+              onCloseGroup={closeWorkbenchGroup}
               renderContent={(c, base, group, tabId, active = true) => {
                 switch (c.kind) {
                   case 'terminal': {
@@ -1593,6 +1769,11 @@ export function Shell() {
           临时文件失败：{scratchError}
         </p>
       )}
+      {groupCloseNotice !== '' && (
+        <p role="alert" className="fixed right-5 bottom-24 z-40 whitespace-pre-wrap rounded border border-destructive/30 bg-background px-3 py-1.5 text-xs text-destructive shadow">
+          {groupCloseNotice}
+        </p>
+      )}
 
       {overlay === 'board' && (
         <BoardOverlay
@@ -1631,7 +1812,41 @@ export function Shell() {
         busy={closeBusy}
         error={closeError}
         onConfirm={() => void (closingPty ? confirmClosePty() : confirmCloseHome())}
-        onCancel={() => { setClosingPty(null); setClosingHome(null) }}
+        onCancel={() => {
+          if (closeRequestRef.current) {
+            console.warn('shell.close.cancel.ignored_in_flight', {
+              tabId: closingPty?.tabId ?? closingHome?.id,
+              sessionId: closingPty?.sessionId ?? closingHome?.sessionId,
+            })
+            return
+          }
+          setClosingPty(null)
+          setClosingHome(null)
+        }}
+      />
+
+      <ConfirmDialog
+        open={groupClose !== null}
+        title="关闭标签组"
+        description={[
+          groupClose?.terminalCount ? `${groupClose.terminalCount} 个终端会话将被结束，运行中的命令也会停止。` : '',
+          groupClose?.dirtyFiles.length ? `以下 ${groupClose.dirtyFiles.length} 个文件有未保存改动，关闭后草稿会丢失：${groupClose.dirtyFiles.join('、')}` : '',
+          '确认后会关闭这个标签组里的所有窗口；只想切走的话可以直接切换标签组。',
+        ].filter(Boolean).join('\n')}
+        confirmLabel={groupClose?.terminalCount ? '关闭并结束终端' : '不保存并关闭组'}
+        destructive
+        busy={closeBusy}
+        error={groupCloseError}
+        onConfirm={() => void confirmCloseGroup()}
+        onCancel={() => {
+          if (closeRequestRef.current) {
+            console.warn('shell.group.close.cancel.ignored_in_flight', { groupId: groupClose?.groupId })
+            return
+          }
+          console.info('shell.group.close.cancelled', { groupId: groupClose?.groupId })
+          setGroupCloseSnapshot(null)
+          setGroupCloseError('')
+        }}
       />
 
       <ConfirmDialog
@@ -1651,7 +1866,10 @@ export function Shell() {
           setClosingDirtyFile(null)
           setClosingDirtyHome(null)
         }}
-        onCancel={() => { setClosingDirtyFile(null); setClosingDirtyHome(null) }}
+        onCancel={() => {
+          setClosingDirtyFile(null)
+          setClosingDirtyHome(null)
+        }}
       />
 
       <NewSessionDialog open={createOpen} busy={createBusy} error={createError} configured={consoleConfigured}

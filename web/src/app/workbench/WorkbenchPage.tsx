@@ -24,6 +24,7 @@ export interface WorkbenchPageProps {
   renderContent: (content: TabContent, base: BaseDir, groupId: string, tabId: string, active?: boolean) => ReactNode
   terminalUnavailable?: string
   onBeforeClose?: (content: TabContent, tabId: string, base: BaseDir) => boolean
+  onCloseGroup?: (groupId: string) => void
   tree: ProjectTreeResp | null
   tasks: Task[]
   onFileCreated?: () => void
@@ -63,7 +64,7 @@ function tabCount(group: { columns: Array<{ panes: Array<Tab | null> }> }): numb
 }
 
 export function WorkbenchPage({
-  api, onAddProject, renderContent, terminalUnavailable, onBeforeClose, tree, tasks, onFileCreated, launchers = [], taskName, singleFocus = false, sessionRoom = false, filePreviewHeader, restoring = false,
+  api, onAddProject, renderContent, terminalUnavailable, onBeforeClose, onCloseGroup, tree, tasks, onFileCreated, launchers = [], taskName, singleFocus = false, sessionRoom = false, filePreviewHeader, restoring = false,
 }: WorkbenchPageProps) {
   const filePreview = Boolean(filePreviewHeader)
   const { wb, base } = api
@@ -500,7 +501,7 @@ export function WorkbenchPage({
             base={base}
             taskName={taskName}
             onActivateGroup={api.activateGroup}
-            onCloseGroup={api.closeGroup}
+            onCloseGroup={onCloseGroup ?? api.closeGroup}
             onNew={openNew}
             onNewLauncher={openLauncher}
             launchers={launcherItems}

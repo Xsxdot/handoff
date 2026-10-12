@@ -21,7 +21,7 @@ import type { ProjectTreeResp, Task } from '../../api/types'
 import { workspaceBase } from '../tree/ProjectTree'
 import { encodeWorkbench, GLOBAL_WORKBENCH_KEY } from '../workbench/persist'
 import type { Workbench } from '../workbench/tabs'
-import { DRAG_BASE_MIME, DRAG_DIR_MIME, DRAG_SESSION_MIME, DRAG_TASK_MIME } from '../workbench/paneDrop'
+import { DRAG_BASE_MIME, DRAG_DIR_MIME, DRAG_SESSION_MIME, DRAG_TAB_MIME, DRAG_TASK_MIME } from '../workbench/paneDrop'
 
 vi.mock('../../api/client', async () => {
   const actual = await vi.importActual<typeof import('../../api/client')>('../../api/client')
@@ -1217,6 +1217,393 @@ describe('关闭一个服务端已经没有的终端会话', () => {
 
     expect(await screen.findByText(/kill 失败/)).toBeInTheDocument()
     expect(screen.getAllByRole('button', { name: /关闭 bash/ }).length).toBeGreaterThan(0)
+  })
+})
+
+describe('顶部标签关闭终端组', () => {
+  it('纯干净文件组无需确认即可关闭', async () => {
+    renderShell()
+    await openBranch()
+    fireEvent.click(await screen.findByText('go.mod'))
+    await screen.findByRole('textbox', { name: 'go.mod' })
+
+    const tablist = screen.getByRole('tablist', { name: '标签组' })
+    fireEvent.click(within(tablist).getByRole('button', { name: /^关闭 go.mod/ }))
+
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(screen.queryByRole('textbox', { name: 'go.mod' })).toBeNull()
+  })
+
+  it('点组标签 × 先确认，确认后 DELETE 会话并关闭整组', async () => {
+    vi.mocked(deletePtySession).mockClear()
+    vi.mocked(fetchPtySessions).mockResolvedValue({ sessions: [liveSession('new-1')] })
+    renderShell()
+    await openBranch()
+    fireEvent.click(screen.getByRole('button', { name: '新建内容' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: /新终端/ }))
+    await waitFor(() => expect(createPtySession).toHaveBeenCalled())
+
+    const tablist = screen.getByRole('tablist', { name: '标签组' })
+    fireEvent.click(within(tablist).getByRole('button', { name: /^关闭 bash/ }))
+
+    expect(await screen.findByRole('heading', { name: '关闭标签组' })).toBeInTheDocument()
+    expect(deletePtySession).not.toHaveBeenCalled()
+    expect(within(tablist).getByRole('button', { name: /^关闭 bash/ })).toBeInTheDocument()
+    fireEvent.click(within(tablist).getByRole('button', { name: /^关闭 bash/ }))
+    const terminalPane = screen.getAllByTestId('workbench-pane').find((pane) => pane.textContent?.includes('bash'))!
+    fireEvent.click(within(terminalPane).getByRole('button', { name: /关闭 bash/ }))
+    expect(screen.getByRole('heading', { name: '关闭标签组' })).toBeInTheDocument()
+    expect(deletePtySession).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: '关闭并结束终端' }))
+    await waitFor(() => expect(deletePtySession).toHaveBeenCalledWith('new-1', undefined))
+    await waitFor(() => expect(screen.queryByRole('button', { name: /^关闭 bash/ })).toBeNull())
+    expect(within(screen.getByRole('tablist', { name: '标签组' })).getByRole('tab', { name: '组 1' })).toBeInTheDocument()
+  })
+
+  it('取消组级确认不 DELETE 终端，也不关闭干净窗格', async () => {
+    vi.mocked(deletePtySession).mockClear()
+    renderShell()
+    await openBranch()
+    fireEvent.click(screen.getByRole('button', { name: '新建内容' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: /新终端/ }))
+    await waitFor(() => expect(createPtySession).toHaveBeenCalled())
+
+    const tablist = screen.getByRole('tablist', { name: '标签组' })
+    fireEvent.click(within(tablist).getByRole('button', { name: /^关闭 bash/ }))
+    expect(await screen.findByRole('heading', { name: '关闭标签组' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '取消' }))
+
+    expect(deletePtySession).not.toHaveBeenCalled()
+    expect(within(tablist).getByRole('button', { name: /^关闭 bash/ })).toBeInTheDocument()
+    expect(screen.getAllByTestId('workbench-pane').some((pane) => pane.textContent?.includes('bash'))).toBe(true)
+  })
+
+  it('取消混合组确认时连干净窗格和脏文件都保持原样', async () => {
+    vi.mocked(deletePtySession).mockClear()
+    renderShell()
+    await openBranch()
+    fireEvent.click(await screen.findByText('go.mod'))
+    const editor = await screen.findByRole('textbox', { name: 'go.mod' })
+    fireEvent.change(editor, { target: { value: 'module handoff\nunsaved' } })
+    openActiveGroupNewContent()
+    fireEvent.click(screen.getByRole('menuitem', { name: /新终端/ }))
+    await waitFor(() => expect(createPtySession).toHaveBeenCalled())
+
+    const tablist = screen.getByRole('tablist', { name: '标签组' })
+    fireEvent.click(within(tablist).getByRole('button', { name: /^关闭 bash/ }))
+    expect(await screen.findByRole('heading', { name: '关闭标签组' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '取消' }))
+
+    expect(deletePtySession).not.toHaveBeenCalled()
+    expect(screen.getByRole('textbox', { name: 'go.mod' })).toHaveValue('module handoff\nunsaved')
+    expect(screen.getAllByTestId('workbench-pane').filter((pane) => pane.textContent?.includes('bash'))).toHaveLength(1)
+    expect(within(tablist).getByRole('button', { name: /^关闭 bash/ })).toBeInTheDocument()
+  })
+
+  it('批量 DELETE 尝试所有终端；失败项留在界面且重试只处理失败项', async () => {
+    vi.mocked(createPtySession).mockClear()
+    vi.mocked(deletePtySession).mockClear()
+    vi.mocked(createPtySession)
+      .mockResolvedValueOnce({ ...liveSession('pty-1'), base_kind: 'workspace', base_path: '/w/b2-b3' })
+      .mockResolvedValueOnce({ ...liveSession('pty-2'), base_kind: 'workspace', base_path: '/w/b2-b3' })
+    vi.mocked(fetchPtySessions).mockResolvedValue({ sessions: [liveSession('pty-1'), liveSession('pty-2')] })
+    vi.mocked(deletePtySession)
+      .mockRejectedValueOnce(new ApiError(500, 'kill 失败'))
+      .mockResolvedValueOnce({ ok: true })
+      .mockResolvedValueOnce({ ok: true })
+    renderShell()
+    await openBranch()
+    fireEvent.click(screen.getByRole('button', { name: '新建内容' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: /新终端/ }))
+    await waitFor(() => expect(createPtySession).toHaveBeenCalledTimes(1))
+    openActiveGroupNewContent()
+    fireEvent.click(screen.getByRole('menuitem', { name: /新终端/ }))
+    await waitFor(() => expect(createPtySession).toHaveBeenCalledTimes(2))
+
+    const tablist = screen.getByRole('tablist', { name: '标签组' })
+    fireEvent.click(within(tablist).getByRole('button', { name: /^关闭 bash/ }))
+    expect(await screen.findByRole('heading', { name: '关闭标签组' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '关闭并结束终端' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('kill 失败')
+    expect(deletePtySession).toHaveBeenCalledTimes(2)
+    expect(within(tablist).getAllByRole('button', { name: /^关闭 bash/ })).toHaveLength(1)
+    expect(screen.getAllByTestId('workbench-pane').filter((pane) => pane.textContent?.includes('bash'))).toHaveLength(1)
+    fireEvent.click(screen.getByRole('button', { name: '关闭并结束终端' }))
+    await waitFor(() => expect(deletePtySession).toHaveBeenCalledTimes(3))
+    expect(deletePtySession).toHaveBeenNthCalledWith(3, 'pty-1', undefined)
+    await waitFor(() => expect(within(tablist).queryAllByRole('button', { name: /^关闭 bash/ })).toHaveLength(0))
+  })
+
+  it('顶部组关闭只确认一次，确认后批量 DELETE 并关闭两个终端', async () => {
+    vi.mocked(createPtySession).mockClear()
+    vi.mocked(deletePtySession).mockClear()
+    vi.mocked(createPtySession)
+      .mockResolvedValueOnce({ ...liveSession('pty-1'), base_kind: 'workspace', base_path: '/w/b2-b3' })
+      .mockResolvedValueOnce({ ...liveSession('pty-2'), base_kind: 'workspace', base_path: '/w/b2-b3' })
+    vi.mocked(fetchPtySessions).mockResolvedValue({ sessions: [liveSession('pty-1'), liveSession('pty-2')] })
+    renderShell()
+    await openBranch()
+    fireEvent.click(screen.getByRole('button', { name: '新建内容' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: /新终端/ }))
+    await waitFor(() => expect(createPtySession).toHaveBeenCalledTimes(1))
+    openActiveGroupNewContent()
+    fireEvent.click(screen.getByRole('menuitem', { name: /新终端/ }))
+    await waitFor(() => expect(createPtySession).toHaveBeenCalledTimes(2))
+
+    const tablist = screen.getByRole('tablist', { name: '标签组' })
+    fireEvent.click(within(tablist).getByRole('button', { name: /^关闭 bash/ }))
+    expect(await screen.findByRole('heading', { name: '关闭标签组' })).toBeInTheDocument()
+    expect(screen.getByText(/2 个终端/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '关闭并结束终端' }))
+
+    await waitFor(() => expect(deletePtySession).toHaveBeenCalledTimes(2))
+    expect(deletePtySession).toHaveBeenNthCalledWith(1, 'pty-1', undefined)
+    expect(deletePtySession).toHaveBeenNthCalledWith(2, 'pty-2', undefined)
+    expect(screen.queryByRole('heading', { name: '关闭标签组' })).toBeNull()
+    expect(screen.queryByRole('heading', { name: '关闭终端会话' })).toBeNull()
+    await waitFor(() => expect(within(tablist).queryAllByRole('button', { name: /^关闭 bash/ })).toHaveLength(0))
+    expect(screen.getAllByTestId('workbench-pane').some((pane) => pane.textContent?.includes('bash'))).toBe(false)
+  })
+
+  it('DELETE 等待时草稿变化会保留新草稿，同时关闭已结束的终端', async () => {
+    let resolveDelete!: (result: { ok: true }) => void
+    vi.mocked(deletePtySession).mockClear().mockImplementation(() => new Promise((resolve) => { resolveDelete = resolve }))
+    renderShell()
+    await openBranch()
+    fireEvent.click(await screen.findByText('go.mod'))
+    const editor = await screen.findByRole('textbox', { name: 'go.mod' })
+    fireEvent.change(editor, { target: { value: 'module handoff\nfirst draft' } })
+    openActiveGroupNewContent()
+    fireEvent.click(screen.getByRole('menuitem', { name: /新终端/ }))
+    await waitFor(() => expect(createPtySession).toHaveBeenCalled())
+
+    const tablist = screen.getByRole('tablist', { name: '标签组' })
+    fireEvent.click(within(tablist).getByRole('button', { name: /^关闭 bash/ }))
+    expect(await screen.findByRole('heading', { name: '关闭标签组' })).toBeInTheDocument()
+    expect(screen.getByText(/未保存改动/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '关闭并结束终端' }))
+    await waitFor(() => expect(deletePtySession).toHaveBeenCalled())
+    fireEvent.change(editor, { target: { value: 'module handoff\nchanged while confirming' } })
+    await act(async () => resolveDelete({ ok: true }))
+    expect(screen.getByRole('textbox', { name: 'go.mod' })).toHaveValue('module handoff\nchanged while confirming')
+    expect(screen.getAllByTestId('workbench-pane').some((pane) => pane.textContent?.includes('bash'))).toBe(false)
+  })
+
+  it('混合脏文件和终端组共用一次确认，确认后全部快照资源关闭', async () => {
+    vi.mocked(deletePtySession).mockClear()
+    vi.mocked(fetchPtySessions).mockResolvedValue({ sessions: [liveSession('new-1')] })
+    renderShell()
+    await openBranch()
+    fireEvent.click(await screen.findByText('go.mod'))
+    fireEvent.change(await screen.findByRole('textbox', { name: 'go.mod' }), {
+      target: { value: 'module handoff\nunsaved' },
+    })
+    openActiveGroupNewContent()
+    fireEvent.click(screen.getByRole('menuitem', { name: /新终端/ }))
+    await waitFor(() => expect(createPtySession).toHaveBeenCalled())
+
+    const tablist = screen.getByRole('tablist', { name: '标签组' })
+    fireEvent.click(within(tablist).getByRole('button', { name: /^关闭 bash/ }))
+    expect(await screen.findByRole('heading', { name: '关闭标签组' })).toBeInTheDocument()
+    expect(within(screen.getByRole('dialog')).getByText(/go.mod/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '关闭并结束终端' }))
+
+    await waitFor(() => expect(deletePtySession).toHaveBeenCalledWith('new-1', undefined))
+    await waitFor(() => expect(screen.queryByRole('textbox', { name: 'go.mod' })).toBeNull())
+    expect(screen.getAllByTestId('workbench-pane').some((pane) => pane.textContent?.includes('bash'))).toBe(false)
+  })
+
+  it('远程终端组关闭使用 tab 自带的 machine，而不是当前选择机器', async () => {
+    const remote = { machine: 'linux-01', name: 'handoff', path: '/remote', probe_error: '', workspaces: [
+      { path: '/remote', branch: 'main', head: 'abc', is_main: true, managed: false, created_at: '' },
+    ] }
+    vi.mocked(fetchProjectTree).mockResolvedValue({
+      ...tree, projects: [{ ...tree.projects[0], locations: [...tree.projects[0].locations, remote] }],
+    })
+    vi.mocked(fetchMachines).mockResolvedValue({ machines: [
+      { name: '', addr: '', reachable: true, version: '', executors: [], default_executor: '', probe_ms: 0, active_tasks: 0, error: '', pty_supported: true },
+      { name: 'linux-01', addr: '', reachable: true, version: '', executors: [], default_executor: '', probe_ms: 0, active_tasks: 0, error: '', pty_supported: true },
+    ] })
+    vi.mocked(createPtySession).mockResolvedValue({
+      ...liveSession('remote-pty'), machine: 'linux-01', base_path: '/remote', base_kind: 'workspace',
+    })
+    vi.mocked(fetchPtySessions).mockResolvedValue({ sessions: [{ ...liveSession('remote-pty'), machine: 'linux-01' }] })
+    vi.mocked(deletePtySession).mockClear()
+    renderShell()
+    fireEvent.click(await screen.findByRole('button', { name: '选择 handoff 终端位置' }))
+    fireEvent.click(screen.getByRole('menuitemradio', { name: 'linux-01' }))
+    await waitFor(() => expect(screen.queryByText('正在恢复工作台…')).toBeNull())
+    fireEvent.click(screen.getByRole('button', { name: '在 handoff 新建终端' }))
+    await waitFor(() => expect(createPtySession).toHaveBeenCalledWith(
+      expect.objectContaining({ base_kind: 'workspace', base_path: '/remote' }), 'linux-01',
+    ))
+
+    const tablist = screen.getByRole('tablist', { name: '标签组' })
+    fireEvent.click(within(tablist).getByRole('button', { name: /^关闭 bash/ }))
+    expect(await screen.findByRole('heading', { name: '关闭标签组' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '关闭并结束终端' }))
+    await waitFor(() => expect(deletePtySession).toHaveBeenCalledWith('remote-pty', 'linux-01'))
+  })
+
+  it('DELETE 等待期间新增到组里的终端不属于本次关闭快照', async () => {
+    vi.mocked(createPtySession).mockClear()
+    vi.mocked(createPtySession)
+      .mockResolvedValueOnce({ ...liveSession('pty-original'), base_kind: 'workspace', base_path: '/w/b2-b3' })
+      .mockResolvedValueOnce({ ...liveSession('pty-added'), base_kind: 'workspace', base_path: '/w/b2-b3' })
+    const resolveDelete = new Map<string, (result: { ok: true }) => void>()
+    vi.mocked(deletePtySession).mockClear().mockImplementation((sessionId) => new Promise((resolve) => {
+      resolveDelete.set(sessionId, resolve)
+    }))
+    vi.mocked(fetchPtySessions).mockResolvedValue({ sessions: [liveSession('pty-original')] })
+    renderShell()
+    await openBranch()
+    fireEvent.click(screen.getByRole('button', { name: '新建内容' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: /新终端/ }))
+    await waitFor(() => expect(createPtySession).toHaveBeenCalled())
+
+    const tablist = screen.getByRole('tablist', { name: '标签组' })
+    fireEvent.click(within(tablist).getByRole('button', { name: /^关闭 bash/ }))
+    expect(await screen.findByRole('heading', { name: '关闭标签组' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '关闭并结束终端' }))
+    await waitFor(() => expect(deletePtySession).toHaveBeenCalledWith('pty-original', undefined))
+    fireEvent.click(screen.getByRole('button', { name: '提交中…' }))
+    expect(deletePtySession).toHaveBeenCalledTimes(1)
+
+    openActiveGroupNewContent()
+    fireEvent.click(screen.getByRole('menuitem', { name: /新终端/ }))
+    await waitFor(() => expect(createPtySession).toHaveBeenCalledTimes(2))
+    await act(async () => resolveDelete.get('pty-original')!({ ok: true }))
+
+    await waitFor(() => expect(screen.queryByRole('heading', { name: '关闭标签组' })).toBeNull())
+    expect(screen.getAllByTestId('workbench-pane').filter((pane) => pane.textContent?.includes('bash'))).toHaveLength(1)
+    expect(within(tablist).getAllByRole('button', { name: /^关闭 bash/ })).toHaveLength(1)
+    expect(screen.getByRole('alert')).toHaveTextContent('其余 1 个窗口已保留')
+  })
+
+  it('确认前移出原组的终端不被原组确认 DELETE 或移除', async () => {
+    vi.mocked(createPtySession).mockClear()
+      .mockResolvedValueOnce({ ...liveSession('pty-moved'), base_kind: 'workspace', base_path: '/w/b2-b3' })
+      .mockResolvedValueOnce({ ...liveSession('pty-target'), base_kind: 'workspace', base_path: '/w/b2-b3' })
+    vi.mocked(deletePtySession).mockClear()
+    renderShell()
+    await openBranch()
+    fireEvent.click(screen.getByRole('button', { name: '新建内容' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: /新终端/ }))
+    await waitFor(() => expect(createPtySession).toHaveBeenCalled())
+    fireEvent.click(screen.getByRole('button', { name: '新建标签组' }))
+    openActiveGroupNewContent()
+    fireEvent.click(screen.getByRole('menuitem', { name: /新终端/ }))
+    await waitFor(() => expect(createPtySession).toHaveBeenCalledTimes(2))
+
+    const tablist = screen.getByRole('tablist', { name: '标签组' })
+    fireEvent.click(within(tablist).getAllByRole('button', { name: /^关闭 bash/ })[0])
+    expect(await screen.findByRole('heading', { name: '关闭标签组' })).toBeInTheDocument()
+
+    const panes = screen.getAllByTestId('workbench-pane')
+    expect(panes.filter((pane) => pane.textContent?.includes('bash'))).toHaveLength(2)
+    const sourcePane = panes[0]
+    const targetPane = panes[1]
+    const sourceHeader = sourcePane.querySelector('[draggable="true"]')!
+    const dragData = { setData: vi.fn(), types: [], effectAllowed: '' }
+    fireEvent(sourceHeader, createEvent.dragStart(sourceHeader, { dataTransfer: dragData as unknown as DataTransfer }))
+    const payload = dragData.setData.mock.calls.find(([type]) => type === DRAG_TAB_MIME)![1] as string
+    Object.defineProperty(targetPane, 'getBoundingClientRect', {
+      value: () => ({ left: 0, top: 0, right: 400, bottom: 400, width: 400, height: 400, x: 0, y: 0, toJSON: () => ({}) }),
+    })
+    const dropData = {
+      types: [DRAG_TAB_MIME], getData: () => payload, setData: vi.fn(), dropEffect: '',
+    }
+    const drop = createEvent.drop(targetPane, { dataTransfer: dropData as unknown as DataTransfer })
+    Object.defineProperty(drop, 'clientX', { value: 200 })
+    Object.defineProperty(drop, 'clientY', { value: 380 })
+    fireEvent(targetPane, drop)
+
+    fireEvent.click(screen.getByRole('button', { name: '关闭并结束终端' }))
+    await waitFor(() => expect(screen.queryByRole('heading', { name: '关闭标签组' })).toBeNull())
+    expect(deletePtySession).not.toHaveBeenCalled()
+    expect(screen.getAllByTestId('workbench-pane').filter((pane) => pane.textContent?.includes('bash'))).toHaveLength(2)
+    expect(screen.getByRole('alert')).toHaveTextContent('已保留')
+  })
+
+  it('DELETE pending 时 Escape 不能释放关闭锁，也不能让另一组替换当前确认目标', async () => {
+    vi.mocked(createPtySession).mockClear()
+    vi.mocked(createPtySession)
+      .mockResolvedValueOnce({ ...liveSession('pty-first'), base_kind: 'workspace', base_path: '/w/b2-b3' })
+      .mockResolvedValueOnce({ ...liveSession('pty-second'), base_kind: 'workspace', base_path: '/w/b2-b3' })
+    vi.mocked(fetchPtySessions).mockResolvedValue({ sessions: [liveSession('pty-first'), liveSession('pty-second')] })
+    const resolveDelete = new Map<string, (result: { ok: true }) => void>()
+    vi.mocked(deletePtySession).mockClear().mockImplementation((sessionId) => new Promise((resolve) => {
+      resolveDelete.set(sessionId, resolve)
+    }))
+    renderShell()
+    await openBranch()
+    fireEvent.click(screen.getByRole('button', { name: '新建内容' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: /新终端/ }))
+    await waitFor(() => expect(createPtySession).toHaveBeenCalledTimes(1))
+    fireEvent.click(screen.getByRole('button', { name: '新建标签组' }))
+    openActiveGroupNewContent()
+    fireEvent.click(screen.getByRole('menuitem', { name: /新终端/ }))
+    await waitFor(() => expect(createPtySession).toHaveBeenCalledTimes(2))
+
+    const tablist = screen.getByRole('tablist', { name: '标签组' })
+    const groupCloseButtons = within(tablist).getAllByRole('button', { name: /^关闭 bash/ })
+    fireEvent.click(groupCloseButtons[0])
+    expect(await screen.findByRole('heading', { name: '关闭标签组' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '关闭并结束终端' }))
+    await waitFor(() => expect(deletePtySession).toHaveBeenCalledTimes(1))
+
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(screen.getByRole('heading', { name: '关闭标签组' })).toBeInTheDocument()
+    expect(within(tablist).getAllByRole('button', { name: /^关闭 bash/ })).toHaveLength(2)
+    expect(deletePtySession).toHaveBeenCalledTimes(1)
+    fireEvent.click(within(tablist).getAllByRole('button', { name: /^关闭 bash/ })[1])
+    expect(screen.getByRole('heading', { name: '关闭标签组' })).toBeInTheDocument()
+    expect(deletePtySession).toHaveBeenCalledTimes(1)
+    await act(async () => resolveDelete.get('pty-first')!({ ok: true }))
+    await waitFor(() => expect(screen.queryByRole('heading', { name: '关闭标签组' })).toBeNull())
+    expect(within(tablist).getAllByRole('button', { name: /^关闭 bash/ })).toHaveLength(1)
+    fireEvent.click(within(tablist).getByRole('button', { name: /^关闭 bash/ }))
+    expect(await screen.findByRole('heading', { name: '关闭标签组' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '关闭并结束终端' }))
+    await waitFor(() => expect(deletePtySession).toHaveBeenCalledTimes(2))
+    expect(deletePtySession).toHaveBeenLastCalledWith('pty-second', undefined)
+    await act(async () => resolveDelete.get('pty-second')!({ ok: true }))
+    await waitFor(() => expect(within(tablist).queryAllByRole('button', { name: /^关闭 bash/ })).toHaveLength(0))
+  })
+
+  it('普通窗格关闭确认打开时，其他组的 × 不能替换当前目标', async () => {
+    vi.mocked(createPtySession).mockClear()
+    vi.mocked(deletePtySession).mockClear()
+    vi.mocked(createPtySession)
+      .mockResolvedValueOnce({ ...liveSession('pty-first'), base_kind: 'workspace', base_path: '/w/b2-b3' })
+      .mockResolvedValueOnce({ ...liveSession('pty-second'), base_kind: 'workspace', base_path: '/w/b2-b3' })
+    vi.mocked(fetchPtySessions).mockResolvedValue({ sessions: [liveSession('pty-first'), liveSession('pty-second')] })
+    renderShell()
+    await openBranch()
+    fireEvent.click(screen.getByRole('button', { name: '新建内容' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: /新终端/ }))
+    await waitFor(() => expect(createPtySession).toHaveBeenCalledTimes(1))
+    fireEvent.click(screen.getByRole('button', { name: '新建标签组' }))
+    openActiveGroupNewContent()
+    fireEvent.click(screen.getByRole('menuitem', { name: /新终端/ }))
+    await waitFor(() => expect(createPtySession).toHaveBeenCalledTimes(2))
+
+    const panes = screen.getAllByTestId('workbench-pane')
+    fireEvent.click(panes.find((pane) => pane.querySelector('button[aria-label^="关闭 bash"]'))!
+      .querySelector('button[aria-label^="关闭 bash"]')!)
+    expect(await screen.findByRole('heading', { name: '关闭终端会话' })).toBeInTheDocument()
+    const tablist = screen.getByRole('tablist', { name: '标签组' })
+    fireEvent.click(within(tablist).getAllByRole('button', { name: /^关闭 bash/ })[1])
+
+    expect(deletePtySession).not.toHaveBeenCalled()
+    expect(screen.queryByRole('heading', { name: '关闭标签组' })).toBeNull()
+    expect(screen.getByRole('heading', { name: '关闭终端会话' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '关闭并终止' }))
+    await waitFor(() => expect(deletePtySession).toHaveBeenCalledTimes(1))
+    expect(deletePtySession).toHaveBeenCalledTimes(1)
+    expect(deletePtySession).toHaveBeenCalledWith('pty-first', undefined)
   })
 })
 
