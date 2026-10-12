@@ -49,8 +49,9 @@ func TestBundleEndToEndCarriesCommit(t *testing.T) {
 		t.Fatalf("落盘 bundle: %v", err)
 	}
 
-	// 把包当 transport fetch 进本地仓库
-	gitInDir(t, local, "fetch", bundlePath, "feat/x:feat/x")
+	// 把包当 transport fetch 进本地仓库。fetch 默认会 detach 自动 maintenance；
+	// 子进程可能在 t.TempDir 清理时仍写 .git/objects/pack，故仅对此次测试 fetch 关闭。
+	gitInDir(t, local, "fetch", "--no-auto-maintenance", bundlePath, "feat/x:feat/x")
 
 	if !hasCommitInDir(t, local, wantSHA) {
 		t.Fatalf("commit %s 应已被 bundle 搬到本地", wantSHA)

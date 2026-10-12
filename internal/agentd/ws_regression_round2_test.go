@@ -316,6 +316,9 @@ func TestWSTruncationWarnsOnRealGap(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), wsDeadline(t, 10*time.Second))
 	defer cancel()
 
+	// 等到首条重放事件，确保服务端已订阅 hub 且已捕获 storeMax；否则 seq=21
+	// 可能在订阅前发布而丢失，或先落库抬高 storeMax，改变本用例要覆盖的缺口条件。
+	waitEventSeq(t, ctx, conn, 1)
 	// 连接后再产一条实时事件（seq=21）：它高于 storeMax，正是修复前掩盖缺口的那类事件
 	fresh := env.appendAndPublish(t, taskID, "新事件")
 	waitEventSeq(t, ctx, conn, fresh.Seq)
