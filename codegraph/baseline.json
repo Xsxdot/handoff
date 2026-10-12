@@ -2,7 +2,7 @@
  "meta": {
   "project": "handoff",
   "branch": "main",
-  "commit": "5d90b1c3578ab275d4ccc101e71e18b972f46c47",
+  "commit": "dc5d861093ce900dd41ccd9a10a5835e85ce979c",
   "scannedAt": "2026-09-14",
   "generator": "handoff-executor/b233.26-full-rescan"
  },
@@ -30793,6 +30793,84 @@
    "signature": "export const DEFAULT_SIDEBAR_WIDTH = 456",
    "modelKind": "dto"
   },
+  "m_web_app_shell_GroupCloseItem": {
+   "kind": "model",
+   "container": "k_web_app_shell_model",
+   "name": "GroupCloseItem",
+   "file": "web/src/app/shell/Shell.tsx",
+   "line": 412,
+   "signature": "type GroupCloseItem = {",
+   "summary": "A group confirmation holds one immutable layout snapshot. Only failed terminal\nentries are retained for retry; the whole snapshot is never widened on re-render.",
+   "fields": [
+    [
+     "tabId",
+     "string",
+     ""
+    ],
+    [
+     "baseKey",
+     "string",
+     ""
+    ],
+    [
+     "machine",
+     "string",
+     ""
+    ],
+    [
+     "kind",
+     "TabContent['kind']",
+     ""
+    ],
+    [
+     "resourceId",
+     "string",
+     ""
+    ],
+    [
+     "draft",
+     "string | undefined",
+     ""
+    ],
+    [
+     "sessionId",
+     "string | undefined",
+     ""
+    ]
+   ],
+   "modelKind": "dto"
+  },
+  "m_web_app_shell_GroupCloseSnapshot": {
+   "kind": "model",
+   "container": "k_web_app_shell_model",
+   "name": "GroupCloseSnapshot",
+   "file": "web/src/app/shell/Shell.tsx",
+   "line": 421,
+   "signature": "type GroupCloseSnapshot = { groupId: string; items: GroupCloseItem[]; terminalCount: number; dirtyFiles: string[] }",
+   "fields": [
+    [
+     "groupId",
+     "string",
+     ""
+    ],
+    [
+     "items",
+     "GroupCloseItem[]",
+     ""
+    ],
+    [
+     "terminalCount",
+     "number",
+     ""
+    ],
+    [
+     "dirtyFiles",
+     "string[]",
+     ""
+    ]
+   ],
+   "modelKind": "dto"
+  },
   "m_web_app_shell_MAX_SIDEBAR_WIDTH": {
    "kind": "model",
    "container": "k_web_app_shell_model",
@@ -31771,8 +31849,85 @@
    "order": 10,
    "name": "WorkbenchPageProps",
    "file": "web/src/app/workbench/WorkbenchPage.tsx",
-   "line": 18,
+   "line": 21,
    "signature": "export interface WorkbenchPageProps {",
+   "fields": [
+    [
+     "api",
+     "WorkbenchApi",
+     ""
+    ],
+    [
+     "onAddProject",
+     "() =\u003e void",
+     ""
+    ],
+    [
+     "renderContent",
+     "(content: TabContent, base: BaseDir, groupId: string, tabId: string, active?: boolean) =\u003e ReactNode",
+     ""
+    ],
+    [
+     "terminalUnavailable",
+     "string | undefined",
+     ""
+    ],
+    [
+     "onBeforeClose",
+     "(content: TabContent, tabId: string, base: BaseDir) =\u003e boolean | undefined",
+     ""
+    ],
+    [
+     "onCloseGroup",
+     "(groupId: string) =\u003e void | undefined",
+     ""
+    ],
+    [
+     "tree",
+     "ProjectTreeResp | null",
+     ""
+    ],
+    [
+     "tasks",
+     "Task[]",
+     ""
+    ],
+    [
+     "onFileCreated",
+     "() =\u003e void | undefined",
+     ""
+    ],
+    [
+     "launchers",
+     "Launcher[] | undefined",
+     ""
+    ],
+    [
+     "taskName",
+     "(taskId: string) =\u003e string | undefined | undefined",
+     ""
+    ],
+    [
+     "singleFocus",
+     "boolean | undefined",
+     ""
+    ],
+    [
+     "sessionRoom",
+     "boolean | undefined",
+     ""
+    ],
+    [
+     "filePreviewHeader",
+     "ReactNode | undefined",
+     ""
+    ],
+    [
+     "restoring",
+     "boolean | undefined",
+     ""
+    ]
+   ],
    "modelKind": "dto"
   },
   "m_web_app_workbench_WorkbenchSource": {
@@ -97251,7 +97406,7 @@
    "order": 15,
    "name": "Shell",
    "file": "web/src/app/shell/Shell.tsx",
-   "line": 108,
+   "line": 146,
    "signature": "export function Shell()"
   },
   "n_web_app_shell_TaskDeepLink": {
@@ -97278,8 +97433,9 @@
    "order": 17,
    "name": "beforeCloseTab",
    "file": "web/src/app/shell/Shell.tsx",
-   "line": 281,
-   "signature": "const beforeCloseTab = (c: TabContent, tabId: string, tabBase: BaseDir): boolean =\u003e"
+   "line": 449,
+   "signature": "const beforeCloseTab = (c: TabContent, tabId: string, tabBase: BaseDir): boolean =\u003e",
+   "summary": "beforeCloseTab 拦下带会话的终端 tab：关它等于终止会话，必须先确认。\n\n与 spec §6.2 的一处收紧（有意为之）：spec 只要求「有前台进程」才确认，\n这里只要是带会话的终端 tab 就弹。关闭即终止是不可逆操作，而「有没有前台\n进程」这个判据在用户点下 × 的那一瞬间可能刚好过期——宁可多问一句，也不\n静默杀掉跑了整个晚上的 build（这正是本设计不做空闲回收的同一条理由）。"
   },
   "n_web_app_shell_beginDrag": {
    "kind": "func",
@@ -97317,13 +97473,29 @@
    "line": 450,
    "signature": "const closeOpenItem = (item: OpenItem) =\u003e"
   },
+  "n_web_app_shell_closeWorkbenchGroup": {
+   "kind": "func",
+   "container": "k_web_app_shell",
+   "name": "closeWorkbenchGroup",
+   "file": "web/src/app/shell/Shell.tsx",
+   "line": 476,
+   "signature": "const closeWorkbenchGroup = (groupId: string) =\u003e"
+  },
+  "n_web_app_shell_confirmCloseGroup": {
+   "kind": "func",
+   "container": "k_web_app_shell",
+   "name": "confirmCloseGroup",
+   "file": "web/src/app/shell/Shell.tsx",
+   "line": 571,
+   "signature": "const confirmCloseGroup = async () =\u003e"
+  },
   "n_web_app_shell_confirmCloseHome": {
    "kind": "func",
    "container": "k_web_app_shell",
    "order": 20,
    "name": "confirmCloseHome",
    "file": "web/src/app/shell/Shell.tsx",
-   "line": 357,
+   "line": 670,
    "signature": "const confirmCloseHome = async () =\u003e"
   },
   "n_web_app_shell_confirmClosePty": {
@@ -97332,7 +97504,7 @@
    "order": 19,
    "name": "confirmClosePty",
    "file": "web/src/app/shell/Shell.tsx",
-   "line": 344,
+   "line": 651,
    "signature": "const confirmClosePty = async () =\u003e"
   },
   "n_web_app_shell_coordinatorBase": {
@@ -97371,6 +97543,14 @@
    "line": 101,
    "signature": "function focusedTabOf(workbench: Workbench): Tab | null"
   },
+  "n_web_app_shell_groupTabs": {
+   "kind": "func",
+   "container": "k_web_app_shell",
+   "name": "groupTabs",
+   "file": "web/src/app/shell/Shell.tsx",
+   "line": 578,
+   "signature": "const groupTabs = () =\u003e"
+  },
   "n_web_app_shell_killHomeSession": {
    "kind": "func",
    "container": "k_web_app_shell",
@@ -97379,6 +97559,23 @@
    "file": "web/src/app/shell/Shell.tsx",
    "line": 370,
    "signature": "const killHomeSession = (id: string) =\u003e"
+  },
+  "n_web_app_shell_killPtySession": {
+   "kind": "func",
+   "container": "k_web_app_shell",
+   "name": "killPtySession",
+   "file": "web/src/app/shell/Shell.tsx",
+   "line": 544,
+   "signature": "const killPtySession = async (\n    sessionId: string,\n    machine: string | undefined,\n    onError: (msg: string) =\u003e void,\n  ): Promise\u003cboolean\u003e =\u003e",
+   "summary": "killPtySession 删一个服务端终端会话，失败时把原文交给 onError 呈现。\n中央 tab 的确认关闭与浮窗 tab 的 × 共用：两处都不许吞错误——点了 × 以为\n会话关了，服务端却还留着一个 shell。返回是否删成功"
+  },
+  "n_web_app_shell_matches": {
+   "kind": "func",
+   "container": "k_web_app_shell",
+   "name": "matches",
+   "file": "web/src/app/shell/Shell.tsx",
+   "line": 586,
+   "signature": "const matches = (item: GroupCloseItem, tab: Tab | null | undefined): tab is Tab =\u003e"
   },
   "n_web_app_shell_moveDrag": {
    "kind": "func",
@@ -97506,6 +97703,14 @@
    "line": 22,
    "signature": "function readStoredSidebarWidth(): number"
   },
+  "n_web_app_shell_resourceId": {
+   "kind": "func",
+   "container": "k_web_app_shell",
+   "name": "resourceId",
+   "file": "web/src/app/shell/Shell.tsx",
+   "line": 581,
+   "signature": "const resourceId = (tab: Tab): string =\u003e"
+  },
   "n_web_app_shell_selectProject": {
    "kind": "func",
    "container": "k_web_app_shell",
@@ -97514,6 +97719,14 @@
    "file": "web/src/app/shell/Shell.tsx",
    "line": 487,
    "signature": "const selectProject = (project: ProjectNode) =\u003e"
+  },
+  "n_web_app_shell_setGroupCloseSnapshot": {
+   "kind": "func",
+   "container": "k_web_app_shell",
+   "name": "setGroupCloseSnapshot",
+   "file": "web/src/app/shell/Shell.tsx",
+   "line": 426,
+   "signature": "const setGroupCloseSnapshot = (snapshot: GroupCloseSnapshot | null) =\u003e"
   },
   "n_web_app_task_BucketRow": {
    "kind": "func",
@@ -98909,8 +99122,8 @@
    "order": 52,
    "name": "WorkbenchPage",
    "file": "web/src/app/workbench/WorkbenchPage.tsx",
-   "line": 44,
-   "signature": "export function WorkbenchPage("
+   "line": 66,
+   "signature": "export function WorkbenchPage({\n  api, onAddProject, renderContent, terminalUnavailable, onBeforeClose, onCloseGroup, tree, tasks, onFileCreated, launchers = [], taskName, singleFocus = false, sessionRoom = false, filePreviewHeader, restoring = false,\n}: WorkbenchPageProps)"
   },
   "n_web_app_workbench_activateGroup": {
    "kind": "func",
@@ -131531,6 +131744,42 @@
   [
    "n_web_app_data_onNativeResume",
    "n_web_app_data_poll"
+  ],
+  [
+   "n_web_app_shell_closeWorkbenchGroup",
+   "n_web_app_shell_setGroupCloseSnapshot"
+  ],
+  [
+   "n_web_app_shell_confirmCloseGroup",
+   "n_web_app_shell_setGroupCloseSnapshot"
+  ],
+  [
+   "n_web_app_shell_confirmCloseGroup",
+   "n_web_app_shell_killPtySession"
+  ],
+  [
+   "n_web_app_shell_confirmCloseGroup",
+   "n_web_app_shell_groupTabs"
+  ],
+  [
+   "n_web_app_shell_confirmCloseGroup",
+   "n_web_app_shell_matches"
+  ],
+  [
+   "n_web_app_shell_matches",
+   "n_web_app_shell_resourceId"
+  ],
+  [
+   "n_web_app_shell_confirmClosePty",
+   "n_web_app_shell_killPtySession"
+  ],
+  [
+   "n_web_app_shell_confirmCloseHome",
+   "n_web_app_shell_killPtySession"
+  ],
+  [
+   "n_web_app_shell_killPtySession",
+   "n_web_api_client_deletePtySession"
   ]
  ],
  "implements": [
