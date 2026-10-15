@@ -43,7 +43,7 @@ import { MobileProjectDetail } from '../tree/MobileProjectDetail'
 import { MobileWorkspace } from '../tree/MobileWorkspace'
 import './mobile-ui.css'
 import { FileTree } from '../files/FileTree'
-import { WorkbenchPage } from '../workbench/WorkbenchPage'
+import { WorkbenchPage, type WorkbenchReplacementRequest } from '../workbench/WorkbenchPage'
 import { TerminalTab } from '../workbench/TerminalTab'
 import { FileTab } from '../workbench/FileTab'
 import { TuiTab } from '../workbench/TuiTab'
@@ -386,6 +386,7 @@ export function Shell() {
   const [closingPty, setClosingPty] = useState<
     { tabId: string; sessionId: string; machine: string } | null
   >(null)
+  const dropReplaceRef = useRef<WorkbenchReplacementRequest | null>(null)
   // 只存 tabId 不存组下标：组下标在确认弹层打开期间会因为分屏/关栏而失效，
   // 而 tabId 在整个 workbench 内唯一。关闭走 wb.closeById 自己反查。
   const [closeBusy, setCloseBusy] = useState(false)
@@ -447,6 +448,10 @@ export function Shell() {
   // 进程」这个判据在用户点下 × 的那一瞬间可能刚好过期——宁可多问一句，也不
   // 静默杀掉跑了整个晚上的 build（这正是本设计不做空闲回收的同一条理由）。
   const beforeCloseTab = (c: TabContent, tabId: string, tabBase: BaseDir): boolean => {
+    if (dropReplaceRef.current || closeRequestRef.current || closeBusy) {
+      console.warn('shell.tab.close.held_for_drop_replace', { tabId, kind: c.kind, busy: closeRequestRef.current || closeBusy })
+      return false
+    }
     const activeGroupClose = groupCloseRef.current
     if (activeGroupClose) {
       console.warn('shell.tab.close.held_for_group_confirmation', { groupId: activeGroupClose.groupId, tabId })
@@ -657,14 +662,94 @@ export function Shell() {
     closeRequestRef.current = true
     setCloseBusy(true)
     setCloseError('')
-    if (await killPtySession(closingPty.sessionId, closingPty.machine || undefined, setCloseError)) {
-      wb.closeById(closingPty.tabId)
+    const replacement = dropReplaceRef.current
+    if (replacement && replacement.target.id === closingPty.tabId && !replacement.isCurrent()) {
+      console.warn('shell.drop.replace.stale_before_delete', { targetTabId: closingPty.tabId, sessionId: closingPty.sessionId, machine: closingPty.machine })
+      setGroupCloseNotice('源或目标窗格在确认期间发生变化，没有结束终端；请重新拖放。')
+      dropReplaceRef.current = null
+      setClosingPty(null)
+      setCloseBusy(false)
+      closeRequestRef.current = false
+      return
+    }
+    if (replacement?.target.id === closingPty.tabId) {
+      console.info('shell.drop.replace.delete.start', {
+        sourceTabId: replacement.source?.id ?? '', targetTabId: closingPty.tabId,
+        sourceSessionId: replacement.source?.content.kind === 'session' || replacement.source?.content.kind === 'terminal' ? replacement.source.content.sessionId ?? '' : '',
+        sourceMachine: replacement.source?.base.machine ?? '',
+        sessionId: closingPty.sessionId, machine: closingPty.machine,
+      })
+    }
+    const deleteSucceeded = await killPtySession(closingPty.sessionId, closingPty.machine || undefined, (message) => {
+      if (replacement?.target.id === closingPty.tabId) {
+        console.error('shell.drop.replace.delete.failed', {
+          sourceTabId: replacement.source?.id ?? '', targetTabId: closingPty.tabId,
+          sourceSessionId: replacement.source?.content.kind === 'session' || replacement.source?.content.kind === 'terminal' ? replacement.source.content.sessionId ?? '' : '',
+          sourceMachine: replacement.source?.base.machine ?? '',
+          sessionId: closingPty.sessionId, machine: closingPty.machine, error: message,
+        })
+      }
+      setCloseError(message)
+    })
+    if (deleteSucceeded) {
+      if (replacement && replacement.target.id === closingPty.tabId) {
+        console.info('shell.drop.replace.delete.success', {
+          sourceTabId: replacement.source?.id ?? '', targetTabId: closingPty.tabId,
+          sourceSessionId: replacement.source?.content.kind === 'session' || replacement.source?.content.kind === 'terminal' ? replacement.source.content.sessionId ?? '' : '',
+          sourceMachine: replacement.source?.base.machine ?? '',
+          sessionId: closingPty.sessionId, machine: closingPty.machine,
+        })
+        if (replacement.isCurrent()) {
+          console.info('shell.drop.replace.apply', { targetTabId: closingPty.tabId, sessionId: closingPty.sessionId, machine: closingPty.machine })
+          replacement.apply()
+        } else {
+          console.warn('shell.drop.replace.stale_after_delete', { targetTabId: closingPty.tabId, sessionId: closingPty.sessionId, machine: closingPty.machine })
+          setGroupCloseNotice('终端会话已结束，但源或目标窗格在处理中发生变化；布局已保留，请重新拖放。')
+        }
+        dropReplaceRef.current = null
+      } else wb.closeById(closingPty.tabId)
       setClosingPty(null)
     }
     // 删失败不关 tab：关掉就等于把一个还活着的会话从视野里抹掉，
     // 而它仍在占着进程（错误已由 killPtySession 塞进 ConfirmDialog）
     setCloseBusy(false)
     closeRequestRef.current = false
+  }
+
+  const beforeReplaceTab = (request: WorkbenchReplacementRequest) => {
+    const target = request.target
+    const protectedTarget = (target.content.kind === 'terminal' && Boolean(target.content.sessionId)) ||
+      (target.content.kind === 'file' && target.content.draft !== undefined)
+    if (!protectedTarget) {
+      request.apply()
+      return
+    }
+    if (dropReplaceRef.current || groupCloseRef.current || closeRequestRef.current || closingPty || closingHome || closingDirtyFile || closingDirtyHome) {
+      console.warn('shell.drop.replace.held_for_close', { targetTabId: target.id, kind: target.content.kind })
+      return
+    }
+    if (!request.isCurrent()) {
+      console.warn('shell.drop.replace.stale_before_confirmation', { targetTabId: target.id, kind: target.content.kind })
+      setGroupCloseNotice('源或目标窗格已发生变化，没有执行拖放；请重新拖放。')
+      return
+    }
+    dropReplaceRef.current = request
+    setGroupCloseNotice('')
+    console.info('shell.drop.replace.confirmation_required', {
+      targetTabId: target.id, targetLocation: request.targetLocation,
+      sourceTabId: request.source?.id ?? '', sourceLocation: request.sourceLocation,
+      sourceSessionId: request.source?.content.kind === 'session' || request.source?.content.kind === 'terminal' ? request.source.content.sessionId ?? '' : '',
+      sourceMachine: request.source?.base.machine ?? '',
+      targetSessionId: target.content.kind === 'terminal' ? target.content.sessionId ?? '' : '',
+      kind: target.content.kind, machine: target.base.machine,
+    })
+    if (target.content.kind === 'terminal' && target.content.sessionId) {
+      setCloseError('')
+      setClosingPty({ tabId: target.id, sessionId: target.content.sessionId, machine: target.base.machine })
+      probeClosingSession(target.content.sessionId)
+    } else if (target.content.kind === 'file') {
+      setClosingDirtyFile({ tabId: target.id, rel: target.content.rel })
+    }
   }
 
   const confirmCloseHome = async () => {
@@ -684,6 +769,10 @@ export function Shell() {
   // killHomeSession 是浮窗 tab × 的入口：找到会话、进确认弹层。为什么不吞错误：
   // 失败被吞掉的话，用户以为会话关了、实际服务端还留着一个 shell
   const killHomeSession = (id: string) => {
+    if (dropReplaceRef.current || closeRequestRef.current || closeBusy) {
+      console.warn('shell.home.close.held_for_drop_replace', { tabId: id, busy: closeRequestRef.current || closeBusy })
+      return
+    }
     if (groupCloseRef.current) {
       console.warn('shell.home.close.held_for_group_confirmation', { groupId: groupCloseRef.current.groupId, tabId: id })
       return
@@ -1375,6 +1464,7 @@ export function Shell() {
               terminalUnavailable={wb.base ? ptyNote(wb.base.machine) : ''}
               launchers={launchersSupported ? (launchersData?.launchers ?? []) : []}
               onBeforeClose={beforeCloseTab}
+              onBeforeReplace={beforeReplaceTab}
               onCloseGroup={closeWorkbenchGroup}
               renderContent={(c, base, group, tabId, active = true) => {
                 switch (c.kind) {
@@ -1822,6 +1912,14 @@ export function Shell() {
           }
           setClosingPty(null)
           setClosingHome(null)
+          if (dropReplaceRef.current) console.info('shell.drop.replace.cancelled', {
+            sourceTabId: dropReplaceRef.current.source?.id ?? '', targetTabId: dropReplaceRef.current.target.id,
+            sourceSessionId: dropReplaceRef.current.source?.content.kind === 'session' || dropReplaceRef.current.source?.content.kind === 'terminal' ? dropReplaceRef.current.source.content.sessionId ?? '' : '',
+            sourceMachine: dropReplaceRef.current.source?.base.machine ?? '',
+            targetSessionId: dropReplaceRef.current.target.content.kind === 'terminal' ? dropReplaceRef.current.target.content.sessionId ?? '' : '',
+            machine: dropReplaceRef.current.target.base.machine,
+          })
+          dropReplaceRef.current = null
         }}
       />
 
@@ -1861,13 +1959,45 @@ export function Shell() {
         confirmLabel="不保存，关闭"
         destructive
         onConfirm={() => {
-          if (closingDirtyFile) wb.closeById(closingDirtyFile.tabId)
+          if (closingDirtyFile) {
+            const replacement = dropReplaceRef.current
+            if (replacement?.target.id === closingDirtyFile.tabId) {
+              if (closeRequestRef.current) return
+              closeRequestRef.current = true
+              setCloseBusy(true)
+              if (replacement.isCurrent()) {
+                console.info('shell.drop.replace.confirmed_dirty_file', {
+                  sourceTabId: replacement.source?.id ?? '', targetTabId: closingDirtyFile.tabId,
+                  sourceMachine: replacement.source?.base.machine ?? '', machine: replacement.target.base.machine,
+                  rel: closingDirtyFile.rel,
+                })
+                console.info('shell.drop.replace.apply_dirty_file', { targetTabId: closingDirtyFile.tabId, rel: closingDirtyFile.rel })
+                replacement.apply()
+              } else {
+                console.warn('shell.drop.replace.stale_dirty_file', { targetTabId: closingDirtyFile.tabId, rel: closingDirtyFile.rel })
+                setGroupCloseNotice('源或目标窗格在确认期间发生变化，草稿已保留；请重新拖放。')
+              }
+              dropReplaceRef.current = null
+              setCloseBusy(false)
+              closeRequestRef.current = false
+            } else wb.closeById(closingDirtyFile.tabId)
+          }
           if (closingDirtyHome) dock.closeTab(closingDirtyHome.id)
           setClosingDirtyFile(null)
           setClosingDirtyHome(null)
         }}
         onCancel={() => {
+          const replacement = dropReplaceRef.current
+          const dirtyFile = closingDirtyFile
+          if (replacement && dirtyFile && replacement.target.id === dirtyFile.tabId) {
+            console.info('shell.drop.replace.cancelled_dirty_file', {
+              sourceTabId: replacement.source?.id ?? '', targetTabId: dirtyFile.tabId,
+              sourceMachine: replacement.source?.base.machine ?? '', machine: replacement.target.base.machine,
+              rel: dirtyFile.rel,
+            })
+          }
           setClosingDirtyFile(null)
+          if (replacement && dirtyFile && replacement.target.id === dirtyFile.tabId) dropReplaceRef.current = null
           setClosingDirtyHome(null)
         }}
       />

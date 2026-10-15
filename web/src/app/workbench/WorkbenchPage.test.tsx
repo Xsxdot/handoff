@@ -2,7 +2,7 @@ import { act, createEvent, fireEvent, render, renderHook, within } from '@testin
 import { useEffect } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 import { registerSessionDetailOpener } from '../rooms/sessionDetailOpener'
-import { WorkbenchPage } from './WorkbenchPage'
+import { WorkbenchPage, type WorkbenchReplacementRequest } from './WorkbenchPage'
 import { DRAG_BASE_MIME, DRAG_DIR_MIME, DRAG_SESSION_MIME, DRAG_TAB_MIME, DRAG_TASK_MIME } from './paneDrop'
 import { useWorkbench, sessionBase, type BaseDir } from './useWorkbench'
 import type { Workbench } from './tabs'
@@ -17,7 +17,7 @@ function setRect(element: Element, width = 400, height = 400) {
   element.getBoundingClientRect = () => ({ left: 0, top: 0, right: width, bottom: height, width, height, x: 0, y: 0, toJSON: () => ({}) }) as DOMRect
 }
 
-function page(api: ReturnType<typeof useWorkbench>, singleFocus = false, restoring = false) {
+function page(api: ReturnType<typeof useWorkbench>, singleFocus = false, restoring = false, onBeforeReplace?: (request: WorkbenchReplacementRequest) => void) {
   return <WorkbenchPage
     api={api}
     tree={null}
@@ -25,6 +25,7 @@ function page(api: ReturnType<typeof useWorkbench>, singleFocus = false, restori
     onAddProject={vi.fn()}
     singleFocus={singleFocus}
     restoring={restoring}
+    onBeforeReplace={onBeforeReplace}
     renderContent={(content, base) => <div>{content.kind === 'file' ? content.rel : `${content.kind}:${base.projectName}`}</div>}
   />
 }
@@ -39,6 +40,70 @@ const sessionDropPayload = (sessionId = 'session:1', title = '架构物理化') 
 })
 
 describe('WorkbenchPage', () => {
+  it('确认期间同一会话从新来源入口打开后使待处理投放失效', () => {
+    const hook = renderHook(() => useWorkbench())
+    act(() => hook.result.current.open({ kind: 'terminal', seq: 1 }, local))
+    const replacements: WorkbenchReplacementRequest[] = []
+    const onBeforeReplace = (request: WorkbenchReplacementRequest) => { replacements.push(request) }
+    const view = render(page(hook.result.current, false, false, onBeforeReplace))
+    const pane = view.container.querySelector('[data-testid="workbench-pane"]') as HTMLElement
+    setRect(pane)
+    const drop = createEvent.drop(pane, { dataTransfer: sessionDropPayload('session:pending') })
+    Object.defineProperty(drop, 'clientX', { value: 200 })
+    Object.defineProperty(drop, 'clientY', { value: 200 })
+    fireEvent(pane, drop)
+    expect(replacements[0]?.isCurrent()).toBe(true)
+
+    act(() => hook.result.current.addGroup())
+    const groupId = hook.result.current.wb.activeGroupId
+    act(() => hook.result.current.open({ kind: 'session', sessionId: 'session:pending', title: 'pending' }, sessionBase('session:pending'), groupId))
+    view.rerender(page(hook.result.current, false, false, onBeforeReplace))
+    expect(replacements[0]?.isCurrent()).toBe(false)
+  })
+
+  it('只对实际覆盖调用守卫：空格、边缘分屏与自身拖回不调用，满列回落会调用', () => {
+    const hook = renderHook(() => useWorkbench())
+    const beforeReplace = vi.fn()
+    const view = render(page(hook.result.current, false, false, beforeReplace))
+    const dropDirectory = (pane: HTMLElement, path: string, y: number) => {
+      const transfer = { types: [DRAG_DIR_MIME], getData: () => JSON.stringify({ ...local, path }), setData: vi.fn(), dropEffect: '' }
+      const drop = createEvent.drop(pane, { dataTransfer: transfer })
+      Object.defineProperty(drop, 'clientX', { value: 200 })
+      Object.defineProperty(drop, 'clientY', { value: y })
+      fireEvent(pane, drop)
+    }
+
+    let pane = view.container.querySelector('[data-testid="workbench-pane"]') as HTMLElement
+    setRect(pane)
+    dropDirectory(pane, '/local/first', 200)
+    expect(beforeReplace).not.toHaveBeenCalled()
+    view.rerender(page(hook.result.current, false, false, beforeReplace))
+
+    pane = view.container.querySelector('[data-testid="workbench-pane"]') as HTMLElement
+    setRect(pane)
+    dropDirectory(pane, '/local/edge', 380)
+    expect(beforeReplace).not.toHaveBeenCalled()
+    view.rerender(page(hook.result.current, false, false, beforeReplace))
+    expect(hook.result.current.wb.groups[0].columns[0].panes.filter(Boolean)).toHaveLength(2)
+
+    pane = view.container.querySelector('[data-testid="workbench-pane"]') as HTMLElement
+    const header = pane.querySelector('[draggable="true"]') as HTMLElement
+    const source = hook.result.current.wb.groups[0].columns[0].panes[0]!
+    const tabTransfer = { types: [DRAG_TAB_MIME], getData: () => JSON.stringify({ groupId: 'g1', tabId: source.id }), setData: vi.fn(), dropEffect: '' }
+    const selfDrop = createEvent.drop(pane, { dataTransfer: tabTransfer })
+    Object.defineProperty(selfDrop, 'clientX', { value: 200 })
+    Object.defineProperty(selfDrop, 'clientY', { value: 200 })
+    fireEvent.dragStart(header, { dataTransfer: tabTransfer })
+    fireEvent(pane, selfDrop)
+    expect(beforeReplace).not.toHaveBeenCalled()
+
+    pane = view.container.querySelector('[data-testid="workbench-pane"]') as HTMLElement
+    setRect(pane)
+    dropDirectory(pane, '/local/full-fallback', 380)
+    expect(beforeReplace).toHaveBeenCalledTimes(1)
+    expect(beforeReplace).toHaveBeenCalledWith(expect.objectContaining({ target: expect.any(Object), targetLocation: expect.objectContaining({ groupId: 'g1', column: 0 }) }))
+  })
+
   it('restoring期间保留窗格但让工作台不可交互并显示状态', () => {
     const hook = renderHook(() => useWorkbench())
     act(() => hook.result.current.open({ kind: 'file', rel: 'README.md' }, local))

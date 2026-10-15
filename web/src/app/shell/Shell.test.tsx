@@ -1220,6 +1220,329 @@ describe('关闭一个服务端已经没有的终端会话', () => {
   })
 })
 
+describe('拖拽覆盖中央终端', () => {
+  it('左栏目录投到终端占用格时先确认，确认前保留原窗格且不发 DELETE', async () => {
+    vi.mocked(deletePtySession).mockClear()
+    const remoteProject: ProjectTreeResp['projects'][number] = {
+      project_id: 'p2', origin_url: '', name: 'aim',
+      locations: [{
+        machine: 'linux-01', name: 'aim', path: '/srv/aim', probe_error: '',
+        workspaces: [{ path: '/srv/aim', branch: 'main', head: 'def', is_main: true, managed: false, created_at: '' }],
+      }],
+    }
+    vi.mocked(fetchProjectTree).mockResolvedValue({ ...tree, projects: [tree.projects[0], remoteProject] })
+    vi.mocked(fetchMachines).mockResolvedValue({
+      machines: [
+        { name: '', addr: '', reachable: true, version: '', executors: [], default_executor: '', probe_ms: 0, active_tasks: 0, error: '', pty_supported: true },
+        { name: 'linux-01', addr: '', reachable: true, version: '', executors: [], default_executor: '', probe_ms: 0, active_tasks: 0, error: '', pty_supported: true },
+      ],
+    })
+    vi.mocked(fetchPtySessions).mockResolvedValue({ sessions: [liveSession('new-1')] })
+    renderShell()
+    await openBranch()
+    fireEvent.click(screen.getByRole('button', { name: '新建内容' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: /新终端/ }))
+    await waitFor(() => expect(createPtySession).toHaveBeenCalled())
+    const pane = screen.getAllByTestId('workbench-pane').find((paneEl) => paneEl.textContent?.includes('bash'))!
+    setPaneRect(pane)
+
+    const values = new Map<string, string>()
+    const dataTransfer = {
+      types: [] as string[],
+      setData: (type: string, value: string) => { values.set(type, value); if (!dataTransfer.types.includes(type)) dataTransfer.types.push(type) },
+      getData: (type: string) => values.get(type) ?? '',
+      effectAllowed: '', dropEffect: '',
+    }
+    const source = within(await openProjectLocations('p2')).getByTestId('machine-row')
+    fireEvent.dragStart(source, { dataTransfer })
+    dropAt(pane, dataTransfer, 200, 200)
+
+    expect(await screen.findByRole('heading', { name: '关闭终端会话' })).toBeInTheDocument()
+    expect(deletePtySession).not.toHaveBeenCalled()
+    expect(screen.getAllByTestId('workbench-pane').some((paneEl) => paneEl.textContent?.includes('bash'))).toBe(true)
+    fireEvent.click(screen.getByRole('button', { name: '取消' }))
+    expect(deletePtySession).not.toHaveBeenCalled()
+    expect(screen.queryByRole('heading', { name: '关闭终端会话' })).toBeNull()
+    expect(screen.getAllByTestId('workbench-pane').some((paneEl) => paneEl.textContent?.includes('bash'))).toBe(true)
+
+    vi.mocked(deletePtySession).mockRejectedValueOnce(new ApiError(500, 'kill 失败'))
+    fireEvent.dragStart(source, { dataTransfer })
+    dropAt(pane, dataTransfer, 200, 200)
+    expect(await screen.findByRole('heading', { name: '关闭终端会话' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '关闭并终止' }))
+    expect(await screen.findByText('kill 失败')).toBeInTheDocument()
+    expect(screen.getAllByTestId('workbench-pane').some((paneEl) => paneEl.textContent?.includes('bash'))).toBe(true)
+    vi.mocked(deletePtySession).mockResolvedValue({ ok: true })
+    fireEvent.click(screen.getByRole('button', { name: '关闭并终止' }))
+    await waitFor(() => expect(deletePtySession).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(screen.getAllByTestId('workbench-pane').some((paneEl) => paneEl.textContent?.includes('linux-01'))).toBe(true))
+  })
+
+  it('DELETE pending 时其他窗格的关闭请求不能覆盖当前替换确认', async () => {
+    vi.mocked(createPtySession).mockClear()
+      .mockResolvedValueOnce({ ...liveSession('replace-target'), base_kind: 'workspace', base_path: '/w/b2-b3' })
+      .mockResolvedValueOnce({ ...liveSession('other-pane'), base_kind: 'workspace', base_path: '/w/b2-b3' })
+    let resolveDelete!: (result: { ok: true }) => void
+    vi.mocked(deletePtySession).mockClear().mockImplementation(() => new Promise((resolve) => { resolveDelete = resolve }))
+    vi.mocked(fetchPtySessions).mockResolvedValue({ sessions: [liveSession('replace-target'), liveSession('other-pane')] })
+    renderShell()
+    await openBranch()
+    fireEvent.click(screen.getByRole('button', { name: '新建内容' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: /新终端/ }))
+    await waitFor(() => expect(createPtySession).toHaveBeenCalledTimes(1))
+    fireEvent.click(screen.getByRole('button', { name: '新建标签组' }))
+    fireEvent.click(screen.getAllByRole('button', { name: '新建内容' }).at(-1)!)
+    fireEvent.click(screen.getByRole('menuitem', { name: /新终端/ }))
+    await waitFor(() => expect(createPtySession).toHaveBeenCalledTimes(2))
+
+    const panes = screen.getAllByTestId('workbench-pane')
+    const target = panes[0]
+    const other = panes[1]
+    setPaneRect(target)
+    const values = new Map<string, string>()
+    const dataTransfer = {
+      types: [] as string[],
+      setData: (type: string, value: string) => { values.set(type, value); if (!dataTransfer.types.includes(type)) dataTransfer.types.push(type) },
+      getData: (type: string) => values.get(type) ?? '',
+      effectAllowed: '', dropEffect: '',
+    }
+    fireEvent.dragStart(await screen.findByText('重构工单通道'), { dataTransfer })
+    dropAt(target, dataTransfer, 200, 200)
+    expect(await screen.findByRole('heading', { name: '关闭终端会话' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '关闭并终止' }))
+    await waitFor(() => expect(deletePtySession).toHaveBeenCalledWith('replace-target', undefined))
+
+    fireEvent.click(within(other).getByRole('button', { name: /关闭 bash/ }))
+    expect(screen.getByRole('heading', { name: '关闭终端会话' })).toBeInTheDocument()
+    expect(deletePtySession).toHaveBeenCalledTimes(1)
+    resolveDelete({ ok: true })
+    await waitFor(() => expect(screen.getAllByTestId('workbench-pane')[0].textContent).not.toContain('bash'))
+    expect(screen.queryByRole('heading', { name: '关闭终端会话' })).toBeNull()
+  })
+
+  it('文件来源在替换确认等待期间改变时不删除终端目标，也不覆盖两边内容', async () => {
+    vi.mocked(createPtySession).mockClear().mockResolvedValue({
+      ...liveSession('source-change-target'), base_kind: 'workspace', base_path: '/w/b2-b3',
+    })
+    vi.mocked(fetchPtySessions).mockResolvedValue({ sessions: [liveSession('source-change-target')] })
+    vi.mocked(deletePtySession).mockClear().mockResolvedValue({ ok: true })
+    renderShell()
+    await openBranch()
+    fireEvent.click(await screen.findByText('go.mod'))
+    const originalEditor = await screen.findByRole('textbox', { name: 'go.mod' })
+    fireEvent.change(originalEditor, { target: { value: 'module before confirmation\n' } })
+
+    fireEvent.click(screen.getByRole('button', { name: '新建标签组' }))
+    fireEvent.click(screen.getAllByRole('button', { name: '新建内容' }).at(-1)!)
+    fireEvent.click(screen.getByRole('menuitem', { name: /新终端/ }))
+    await waitFor(() => expect(createPtySession).toHaveBeenCalledTimes(1))
+
+    fireEvent.click(screen.getByRole('tab', { name: 'go.mod' }))
+    const sourceEditor = screen.getByRole('textbox', { name: 'go.mod' })
+    const sourcePane = sourceEditor.closest('[data-testid="workbench-pane"]')!
+    const values = new Map<string, string>()
+    const dataTransfer = {
+      types: [] as string[],
+      setData: (type: string, value: string) => { values.set(type, value); if (!dataTransfer.types.includes(type)) dataTransfer.types.push(type) },
+      getData: (type: string) => values.get(type) ?? '',
+      effectAllowed: '', dropEffect: '',
+    }
+    const source = sourcePane.querySelector('[draggable="true"]')!
+    fireEvent(source, createEvent.dragStart(source, { dataTransfer: dataTransfer as unknown as DataTransfer }))
+    fireEvent.click(screen.getByRole('tab', { name: /bash · integration\/b2-b3/ }))
+    const targetPane = screen.getAllByTestId('workbench-pane').find((pane) => pane.textContent?.includes('bash'))!
+    setPaneRect(targetPane)
+    dropAt(targetPane, dataTransfer, 200, 200)
+
+    expect(await screen.findByRole('heading', { name: '关闭终端会话' })).toBeInTheDocument()
+    expect(deletePtySession).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('tab', { name: 'go.mod' }))
+    const editorWhileConfirming = screen.getByRole('textbox', { name: 'go.mod' })
+    fireEvent.change(editorWhileConfirming, { target: { value: 'module changed while confirming\n' } })
+
+    fireEvent.click(screen.getByRole('button', { name: '关闭并终止' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('没有结束终端')
+    expect(deletePtySession).not.toHaveBeenCalled()
+    expect(screen.getByRole('textbox', { name: 'go.mod' })).toHaveValue('module changed while confirming\n')
+    expect(screen.getAllByTestId('workbench-pane').some((pane) => pane.textContent?.includes('bash'))).toBe(true)
+    expect(screen.getAllByTestId('workbench-pane').some((pane) => pane.textContent?.includes('go.mod'))).toBe(true)
+  })
+
+  it('覆盖有草稿的文件先确认，取消保留草稿，确认后才替换', async () => {
+    renderShell()
+    await openBranch()
+    fireEvent.click(await screen.findByText('go.mod'))
+    const editor = await screen.findByRole('textbox', { name: 'go.mod' })
+    fireEvent.change(editor, { target: { value: 'module changed\n' } })
+    const pane = screen.getAllByTestId('workbench-pane')[0]
+    setPaneRect(pane)
+    const values = new Map<string, string>()
+    const dataTransfer = {
+      types: [] as string[],
+      setData: (type: string, value: string) => { values.set(type, value); if (!dataTransfer.types.includes(type)) dataTransfer.types.push(type) },
+      getData: (type: string) => values.get(type) ?? '',
+      effectAllowed: '', dropEffect: '',
+    }
+    const source = await screen.findByText('重构工单通道')
+    const drop = () => {
+      fireEvent.dragStart(source, { dataTransfer })
+      dropAt(pane, dataTransfer, 200, 200)
+    }
+    drop()
+    expect(await screen.findByRole('heading', { name: '关闭未保存的文件' })).toBeInTheDocument()
+    expect(screen.getByRole('textbox', { name: 'go.mod' })).toHaveValue('module changed\n')
+    fireEvent.click(screen.getByRole('button', { name: '取消' }))
+    expect(screen.getByRole('textbox', { name: 'go.mod' })).toHaveValue('module changed\n')
+
+    drop()
+    expect(await screen.findByRole('heading', { name: '关闭未保存的文件' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '不保存，关闭' }))
+    await waitFor(() => expect(screen.getAllByTestId('workbench-pane')[0].textContent).toContain('T1'))
+    expect(screen.queryByRole('textbox', { name: 'go.mod' })).toBeNull()
+  })
+
+  it('替换远端终端按目标 tab 所属机器 DELETE', async () => {
+    const remoteProject: ProjectTreeResp['projects'][number] = {
+      project_id: 'p2', origin_url: '', name: 'aim',
+      locations: [{ machine: 'linux-01', name: 'aim', path: '/srv/aim', probe_error: '', workspaces: [
+        { path: '/srv/aim', branch: 'main', head: 'def', is_main: true, managed: false, created_at: '' },
+      ] }],
+    }
+    vi.mocked(fetchProjectTree).mockResolvedValue({ ...tree, projects: [tree.projects[0], remoteProject] })
+    vi.mocked(fetchMachines).mockResolvedValue({ machines: [
+      { name: '', addr: '', reachable: true, version: '', executors: [], default_executor: '', probe_ms: 0, active_tasks: 0, error: '', pty_supported: true },
+      { name: 'linux-01', addr: '', reachable: true, version: '', executors: [], default_executor: '', probe_ms: 0, active_tasks: 0, error: '', pty_supported: true },
+    ] })
+    vi.mocked(createPtySession).mockClear().mockResolvedValue({ ...liveSession('remote-replace'), base_kind: 'workspace', base_path: '/srv/aim' })
+    vi.mocked(deletePtySession).mockClear().mockResolvedValue({ ok: true })
+    vi.mocked(fetchPtySessions).mockResolvedValue({ sessions: [{ ...liveSession('remote-replace'), machine: 'linux-01' }] })
+    renderShell()
+    await openBranch()
+    const values = new Map<string, string>()
+    const dataTransfer = {
+      types: [] as string[],
+      setData: (type: string, value: string) => { values.set(type, value); if (!dataTransfer.types.includes(type)) dataTransfer.types.push(type) },
+      getData: (type: string) => values.get(type) ?? '', effectAllowed: '', dropEffect: '',
+    }
+    const pane = screen.getAllByTestId('workbench-pane')[0]
+    setPaneRect(pane)
+    const remoteMachine = within(await openProjectLocations('p2')).getByTestId('machine-row')
+    fireEvent.dragStart(remoteMachine, { dataTransfer })
+    dropAt(pane, dataTransfer, 200, 200)
+    await waitFor(() => expect(createPtySession).toHaveBeenCalledWith(expect.objectContaining({ base_path: '/srv/aim' }), 'linux-01'))
+    const remoteTerminalPane = await waitFor(() => {
+      const found = screen.getAllByTestId('workbench-pane').find((candidate) => candidate.textContent?.includes('bash'))
+      expect(found).toBeDefined()
+      return found!
+    })
+    setPaneRect(remoteTerminalPane)
+
+    const taskValues = new Map<string, string>()
+    const taskTransfer = {
+      types: [] as string[],
+      setData: (type: string, value: string) => { taskValues.set(type, value); if (!taskTransfer.types.includes(type)) taskTransfer.types.push(type) },
+      getData: (type: string) => taskValues.get(type) ?? '', effectAllowed: '', dropEffect: '',
+    }
+    fireEvent.dragStart(await screen.findByText('重构工单通道'), { dataTransfer: taskTransfer })
+    dropAt(remoteTerminalPane, taskTransfer, 200, 200)
+    expect(await screen.findByRole('heading', { name: '关闭终端会话' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '关闭并终止' }))
+    await waitFor(() => expect(deletePtySession).toHaveBeenCalledWith('remote-replace', 'linux-01'))
+  })
+
+  it('DELETE 等待时目标 tab 移位会保留新布局并丢弃旧拖放续接', async () => {
+    let resolveDelete!: (result: { ok: true }) => void
+    vi.mocked(createPtySession).mockClear().mockResolvedValue({ ...liveSession('moving-target'), base_kind: 'workspace', base_path: '/w/b2-b3' })
+    vi.mocked(fetchPtySessions).mockResolvedValue({ sessions: [liveSession('moving-target')] })
+    vi.mocked(deletePtySession).mockClear().mockImplementation(() => new Promise((resolve) => { resolveDelete = resolve }))
+    renderShell()
+    await openBranch()
+    fireEvent.click(screen.getByRole('button', { name: '新建内容' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: /新终端/ }))
+    await waitFor(() => expect(createPtySession).toHaveBeenCalled())
+    fireEvent.click(screen.getByRole('button', { name: '新建标签组' }))
+    const panes = screen.getAllByTestId('workbench-pane')
+    const sourcePane = panes[0]
+    const blankTarget = panes[1]
+    setPaneRect(sourcePane)
+    setPaneRect(blankTarget)
+
+    const taskValues = new Map<string, string>()
+    const taskTransfer = {
+      types: [] as string[],
+      setData: (type: string, value: string) => { taskValues.set(type, value); if (!taskTransfer.types.includes(type)) taskTransfer.types.push(type) },
+      getData: (type: string) => taskValues.get(type) ?? '', effectAllowed: '', dropEffect: '',
+    }
+    fireEvent.dragStart(await screen.findByText('重构工单通道'), { dataTransfer: taskTransfer })
+    dropAt(sourcePane, taskTransfer, 200, 200)
+    expect(await screen.findByRole('heading', { name: '关闭终端会话' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '关闭并终止' }))
+    await waitFor(() => expect(deletePtySession).toHaveBeenCalledWith('moving-target', undefined))
+
+    const liveSourcePane = screen.getAllByTestId('workbench-pane').find((pane) => pane.textContent?.includes('bash'))!
+    const tabHeader = liveSourcePane.querySelector('[draggable="true"]')!
+    const tabValues = new Map<string, string>()
+    const tabTransfer = {
+      types: [] as string[],
+      setData: (type: string, value: string) => { tabValues.set(type, value); if (!tabTransfer.types.includes(type)) tabTransfer.types.push(type) },
+      getData: (type: string) => tabValues.get(type) ?? '', effectAllowed: '', dropEffect: '',
+    }
+    fireEvent(tabHeader, createEvent.dragStart(tabHeader, { dataTransfer: tabTransfer as unknown as DataTransfer }))
+    const emptyPane = screen.getAllByTestId('workbench-pane').find((pane) => !pane.textContent?.includes('bash') && pane !== liveSourcePane)!
+    setPaneRect(emptyPane)
+    dropAt(emptyPane, tabTransfer, 200, 200)
+    await waitFor(() => expect(screen.getAllByTestId('workbench-pane').some((pane) => pane.textContent?.includes('bash'))).toBe(true))
+
+    await act(async () => resolveDelete({ ok: true }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('布局已保留，请重新拖放')
+    expect(screen.queryByText('T1')).toBeNull()
+    expect(screen.getAllByTestId('workbench-pane').some((pane) => pane.textContent?.includes('bash'))).toBe(true)
+  })
+
+  it('确认弹层期间目标 tab 移位会在 DELETE 前使请求失效', async () => {
+    vi.mocked(createPtySession).mockClear().mockResolvedValue({ ...liveSession('preconfirm-target'), base_kind: 'workspace', base_path: '/w/b2-b3' })
+    vi.mocked(fetchPtySessions).mockResolvedValue({ sessions: [liveSession('preconfirm-target')] })
+    vi.mocked(deletePtySession).mockClear().mockResolvedValue({ ok: true })
+    renderShell()
+    await openBranch()
+    fireEvent.click(screen.getByRole('button', { name: '新建内容' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: /新终端/ }))
+    await waitFor(() => expect(createPtySession).toHaveBeenCalled())
+    fireEvent.click(screen.getByRole('button', { name: '新建标签组' }))
+    let panes = screen.getAllByTestId('workbench-pane')
+    const originalPane = panes[0]
+    setPaneRect(originalPane)
+    const values = new Map<string, string>()
+    const taskTransfer = {
+      types: [] as string[],
+      setData: (type: string, value: string) => { values.set(type, value); if (!taskTransfer.types.includes(type)) taskTransfer.types.push(type) },
+      getData: (type: string) => values.get(type) ?? '', effectAllowed: '', dropEffect: '',
+    }
+    fireEvent.dragStart(await screen.findByText('重构工单通道'), { dataTransfer: taskTransfer })
+    dropAt(originalPane, taskTransfer, 200, 200)
+    expect(await screen.findByRole('heading', { name: '关闭终端会话' })).toBeInTheDocument()
+
+    const currentPane = screen.getAllByTestId('workbench-pane').find((pane) => pane.textContent?.includes('bash'))!
+    const header = currentPane.querySelector('[draggable="true"]')!
+    const tabValues = new Map<string, string>()
+    const tabTransfer = {
+      types: [] as string[],
+      setData: (type: string, value: string) => { tabValues.set(type, value); if (!tabTransfer.types.includes(type)) tabTransfer.types.push(type) },
+      getData: (type: string) => tabValues.get(type) ?? '', effectAllowed: '', dropEffect: '',
+    }
+    fireEvent(header, createEvent.dragStart(header, { dataTransfer: tabTransfer as unknown as DataTransfer }))
+    panes = screen.getAllByTestId('workbench-pane')
+    const liveBlankPane = panes.find((pane) => pane !== currentPane && !pane.textContent?.includes('bash'))!
+    setPaneRect(liveBlankPane)
+    dropAt(liveBlankPane, tabTransfer, 200, 200)
+    fireEvent.click(screen.getByRole('button', { name: '关闭并终止' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('没有结束终端')
+    expect(deletePtySession).not.toHaveBeenCalled()
+    expect(screen.getAllByTestId('workbench-pane').some((pane) => pane.textContent?.includes('bash'))).toBe(true)
+  })
+})
+
 describe('顶部标签关闭终端组', () => {
   it('纯干净文件组无需确认即可关闭', async () => {
     renderShell()

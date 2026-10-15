@@ -2,13 +2,13 @@
 //
 // 职责：顶部标签栏（TabBar）、每列最多两格的 pane，以及 task/dir/tab 的 MIME 投放。
 // 边界：内容由 renderContent 注入；布局迁移交给 WorkbenchApi/tabs.ts；不按 BaseDir 切换布局。
-import { Fragment, useEffect, useState, type ReactNode } from 'react'
+import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react'
 import { BlankTab, type PickKind } from './BlankTab'
 import { GroupDivider } from './GroupDivider'
 import { TabBar } from './TabBar'
 import { TaskPickerDialog } from './TaskPickerDialog'
 import { DRAG_BASE_MIME, DRAG_DIR_MIME, DRAG_SESSION_MIME, DRAG_TAB_MIME, DRAG_TASK_MIME, dropZoneAt, readDragBase, readDragSession, readDragTab, type DropZone } from './paneDrop'
-import { MAX_PANES_PER_COLUMN, MIN_PANE_PX, nextTerminalSeq, spawnTerminalContent, tabTitle, type BaseDir, type PaneTarget, type Tab, type TabContent } from './tabs'
+import { MAX_PANES_PER_COLUMN, MIN_PANE_PX, nextTerminalSeq, placeSource, spawnTerminalContent, tabTitle, type BaseDir, type PaneTarget, type Tab, type TabContent } from './tabs'
 import type { Launcher, ProjectTreeResp, Task } from '../../api/types'
 import type { WorkbenchApi } from './useWorkbench'
 import { sessionBase } from './useWorkbench'
@@ -18,12 +18,25 @@ import { openSessionDetail } from '../rooms/sessionDetailOpener'
 import { cn } from '@/lib/utils'
 import './desktop-workspace.css'
 
+/** Shell confirmation boundary for a drop whose pure layout projection removes an occupied tab. */
+export interface WorkbenchReplacementRequest {
+  target: Tab
+  source: Tab | null
+  targetLocation: { groupId: string; column: number; row: number }
+  sourceLocation: { groupId: string; column: number; row: number } | null
+  /** Recheck tab identity, position, and content immediately before applying. */
+  isCurrent: () => boolean
+  /** Replay the same logical placement against the current WorkbenchApi. */
+  apply: () => void
+}
+
 export interface WorkbenchPageProps {
   api: WorkbenchApi
   onAddProject: () => void
   renderContent: (content: TabContent, base: BaseDir, groupId: string, tabId: string, active?: boolean) => ReactNode
   terminalUnavailable?: string
   onBeforeClose?: (content: TabContent, tabId: string, base: BaseDir) => boolean
+  onBeforeReplace?: (request: WorkbenchReplacementRequest) => void
   onCloseGroup?: (groupId: string) => void
   tree: ProjectTreeResp | null
   tasks: Task[]
@@ -64,10 +77,14 @@ function tabCount(group: { columns: Array<{ panes: Array<Tab | null> }> }): numb
 }
 
 export function WorkbenchPage({
-  api, onAddProject, renderContent, terminalUnavailable, onBeforeClose, onCloseGroup, tree, tasks, onFileCreated, launchers = [], taskName, singleFocus = false, sessionRoom = false, filePreviewHeader, restoring = false,
+  api, onAddProject, renderContent, terminalUnavailable, onBeforeClose, onBeforeReplace, onCloseGroup, tree, tasks, onFileCreated, launchers = [], taskName, singleFocus = false, sessionRoom = false, filePreviewHeader, restoring = false,
 }: WorkbenchPageProps) {
   const filePreview = Boolean(filePreviewHeader)
   const { wb, base } = api
+  const wbRef = useRef(wb)
+  const apiRef = useRef(api)
+  wbRef.current = wb
+  apiRef.current = api
   const activeGroup = wb.groups.find((group) => group.id === wb.activeGroupId) ?? wb.groups[0]
   const [picking, setPicking] = useState<{ groupId: string; tabId: string | null } | null>(null)
   const [newFileError, setNewFileError] = useState('')
@@ -94,6 +111,65 @@ export function WorkbenchPage({
       window.removeEventListener('drop', reset)
     }
   }, [])
+
+  // Route every drag placement through one replacement gate. Layout remains a pure
+  // projection; Shell owns confirmation and ending server sessions.
+  const placeWithReplacementGuard = (source: Parameters<typeof api.place>[0], target: PaneTarget) => {
+    const current = wbRef.current
+    const location = (tabId: string) => {
+      for (const group of current.groups) for (let column = 0; column < group.columns.length; column++) {
+        for (let row = 0; row < group.columns[column].panes.length; row++) {
+          if (group.columns[column].panes[row]?.id === tabId) return { groupId: group.id, column, row }
+        }
+      }
+      return null
+    }
+    const sourceTab = source.kind === 'tab' ? current.groups.flatMap((group) => group.columns.flatMap((column) => column.panes)).find((tab) => tab?.id === source.tabId) ?? null : null
+    const sourceLocation = sourceTab ? location(sourceTab.id) : null
+    const column = current.groups.find((group) => group.id === target.groupId)?.columns[target.column]
+    const candidate = column?.panes[target.row] ?? null
+    // Reuse the layout's projection to identify the tab it will actually remove,
+    // including source removal and full-column top/bottom fallback.
+    const projected = placeSource(current, source, target)
+    const targetRemains = candidate && projected.groups.some((group) => group.columns.some((candidateColumn) => candidateColumn.panes.some((tab) => tab?.id === candidate.id)))
+    const targetTab = candidate && !targetRemains ? candidate : null
+    if (!targetTab || targetTab.id === sourceTab?.id || !onBeforeReplace) {
+      apiRef.current.place(source, target)
+      return
+    }
+    const targetLocation = { groupId: target.groupId, column: target.column, row: target.row }
+    const contentKey = (tab: Tab) => `${tab.base.key}\u0000${tab.base.machine}\u0000${JSON.stringify(tab.content)}`
+    const targetKey = contentKey(targetTab)
+    const sourceKey = sourceTab ? contentKey(sourceTab) : ''
+    const sourceSessionId = source.kind === 'new' && source.content.kind === 'session' ? source.content.sessionId : ''
+    const isCurrent = () => {
+      const liveLocation = (tabId: string) => {
+        for (const group of wbRef.current.groups) for (let c = 0; c < group.columns.length; c++) for (let r = 0; r < group.columns[c].panes.length; r++) {
+          if (group.columns[c].panes[r]?.id === tabId) return { groupId: group.id, column: c, row: r }
+        }
+        return null
+      }
+      const sameLocation = (a: typeof targetLocation | null, b: typeof targetLocation | null) => Boolean(a && b && a.groupId === b.groupId && a.column === b.column && a.row === b.row)
+      const liveTargetLocation = liveLocation(targetTab.id)
+      const liveTarget = liveTargetLocation && wbRef.current.groups.find((group) => group.id === liveTargetLocation.groupId)?.columns[liveTargetLocation.column].panes[liveTargetLocation.row]
+      if (!sameLocation(liveTargetLocation, targetLocation) || !liveTarget || contentKey(liveTarget) !== targetKey) return false
+      if (sourceTab) {
+        const liveSourceLocation = liveLocation(sourceTab.id)
+        const liveSource = liveSourceLocation && wbRef.current.groups.find((group) => group.id === liveSourceLocation.groupId)?.columns[liveSourceLocation.column].panes[liveSourceLocation.row]
+        if (!sameLocation(liveSourceLocation, sourceLocation) || !liveSource || contentKey(liveSource) !== sourceKey) return false
+      }
+      if (sourceSessionId && wbRef.current.groups.some((group) => group.columns.some((candidateColumn) => candidateColumn.panes.some((tab) => tab?.content.kind === 'session' && tab.content.sessionId === sourceSessionId)))) return false
+      return true
+    }
+    console.info('workbench.drop.replace.request', {
+      targetTabId: targetTab.id, sourceTabId: sourceTab?.id ?? '', targetLocation,
+      sourceLocation, zone: target.zone, kind: targetTab.content.kind,
+      sourceMachine: sourceTab?.base.machine ?? '',
+      sessionId: targetTab.content.kind === 'terminal' ? targetTab.content.sessionId ?? '' : '',
+      machine: targetTab.base.machine,
+    })
+    onBeforeReplace({ target: targetTab, source: sourceTab, targetLocation, sourceLocation, isCurrent, apply: () => apiRef.current.place(source, target) })
+  }
 
   const dropContext = (source: BaseDir | null | undefined = base) => ({
     project: source?.projectName ?? '',
@@ -192,7 +268,7 @@ export function WorkbenchPage({
         const target: PaneTarget = emptyAt
           ? { groupId, column: emptyAt.column, row: emptyAt.row, zone: 'center' }
           : { groupId, column: (targetGroup?.columns.length ?? 1) - 1, row: 0, zone: 'right' }
-        api.place({ kind: 'tab', ...existing }, target)
+        placeWithReplacementGuard({ kind: 'tab', ...existing }, target)
       }
       console.debug('workbench.drop.session_group_dedup', { sessionId: source.sessionId, groupId })
       return
@@ -233,12 +309,12 @@ export function WorkbenchPage({
       if (existing !== null) {
         // 已开在本组只激活；开在别的组整支移动过去（一会话一 tab，不复制）。
         if (existing.groupId === groupId) api.activate(groupId, existing.tabId)
-        else api.place({ kind: 'tab', ...existing }, target)
+        else placeWithReplacementGuard({ kind: 'tab', ...existing }, target)
         console.debug('workbench.drop.session_dedup', { sessionId: source.sessionId, groupId, column, row, zone: target.zone })
         return
       }
       const content: TabContent = { kind: 'session', sessionId: source.sessionId, title: source.title }
-      api.place({ kind: 'new', base: sessionBase(source.sessionId), content }, target)
+      placeWithReplacementGuard({ kind: 'new', base: sessionBase(source.sessionId), content }, target)
       console.debug('workbench.drop.session', { sessionId: source.sessionId, groupId, column, row, zone: target.zone })
       return
     }
@@ -250,7 +326,7 @@ export function WorkbenchPage({
         })
         return
       }
-      api.place({ kind: 'tab', ...source }, target)
+      placeWithReplacementGuard({ kind: 'tab', ...source }, target)
       console.debug('workbench.drop.tab', { groupId, column, row, zone: target.zone, tabId: source.tabId })
       return
     }
@@ -284,7 +360,7 @@ export function WorkbenchPage({
     const content: TabContent = types.includes(DRAG_TASK_MIME)
       ? { kind: 'tui', taskId }
       : spawnTerminalContent(nextTerminalSeq(wb))
-    api.place({ kind: 'new', base: draggedBase, content }, target)
+    placeWithReplacementGuard({ kind: 'new', base: draggedBase, content }, target)
     console.debug('workbench.drop.new', {
       ...dropContext(draggedBase), groupId, column, row, zone: target.zone, baseKey: draggedBase.key,
     })
@@ -303,7 +379,7 @@ export function WorkbenchPage({
     if (!source) return
     const column = zone === 'left' ? 0 : zone === 'right' ? targetGroup.columns.length - 1 : targetGroup.focus[0]
     const target: PaneTarget = { groupId: targetGroupId, column, row: targetGroup.focus[1], zone }
-    api.place({ kind: 'tab', groupId: sourceGroupId, tabId: source.id }, target)
+    placeWithReplacementGuard({ kind: 'tab', groupId: sourceGroupId, tabId: source.id }, target)
     console.debug('workbench.drop.group', { groupId: targetGroupId, tabId: source.id, zone })
   }
 
