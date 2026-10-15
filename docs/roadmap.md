@@ -974,4 +974,4 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 
 ## 来自 2026-10-15 拖拽覆盖终端修复
 
-- 已部署本机并完成真实浏览器拖拽点验：实际覆盖先确认，取消后清单及原PID不变，确认后旧会话与PID消失、新终端显示；本轮测试终端已清理，原有3会话全部保留。源码保护失败/取消和确认期间源或目标变化；普通分屏、空格、自身投放不误触资源释放。全 Web 144文件/1877项、构建与承重变异通过。SuperDev接口不可达，核验实际服务为既有launchd托管后沿受管链更新。尚未逐一运行原生桌面/手机拖放与各machine/content/位置变化组合；实际覆盖以 `docs/superpowers/ledgers/2026-10-15-terminal-drop-replace.ledger` 与独立review为准。代码图本视图check/独立validate通过；全仓validate的既有 `diffs/cards` 子目录问题仍在。
+- 已部署本机并完成真实浏览器拖拽点验：实际覆盖先确认，取消后清单及原PID不变，确认后旧会话与PID消失、新终端显示；本轮测试终端已清理，原有3会话全部保留。源码保护失败/取消和确认期间源或目标变化；普通分屏、空格、自身投放不误触资源释放。全 Web 144文件/1877项、构建与承重变异通过。SuperDev接口不可达，核验实际服务为既有launchd托管后沿受管链更新。尚未逐一运行原生桌面/手机拖放与各machine/content/位置变化组合；实际覆盖以 `docs/superpowers/ledgers/2026-10-15-terminal-drop-replace.ledger` 与独立review为准。代码图已回灌基线，check/独立validate通过；全仓validate的既有 `diffs/cards` 子目录问题仍在。

@@ -28,4 +28,4 @@ WorkbenchPage.placeFromDrop/moveGroup 直接 api.place → useWorkbench.place �
 
 ## 本轮交付记录
 
-gpt-6-luna 实现完成；独立审查 R1/R2 核销，来源身份测试缺口经补测和同一可编译变异核销。协调者最终原版全Web 144文件/1877项通过，build/lint通过；真实PTY host的detach保活与kill清理测试通过。源码与自动化阶段通过，未部署或操作客户端，尚不称真实UI到后台资源结束的整链验收；部署/设备点验与全仓图历史问题已落roadmap。
+gpt-6-luna 实现完成；独立审查 R1/R2 核销，来源身份测试缺口经补测和同一可编译变异核销。协调者最终原版全Web 144文件/1877项通过，build/lint通过；真实PTY host的detach保活与kill清理测试通过。源码、自动化及本机浏览器到真实PTY结束的整链已验证，部署时取消保留原PID、确认后旧PID结束且新终端显示；未逐项运行原生/手机拖放及全部字段变化组合，边界和全仓图历史问题已落roadmap。用户后续授权主线合并推送，具体收尾证据见ledger。
