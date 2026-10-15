@@ -1,0 +1,737 @@
+{
+  "view": "terminal-drop-replace",
+  "base": "c34cad96ac4e001d051001869a560eca55816bb7",
+  "summary": "拖放实际替换复用Shell确认与资源结束，保留失败或已变化内容；纯布局和普通卸载继续保活。",
+  "nodesAdded": {
+    "m_web_app_workbench_WorkbenchReplacementRequest": {
+      "kind": "model",
+      "container": "k_web_app_workbench_model",
+      "name": "WorkbenchReplacementRequest",
+      "file": "web/src/app/workbench/WorkbenchPage.tsx",
+      "line": 22,
+      "signature": "export interface WorkbenchReplacementRequest {",
+      "summary": "Shell confirmation boundary for a drop whose pure layout projection removes an occupied tab.",
+      "modelKind": "dto",
+      "fields": [
+        [
+          "target",
+          "Tab",
+          ""
+        ],
+        [
+          "source",
+          "Tab | null",
+          ""
+        ],
+        [
+          "targetLocation",
+          "{ groupId: string; column: number; row: number }",
+          ""
+        ],
+        [
+          "sourceLocation",
+          "{ groupId: string; column: number; row: number } | null",
+          ""
+        ],
+        [
+          "isCurrent",
+          "() => boolean",
+          ""
+        ],
+        [
+          "apply",
+          "() => void",
+          ""
+        ]
+      ]
+    },
+    "n_web_app_shell_beforeReplaceTab": {
+      "kind": "func",
+      "container": "k_web_app_shell",
+      "name": "beforeReplaceTab",
+      "file": "web/src/app/shell/Shell.tsx",
+      "line": 719,
+      "signature": "const beforeReplaceTab = (request: WorkbenchReplacementRequest) => {"
+    },
+    "n_web_app_workbench_placeWithReplacementGuard": {
+      "kind": "func",
+      "container": "k_web_app_workbench",
+      "name": "placeWithReplacementGuard",
+      "file": "web/src/app/workbench/WorkbenchPage.tsx",
+      "line": 117,
+      "signature": "const placeWithReplacementGuard = (source: Parameters<typeof api.place>[0], target: PaneTarget) => {",
+      "summary": "Route every drag placement through one replacement gate. Layout remains a pure\nprojection; Shell owns confirmation and ending server sessions."
+    },
+    "n_web_app_workbench_location": {
+      "kind": "func",
+      "container": "k_web_app_workbench",
+      "name": "location",
+      "file": "web/src/app/workbench/WorkbenchPage.tsx",
+      "line": 119,
+      "signature": "const location = (tabId: string) => {"
+    },
+    "n_web_app_workbench_contentKey": {
+      "kind": "func",
+      "container": "k_web_app_workbench",
+      "name": "contentKey",
+      "file": "web/src/app/workbench/WorkbenchPage.tsx",
+      "line": 141,
+      "signature": "const contentKey = (tab: Tab) => `${tab.base.key}\\u0000${tab.base.machine}\\u0000${JSON.stringify(tab.content)}`"
+    },
+    "n_web_app_workbench_isCurrent": {
+      "kind": "func",
+      "container": "k_web_app_workbench",
+      "name": "isCurrent",
+      "file": "web/src/app/workbench/WorkbenchPage.tsx",
+      "line": 145,
+      "signature": "const isCurrent = () => {"
+    },
+    "n_web_app_workbench_liveLocation": {
+      "kind": "func",
+      "container": "k_web_app_workbench",
+      "name": "liveLocation",
+      "file": "web/src/app/workbench/WorkbenchPage.tsx",
+      "line": 146,
+      "signature": "const liveLocation = (tabId: string) => {"
+    },
+    "n_web_app_workbench_sameLocation": {
+      "kind": "func",
+      "container": "k_web_app_workbench",
+      "name": "sameLocation",
+      "file": "web/src/app/workbench/WorkbenchPage.tsx",
+      "line": 152,
+      "signature": "const sameLocation = (a: typeof targetLocation | null, b: typeof targetLocation | null) => Boolean(a && b && a.groupId === b.groupId && a.column === b.column && a.row === b.row)"
+    },
+    "n_web_app_workbench_findSessionTab": {
+      "kind": "func",
+      "container": "k_web_app_workbench",
+      "name": "findSessionTab",
+      "file": "web/src/app/workbench/WorkbenchPage.tsx",
+      "line": 243,
+      "signature": "const findSessionTab = (sessionId: string): { groupId: string; tabId: string } | null => {"
+    },
+    "n_web_app_workbench_dropSessionIntoGroup": {
+      "kind": "func",
+      "container": "k_web_app_workbench",
+      "name": "dropSessionIntoGroup",
+      "file": "web/src/app/workbench/WorkbenchPage.tsx",
+      "line": 258,
+      "signature": "const dropSessionIntoGroup = (source: { sessionId: string; title: string }, groupId: string) => {"
+    }
+  },
+  "nodesModified": {
+    "m_web_app_shell_GroupCloseItem": {
+      "kind": "model",
+      "container": "k_web_app_shell_model",
+      "name": "GroupCloseItem",
+      "file": "web/src/app/shell/Shell.tsx",
+      "line": 413,
+      "signature": "type GroupCloseItem = {",
+      "summary": "A group confirmation holds one immutable layout snapshot. Only failed terminal\nentries are retained for retry; the whole snapshot is never widened on re-render.",
+      "fields": [
+        [
+          "tabId",
+          "string",
+          ""
+        ],
+        [
+          "baseKey",
+          "string",
+          ""
+        ],
+        [
+          "machine",
+          "string",
+          ""
+        ],
+        [
+          "kind",
+          "TabContent['kind']",
+          ""
+        ],
+        [
+          "resourceId",
+          "string",
+          ""
+        ],
+        [
+          "draft",
+          "string | undefined",
+          ""
+        ],
+        [
+          "sessionId",
+          "string | undefined",
+          ""
+        ]
+      ],
+      "modelKind": "dto"
+    },
+    "m_web_app_shell_GroupCloseSnapshot": {
+      "kind": "model",
+      "container": "k_web_app_shell_model",
+      "name": "GroupCloseSnapshot",
+      "file": "web/src/app/shell/Shell.tsx",
+      "line": 422,
+      "signature": "type GroupCloseSnapshot = { groupId: string; items: GroupCloseItem[]; terminalCount: number; dirtyFiles: string[] }",
+      "fields": [
+        [
+          "groupId",
+          "string",
+          ""
+        ],
+        [
+          "items",
+          "GroupCloseItem[]",
+          ""
+        ],
+        [
+          "terminalCount",
+          "number",
+          ""
+        ],
+        [
+          "dirtyFiles",
+          "string[]",
+          ""
+        ]
+      ],
+      "modelKind": "dto"
+    },
+    "m_web_app_shell_OverlayKind": {
+      "kind": "model",
+      "container": "k_web_app_shell_model",
+      "order": 3,
+      "name": "OverlayKind",
+      "file": "web/src/app/shell/Shell.tsx",
+      "line": 88,
+      "signature": "type OverlayKind = 'none' | 'board' | 'tickets'",
+      "modelKind": "dto"
+    },
+    "m_web_app_workbench_DragOver": {
+      "kind": "model",
+      "container": "k_web_app_workbench_model",
+      "order": 11,
+      "name": "DragOver",
+      "file": "web/src/app/workbench/WorkbenchPage.tsx",
+      "line": 68,
+      "signature": "type DragOver = {",
+      "modelKind": "dto"
+    },
+    "m_web_app_workbench_WorkbenchPageProps": {
+      "kind": "model",
+      "container": "k_web_app_workbench_model",
+      "order": 10,
+      "name": "WorkbenchPageProps",
+      "file": "web/src/app/workbench/WorkbenchPage.tsx",
+      "line": 33,
+      "signature": "export interface WorkbenchPageProps {",
+      "fields": [
+        [
+          "api",
+          "WorkbenchApi",
+          ""
+        ],
+        [
+          "onAddProject",
+          "() => void",
+          ""
+        ],
+        [
+          "renderContent",
+          "(content: TabContent, base: BaseDir, groupId: string, tabId: string, active?: boolean) => ReactNode",
+          ""
+        ],
+        [
+          "terminalUnavailable",
+          "string | undefined",
+          ""
+        ],
+        [
+          "onBeforeClose",
+          "(content: TabContent, tabId: string, base: BaseDir) => boolean | undefined",
+          ""
+        ],
+        [
+          "onCloseGroup",
+          "(groupId: string) => void | undefined",
+          ""
+        ],
+        [
+          "tree",
+          "ProjectTreeResp | null",
+          ""
+        ],
+        [
+          "tasks",
+          "Task[]",
+          ""
+        ],
+        [
+          "onFileCreated",
+          "() => void | undefined",
+          ""
+        ],
+        [
+          "launchers",
+          "Launcher[] | undefined",
+          ""
+        ],
+        [
+          "taskName",
+          "(taskId: string) => string | undefined | undefined",
+          ""
+        ],
+        [
+          "singleFocus",
+          "boolean | undefined",
+          ""
+        ],
+        [
+          "sessionRoom",
+          "boolean | undefined",
+          ""
+        ],
+        [
+          "filePreviewHeader",
+          "ReactNode | undefined",
+          ""
+        ],
+        [
+          "restoring",
+          "boolean | undefined",
+          ""
+        ],
+        [
+          "onBeforeReplace",
+          "(request: WorkbenchReplacementRequest) => void",
+          ""
+        ]
+      ],
+      "modelKind": "dto"
+    },
+    "n_web_app_shell_FullPageCover": {
+      "kind": "func",
+      "container": "k_web_app_shell",
+      "order": 33,
+      "name": "FullPageCover",
+      "file": "web/src/app/shell/Shell.tsx",
+      "line": 2028,
+      "signature": "function FullPageCover("
+    },
+    "n_web_app_shell_TaskDeepLink": {
+      "kind": "func",
+      "container": "k_web_app_shell",
+      "order": 34,
+      "name": "TaskDeepLink",
+      "file": "web/src/app/shell/Shell.tsx",
+      "line": 2042,
+      "signature": "function TaskDeepLink("
+    },
+    "n_web_app_shell_backToWorkbench": {
+      "kind": "func",
+      "container": "k_web_app_shell",
+      "order": 24,
+      "name": "backToWorkbench",
+      "file": "web/src/app/shell/Shell.tsx",
+      "line": 825,
+      "signature": "const backToWorkbench = () =>"
+    },
+    "n_web_app_shell_beforeCloseTab": {
+      "kind": "func",
+      "container": "k_web_app_shell",
+      "order": 17,
+      "name": "beforeCloseTab",
+      "file": "web/src/app/shell/Shell.tsx",
+      "line": 450,
+      "signature": "const beforeCloseTab = (c: TabContent, tabId: string, tabBase: BaseDir): boolean =>",
+      "summary": "beforeCloseTab 拦下带会话的终端 tab：关它等于终止会话，必须先确认。\n\n与 spec §6.2 的一处收紧（有意为之）：spec 只要求「有前台进程」才确认，\n这里只要是带会话的终端 tab 就弹。关闭即终止是不可逆操作，而「有没有前台\n进程」这个判据在用户点下 × 的那一瞬间可能刚好过期——宁可多问一句，也不\n静默杀掉跑了整个晚上的 build（这正是本设计不做空闲回收的同一条理由）。"
+    },
+    "n_web_app_shell_closeOpenItem": {
+      "kind": "func",
+      "container": "k_web_app_shell",
+      "order": 27,
+      "name": "closeOpenItem",
+      "file": "web/src/app/shell/Shell.tsx",
+      "line": 934,
+      "signature": "const closeOpenItem = (item: OpenItem) =>"
+    },
+    "n_web_app_shell_closeWorkbenchGroup": {
+      "kind": "func",
+      "container": "k_web_app_shell",
+      "name": "closeWorkbenchGroup",
+      "file": "web/src/app/shell/Shell.tsx",
+      "line": 481,
+      "signature": "const closeWorkbenchGroup = (groupId: string) =>"
+    },
+    "n_web_app_shell_confirmCloseGroup": {
+      "kind": "func",
+      "container": "k_web_app_shell",
+      "name": "confirmCloseGroup",
+      "file": "web/src/app/shell/Shell.tsx",
+      "line": 576,
+      "signature": "const confirmCloseGroup = async () =>"
+    },
+    "n_web_app_shell_confirmCloseHome": {
+      "kind": "func",
+      "container": "k_web_app_shell",
+      "order": 20,
+      "name": "confirmCloseHome",
+      "file": "web/src/app/shell/Shell.tsx",
+      "line": 755,
+      "signature": "const confirmCloseHome = async () =>"
+    },
+    "n_web_app_shell_confirmClosePty": {
+      "kind": "func",
+      "container": "k_web_app_shell",
+      "order": 19,
+      "name": "confirmClosePty",
+      "file": "web/src/app/shell/Shell.tsx",
+      "line": 656,
+      "signature": "const confirmClosePty = async () =>"
+    },
+    "n_web_app_shell_coordinatorBase": {
+      "kind": "func",
+      "container": "k_web_app_shell",
+      "order": 12,
+      "name": "coordinatorBase",
+      "file": "web/src/app/shell/Shell.tsx",
+      "line": 92,
+      "signature": "export function coordinatorBase(tree: ProjectTreeResp | null, info: CoordinatorAttachInfo): BaseDir"
+    },
+    "n_web_app_shell_focusedPaneBase": {
+      "kind": "func",
+      "container": "k_web_app_shell",
+      "order": 13,
+      "name": "focusedPaneBase",
+      "file": "web/src/app/shell/Shell.tsx",
+      "line": 130,
+      "signature": "function focusedPaneBase(workbench: Workbench): BaseDir | null"
+    },
+    "n_web_app_shell_focusedTabOf": {
+      "kind": "func",
+      "container": "k_web_app_shell",
+      "order": 14,
+      "name": "focusedTabOf",
+      "file": "web/src/app/shell/Shell.tsx",
+      "line": 139,
+      "signature": "function focusedTabOf(workbench: Workbench): Tab | null"
+    },
+    "n_web_app_shell_groupTabs": {
+      "kind": "func",
+      "container": "k_web_app_shell",
+      "name": "groupTabs",
+      "file": "web/src/app/shell/Shell.tsx",
+      "line": 583,
+      "signature": "const groupTabs = () =>"
+    },
+    "n_web_app_shell_killHomeSession": {
+      "kind": "func",
+      "container": "k_web_app_shell",
+      "order": 21,
+      "name": "killHomeSession",
+      "file": "web/src/app/shell/Shell.tsx",
+      "line": 771,
+      "signature": "const killHomeSession = (id: string) =>"
+    },
+    "n_web_app_shell_killPtySession": {
+      "kind": "func",
+      "container": "k_web_app_shell",
+      "name": "killPtySession",
+      "file": "web/src/app/shell/Shell.tsx",
+      "line": 549,
+      "signature": "const killPtySession = async (\n    sessionId: string,\n    machine: string | undefined,\n    onError: (msg: string) => void,\n  ): Promise<boolean> =>",
+      "summary": "killPtySession 删一个服务端终端会话，失败时把原文交给 onError 呈现。\n中央 tab 的确认关闭与浮窗 tab 的 × 共用：两处都不许吞错误——点了 × 以为\n会话关了，服务端却还留着一个 shell。返回是否删成功"
+    },
+    "n_web_app_shell_matches": {
+      "kind": "func",
+      "container": "k_web_app_shell",
+      "name": "matches",
+      "file": "web/src/app/shell/Shell.tsx",
+      "line": 591,
+      "signature": "const matches = (item: GroupCloseItem, tab: Tab | null | undefined): tab is Tab =>"
+    },
+    "n_web_app_shell_newScratchFile": {
+      "kind": "func",
+      "container": "k_web_app_shell",
+      "order": 22,
+      "name": "newScratchFile",
+      "file": "web/src/app/shell/Shell.tsx",
+      "line": 803,
+      "signature": "const newScratchFile = () =>"
+    },
+    "n_web_app_shell_onUnregister": {
+      "kind": "func",
+      "container": "k_web_app_shell",
+      "order": 23,
+      "name": "onUnregister",
+      "file": "web/src/app/shell/Shell.tsx",
+      "line": 811,
+      "signature": "const onUnregister = async (name: string, machine: string) =>"
+    },
+    "n_web_app_shell_openDirectory": {
+      "kind": "func",
+      "container": "k_web_app_shell",
+      "order": 25,
+      "name": "openDirectory",
+      "file": "web/src/app/shell/Shell.tsx",
+      "line": 910,
+      "signature": "const openDirectory = (base: BaseDir) =>"
+    },
+    "n_web_app_shell_openProjectCards": {
+      "kind": "func",
+      "container": "k_web_app_shell",
+      "order": 31,
+      "name": "openProjectCards",
+      "file": "web/src/app/shell/Shell.tsx",
+      "line": 1030,
+      "signature": "const openProjectCards = (project: ProjectNode) =>"
+    },
+    "n_web_app_shell_openProjectCodegraph": {
+      "kind": "func",
+      "container": "k_web_app_shell",
+      "order": 32,
+      "name": "openProjectCodegraph",
+      "file": "web/src/app/shell/Shell.tsx",
+      "line": 1036,
+      "signature": "const openProjectCodegraph = (project: ProjectNode) =>"
+    },
+    "n_web_app_shell_openTaskTui": {
+      "kind": "func",
+      "container": "k_web_app_shell",
+      "order": 29,
+      "name": "openTaskTui",
+      "file": "web/src/app/shell/Shell.tsx",
+      "line": 962,
+      "signature": "const openTaskTui = (base: BaseDir | null, taskId: string) =>"
+    },
+    "n_web_app_shell_openTerminalAt": {
+      "kind": "func",
+      "container": "k_web_app_shell",
+      "order": 28,
+      "name": "openTerminalAt",
+      "file": "web/src/app/shell/Shell.tsx",
+      "line": 945,
+      "signature": "const openTerminalAt = (base: BaseDir) =>"
+    },
+    "n_web_app_shell_openWorkbenchItem": {
+      "kind": "func",
+      "container": "k_web_app_shell",
+      "order": 26,
+      "name": "openWorkbenchItem",
+      "file": "web/src/app/shell/Shell.tsx",
+      "line": 921,
+      "signature": "const openWorkbenchItem = (item: OpenItem) =>"
+    },
+    "n_web_app_shell_probeClosingSession": {
+      "kind": "func",
+      "container": "k_web_app_shell",
+      "order": 18,
+      "name": "probeClosingSession",
+      "file": "web/src/app/shell/Shell.tsx",
+      "line": 531,
+      "signature": "const probeClosingSession = (sessionId: string) =>"
+    },
+    "n_web_app_shell_ptyNote": {
+      "kind": "func",
+      "container": "k_web_app_shell",
+      "order": 16,
+      "name": "ptyNote",
+      "file": "web/src/app/shell/Shell.tsx",
+      "line": 433,
+      "signature": "const ptyNote = (machine: string): string =>"
+    },
+    "n_web_app_shell_resourceId": {
+      "kind": "func",
+      "container": "k_web_app_shell",
+      "name": "resourceId",
+      "file": "web/src/app/shell/Shell.tsx",
+      "line": 586,
+      "signature": "const resourceId = (tab: Tab): string =>"
+    },
+    "n_web_app_shell_selectProject": {
+      "kind": "func",
+      "container": "k_web_app_shell",
+      "order": 30,
+      "name": "selectProject",
+      "file": "web/src/app/shell/Shell.tsx",
+      "line": 1020,
+      "signature": "const selectProject = (project: ProjectNode) =>"
+    },
+    "n_web_app_shell_setGroupCloseSnapshot": {
+      "kind": "func",
+      "container": "k_web_app_shell",
+      "name": "setGroupCloseSnapshot",
+      "file": "web/src/app/shell/Shell.tsx",
+      "line": 427,
+      "signature": "const setGroupCloseSnapshot = (snapshot: GroupCloseSnapshot | null) =>"
+    },
+    "n_web_app_workbench_WorkbenchPage": {
+      "kind": "func",
+      "container": "k_web_app_workbench",
+      "order": 52,
+      "name": "WorkbenchPage",
+      "file": "web/src/app/workbench/WorkbenchPage.tsx",
+      "line": 79,
+      "signature": "export function WorkbenchPage({\napi, onAddProject, renderContent, terminalUnavailable, onBeforeClose, onBeforeReplace, onCloseGroup, tree, tasks, onFileCreated, launchers = [], taskName, singleFocus = false, sessionRoom = false, filePreviewHeader, restoring = false,\n}: WorkbenchPageProps)"
+    },
+    "n_web_app_workbench_closeTab": {
+      "kind": "func",
+      "container": "k_web_app_workbench",
+      "order": 59,
+      "name": "closeTab",
+      "file": "web/src/app/workbench/WorkbenchPage.tsx",
+      "line": 215,
+      "signature": "const closeTab = (groupId: string, tab: Tab) =>"
+    },
+    "n_web_app_workbench_dropContext": {
+      "kind": "func",
+      "container": "k_web_app_workbench",
+      "order": 55,
+      "name": "dropContext",
+      "file": "web/src/app/workbench/WorkbenchPage.tsx",
+      "line": 174,
+      "signature": "const dropContext = (source: BaseDir | null | undefined = base) => ("
+    },
+    "n_web_app_workbench_moveGroup": {
+      "kind": "func",
+      "container": "k_web_app_workbench",
+      "order": 61,
+      "name": "moveGroup",
+      "file": "web/src/app/workbench/WorkbenchPage.tsx",
+      "line": 371,
+      "signature": "const moveGroup = (sourceGroupId: string, targetGroupId: string, zone: 'left' | 'right' | 'center') =>"
+    },
+    "n_web_app_workbench_onDragStart": {
+      "kind": "func",
+      "container": "k_web_app_workbench",
+      "order": 53,
+      "name": "onDragStart",
+      "file": "web/src/app/workbench/WorkbenchPage.tsx",
+      "line": 101,
+      "signature": "const onDragStart = (event: DragEvent) =>"
+    },
+    "n_web_app_workbench_openLauncher": {
+      "kind": "func",
+      "container": "k_web_app_workbench",
+      "order": 58,
+      "name": "openLauncher",
+      "file": "web/src/app/workbench/WorkbenchPage.tsx",
+      "line": 211,
+      "signature": "const openLauncher = (groupId: string, name: string) =>"
+    },
+    "n_web_app_workbench_openNew": {
+      "kind": "func",
+      "container": "k_web_app_workbench",
+      "order": 57,
+      "name": "openNew",
+      "file": "web/src/app/workbench/WorkbenchPage.tsx",
+      "line": 196,
+      "signature": "const openNew = (groupId: string, kind: PickKind) =>"
+    },
+    "n_web_app_workbench_pickForTab": {
+      "kind": "func",
+      "container": "k_web_app_workbench",
+      "order": 56,
+      "name": "pickForTab",
+      "file": "web/src/app/workbench/WorkbenchPage.tsx",
+      "line": 182,
+      "signature": "const pickForTab = (groupId: string, tab: Tab, kind: PickKind) =>"
+    },
+    "n_web_app_workbench_placeFromDrop": {
+      "kind": "func",
+      "container": "k_web_app_workbench",
+      "order": 60,
+      "name": "placeFromDrop",
+      "file": "web/src/app/workbench/WorkbenchPage.tsx",
+      "line": 280,
+      "signature": "const placeFromDrop = (event: React.DragEvent<HTMLElement>, groupId: string, column: number, row: number) =>"
+    },
+    "n_web_app_workbench_renderGroup": {
+      "kind": "func",
+      "container": "k_web_app_workbench",
+      "order": 63,
+      "name": "renderGroup",
+      "file": "web/src/app/workbench/WorkbenchPage.tsx",
+      "line": 398,
+      "signature": "const renderGroup = (group: typeof activeGroup, visible: boolean) => ("
+    },
+    "n_web_app_workbench_renderTab": {
+      "kind": "func",
+      "container": "k_web_app_workbench",
+      "order": 62,
+      "name": "renderTab",
+      "file": "web/src/app/workbench/WorkbenchPage.tsx",
+      "line": 386,
+      "signature": "const renderTab = (groupId: string, column: number, row: number, tab: Tab | null) =>"
+    },
+    "n_web_app_workbench_reset": {
+      "kind": "func",
+      "container": "k_web_app_workbench",
+      "order": 54,
+      "name": "reset",
+      "file": "web/src/app/workbench/WorkbenchPage.tsx",
+      "line": 104,
+      "signature": "const reset = () => setDragging(false)"
+    },
+    "n_web_app_workbench_tabCount": {
+      "kind": "func",
+      "container": "k_web_app_workbench",
+      "order": 51,
+      "name": "tabCount",
+      "file": "web/src/app/workbench/WorkbenchPage.tsx",
+      "line": 75,
+      "signature": "function tabCount(group:"
+    }
+  },
+  "edgesAdded": [
+    [
+      "n_web_app_workbench_placeFromDrop",
+      "n_web_app_workbench_placeWithReplacementGuard"
+    ],
+    [
+      "n_web_app_workbench_moveGroup",
+      "n_web_app_workbench_placeWithReplacementGuard"
+    ],
+    [
+      "n_web_app_workbench_dropSessionIntoGroup",
+      "n_web_app_workbench_placeWithReplacementGuard"
+    ],
+    [
+      "n_web_app_workbench_dropSessionIntoGroup",
+      "n_web_app_workbench_findSessionTab"
+    ],
+    [
+      "n_web_app_workbench_placeFromDrop",
+      "n_web_app_workbench_findSessionTab"
+    ],
+    [
+      "n_web_app_workbench_placeWithReplacementGuard",
+      "n_web_app_workbench_placeSource"
+    ],
+    [
+      "n_web_app_workbench_placeWithReplacementGuard",
+      "n_web_app_workbench_location"
+    ],
+    [
+      "n_web_app_workbench_placeWithReplacementGuard",
+      "n_web_app_workbench_contentKey"
+    ],
+    [
+      "n_web_app_workbench_isCurrent",
+      "n_web_app_workbench_liveLocation"
+    ],
+    [
+      "n_web_app_workbench_isCurrent",
+      "n_web_app_workbench_sameLocation"
+    ],
+    [
+      "n_web_app_workbench_isCurrent",
+      "n_web_app_workbench_contentKey"
+    ],
+    [
+      "n_web_app_shell_beforeReplaceTab",
+      "n_web_app_shell_probeClosingSession"
+    ]
+  ]
+}
