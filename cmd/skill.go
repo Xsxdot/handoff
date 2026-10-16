@@ -11,6 +11,7 @@ package cmd
 
 import (
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 
@@ -39,6 +40,16 @@ func SetSkillContent(s string) { skillContent = s }
 // SetPluginContent 由 main 注入 OpenCode monitor 插件全文。
 func SetPluginContent(s string) { pluginContent = s }
 
+// claudeModFS 是 main 包注入的 Claude Code 唤醒 mod 文件树（根即插件目录，B434）。
+//
+// 为什么是 fs.FS 而不是字符串：mod 是三件一目录，安装要保住相对路径；
+// 为什么注入：go:embed 不能引用父目录，与 skillContent 同理。
+var claudeModFS fs.FS
+
+// SetClaudeModFS 由 main 注入内嵌的 Claude Code 唤醒 mod（契约 §3.13）。nil 表示构建漏了注入，
+// install 会如实报 skipped，不会装出半截 mod。
+func SetClaudeModFS(f fs.FS) { claudeModFS = f }
+
 func defaultSkillProviders(log *slog.Logger) []executor.Skills {
 	return []executor.Skills{
 		claudecode.New(log),
@@ -54,7 +65,8 @@ var skillCmd = &cobra.Command{
 	Short: "查看或安装给 AI 协调者的 handoff skill",
 	Long: "不带参数报告各落点是否与当前二进制内嵌的 skill 一致。\n" +
 		"skill install 把内嵌版本装到本机各家 agent（Claude Code / codex / opencode / grok），\n" +
-		"并在已装 OpenCode 时写入 monitor 插件。\n" +
+		"并在已装 OpenCode 时写入 monitor 插件；已装 Claude Code 时写入桌面端唤醒 mod\n" +
+		"（~/.handoff/claude-mods/handoff-desktop-wake，并登记到 ~/.claude/settings.json 的 CLAUDE_CODE_PLUGIN_DIRS）。\n" +
 		"安装与升级会自动调用它，正常不需要手工跑。",
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		home, err := os.UserHomeDir()
@@ -65,6 +77,7 @@ var skillCmd = &cobra.Command{
 		// 报告里如实点名，不让一处坏掉的落点吃掉整份报告
 		sites, _ := skill.Status(skillContent, home, defaultSkillProviders(slog.Default()))
 		sites = append(sites, skill.PluginStatus(pluginContent, home))
+		sites = append(sites, skill.ClaudeModStatus(claudeModFS, home))
 		out := cmd.OutOrStdout()
 		for _, s := range sites {
 			fmt.Fprintf(out, "%-8s %s%s\n", skillStateText(s.State), s.Path, noteSuffix(s))
@@ -93,6 +106,7 @@ var skillInstallCmd = &cobra.Command{
 			return err
 		}
 		sites = append(sites, skill.InstallPlugin(pluginContent, home))
+		sites = append(sites, skill.InstallClaudeMod(claudeModFS, home))
 		// 逐个落点数出结论：安装是个「部分成功」的操作，只把表打给人看，
 		// 事后排查（比如「为什么这台机器的 codex 没有 skill」）就没有任何痕迹
 		var installed, skipped int
