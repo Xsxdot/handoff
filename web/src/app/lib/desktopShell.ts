@@ -51,6 +51,12 @@ interface WebkitBridge {
 // RawMessageHandler。URL 作为同一条字符串的后缀传输，桌面侧再做同源校验。
 export const OPEN_BROWSER_MESSAGE_PREFIX = 'handoff:open-browser:'
 
+// OPEN_DEEPLINK_MESSAGE_PREFIX 是卡页「用 Claude Code 坐下」发给桌面宿主的深链请求前缀（B434）。
+// 承重：必须与 desktop/internal/shell/external_deeplink.go 的
+// ExternalDeepLinkMessagePrefix 逐字相等，两侧各有一支字面量测试。消息体 = 前缀 + 完整
+// claude:// URL；宿主只放行 claude://code/new 与 claude://code/continue。
+export const OPEN_DEEPLINK_MESSAGE_PREFIX = 'handoff:open-deeplink:'
+
 // NATIVE_CLIPBOARD_MESSAGE_PREFIX 是终端 OSC 52 交给桌面壳原生剪贴板的协议前缀。
 // 不使用 wails:：外链控制台没有 Wails 公开 runtime，且 wails: 会被内置窗口消息
 // 分发器截走。请求格式为「前缀 + requestId + ':' + UTF-8 base64」。
@@ -143,4 +149,13 @@ export function requestTitlebarZoom(): boolean {
   if (!post) return false
   post.call(bridge.webkit!.messageHandlers!.external, 'wails:drag:doubleclick')
   return true
+}
+
+// requestOpenDeepLink 请求桌面宿主打开一条 Claude 桌面端深链（B434）。
+// 参数：url 由 claudeDeepLink.ts 的 buildClaudeNewSessionURL 产出，调用方不得手拼。
+// 返回：找到并发出 external bridge 时为 true；浏览器里（无 bridge）为 false，调用方
+// 走普通链接或「复制简报」兜底。
+// TODO(B434)：Ticket 0 空壳，恒返回 false。
+export function requestOpenDeepLink(_url: string): boolean {
+  return false
 }

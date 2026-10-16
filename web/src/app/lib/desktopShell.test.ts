@@ -5,6 +5,7 @@ import {
   NATIVE_CLIPBOARD_MESSAGE_PREFIX,
   NATIVE_CLIPBOARD_RESULT_EVENT,
   OPEN_BROWSER_MESSAGE_PREFIX,
+  OPEN_DEEPLINK_MESSAGE_PREFIX,
   requestNativeClipboard,
   requestOpenCurrentPageInBrowser,
   requestTitlebarZoom,
@@ -76,6 +77,12 @@ describe('requestOpenCurrentPageInBrowser', () => {
 
   it('没有 external bridge 时返回 false 且不抛异常', () => {
     expect(requestOpenCurrentPageInBrowser()).toBe(false)
+  })
+
+  // B434 对侧常量执法：与 desktop/internal/shell ExternalDeepLinkMessagePrefix 逐字相等。
+  it('深链协议前缀字面量冻结且不与系统浏览器前缀相同', () => {
+    expect(OPEN_DEEPLINK_MESSAGE_PREFIX).toBe('handoff:open-deeplink:')
+    expect(OPEN_DEEPLINK_MESSAGE_PREFIX).not.toBe(OPEN_BROWSER_MESSAGE_PREFIX)
   })
 })
 
