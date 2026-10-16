@@ -245,3 +245,24 @@ test('提交在排队时下一拍不重入：同一封信不读第二次（busy�
   expect(w.lists).toEqual([BOX]) // 后两拍都因上一轮未结束而跳过
   expect(w.promptReads()).toBe(1)
 })
+
+test('空信（去空白后为空）：删除且不提交、下一拍不再读它（契约 r9）', async ($, on) => {
+  const blank = `${SID}.0000000000000000001.md`
+  const w = world(on, { files: { [blank]: ' \n\t \n' } })
+  mock.env(on, { HOME })
+  const clock = mock.clock(on)
+  await start($)
+  await clock.advance(1500)
+  expect(w.reads).toEqual([blank]) // 正对照：确实读到了这封信
+  expect(w.removed).toEqual([blank])
+  expect(w.files.has(blank)).toBe(false)
+  expect(w.submitted.length).toBe(0)
+  // 引擎本身拒收空白 submit（「a non-empty prompt」）：没有这条分支时同样 0 次提交，
+  // 区别在于会抛错并在 transcript 落一行「查信失败」——所以要断言跳过是静默的、走 debug
+  expect(w.logs.filter((l) => l.to === 'transcript')).toEqual([])
+  expect(w.logs.some((l) => l.to === 'debug' && l.text.includes('跳过空信'))).toBe(true)
+  await clock.advance(5000)
+  expect(w.lists).toEqual([BOX, BOX]) // 正对照：第二拍确实查了信箱
+  expect(w.reads).toEqual([blank])
+  expect(w.submitted.length).toBe(0)
+})
