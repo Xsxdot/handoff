@@ -126,3 +126,18 @@
 - `codegraph resolve --doc docs/superpowers/specs/b434-breakdown.md` 首跑：exit=1（「文档锚点检查失败: ledgerapi.go#withLedger (file_missing)」），49 锚 = file_missing 11 / moved 34 / ok 4；file_missing 全是短路径锚（`ledgerapi.go#…`、`scheddrain.go#…`、`CardDrawer.tsx#…`、`room/delivery.go#…`、`pushfanout.go#…`）、§8 故意举例的带接收者写法、以及尚不存在的 `desktopwake_slice_test.go#…`。修法：短路径补全为仓根相对路径；举例改为不带 `#` 的叙述；未来文件不写锚。复跑：exit=0，42 锚 = moved 37 / ok 5 / vanished 0 / file_missing 0。
 - 判断（稿内均为提案，待协调者拍板）：切法倾向「按子系统、子系统内按故事」（L/C/G1/V/G2/G3/W/D/M + I），因按故事切会让 `desktopwake.go`/`coordapi.go`/`seat_desktop.go`/`CoordinatorPanel.tsx` 多写者，且 S3 实际依赖 S1（`renderLauncherLetter` 复用 S1 材料函数）。退回 contract：R-B0 头部冻结状态行缺 r5；R-B1 故事 6 触发者缺失（P4 显示条件所致，需用户）；R-B2 坐下按钮 UI 无原子条；R-B3 `/api/desktop/deliver` 守卫「不需要账本」与 r5 矛盾。真机清单 15 条。风险最高两族：静默失败（`open` 退出码与已归档会话）、门禁绕过（来信 `asUser:true` 把群成员原文抬成人本人口吻）。
 - breakdown 提交（历史读数，随后 amend 一次收进同批提交，hash 会变）：`git commit -q -F - && git log --oneline -1` → `6b7f6496 docs(b434): breakdown 稿（待拍板）`；`git show --stat HEAD` → `2 files changed, 544 insertions(+)`。未 push。trailer 用 `Claude Opus 5.5`（会话归属提示要求，与派单里写的 `Claude Fable 5.1` 不同，已在回报中说明）。
+
+### Wave 0 末条真机验（2026-10-16 18:43，breakdown 拍板前，协调者本机）
+
+- 问题：launchd 托管的 agentd 进程里 `open claude://…` 能否到达 GUI 会话（spec 实现决定末条；本机 agentd 实为 LaunchAgent `dev.gosuper.handoff.agentd`，gui 域）。
+- 做法：临时 LaunchAgent `dev.gosuper.b434.probe`（同 gui 域、RunAtLoad）跑脚本：原子写 `~/.handoff/desktop-wake/f67b34c3-….md` → `/usr/bin/open "claude://code/continue?session=local_bbc4b5ae-…"`；`launchctl bootstrap gui/501 …` 18:43:31。
+- 读数：probe.log `18:43:32 letter written; ppid=1 uid=501 PATH=/usr/bin:/bin:/usr/sbin:/sbin`、`open exit=0`；main.log `18:43:32 Session local_bbc4b5ae… warmed successfully in 70ms`、`18:43:33 startShellPty`、`18:43:36 Mapping … to CLI session f67b34c3…`；会话 jsonl `18:43:36 user [handoff] B434 launchd 探针…`（mod 取信提交），信箱目录随即为空。
+- 结论：**launchd 托管进程（ppid=1、最小 PATH）发 `open` 深链能到达 GUI 会话并拉起被回收会话，mod 正常取信**。欠账 §10.13 / 真机清单第 1 条销账。探针 LaunchAgent 已 `bootout` 并删除 plist。
+
+## breakdown 修复轮 1（2026-10-16，基于 `4e67f33c`；独立审阅 fail 一处阻塞 + 协调者拍板 8 岔口）
+
+- 输入：协调者转达审阅裁决（阻塞 B1：G1 无缺陷族审查）与补项 1–8，及拍板 P1–P6、P8、P10 = 甲，P7/P9 待用户（协调者倾向 P7=d、P9=丁）。工作树原有未提交的「Wave 0 末条真机验」小节（协调者写）保留不动，随本提交入库。
+- 核对读数：`internal/agentd/server.go:800` `Handler()`、`:908` `s.registerCoordRoutes(api)`（G3 注册 deliver 的落点）；`internal/agentd/wakeconsumer.go:275` `decodeRoomMessageForWake` 只过滤 `by_system`（含 null）与 `RoomMsgPointer`，不看作者——与 `room/delivery.go#ResolveDelivery` 不排除作者合起来即「自己 @ 自己 / 回复自己会唤醒自己」，为可 grep 代码事实，改作 G2 机内测试（锁现状）。
+- 改动：B1 补 §5.9 G1 逐族（生命周期/静默失败/跨平台/假红假绿/门禁 + 序列化边界指 V 的 DTO fixture + 承重安全属性指条 14 反面断言），G1 验收栏同步；§2.4 增第 9 条（G1∥V 同写 `desktopwake.go`，G1 先合、V rebase）、第 10 条（V/G2/G3 写 `server.go` 的字段/函数分工），三卡禁改清单同步；L 契约引用补条 139–143（Store 一侧）；§6 重排为「已验 1 + 三批 19」（launchd 标已验并销 §10.13、G2 前置清掉；故事 4 分诊处置补 #13；自唤醒拆为 G2 机内测试 + 真机 #18 循环观察）；G2 的 `.tmp` 清理与 `Run()` 标「plan 定，不作硬判据」，注明 `open` 退出码对 LaunchServices 很可能恒为 0、unopened 能否触发以真机 #9 为准；P7 增方案 d、P9 增方案丁并更正 `cli:sycm@…` 他人身份与「bypass 模式」两处无读数推断；§0 增裁决列、稿末拍板记录区回填；头部状态行改「部分已拍板（2026-10-16）：P1–P6、P8、P10 已裁；P7、P9 待用户」；正文旧的真机条号引用全部改到新编号。
+- 自检：`codegraph resolve --doc docs/superpowers/specs/b434-breakdown.md` → exit=0，44 锚 = moved 39 / ok 5 / vanished 0 / file_missing 0。
+- r1 提交（历史读数，随后 amend 一次，hash 会变）：`git commit -q -F -` → `a78d12db docs(b434): breakdown r1 — 补 G1 缺陷族、回写拍板`；`2 files changed, 134 insertions(+), 80 deletions(-)`。未 push。
