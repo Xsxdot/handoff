@@ -346,3 +346,168 @@ func TestB434SetSeatDesktopRejectsWithoutSideEffects(t *testing.T) {
 		t.Fatalf("正控制后 seat_desktops 行数 = %d，期望 1", n)
 	}
 }
+
+// TestB434RebindSeatDropsSeatDesktop 锁条 62：RebindSeat 成功后 SeatDesktopOf
+// ok=false；CAS 失败的换绑不动行；新席位可重新写入；换绑到 coordinate 同样删行。
+func TestB434RebindSeatDropsSeatDesktop(t *testing.T) {
+	s := seedStore(t)
+	card, seat := b434BindCard(t, s, "cli-old")
+	desk := SeatDesktop{Session: b434DesktopSession, Machine: "mbp-01", Via: proto.SeatDesktopViaPage}
+	if err := s.SetSeatDesktop(card, seat, desk); err != nil {
+		t.Fatalf("写桌面端记录: %v", err)
+	}
+
+	next, _ := proto.EncodeSeatIdentity("claude", "cli-new")
+	if err := s.RebindSeat(card, next, proto.SeatSourceBind, "cli:claude#wrong", SeatBearing{}); !errors.Is(err, ErrCASConflict) {
+		t.Fatalf("CAS 不符应 ErrCASConflict，得 %v", err)
+	}
+	if _, ok, _ := s.SeatDesktopOf(card); !ok {
+		t.Fatal("CAS 失败的换绑不应删桌面端记录")
+	}
+
+	if err := s.RebindSeat(card, next, proto.SeatSourceBind, seat, SeatBearing{}); err != nil {
+		t.Fatalf("换绑: %v", err)
+	}
+	if _, ok, err := s.SeatDesktopOf(card); err != nil || ok {
+		t.Fatalf("换绑后应 ok=false 且不报错: ok=%v err=%v", ok, err)
+	}
+	if n := b434SeatDesktopRows(t, s, card); n != 0 {
+		t.Fatalf("换绑后 seat_desktops 行数 = %d，期望 0", n)
+	}
+
+	// 两步提交（D2）：新席位随后可重新登记桌面端记录。
+	desk2 := SeatDesktop{Session: "local_new-0001", Via: proto.SeatDesktopViaLauncher}
+	if err := s.SetSeatDesktop(card, next, desk2); err != nil {
+		t.Fatalf("新席位写桌面端记录: %v", err)
+	}
+
+	coord, _ := proto.EncodeSeatIdentity("opencode", "sess-coord")
+	if err := s.RebindSeat(card, coord, proto.SeatSourceCoordinate, next,
+		SeatBearing{Carrier: "coord-carrier", Machine: "linux-01"}); err != nil {
+		t.Fatalf("换绑到 coordinate: %v", err)
+	}
+	if _, ok, _ := s.SeatDesktopOf(card); ok {
+		t.Fatal("换绑到 coordinate 后桌面端记录必须不存在")
+	}
+}
+
+// TestB434RebindSeatRollsBackWhenSeatDesktopDeleteFails 锁「删行与席位写同事务」
+// （拆解稿 §5.1 生命周期族的能变红判据）：删行失败时换绑整体回滚，席位不变、
+// 不落 EvDriverTakeover。把删行挪出事务或吞掉删行错误，本测试都会红。
+func TestB434RebindSeatRollsBackWhenSeatDesktopDeleteFails(t *testing.T) {
+	s := seedStore(t)
+	card, seat := b434BindCard(t, s, "cli-old")
+	if _, err := s.db.Exec(`DROP TABLE seat_desktops`); err != nil {
+		t.Fatalf("拆表: %v", err)
+	}
+	next, _ := proto.EncodeSeatIdentity("claude", "cli-new")
+	if err := s.RebindSeat(card, next, proto.SeatSourceBind, seat, SeatBearing{}); err == nil {
+		t.Fatal("删桌面端记录失败时 RebindSeat 必须报错")
+	}
+	c, err := s.GetCard(card)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.DriverSession != seat {
+		t.Fatalf("回滚后席位应仍为 %q，得 %q", seat, c.DriverSession)
+	}
+	if n := len(b434EventsOfType(t, s, card, EvDriverTakeover)); n != 0 {
+		t.Fatalf("回滚后 driver_takeover 事件数 = %d，期望 0", n)
+	}
+}
+
+// TestB434ClearSeatPathsDropSeatDesktop 锁条 63：clearSeatTx 的两条入口（终态关单
+// CloseCard、人工清座 ClearSeat）之后 SeatDesktopOf 都是 ok=false；清座幂等。
+func TestB434ClearSeatPathsDropSeatDesktop(t *testing.T) {
+	desk := SeatDesktop{Session: b434DesktopSession, Via: proto.SeatDesktopViaManual}
+
+	t.Run("终态关单", func(t *testing.T) {
+		s := seedStore(t)
+		card, seat := b434BindCard(t, s, "cli-close")
+		if err := s.SetSeatDesktop(card, seat, desk); err != nil {
+			t.Fatalf("写桌面端记录: %v", err)
+		}
+		if err := s.CloseCard(card, CloseShelved, "t"); err != nil {
+			t.Fatalf("终止卡: %v", err)
+		}
+		if _, ok, err := s.SeatDesktopOf(card); err != nil || ok {
+			t.Fatalf("终态后应 ok=false 且不报错: ok=%v err=%v", ok, err)
+		}
+		if n := b434SeatDesktopRows(t, s, card); n != 0 {
+			t.Fatalf("终态后 seat_desktops 行数 = %d，期望 0", n)
+		}
+	})
+
+	t.Run("人工清座", func(t *testing.T) {
+		s := seedStore(t)
+		card, seat := b434BindCard(t, s, "cli-clear")
+		if err := s.SetSeatDesktop(card, seat, desk); err != nil {
+			t.Fatalf("写桌面端记录: %v", err)
+		}
+		if err := s.ClearSeat(card); err != nil {
+			t.Fatalf("清座: %v", err)
+		}
+		if _, ok, err := s.SeatDesktopOf(card); err != nil || ok {
+			t.Fatalf("清座后应 ok=false 且不报错: ok=%v err=%v", ok, err)
+		}
+		if err := s.ClearSeat(card); err != nil {
+			t.Fatalf("清座应幂等: %v", err)
+		}
+	})
+}
+
+// TestB434CloseCardRollsBackWhenSeatDesktopDeleteFails 锁终态关单路径的同事务：
+// 删桌面端记录失败时整次关单回滚，卡状态与席位都不变。
+func TestB434CloseCardRollsBackWhenSeatDesktopDeleteFails(t *testing.T) {
+	s := seedStore(t)
+	card, seat := b434BindCard(t, s, "cli-close")
+	before, err := s.GetCard(card)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(`DROP TABLE seat_desktops`); err != nil {
+		t.Fatalf("拆表: %v", err)
+	}
+	if err := s.CloseCard(card, CloseShelved, "t"); err == nil {
+		t.Fatal("删桌面端记录失败时 CloseCard 必须报错")
+	}
+	after, err := s.GetCard(card)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Status != before.Status || after.DriverSession != seat {
+		t.Fatalf("回滚后应保持 status=%q seat=%q，得 status=%q seat=%q",
+			before.Status, seat, after.Status, after.DriverSession)
+	}
+}
+
+// TestB434BindSeatLeavesSeatDesktopUntouched 锁 §3.3「BindSeat 不写也不删」与条 44 的
+// Store 侧：BindSeat 不落 seat_desktop_set、不建行；空座残留行（只能手写 SQL 构造，
+// 生产写面对空座拒绝）也不被 BindSeat 删除——两步提交（D2）的第二步只属于 SetSeatDesktop。
+func TestB434BindSeatLeavesSeatDesktopUntouched(t *testing.T) {
+	s := seedStore(t)
+	card, _ := b434BindCard(t, s, "cli-plain")
+	if n := b434SeatDesktopRows(t, s, card); n != 0 {
+		t.Fatalf("BindSeat 不应写 seat_desktops，得 %d 行", n)
+	}
+	if n := len(b434EventsOfType(t, s, card, EvSeatDesktopSet)); n != 0 {
+		t.Fatalf("BindSeat 不应落 seat_desktop_set，得 %d 条", n)
+	}
+
+	ghost, err := s.CreateCard(NewCard{Title: "残留", Project: "p", Workflow: "bug", Actor: "t"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(s.q(`INSERT INTO seat_desktops
+		(card_id, identity, desktop_session, machine, via, bound_at) VALUES (?, ?, ?, ?, ?, ?)`),
+		ghost.ID, "cli:claude#ghost", "local_ghost", "", proto.SeatDesktopViaManual, s.tval(s.timeNow())); err != nil {
+		t.Fatalf("手插残留行: %v", err)
+	}
+	seat, _ := proto.EncodeSeatIdentity("claude", "cli-fresh")
+	if err := s.BindSeat(ghost.ID, seat, proto.SeatSourceBind, SeatBearing{}); err != nil {
+		t.Fatalf("bind 坐下: %v", err)
+	}
+	if n := b434SeatDesktopRows(t, s, ghost.ID); n != 1 {
+		t.Fatalf("BindSeat 不应删 seat_desktops 行，得 %d 行", n)
+	}
+}

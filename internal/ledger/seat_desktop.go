@@ -133,6 +133,16 @@ func (s *Store) SeatDesktopOf(id string) (SeatDesktop, bool, error) {
 	return d, true, nil
 }
 
+// deleteSeatDesktopTx 在调用方事务内删除该卡的桌面端记录（幂等）。只由 RebindSeat
+// 与 clearSeatTx 调用：旧席位的桌面端 id 必须随席位一起失效——分成两步就会留下
+// 「旧会话 id 指着新席位」的孤儿行，信被投到旧会话。
+func (s *Store) deleteSeatDesktopTx(tx *sql.Tx, card string) error {
+	if _, err := tx.Exec(s.q(`DELETE FROM seat_desktops WHERE card_id = ?`), card); err != nil {
+		return fmt.Errorf("删桌面端记录 %s: %w", card, err)
+	}
+	return nil
+}
+
 // DesktopLauncher 是某项目的拉起器登记：一场由人开过的普通桌面端会话，
 // 人不在时由控制面写信 + continue 唤醒它代开协调者会话。
 type DesktopLauncher struct {
