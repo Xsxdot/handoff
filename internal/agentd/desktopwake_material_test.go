@@ -12,8 +12,13 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"log/slog"
 	"net/http"
+	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -431,4 +436,115 @@ func TestB434MaterialLauncherField(t *testing.T) {
 			t.Fatalf("降级须留 Warn（带卡号与原因），日志：\n%s", logs.String())
 		}
 	})
+}
+
+// ---------- T5：GET 不写状态（条 14，承重属性的反面断言） ----------
+
+// b434StallSnapshot 复制进程内失败计数表（G1 时点仅 automationStall；G2 加
+// desktopWakeStall 后须在此并入，见 plan §11）。
+func b434StallSnapshot(env *ledgerEnv) map[string]int {
+	env.srv.automationMu.Lock()
+	defer env.srv.automationMu.Unlock()
+	out := make(map[string]int, len(env.srv.automationStall))
+	for k, v := range env.srv.automationStall {
+		out[k] = v
+	}
+	return out
+}
+
+// TestB434MaterialGetWritesNothing 锁条 14：200（带拉起器）、409 两条路径各连打三次
+// （模拟 5s 轮询），账本全表行数、事件最大 seq、卡可变列与进程内失败计数表前后相等。
+// 计数表预置非零值，防「清零」类改动漏网。
+func TestB434MaterialGetWritesNothing(t *testing.T) {
+	env := newB434MaterialEnv(t)
+	okCard := b434SessionCard(t, env)
+	b434RegisterLauncher(t, env)
+	ghost := b434BareCard(t, env, "ghost")
+	env.srv.automationMu.Lock()
+	env.srv.automationStall[okCard] = 2
+	env.srv.automationMu.Unlock()
+
+	beforeLedger := b434LedgerSnapshot(t, env)
+	beforeStall := b434StallSnapshot(env)
+	for i := 0; i < 3; i++ {
+		if code, body := ledgerGet(t, env.testAgentdEnv, b434MaterialPath(okCard)); code != http.StatusOK {
+			t.Fatalf("第 %d 次 200 路径得 %d %s", i, code, body)
+		}
+		if code, body := ledgerGet(t, env.testAgentdEnv, b434MaterialPath(ghost)); code != http.StatusConflict {
+			t.Fatalf("第 %d 次 409 路径得 %d %s", i, code, body)
+		}
+	}
+	if after := b434LedgerSnapshot(t, env); after != beforeLedger {
+		t.Fatalf("条 14：GET 改了账本：\n前 %s\n后 %s", beforeLedger, after)
+	}
+	afterStall := b434StallSnapshot(env)
+	if len(afterStall) != len(beforeStall) || afterStall[okCard] != beforeStall[okCard] {
+		t.Fatalf("条 14：GET 改了进程内失败计数：前 %v 后 %v", beforeStall, afterStall)
+	}
+}
+
+// ---------- 内部锁（声明见 plan §9） ----------
+
+// TestB434MaterialSourceGuard 是内部锁：desktopwake.go 里本卡三个函数体
+// （desktopLaunchMaterial / desktopBrief / handleDesktopLaunchMaterial）不出现
+// ListProjectLocations、workspace.ResolveProject（解析只走 resolveLocalProjectRoot，
+// §11.1）、keystone./s.keystone/s.scheduling（条 13、162），也不出现 desktopOpen、
+// claudeContinueURL、writeDesktopLetter（契约 r10 第 13 条：GET 绝不发深链、绝不写信）。
+// 从 HTTP 缝构造不出「两处共用同一解析函数」「零 keystone 调用」「零深链/写信」这类
+// 静态属性。
+func TestB434MaterialSourceGuard(t *testing.T) {
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller 失败")
+	}
+	path := filepath.Join(filepath.Dir(thisFile), "desktopwake.go")
+	fset := token.NewFileSet()
+	af, err := parser.ParseFile(fset, path, nil, 0)
+	if err != nil {
+		t.Fatalf("解析 desktopwake.go: %v", err)
+	}
+	guarded := map[string]bool{"desktopLaunchMaterial": true, "desktopBrief": true, "handleDesktopLaunchMaterial": true}
+	// 按标识符名禁：覆盖选择子 s.desktopOpen 的 Sel 与包级函数直呼两种形态。
+	bannedIdents := map[string]string{
+		"desktopOpen":        "发深链",
+		"claudeContinueURL":  "构造 continue 深链",
+		"writeDesktopLetter": "写信箱",
+	}
+	seen := map[string]bool{}
+	for _, decl := range af.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || !guarded[fn.Name.Name] || fn.Body == nil {
+			continue
+		}
+		seen[fn.Name.Name] = true
+		ast.Inspect(fn.Body, func(n ast.Node) bool {
+			if id, ok := n.(*ast.Ident); ok {
+				if why, banned := bannedIdents[id.Name]; banned {
+					t.Errorf("%s:%d 触碰 %s（GET 材料端点不得%s，契约 r10 第 13 条）",
+						fn.Name.Name, fset.Position(id.Pos()).Line, id.Name, why)
+				}
+				return true
+			}
+			sel, ok := n.(*ast.SelectorExpr)
+			if !ok {
+				return true
+			}
+			if sel.Sel.Name == "ListProjectLocations" || sel.Sel.Name == "ResolveProject" {
+				t.Errorf("%s:%d %s 直接解析项目位置（应只经 resolveLocalProjectRoot）",
+					fn.Name.Name, fset.Position(sel.Pos()).Line, sel.Sel.Name)
+			}
+			if id, ok := sel.X.(*ast.Ident); ok && id.Name == "keystone" {
+				t.Errorf("%s:%d 调用 keystone.%s（条 162 禁止）", fn.Name.Name, fset.Position(sel.Pos()).Line, sel.Sel.Name)
+			}
+			if inner, ok := sel.X.(*ast.Ident); ok && inner.Name == "s" && (sel.Sel.Name == "keystone" || sel.Sel.Name == "scheduling") {
+				t.Errorf("%s:%d 触碰 s.%s（材料端点不依赖自动化层，条 13）", fn.Name.Name, fset.Position(sel.Pos()).Line, sel.Sel.Name)
+			}
+			return true
+		})
+	}
+	for name := range guarded {
+		if !seen[name] {
+			t.Errorf("desktopwake.go 缺函数 %s（守卫失去对象）", name)
+		}
+	}
 }
