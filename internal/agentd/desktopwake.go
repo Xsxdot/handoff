@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/Xsxdot/handoff/internal/keystone"
@@ -114,11 +115,47 @@ func (s *Server) desktopLaunchMaterial(card, via string) (proto.DesktopLaunchMat
 	return m, nil
 }
 
-// desktopBrief 渲染人尺度简报：以 proto.DesktopWakeMarker 开头，含卡号/标题/
-// 有效基线/会话 id/项目根目录与三步指引；不含「一次性回合」。
+// desktopBrief 渲染人尺度简报（契约 §3.5 模板逐行，r10 第 2 条修订第 3 行）：以
+// proto.DesktopWakeMarker 开头，含卡号/标题/有效基线（空 →「未设」）/所在会话
+// （空 →「未入群」）/项目根目录与三步指引；第 3 步末句三分支——入群且有群主
+// →「需要人就 `@<群主>`」，入群但群主为空 →「需要人就打 needs_human」，未入群
+// →「需要人就在卡上打 needs_human」；不含「一次性回合」。
+// 纯函数：不读任何状态、不打日志（5s 轮询下纯渲染打日志只会刷屏），同输入同输出
+// （G3 拉起器来信经 desktopLaunchMaterial 复用它）。
 func desktopBrief(in desktopBriefInput) string {
-	_ = in
-	return "" // TODO(B434)
+	base := in.BaseBranch
+	if base == "" {
+		base = "未设"
+	}
+	session := in.Session
+	if session == "" {
+		session = "未入群"
+	}
+	// 群主已是统一记法 user:<name>/agent:<name>，可寻址写法是 "@"+群主原值（模板旧写
+	// 「@user:<群主>」会渲染成 @user:user:sy，r10 已改）。没有可 @ 的升级终点时改为打标。
+	escalate := "需要人就在卡上打 needs_human"
+	switch {
+	case in.Session != "" && in.Owner != "":
+		escalate = "需要人就 `@" + in.Owner + "`"
+	case in.Session != "":
+		escalate = "需要人就打 needs_human"
+	}
+	lines := []string{
+		proto.DesktopWakeMarker + " 你是卡 " + in.Card + " 的协调者，坐在这场 Claude 桌面端会话里。",
+		"",
+		"- 卡号：" + in.Card,
+		"- 标题：" + in.Title,
+		"- 有效基线分支：" + base,
+		"- 所在会话：" + session,
+		"- 项目根目录：" + in.Folder,
+		"",
+		"请按三步开始：",
+		"1. 读 handoff skill。",
+		"2. 用桌面端会话管理工具读到你自己的桌面端会话 id（" + proto.DesktopSessionPrefix + " 开头），然后执行：",
+		"   handoff card bind " + in.Card + " --desktop-session <你的桌面端会话 id> --via " + in.Via,
+		"3. 之后有事 handoff 会叫醒你，不必挂订阅；推卡按 charter 节点逐节点点火，升级按三档，" + escalate + "。",
+	}
+	return strings.Join(lines, "\n")
 }
 
 // handleDesktopLaunchMaterial 是 GET /api/cards/{id}/coordinator/desktop-launch

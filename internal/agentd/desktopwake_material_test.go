@@ -144,3 +144,117 @@ func TestB434MaterialUnknownCard404(t *testing.T) {
 		t.Fatalf("404 体须为 {\"error\":…含卡号}，得 %s（解析错误 %v）", body, err)
 	}
 }
+
+// ---------- T2：简报（条 6–12；§3.5 模板） ----------
+
+// TestB434DesktopBriefTemplate 锁 §3.5 模板逐字（入群 @ 群主 / 未入群打标 两种末句）。
+func TestB434DesktopBriefTemplate(t *testing.T) {
+	inSession := desktopBrief(desktopBriefInput{Card: "B7", Title: "标题甲", BaseBranch: "feat/x",
+		Session: "session:3", Owner: "user:sy", Folder: "/repo/a b", Via: proto.SeatDesktopViaPage})
+	wantIn := "[handoff] 你是卡 B7 的协调者，坐在这场 Claude 桌面端会话里。\n" +
+		"\n" +
+		"- 卡号：B7\n" +
+		"- 标题：标题甲\n" +
+		"- 有效基线分支：feat/x\n" +
+		"- 所在会话：session:3\n" +
+		"- 项目根目录：/repo/a b\n" +
+		"\n" +
+		"请按三步开始：\n" +
+		"1. 读 handoff skill。\n" +
+		"2. 用桌面端会话管理工具读到你自己的桌面端会话 id（local_ 开头），然后执行：\n" +
+		"   handoff card bind B7 --desktop-session <你的桌面端会话 id> --via page\n" +
+		"3. 之后有事 handoff 会叫醒你，不必挂订阅；推卡按 charter 节点逐节点点火，升级按三档，需要人就 `@user:sy`。"
+	if inSession != wantIn {
+		t.Fatalf("入群简报不符模板：\n得：\n%s\n期望：\n%s", inSession, wantIn)
+	}
+	bare := desktopBrief(desktopBriefInput{Card: "B8", Title: "标题乙", Folder: "/repo/b",
+		Via: proto.SeatDesktopViaLauncher})
+	for _, want := range []string{
+		"- 有效基线分支：未设\n",
+		"- 所在会话：未入群\n",
+		"   handoff card bind B8 --desktop-session <你的桌面端会话 id> --via launcher\n",
+		"，升级按三档，需要人就在卡上打 needs_human。",
+	} {
+		if !strings.Contains(bare, want) {
+			t.Fatalf("未入群简报缺 %q：\n%s", want, bare)
+		}
+	}
+	if strings.Contains(bare, "@") {
+		t.Fatalf("未入群简报不得 @ 任何人：\n%s", bare)
+	}
+	// 契约 r10 第 2 条：已入群但群主为空 → 末句「需要人就打 needs_human」（与未入群的
+	// 「在卡上打」区分），且不得渲染出空 @。
+	ownerless := desktopBrief(desktopBriefInput{Card: "B9", Title: "标题丙", Session: "session:4",
+		Folder: "/repo/c", Via: proto.SeatDesktopViaPage})
+	if want := "，升级按三档，需要人就打 needs_human。"; !strings.HasSuffix(ownerless, want) {
+		t.Fatalf("入群无群主简报末句应为 %q：\n%s", want, ownerless)
+	}
+	if strings.Contains(ownerless, "@") || !strings.Contains(ownerless, "- 所在会话：session:4\n") {
+		t.Fatalf("入群无群主简报不得 @、须保留会话 id：\n%s", ownerless)
+	}
+}
+
+// TestB434MaterialBriefOverHTTP 锁条 6–12（经 HTTP 真序列化边界）：入群卡的简报
+// 以 "[handoff] " 开头，含卡号、**继承自父卡**的有效基线、会话 id、--desktop-session、
+// --via page，且不含「一次性回合」；裸卡含「未设」「未入群」。
+func TestB434MaterialBriefOverHTTP(t *testing.T) {
+	env := newB434MaterialEnv(t)
+	card := b434SessionCard(t, env)
+	session, err := env.ledger.SessionOfCard(card)
+	if err != nil || session == "" {
+		t.Fatalf("前提：卡应已入群，session=%q err=%v", session, err)
+	}
+	code, body := ledgerGet(t, env.testAgentdEnv, b434MaterialPath(card))
+	if code != http.StatusOK {
+		t.Fatalf("材料端点应 200，得 %d %s", code, body)
+	}
+	m, _ := b434DecodeMaterial(t, body)
+	if !strings.HasPrefix(m.Brief, "[handoff] ") {
+		t.Fatalf("条 6：brief 须以 \"[handoff] \" 开头：%q", m.Brief)
+	}
+	for i, want := range []string{
+		"- 卡号：" + card,                      // 条 7
+		"- 有效基线分支：" + b434MaterialBase,      // 条 8（父卡继承，证明走 EffectiveBaseBranch）
+		"- 所在会话：" + session,                 // 条 9
+		"--desktop-session",                 // 条 10
+		"--via page",                        // 条 11
+		"- 项目根目录：" + m.Folder,               // 模板一致性
+		"需要人就 `@" + b434MaterialOwner + "`", // 群主末句
+	} {
+		if !strings.Contains(m.Brief, want) {
+			t.Fatalf("断言 %d：brief 缺 %q：\n%s", i, want, m.Brief)
+		}
+	}
+	if strings.Contains(m.Brief, "一次性回合") { // 条 12
+		t.Fatalf("条 12：brief 不得含「一次性回合」：\n%s", m.Brief)
+	}
+
+	bare := b434BareCard(t, env, b434MaterialProject)
+	code, body = ledgerGet(t, env.testAgentdEnv, b434MaterialPath(bare))
+	if code != http.StatusOK {
+		t.Fatalf("裸卡材料端点应 200，得 %d %s", code, body)
+	}
+	bm, _ := b434DecodeMaterial(t, body)
+	for _, want := range []string{"- 有效基线分支：未设", "- 所在会话：未入群", "needs_human"} {
+		if !strings.Contains(bm.Brief, want) {
+			t.Fatalf("条 8/9：裸卡 brief 缺 %q：\n%s", want, bm.Brief)
+		}
+	}
+}
+
+// TestB434MaterialViaLauncher 锁 G3 消费面（契约 §3.9.1）：desktopLaunchMaterial(card,
+// SeatDesktopViaLauncher) 的简报写 --via launcher 而非 page；词表外 via 报错。
+func TestB434MaterialViaLauncher(t *testing.T) {
+	env := newB434MaterialEnv(t)
+	card := b434BareCard(t, env, b434MaterialProject)
+	m, err := env.srv.desktopLaunchMaterial(card, proto.SeatDesktopViaLauncher)
+	if err != nil {
+		t.Fatalf("via=launcher 材料: %v", err)
+	}
+	if !strings.Contains(m.Brief, "--via launcher") || strings.Contains(m.Brief, "--via page") {
+		t.Fatalf("via=launcher 简报应只含 --via launcher：\n%s", m.Brief)
+	}
+	if _, err := env.srv.desktopLaunchMaterial(card, proto.SeatDesktopViaManual); err == nil {
+		t.Fatalf("via=manual 不是拉起材料的合法来源，应报错")
+	}
+}
