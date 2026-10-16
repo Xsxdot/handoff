@@ -374,3 +374,88 @@ func TestB434CardBindDesktopRejectsUnsafeMailboxKey(t *testing.T) {
 		})
 	}
 }
+
+// §3.10：card rebind --self 删旧桌面端记录（L 的生命周期联动经 CLI 可见）；新会话用
+// card seat desktop set 以当前席位为 expect 重设，事件 identity 是新席位。
+func TestB434CardSeatDesktopSetAfterRebindSelf(t *testing.T) {
+	clearSeatSourceEnv(t)
+	t.Setenv("CLAUDE_CODE_SESSION_ID", "claude-old")
+	dir := t.TempDir()
+	id := mustAddCard(t, dir, "接班重记卡")
+	if _, errOut, err := runLedgerCLI(t, dir, "card", "bind", id, "--desktop-session", "local_old-1", "--via", "page"); err != nil {
+		t.Fatalf("bind: %v stderr=%s", err, errOut)
+	}
+	t.Setenv("CLAUDE_CODE_SESSION_ID", "claude-new")
+	if _, errOut, err := runLedgerCLI(t, dir, "card", "rebind", id, "--self"); err != nil {
+		t.Fatalf("rebind --self: %v stderr=%s", err, errOut)
+	}
+	card, _, has := b434SeatState(t, dir, id)
+	if has || card.DriverSession != "cli:claude#claude-new" {
+		t.Fatalf("换绑后旧记录应删、席位换新: seat=%q has=%v", card.DriverSession, has)
+	}
+	out, errOut, err := runLedgerCLI(t, dir, "card", "seat", "desktop", "set", id,
+		"--desktop-session", "local_new-1", "--machine", "mac-01")
+	if err != nil || out != "{\"ok\":true}\n" {
+		t.Fatalf("seat desktop set: out=%q err=%v stderr=%s", out, err, errOut)
+	}
+	_, desk, has := b434SeatState(t, dir, id)
+	if !has || desk.Session != "local_new-1" || desk.Machine != "mac-01" || desk.Via != proto.SeatDesktopViaManual {
+		t.Fatalf("重设后记录 = %+v has=%v", desk, has)
+	}
+	sets := b434Events(t, dir, id, ledger.EvSeatDesktopSet)
+	if len(sets) != 2 {
+		t.Fatalf("seat_desktop_set = %d 条，want 2（bind 一条、set 一条）", len(sets))
+	}
+	if got := b434Payload(t, sets[1])["identity"]; got != "cli:claude#claude-new" {
+		t.Fatalf("重设事件 identity = %q, want 新席位", got)
+	}
+}
+
+// card seat desktop set 的拒绝面：空座、coordinate 席位、非 claude bind 席位、非法 id——
+// 每种都非零退出、点名原因、不写行。
+func TestB434CardSeatDesktopSetRejects(t *testing.T) {
+	cases := []struct {
+		name    string
+		seed    func(t *testing.T, st *ledger.Store, id string)
+		session string
+		want    string
+	}{
+		{"空座", func(*testing.T, *ledger.Store, string) {}, "local_ok-1", "空座"},
+		{"coordinate 席位", func(t *testing.T, st *ledger.Store, id string) {
+			if err := st.BindSeat(id, "cli:claude#coord-1", proto.SeatSourceCoordinate,
+				ledger.SeatBearing{Carrier: "coord-carrier", Machine: "local"}); err != nil {
+				t.Fatalf("种 coordinate 席位: %v", err)
+			}
+		}, "local_ok-1", "bind 席位"},
+		{"codex bind 席位", func(t *testing.T, st *ledger.Store, id string) {
+			if err := st.BindSeat(id, "cli:codex#t1", proto.SeatSourceBind, ledger.SeatBearing{}); err != nil {
+				t.Fatalf("种 codex 席位: %v", err)
+			}
+		}, "local_ok-1", "claude"},
+		{"非法 id", func(t *testing.T, st *ledger.Store, id string) {
+			if err := st.BindSeat(id, "cli:claude#c1", proto.SeatSourceBind, ledger.SeatBearing{}); err != nil {
+				t.Fatalf("种 claude 席位: %v", err)
+			}
+		}, "nope", "--desktop-session 非法"}, // 不能只断言 flag 名：基线 unknown flag 报文也含它
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			clearSeatSourceEnv(t)
+			dir := t.TempDir()
+			id := mustAddCard(t, dir, "补写拒绝卡")
+			st := b434Ledger(t, dir)
+			tc.seed(t, st, id)
+			st.Close()
+			out, _, err := runLedgerCLI(t, dir, "card", "seat", "desktop", "set", id, "--desktop-session", tc.session)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("应被拒并含 %q: err=%v", tc.want, err)
+			}
+			if strings.Contains(out, `"ok"`) {
+				t.Fatalf("被拒时 stdout 不得报成功: %q", out)
+			}
+			if _, _, has := b434SeatState(t, dir, id); has {
+				t.Fatal("被拒时不得写桌面端记录")
+			}
+		})
+	}
+}

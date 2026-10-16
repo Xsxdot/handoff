@@ -16,12 +16,14 @@ package cmd
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 	"unicode"
 
 	"github.com/Xsxdot/handoff/internal/ledger"
 	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/spf13/cobra"
 )
 
 // desktopSeatCLI 是唯一能挂桌面端记录 / 登记拉起器的席位物种：Claude 桌面端会话只跑
@@ -128,4 +130,74 @@ func seatDesktopSetRemedy(id string, desk ledger.SeatDesktop) string {
 		cmd += " --via " + desk.Via
 	}
 	return cmd
+}
+
+// cardSeatDesktopSession / cardSeatDesktopMachine / cardSeatDesktopVia 是 seat desktop set 的 flag。
+var cardSeatDesktopSession, cardSeatDesktopMachine, cardSeatDesktopVia string
+
+var cardSeatDesktopCmd = &cobra.Command{
+	Use:   "desktop",
+	Short: "bind 席位的 Claude 桌面端记录维护",
+}
+
+// cardSeatDesktopSetCmd 为卡上已有的 claude bind 席位写入（覆盖）桌面端记录。
+//
+// 用途：card bind 两步提交第二步失败后的补救；card rebind --self 之后新会话重新登记
+// 自己的桌面端 id（换绑在同事务里删了旧记录，契约 §3.10）。
+// 注意：CAS 期望值取卡上当前 driver_session——调用方不必是席位本人（人可在终端代填），
+// 但席位物种必须是 claude，与 card bind --desktop-session 同一道门。
+var cardSeatDesktopSetCmd = &cobra.Command{
+	Use:   "set <id> --desktop-session <local_…>",
+	Short: "为卡上已有的 claude bind 席位写入桌面端会话 id（CAS：以当前席位为期望值）",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		id := args[0]
+		if cardSeatDesktopSession == "" {
+			return fmt.Errorf("--desktop-session 必填")
+		}
+		slog.Default().Info("CLI 补写桌面端记录入口", "card", id, "desktop_session", cardSeatDesktopSession)
+		st, err := openLedger()
+		if err != nil {
+			slog.Default().Warn("CLI 补写桌面端记录打开账本失败", "card", id, "cause", err)
+			return err
+		}
+		defer st.Close()
+		card, err := st.GetCard(id)
+		if err != nil {
+			slog.Default().Warn("CLI 补写桌面端记录读卡失败", "card", id, "cause", err)
+			return fmt.Errorf("读取卡 %s: %w", id, err)
+		}
+		if card.DriverSession == "" {
+			err := fmt.Errorf("卡 %s 空座：先 handoff card bind %s --desktop-session <local_…> 坐下", id, id)
+			slog.Default().Warn("CLI 补写桌面端记录被拒：空座", "card", id)
+			return err
+		}
+		desk, hint, err := prepareSeatDesktop(card.DriverSession, desktopSeatInput{
+			Session: cardSeatDesktopSession, Machine: cardSeatDesktopMachine,
+			MachineChanged: cmd.Flags().Changed("machine"), Via: cardSeatDesktopVia,
+		})
+		if err != nil {
+			slog.Default().Warn("CLI 补写桌面端记录拒绝入参", "card", id, "cause", err)
+			return fmt.Errorf("补写卡 %s 桌面端记录: %w", id, err)
+		}
+		if hint != "" {
+			fmt.Fprintln(cmd.ErrOrStderr(), hint)
+		}
+		if err := st.SetSeatDesktop(id, card.DriverSession, desk); err != nil {
+			slog.Default().Warn("CLI 补写桌面端记录失败", "card", id, "cause", err)
+			return fmt.Errorf("补写卡 %s 桌面端记录: %w", id, err)
+		}
+		slog.Default().Info("CLI 补写桌面端记录完成", "card", id,
+			"desktop_session", desk.Session, "machine", desk.Machine, "via", desk.Via)
+		fmt.Fprintln(cmd.OutOrStdout(), `{"ok":true}`)
+		return nil
+	},
+}
+
+func init() {
+	cardSeatDesktopSetCmd.Flags().StringVar(&cardSeatDesktopSession, "desktop-session", "", "Claude 桌面端会话 id（local_…，必填）")
+	cardSeatDesktopSetCmd.Flags().StringVar(&cardSeatDesktopMachine, "machine", "", "桌面端会话所在机器（缺省本机 hostname）")
+	cardSeatDesktopSetCmd.Flags().StringVar(&cardSeatDesktopVia, "via", proto.SeatDesktopViaManual, "这场会话怎么开出来的：page|launcher|manual")
+	cardSeatDesktopCmd.AddCommand(cardSeatDesktopSetCmd)
+	cardSeatCmd.AddCommand(cardSeatDesktopCmd)
 }
