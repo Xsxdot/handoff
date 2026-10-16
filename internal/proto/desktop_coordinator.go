@@ -66,13 +66,14 @@ type DesktopLauncherOpenResp struct {
 	HandledBy string `json:"handled_by"` // 实际写信、发深链的机器名
 }
 
-// DesktopDeliverReq 是 agentd→agentd 的桌面端投递请求（POST /api/desktop/deliver）：
-// 收件机在本机信箱为 CLISession 写一封信并对 DesktopSession 发 continue 深链。
-// 仅服务拉起器异机投递，且以契约待裁决 P3 取 A 为前提；取 B 则删除本类型与回执。
+// DesktopDeliverReq 是 agentd→agentd 的拉起器投递请求（POST /api/desktop/deliver，
+// P3=A）：收件机按 Card 用**自己登记的**项目位置解析 Folder、渲染拉起器来信，
+// 写进 CLISession 的信箱并对 DesktopSession 发 continue 深链（r5：发起端只搬运
+// 「哪张卡」，不搬运信的正文——与拍板 D3「信在桌面端所在机渲染」同一原则）。
 type DesktopDeliverReq struct {
 	CLISession     string `json:"cli_session"`
 	DesktopSession string `json:"desktop_session"`
-	Letter         string `json:"letter"`
+	Card           string `json:"card"` // 卡号；收件机经共享账本读卡得 project/标题/基线/会话
 }
 
 // DesktopDeliverResp 是投递回执：Written 表示信已原子落盘，Opened 表示 continue

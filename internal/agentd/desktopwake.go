@@ -91,18 +91,20 @@ func claudeContinueURL(desktopSession string) (string, error) {
 	return "", proto.ErrDesktopNotImplemented // TODO(B434)
 }
 
-// deliverDesktopLetter 投递一封信并发 continue。machine 为本机 → 写信 + opener；
-// 否则（拉起器在异机，P3=A）经 clientForTarget(machine).MarkForwarded() 的
-// POST /api/desktop/deliver 一跳转交。席位唤醒的异机路径不走本函数（走 B389
+// deliverDesktopLetter 是拉起器投递（r5）。machine 为本机 → renderLauncherLetter
+// (req.Card) 渲染来信（唯一渲染点）→ 写信 + opener；否则（拉起器在异机，P3=A）
+// 经 clientForTarget(machine).MarkForwarded() 的 POST /api/desktop/deliver 一跳转交，
+// 只搬运 req（含 Card），不在本机渲染。席位唤醒的异机路径不走本函数（走 B389
 // transferCoordinatorWake，拍板 D3）。
 func (s *Server) deliverDesktopLetter(ctx context.Context, machine string, req proto.DesktopDeliverReq) (proto.DesktopDeliverResp, error) {
 	_, _, _ = ctx, machine, req
 	return proto.DesktopDeliverResp{}, proto.ErrDesktopNotImplemented // TODO(B434)
 }
 
-// handleDesktopDeliver 是 POST /api/desktop/deliver（P3=A）：只在本机写信 + 发
-// continue，从不再转发（一跳封顶）；鉴权沿 /api 既有 token 中间件。未注册
-// （TODO(B434)）。
+// handleDesktopDeliver 是 POST /api/desktop/deliver（P3=A）：以本机身份调
+// deliverDesktopLetter 的本机分支（按 Card 在本机解析 Folder 并渲染），从不再
+// 转发（一跳封顶）；项目在本机无位置 → 409 {"error": <errNoLocalProject 包装文本>}。
+// 鉴权沿 /api 既有 token 中间件。未注册（TODO(B434)）。
 func (s *Server) handleDesktopDeliver(w http.ResponseWriter, r *http.Request) {
 	_ = r
 	writeErr(w, http.StatusNotImplemented, proto.ErrDesktopNotImplemented) // TODO(B434)
@@ -175,6 +177,14 @@ func (s *Server) wakeDesktopSeat(ctx context.Context, card, seat string, desk le
 	evs []keystone.WakeEvent, raws []proto.LedgerEvent, roundID string) (keystone.RoundResult, error) {
 	_, _, _, _, _, _, _ = ctx, card, seat, desk, evs, raws, roundID
 	return keystone.RoundResult{}, proto.ErrDesktopNotImplemented // TODO(B434)
+}
+
+// renderLauncherLetter 渲染拉起器来信（r5，唯一渲染点，只在拉起器所在机器调用）：
+// desktopLaunchMaterial(card, SeatDesktopViaLauncher) → 套 §3.6 拉起器来信模板。
+// 项目在本机无位置 → 透传 errNoLocalProject 包装错误。
+func (s *Server) renderLauncherLetter(card string) (string, error) {
+	_ = card
+	return "", proto.ErrDesktopNotImplemented // TODO(B434)
 }
 
 // desktopNeedsHumanSystemActors 是「系统组件自打」的 needs_human actor 精确值表

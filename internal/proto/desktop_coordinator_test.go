@@ -54,3 +54,25 @@ func TestB434CoordinatorWakeRespLetterUnopenedWire(t *testing.T) {
 		t.Fatalf("LetterUnopened=true 必须出键: %s", unopened)
 	}
 }
+
+// TestB434DesktopDeliverReqWireKeys 锁契约条 211/212（r5）：拉起器投递请求的 wire
+// 键集恰为 {cli_session, desktop_session, card}，不再携带来信正文。
+func TestB434DesktopDeliverReqWireKeys(t *testing.T) {
+	raw, err := json.Marshal(DesktopDeliverReq{CLISession: "c1", DesktopSession: "local_x", Card: "B434"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]bool{"cli_session": true, "desktop_session": true, "card": true}
+	if len(fields) != len(want) {
+		t.Fatalf("DesktopDeliverReq 键集 = %s，契约冻结 {cli_session, desktop_session, card}", raw)
+	}
+	for k := range fields {
+		if !want[k] {
+			t.Fatalf("DesktopDeliverReq 出现契约外的键 %q: %s", k, raw)
+		}
+	}
+}

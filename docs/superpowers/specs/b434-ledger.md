@@ -97,3 +97,12 @@
 - 契约：§3.2/§3.5/§3.6/§3.8/§3.8.1/§3.10/§3.12 补签；冻结条 177–210；拍板 D6；§7 无待裁决，R1 关；欠账 12 清、增 14–17。spec 头部修订轨迹追加 r2.2。
 - 查证中发现（未改，待协调者认定，欠账 17）：拉起器来信 `Folder` 取自发起 agentd 的项目位置，拉起器在异机（P3=A）时路径可能不对。
 - r4 提交（历史读数，随后 amend 一次，hash 会变）：`git commit -q -F <scratchpad>/r1/msg4.txt && git log --oneline -1` → `35af1038 docs(b434): contract r4 — 补签 P5=B 与 P4`。未 push。
+
+### contract r5（2026-10-16，协调者拍板欠账 17 = 候选一；基于 `939d0fb4`）
+
+- 拍板原文（协调者）：「选候选一。理由：与 D3『信在桌面端所在机渲染与落盘』同一原则——拉起材料必须在拉起器所在机器解析，发起端只搬运『哪张卡』。」
+- DTO 选择：`DesktopDeliverReq` 携带 `card`（不选项目名）——简报还需卡标题/有效基线/所在会话，收件机须经共享账本按卡读；既有协调者 DTO 以卡为键。`letter` 字段删除（发起端不再搬运正文）。
+- Ticket 0：`internal/proto/desktop_coordinator.go:73` `DesktopDeliverReq{CLISession, DesktopSession, Card}`；`internal/agentd/desktopwake.go:185` `renderLauncherLetter` 空壳，`deliverDesktopLetter`/`handleDesktopDeliver` 注释改写；`internal/proto/desktop_coordinator_test.go` 增 `TestB434DesktopDeliverReqWireKeys`。契约内 desktopwake.go 行号按符号重算（14 处）。
+- 命令与退出码（`export PATH="$HOME/.local/sdk/go/bin:$HOME/.local/sdk/node/bin:$PATH"`）：`go build ./...` exit=0；`go vet ./...` exit=0；`go test -count=1 ./internal/agentd/ ./internal/proto/ ./internal/ledger/` exit=0；`go test ./internal/proto/ -run 'TestB434|TestCoordinatorWakeWire' -v` → 四支 PASS（含新 `TestB434DesktopDeliverReqWireKeys`）；`go test ./internal/agentd/ -run TestB434 -v` → PASS；`cd web && npm run typecheck` exit=0；`npx eslint` B434 五文件 exit=0；`npx vitest run` 三文件 exit=0。
+- 契约：§3.2 DTO、§3.6 渲染点注、§3.9 deliver 行与发起端 409 透传、新 §3.9.1；条 150/158 注明；追加 §4.13 条 211–222；欠账 17 清；§12 修订记录 r5。
+- r5 提交（历史读数，随后 amend 一次，hash 会变）：`git commit -q -F <scratchpad>/r1/msg5.txt` → `21a7f405 docs(b434): contract r5 — 拉起器代开材料在拉起器所在机解析`。未 push。

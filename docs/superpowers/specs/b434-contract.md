@@ -134,7 +134,7 @@ const (
     SeatDesktopViaLauncher = "launcher"  // 拉起器代开
     SeatDesktopViaManual   = "manual"    // 手填（card seat desktop set / 未带 --via）
 )
-func ValidateDesktopSessionID(id string) error         // :85  前缀 local_ + 余部非空且只含 [A-Za-z0-9-]
+func ValidateDesktopSessionID(id string) error         // :89  前缀 local_ + 余部非空且只含 [A-Za-z0-9-]
 ```
 
 ### 3.2 HTTP DTO（`internal/proto/desktop_coordinator.go`，新增，Ticket 0 已落）
@@ -152,7 +152,7 @@ type DesktopLauncherOpenResp struct {        // :60
     HandledBy string `json:"handled_by"`
 }
 // 以下两型服务 POST /api/desktop/deliver（P3=A 协调者已拍板）
-type DesktopDeliverReq  struct { CLISession, DesktopSession, Letter string }  // json: cli_session / desktop_session / letter
+type DesktopDeliverReq  struct { CLISession, DesktopSession, Card string }    // :73  json: cli_session / desktop_session / card（r5：携带卡号，不再携带来信正文）
 type DesktopDeliverResp struct { HandledBy string; Written, Opened bool }     // json: handled_by / written / opened
 ```
 
@@ -302,7 +302,7 @@ func (s *Server) desktopLetter(card, seat string, evs []keystone.WakeEvent, raws
 读全文：handoff card show <卡号>；会话消息：handoff session read <会话 id>。处置完不必挂订阅，有事会再叫醒你。
 ```
 
-拉起器来信 = `DesktopWakeMarker + " 请替我开一场协调者会话。\n\n项目根目录：<Folder>\n\n用桌面端会话管理工具在上述目录新建会话，把下面整段简报作为首条消息发出：\n\n" + Brief(via=launcher)`。
+拉起器来信（r5：只在拉起器所在机器由 `renderLauncherLetter` 渲染，§3.9.1）= `DesktopWakeMarker + " 请替我开一场协调者会话。\n\n项目根目录：<Folder>\n\n用桌面端会话管理工具在上述目录新建会话，把下面整段简报作为首条消息发出：\n\n" + Brief(via=launcher)`。
 
 ### 3.7 continue 深链、投递与失败路径（`internal/agentd/desktopwake.go`）
 
@@ -310,16 +310,16 @@ func (s *Server) desktopLetter(card, seat string, evs []keystone.WakeEvent, raws
 type desktopOpener func(url string) error                                                       // :54
 func claudeContinueURL(desktopSession string) (string, error)                                   // :89
 //   = proto.ClaudeContinueURLPrefix + url.QueryEscape(desktopSession)；先 ValidateDesktopSessionID
-func (s *Server) deliverDesktopLetter(ctx context.Context, machine string, req proto.DesktopDeliverReq) (proto.DesktopDeliverResp, error)  // :98
-func (s *Server) handleDesktopDeliver(w http.ResponseWriter, r *http.Request)                   // :106
-type desktopUndeliveredError struct{ machine string; err error }   // :115  信未落盘
-func desktopUndelivered(err error) bool                             // :127
-type desktopUnopenedError struct{ letterPath string; err error }    // :136  信已落盘、opener 失败
-func desktopUnopened(err error) bool                                // :148
-func withForwardedWake(ctx context.Context) context.Context         // :158
-func isForwardedWake(ctx context.Context) bool                      // :163
+func (s *Server) deliverDesktopLetter(ctx context.Context, machine string, req proto.DesktopDeliverReq) (proto.DesktopDeliverResp, error)  // :99
+func (s *Server) handleDesktopDeliver(w http.ResponseWriter, r *http.Request)                   // :108
+type desktopUndeliveredError struct{ machine string; err error }   // :117  信未落盘
+func desktopUndelivered(err error) bool                             // :129
+type desktopUnopenedError struct{ letterPath string; err error }    // :138  信已落盘、opener 失败
+func desktopUnopened(err error) bool                                // :150
+func withForwardedWake(ctx context.Context) context.Context         // :160
+func isForwardedWake(ctx context.Context) bool                      // :165
 func (s *Server) wakeDesktopSeat(ctx context.Context, card, seat string, desk ledger.SeatDesktop,
-    evs []keystone.WakeEvent, raws []proto.LedgerEvent, roundID string) (keystone.RoundResult, error)   // :174
+    evs []keystone.WakeEvent, raws []proto.LedgerEvent, roundID string) (keystone.RoundResult, error)   // :176
 const desktopWakeFailReasonPrefix = "桌面端协调者唤醒失败："                                      // :40
 ```
 
@@ -375,10 +375,10 @@ type CoordinatorWakeResp struct {
 用户原话：「P5 选 B：needs_human 叫醒桌面端协调者，但排除 agentd 和协调者自己打的标」。
 
 ```go
-var desktopNeedsHumanSystemActors = []string{"agentd", "keystone", "coordinator"}   // desktopwake.go:184
-const desktopNeedsHumanSystemActorPrefix = "node:"                                   // :188
-func isSystemNeedsHumanActor(actor string) bool                                      // :192
-func (s *Server) desktopNeedsHumanWakes(ev proto.LedgerEvent) ([]keystone.WakeEvent, error)  // :203
+var desktopNeedsHumanSystemActors = []string{"agentd", "keystone", "coordinator"}   // desktopwake.go:194
+const desktopNeedsHumanSystemActorPrefix = "node:"                                   // :198
+func isSystemNeedsHumanActor(actor string) bool                                      // :202
+func (s *Server) desktopNeedsHumanWakes(ev proto.LedgerEvent) ([]keystone.WakeEvent, error)  // :213
 ```
 
 **分流层：选「在 `automationWakeEvents`（Server 方法）里先于纯函数分流」，不选「给 `automationWakeEvent` 加参数」。** 依据：
@@ -405,14 +405,33 @@ func (s *Server) desktopNeedsHumanWakes(ev proto.LedgerEvent) ([]keystone.WakeEv
 | --- | --- | --- | --- |
 | `GET /api/cards/{id}/coordinator/desktop-launch` | `withLedger`（**不**套 `withCoordinator`） | — | 200 `DesktopLaunchMaterial`（via=page）；404 卡不存在（`ledgerErr`）；409 `{"error": <errNoLocalProject 包装文本>}` |
 | `POST /api/cards/{id}/coordinator/desktop-launch` | `withLedger` | `{}` | 200 `DesktopLauncherOpenResp`；409 `{"error":"无拉起器，请在桌面端开一场并登记"}` 且已 `MarkNeedsHuman(card, 同文, "agentd")`；409 无本机位置；502 投递失败（已落 needs_human，前缀同 §3.7） |
-| `POST /api/desktop/deliver`（P3=A 协调者已拍板） | `/api` 既有 token 中间件（`internal/agentd/server.go#Server.auth`，`:976`）；不需要账本 | `DesktopDeliverReq` | 200 `DesktopDeliverResp`；400 字段缺失或桌面端会话 id 非法；只在本机写信 + opener，**无论是否带 `X-Handoff-Forwarded`（`forward.go:35`）都从不出站转发**（一跳封顶）；opener 失败 → 200 `{written:true, opened:false}` |
+| `POST /api/desktop/deliver`（P3=A 协调者已拍板） | `/api` 既有 token 中间件（`internal/agentd/server.go#Server.auth`，`:976`）；不需要账本 | `DesktopDeliverReq`（r5：`{cli_session, desktop_session, card}`） | 200 `DesktopDeliverResp`；400 字段缺失或桌面端会话 id 非法；409 `{"error": <errNoLocalProject 包装文本>}`（卡的项目在**收件机**无登记位置）；只在本机按卡解析并渲染、写信 + opener，**无论是否带 `X-Handoff-Forwarded`（`forward.go:35`）都从不出站转发**（一跳封顶）；opener 失败 → 200 `{written:true, opened:false}` |
 
-发起端：`deliverDesktopLetter` 对异机拉起器用 `clientForTarget(machine)` 并 `MarkForwarded()` 发出；转交失败 → `MarkNeedsHuman(card, desktopWakeFailReasonPrefix+…)`，代开端点回 502。
+发起端：`deliverDesktopLetter` 对异机拉起器用 `clientForTarget(machine)` 并 `MarkForwarded()` 发出；收件机回 409（无本机位置）→ 代开端点回 409，`error` 逐字透传收件机文本，不落 needs_human（与本机无位置的 409 同款：人当场就能看到原因）；其余转交失败 → `MarkNeedsHuman(card, desktopWakeFailReasonPrefix+…)`，代开端点回 502。
+
+### 3.9.1 拉起器代开材料在拉起器所在机解析（r5，协调者拍板欠账 17 = 候选一）
+
+原则与拍板 D3 相同：信在桌面端所在机器渲染与落盘；发起端只搬运「哪张卡」。
+
+```go
+type DesktopDeliverReq struct {                                   // internal/proto/desktop_coordinator.go:73
+    CLISession     string `json:"cli_session"`
+    DesktopSession string `json:"desktop_session"`
+    Card           string `json:"card"`
+}
+func (s *Server) renderLauncherLetter(card string) (string, error)   // internal/agentd/desktopwake.go:185（新增空壳）
+```
+
+- **携带卡号而不是项目名**：既有协调者 DTO 都以卡为键（`CoordinatorWakeReq` 走 `/api/cards/{id}/…` 路径、`DesktopLaunchMaterial.Card`）；简报除 `Folder` 外还要卡标题、有效基线、所在会话，收件机只有拿到卡号才能经共享账本读全（`GetCard`/`EffectiveBaseBranch`/`SessionOfCard`），项目名只够解析 `Folder`。项目名由收件机从 `card.Project` 读出。
+- **唯一渲染点**：`renderLauncherLetter`（`desktopwake.go:185`）= `desktopLaunchMaterial(card, SeatDesktopViaLauncher)`（`:57`，按**本机** `ListProjectLocations` 解析 `Folder`）+ §3.6 拉起器来信模板。它只被 `deliverDesktopLetter` 的本机分支（`:99`）调用。
+- **本机拉起器路径**：`openViaDesktopLauncher`（`:221`）→ `deliverDesktopLetter(ctx, launcher.Machine, req)` 本机分支 → `renderLauncherLetter` → `writeDesktopLetter` → opener。
+- **异机拉起器路径**：`openViaDesktopLauncher` → `deliverDesktopLetter` 异机分支 → `POST /api/desktop/deliver {cli_session, desktop_session, card}`（发起端**不**渲染来信、不解析 `Folder`）→ 收件机 `handleDesktopDeliver`（`:108`）→ 同一个 `deliverDesktopLetter` 本机分支 → `renderLauncherLetter`。
+- **无本机位置**：`renderLauncherLetter` 透传 `errNoLocalProject` 包装错误（与 §3.5 同款文本「项目在本机没有登记位置：<project>（handoff project add 登记后可用）」）；收件机回 409 带该文本；发起端代开端点 409 原样透传，控制台按 P4「失败逐字显示服务端 `error`」展示（条 209）。
 
 ```go
 var errNoDesktopLauncher = errors.New(desktopNoLauncherReason)                                   // :34
 const desktopNoLauncherReason = "无拉起器，请在桌面端开一场并登记"                                  // :37
-func (s *Server) openViaDesktopLauncher(ctx context.Context, card string) (proto.DesktopLauncherOpenResp, error)  // :183
+func (s *Server) openViaDesktopLauncher(ctx context.Context, card string) (proto.DesktopLauncherOpenResp, error)  // :221
 ```
 
 ### 3.10 CLI 面（实现节点落）
@@ -504,7 +523,7 @@ func ClaudeModStatus(mod fs.FS, home string) Site    // 逐文件哈希比对 + 
 
 ## 4. 原子冻结清单
 
-每条一支可独立判 pass/fail 的接缝断言。「T0」= Ticket 0 已写对应测试，**但本轮未跑**（本机无工具链，§9.2）；其余为实现节点对账条目。r1 修复轮拆开了复合条目并补齐来信内容与异机失败路径，编号整体重排（r0 编号作废）。r2 修复轮改写条 99–111，并在 §4.6 内追加条 165–176（编号接续全清单末尾，不再重排已对账编号）。r4 补签轮追加 §4.11（条 177–193）与 §4.12（条 194–210）。
+每条一支可独立判 pass/fail 的接缝断言。「T0」= Ticket 0 已写对应测试，**但本轮未跑**（本机无工具链，§9.2）；其余为实现节点对账条目。r1 修复轮拆开了复合条目并补齐来信内容与异机失败路径，编号整体重排（r0 编号作废）。r2 修复轮改写条 99–111，并在 §4.6 内追加条 165–176（编号接续全清单末尾，不再重排已对账编号）。r4 补签轮追加 §4.11（条 177–193）与 §4.12（条 194–210）。r5 补签轮追加 §4.13（条 211–222），并在条 150 注明渲染点。
 
 ### 4.1 拉起材料（S1）
 
@@ -693,7 +712,7 @@ func ClaudeModStatus(mod fs.FS, home string) Site    // 逐文件哈希比对 + 
 147. 上条不调 opener。
 148. 有本机拉起器 → 写一封以 `[handoff]` 开头的信到拉起器 CLI 会话的信箱。
 149. 上条信含 `Folder`。
-150. 上条信含 via=launcher 的简报全文。
+150. 上条信含 via=launcher 的简报全文（由本机 `renderLauncherLetter` 渲染）。
 151. 有本机拉起器 → 对拉起器桌面端会话 id 调 opener 恰一次（continue）。
 152. 拉起请求不写 room_message（是信，不是 `by_system` 结构行）。
 153. 拉起器在异机 → 恰一次 `POST /api/desktop/deliver` 到该机，请求带 `X-Handoff-Forwarded`。
@@ -701,7 +720,7 @@ func ClaudeModStatus(mod fs.FS, home string) Site    // 逐文件哈希比对 + 
 155. `/api/desktop/deliver` 只在本机写信 + opener，不论是否带 `X-Handoff-Forwarded` 都零出站转发。
 156. `/api/desktop/deliver` 信落盘后回 `written:true`。
 157. `/api/desktop/deliver` opener 失败时回 200 `{written:true, opened:false}`，信留在信箱。
-158. 异机拉起器投递失败 → needs_human（前缀「桌面端协调者唤醒失败：」）且代开端点回 502。
+158. 异机拉起器投递失败 → needs_human（前缀「桌面端协调者唤醒失败：」）且代开端点回 502（收件机 409 无本机位置除外，见条 220–221）。
 159. `handoff status` 列出每个登记拉起器的项目名。
 160. 同上列出桌面端会话 id。
 161. 同上列出机器。
@@ -751,6 +770,21 @@ func ClaudeModStatus(mod fs.FS, home string) Site    // 逐文件哈希比对 + 
 208. 上条成功 → 面板显示 `DESKTOP_LAUNCHER_SENT`。
 209. 上条失败 → 面板 `role="alert"` 段逐字显示服务端 `error` 文本。
 210. 请求进行中与断连时「让拉起器代开」为禁用态。
+
+### 4.13 拉起器代开材料在拉起器所在机解析（r5）
+
+211. `DesktopDeliverReq` 的 JSON 键集恰为 {cli_session, desktop_session, card}（T0：`internal/proto/desktop_coordinator_test.go#TestB434DesktopDeliverReqWireKeys`，r5 已跑 PASS）。
+212. `DesktopDeliverReq` 不含来信正文键（`letter` 不出现；T0：同上）。
+213. 异机拉起器路径中，发起端零调用 `renderLauncherLetter`。
+214. 异机拉起器路径中，发起端零调用 `desktopLaunchMaterial`（不在发起端解析 `Folder`）。
+215. 收件机 `handleDesktopDeliver` 恰调用一次 `renderLauncherLetter(req.Card)`。
+216. 收件机写出的拉起器来信 `Folder` 等于收件机自己登记的该卡项目位置（发起端与收件机路径不同时以收件机为准）。
+217. 本机拉起器路径恰调用一次 `renderLauncherLetter`，且只经 `deliverDesktopLetter` 本机分支。
+218. 卡的项目在收件机无登记位置 → `/api/desktop/deliver` 回 409，`error` 含项目名。
+219. 上条情形收件机零写信、零 opener 调用。
+220. 上条情形发起端代开端点回 409，`error` 与收件机 409 的 `error` 逐字相同。
+221. 上条情形发起端不落 needs_human。
+222. `/api/desktop/deliver` 的 `card` 为空 → 400，零写信。
 
 ---
 
@@ -828,6 +862,7 @@ func ClaudeModStatus(mod fs.FS, home string) Site    // 逐文件哈希比对 + 
 - `internal/ledger/seat_desktop.go`：`SeatDesktop`、`DesktopLauncher` + 六个 Store 方法空壳（`SetSeatDesktop`、`SeatDesktopOf`、`RegisterDesktopLauncher`、`DesktopLauncherOf`、`UnregisterDesktopLauncher`、`ListDesktopLaunchers`，均返回 `ErrDesktopNotImplemented`）。
 - `internal/agentd/desktopwake.go`：§3.5/§3.6/§3.7/§3.9 的函数空壳（含 r1 新增 `handleDesktopDeliver`（未注册）、`desktopUndeliveredError`/`desktopUndelivered`、`withForwardedWake`/`isForwardedWake`；`desktopLetter` 改为 `Server` 方法并返回 error；r2 新增 `desktopUnopenedError`/`desktopUnopened`）、两个错误哨兵、两个 reason 字面量、`desktopOpener` 类型。
 - `desktop/internal/shell/external_deeplink.go` + `external_deeplink_test.go`：前缀常量、处理器与校验器空壳、前缀字面量测试。
+- r5：`internal/proto/desktop_coordinator.go` `DesktopDeliverReq` 以 `Card` 取代 `Letter`；`internal/agentd/desktopwake.go` 增 `renderLauncherLetter` 空壳；`internal/proto/desktop_coordinator_test.go` 增 `TestB434DesktopDeliverReqWireKeys`。
 - r4：`internal/agentd/desktopwake.go` 增 `desktopNeedsHumanSystemActors`/`desktopNeedsHumanSystemActorPrefix`/`isSystemNeedsHumanActor`（空壳）/`desktopNeedsHumanWakes`（空壳）；`internal/agentd/desktopwake_b434_test.go`（新，actor 表金样本）；`internal/proto/desktop_coordinator.go` `DesktopLaunchMaterial.Launcher`；`web/src/api/scheduling.ts` `launcher?`；`web/src/app/cards/desktopSeatCopy.ts` + `desktopSeatCopy.test.ts`（新，文案金样本）。
 - `web/src/app/lib/desktopShell.ts`（+前缀、`requestOpenDeepLink` 空壳）、`desktopShell.test.ts`（+前缀用例）、`web/src/app/lib/claudeDeepLink.ts`（新）、`web/src/app/lib/claudeDeepLink.test.ts`（r1 新增：条 24/25 字面量用例）、`web/src/api/scheduling.ts`（+两 DTO、两 API 镜像）。
 
@@ -878,7 +913,7 @@ r0–r2 三轮本机无 Go/Node 工具链（台账原文：`command not found: g
 14. **P5=B 实现（r4 新增，归 S2）**：`automationWakeEvents` 增 needs_human 分流、`desktopNeedsHumanWakes`/`isSystemNeedsHumanActor` 实现、来信 needs_human 段渲染，对账条 177–193（条 180/181 已由 T0 锁）。
 15. **`card needs` actor 改席位身份优先（r4 新增，归 S2；CLI 行为改动）**：`cmd/card_records.go:84` 改为 `currentSeatIdentity("", "")` 成功即用、失败回落 `ledgerActor()` 且不报错，对账条 189–190。
 16. **P4 实现（r4 新增，归 S3）**：材料端点填 `launcher`、`CoordinatorPanel` 第三按钮，对账条 200–210（条 194–199 已由 T0 锁）。
-17. **待协调者认定（r4 查证中发现，不在本轮裁决范围）**：拉起器来信里的 `Folder` 取自**发起请求的 agentd** 的项目位置（§3.5），而拉起器可在异机（P3=A）；两台机器的项目路径不同时，拉起器会被指到错误目录。候选：由拉起器所在机器的 agentd 在 `/api/desktop/deliver` 收件时按项目名重解析 `Folder` 并重渲染简报（需给 `DesktopDeliverReq` 增 `Card`/`Project` 字段），或在材料里注明「仅本机拉起器」。本轮不改。
+17. ~~**拉起器异机 `Folder` 缺口**~~ **已清（r5）**：协调者拍板候选一，补签 §3.9.1、条 211–222；实现随 S3（欠账 11）。
 
 ---
 
@@ -911,3 +946,5 @@ r0–r2 三轮本机无 Go/Node 工具链（台账原文：`command not found: g
 > **修订记录（r3 补跑，2026-10-16）**：用户裁决本机安装官方 Go/Node 后补齐编译与测试证据（§9.2），§10.1/§10.2 清账、§10.3 部分清账（validate/check/resolve 已跑，视图 diff 仍欠）；lint 清零改动：`claudeDeepLink.ts`、`desktopShell.ts` 空壳形参去下划线改 `void` 引用；§12 第 3 项 ✅、第 4 项仅余 fixture。审阅轮 3 非阻塞建议 1（未投递/未打开互斥断言）、2（「未打开」走独立分支不经 `clearWakeStall`）交 plan 吸收。
 >
 > **修订记录（r4 补签轮，2026-10-16）**：用户裁决 P5=B、P4=推荐。P5：§3.8.1 新增 needs_human 唤醒桌面端席位（分流层 = `automationWakeEvents` 先于纯函数分流；排除系统组件 actor 表 `agentd/keystone/coordinator` + `node:` 前缀与席位自打；复用 `WakeTaskTerminal` 以过 `keystone.Decide`；查证 needs_human 无 `by_system` 字段、`card needs` 现 actor 为 `cli:<USER>@<host>`，补签其改为席位身份优先），§3.6 来信增 needs_human 段，条 177–193，拍板 D6。P4：§3.12 拉起器代开入口（文案常量 `desktopSeatCopy.ts`、显示条件、调用、禁用与失败提示），`DesktopLaunchMaterial` 增 `launcher` omitempty，条 194–210。§7 已无待裁决项，R1 关闭；spec 头部记 r2.2。新增欠账 14–17（17 为查证中发现的拉起器异机 `Folder` 缺口，待协调者认定）。
+>
+> **修订记录（r5 补签轮，2026-10-16）**：协调者拍板欠账 17 = 候选一（与 D3 同一原则）。`DesktopDeliverReq` 以 `card` 取代 `letter`（选卡号不选项目名：简报需卡标题/基线/会话，且既有协调者 DTO 以卡为键）；新增 `renderLauncherLetter` 为拉起器来信唯一渲染点，只在拉起器所在机调用；收件机无本机位置 → 409，发起端代开端点逐字透传、不落 needs_human。§3.9.1，条 211–222，欠账 17 清。
