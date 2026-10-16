@@ -17,6 +17,8 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"strings"
+	"unicode"
 
 	"github.com/Xsxdot/handoff/internal/ledger"
 	"github.com/Xsxdot/handoff/internal/proto"
@@ -53,12 +55,15 @@ func validSeatDesktopViaFlag(via string) bool {
 // 必须在任何账本写入之前返回。
 // 注意：--via 由 flag 缺省值给出 manual（契约条 47）；显式空串按词表外拒绝。
 func prepareSeatDesktop(identity string, in desktopSeatInput) (ledger.SeatDesktop, string, error) {
-	cli, _, err := proto.ParseSeatIdentity(identity)
+	cli, cliSession, err := proto.ParseSeatIdentity(identity)
 	if err != nil {
 		return ledger.SeatDesktop{}, "", fmt.Errorf("解析席位身份: %w", err)
 	}
 	if cli != desktopSeatCLI {
 		return ledger.SeatDesktop{}, "", fmt.Errorf("--desktop-session 只能用于 claude 会话的席位，当前席位物种是 %q", cli)
+	}
+	if err := checkMailboxKey(cliSession); err != nil {
+		return ledger.SeatDesktop{}, "", err
 	}
 	if err := proto.ValidateDesktopSessionID(in.Session); err != nil {
 		return ledger.SeatDesktop{}, "", fmt.Errorf("--desktop-session 非法: %w", err)
@@ -71,6 +76,22 @@ func prepareSeatDesktop(identity string, in desktopSeatInput) (ledger.SeatDeskto
 		return ledger.SeatDesktop{}, "", err
 	}
 	return ledger.SeatDesktop{Session: in.Session, Machine: machine, Via: in.Via}, hint, nil
+}
+
+// checkMailboxKey 执法席位 CLI 会话 id 可作信箱文件名的一段（契约 r10 第 5 条，与
+// internal/ledger 拉起器写闸同一规则）：不含 / \ # 与空白、不以 . 开头。
+//
+// 为什么 CLI 要再判：桌面端唤醒把信写到 ~/.handoff/desktop-wake/<CLI id>.<ns>.md，含路径
+// 分隔符的 id 会写出信箱目录、以 . 开头的 id 会落成隐藏文件或 ..；SetSeatDesktop 不判
+// 席位 cli 段与会话 id（只判桌面端 id），不在这里拦就会坐下并记上一个永远收不到信的席位。
+// # 与空白已被席位编码规则拒绝，这里仍列出是为了与拉起器写闸的规则逐条对齐。
+// 注意：错误文案不带 id 原值（会话 id 不进日志，沿 currentSeatIdentity 约定）。
+func checkMailboxKey(cliSession string) error {
+	if cliSession == "" || strings.ContainsAny(cliSession, "/\\#") ||
+		strings.IndexFunc(cliSession, unicode.IsSpace) >= 0 || strings.HasPrefix(cliSession, ".") {
+		return fmt.Errorf("当前席位的 CLI 会话 id 不可作信箱文件名（不得含 / \\ # 或空白，不得以 . 开头），不能挂桌面端记录")
+	}
+	return nil
 }
 
 // resolveDesktopMachine 决定桌面端记录 / 拉起器登记的机器名。
@@ -96,4 +117,15 @@ func resolveDesktopMachine(flagValue string, changed bool) (string, string, erro
 		}
 	}
 	return host, "", nil
+}
+
+// seatDesktopSetRemedy 拼 card bind 第二步失败时给人的补救命令。
+// 为什么原样带 --via：补写若降成缺省 manual，seat_desktop_set 事件就丢了「这场会话是
+// 页面 / 拉起器开出来的」来源信息（故事 9；契约 r10 第 5 条）；manual 即缺省，省略。
+func seatDesktopSetRemedy(id string, desk ledger.SeatDesktop) string {
+	cmd := fmt.Sprintf("handoff card seat desktop set %s --desktop-session %s", id, desk.Session)
+	if desk.Via != proto.SeatDesktopViaManual {
+		cmd += " --via " + desk.Via
+	}
+	return cmd
 }

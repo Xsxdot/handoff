@@ -9,11 +9,15 @@
 package cmd
 
 import (
+	"database/sql"
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/ledger"
 	"github.com/Xsxdot/handoff/internal/proto"
 )
@@ -171,5 +175,202 @@ func TestB434CardBindDesktopSessionRecordsSeatDesktop(t *testing.T) {
 	defer st.Close()
 	if _, hasBearing, err := st.SeatBearingOf(id); err != nil || hasBearing {
 		t.Fatalf("桌面端 bind 席位不得有 seat_bearings 行: has=%v err=%v", hasBearing, err)
+	}
+}
+
+// 条 48 + 拆解稿 §5.2 枚举表驱动：--via 三值照记；词表外与显式空串在坐下前被拒。
+func TestB434CardBindDesktopViaVocabulary(t *testing.T) {
+	cases := []struct {
+		via string
+		ok  bool
+	}{
+		{"page", true}, {"launcher", true}, {"manual", true},
+		{"bogus", false}, {"", false}, {"Page", false},
+	}
+	for _, tc := range cases {
+		t.Run("via="+tc.via, func(t *testing.T) {
+			clearSeatSourceEnv(t)
+			t.Setenv("CLAUDE_CODE_SESSION_ID", "claude-via")
+			dir := t.TempDir()
+			id := mustAddCard(t, dir, "via 卡")
+			_, _, err := runLedgerCLI(t, dir, "card", "bind", id, "--desktop-session", "local_via-1", "--via", tc.via)
+			card, desk, has := b434SeatState(t, dir, id)
+			if tc.ok {
+				if err != nil || !has || desk.Via != tc.via {
+					t.Fatalf("--via %q 应照记: err=%v has=%v via=%q", tc.via, err, has, desk.Via)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), "--via") {
+				t.Fatalf("--via %q 应被拒且点名 --via: %v", tc.via, err)
+			}
+			if card.DriverSession != "" || has {
+				t.Fatalf("词表外 --via 必须在坐下前被拒: seat=%q has=%v", card.DriverSession, has)
+			}
+		})
+	}
+}
+
+// 条 60：席位 cli 段非 claude → 报错且不写桌面端记录（本卡在坐下前校验，故也不坐下）。
+func TestB434CardBindDesktopRequiresClaudeSeat(t *testing.T) {
+	clearSeatSourceEnv(t)
+	t.Setenv("HANDOFF_SESSION_CLI", "codex")
+	t.Setenv("HANDOFF_SESSION_ID", "thread-desk")
+	dir := t.TempDir()
+	id := mustAddCard(t, dir, "非 claude 卡")
+	_, _, err := runLedgerCLI(t, dir, "card", "bind", id, "--desktop-session", "local_abc")
+	if err == nil || !strings.Contains(err.Error(), "claude") {
+		t.Fatalf("非 claude 席位带 --desktop-session 应报错并点名 claude: %v", err)
+	}
+	card, _, has := b434SeatState(t, dir, id)
+	if has {
+		t.Fatal("非 claude 席位不得写桌面端记录")
+	}
+	if card.DriverSession != "" {
+		t.Fatalf("入参被拒时不得坐下，席位 = %q", card.DriverSession)
+	}
+}
+
+// 条 61：--machine 或 --via 不带 --desktop-session → 报错且不坐下（反面断言查席位列）。
+func TestB434CardBindDesktopFlagsRequireSession(t *testing.T) {
+	for _, extra := range [][]string{{"--machine", "mac-01"}, {"--via", "page"}} {
+		t.Run(extra[0], func(t *testing.T) {
+			clearSeatSourceEnv(t)
+			t.Setenv("CLAUDE_CODE_SESSION_ID", "claude-orphan")
+			dir := t.TempDir()
+			id := mustAddCard(t, dir, "孤立 flag 卡")
+			args := append([]string{"card", "bind", id}, extra...)
+			_, _, err := runLedgerCLI(t, dir, args...)
+			if err == nil || !strings.Contains(err.Error(), "--desktop-session") {
+				t.Fatalf("%v 不带 --desktop-session 应报错: %v", extra, err)
+			}
+			card, _, has := b434SeatState(t, dir, id)
+			if card.DriverSession != "" || has {
+				t.Fatalf("孤立 flag 不得坐下: seat=%q has=%v", card.DriverSession, has)
+			}
+		})
+	}
+}
+
+// 条 54 的 CLI 侧前置：非法桌面端会话 id 在坐下前被拒。
+func TestB434CardBindDesktopRejectsBadSessionID(t *testing.T) {
+	for _, bad := range []string{"31eda11a-a6fe", "local_", "local_a b", "local_a/b", "LOCAL_abc"} {
+		t.Run(bad, func(t *testing.T) {
+			clearSeatSourceEnv(t)
+			t.Setenv("CLAUDE_CODE_SESSION_ID", "claude-bad-id")
+			dir := t.TempDir()
+			id := mustAddCard(t, dir, "非法 id 卡")
+			_, _, err := runLedgerCLI(t, dir, "card", "bind", id, "--desktop-session", bad)
+			// 断言「--desktop-session 非法」而非仅「--desktop-session」：基线的 unknown flag 报文
+			// 也含 flag 名，只断言 flag 名会在基线假绿（台账 C7 红跑读数）。
+			if err == nil || !strings.Contains(err.Error(), "--desktop-session 非法") {
+				t.Fatalf("非法 id %q 应报错: %v", bad, err)
+			}
+			card, _, has := b434SeatState(t, dir, id)
+			if card.DriverSession != "" || has {
+				t.Fatalf("非法 id 不得坐下: seat=%q has=%v", card.DriverSession, has)
+			}
+		})
+	}
+}
+
+// 拍板 D2 + 缺陷族·静默失败：第二步 SetSeatDesktop 失败（sqlite 触发器真实注入）→
+// 非零退出、stdout 不报成功、错误含补救命令（原样带 --via，契约 r10 第 5 条：不降成 manual，
+// 保故事 9 的来源信息）；席位保持已坐下；去掉注入后按补救命令补写成功。
+func TestB434CardBindDesktopSecondStepFailureKeepsSeat(t *testing.T) {
+	clearSeatSourceEnv(t)
+	t.Setenv("CLAUDE_CODE_SESSION_ID", "claude-half")
+	dir := t.TempDir()
+	id := mustAddCard(t, dir, "半态卡")
+	db, err := sql.Open("sqlite", filepath.Join(dir, "ledger.db")+"?_pragma=busy_timeout(5000)")
+	if err != nil {
+		t.Fatalf("打开 raw 账本: %v", err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`CREATE TRIGGER b434_seat_desktop_fail BEFORE INSERT ON seat_desktops
+		BEGIN SELECT RAISE(ABORT, '注入：桌面端记录写入失败'); END`); err != nil {
+		t.Fatalf("建注入触发器: %v", err)
+	}
+	out, errOut, err := runLedgerCLI(t, dir, "card", "bind", id, "--desktop-session", "local_half-1", "--via", "page")
+	if err == nil || ExitCode(err) == 0 {
+		t.Fatalf("第二步失败必须非零退出: err=%v", err)
+	}
+	msg := err.Error() + errOut
+	for _, want := range []string{"已坐下", "handoff card seat desktop set " + id + " --desktop-session local_half-1 --via page"} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("错误应含 %q，得 %q", want, msg)
+		}
+	}
+	if strings.Contains(out, `"ok"`) {
+		t.Fatalf("半态不得在 stdout 报成功: %q", out)
+	}
+	card, _, has := b434SeatState(t, dir, id)
+	if card.DriverSession != "cli:claude#claude-half" || has {
+		t.Fatalf("半态应为「已坐下、无桌面端记录」: seat=%q has=%v", card.DriverSession, has)
+	}
+	if _, err := db.Exec(`DROP TRIGGER b434_seat_desktop_fail`); err != nil {
+		t.Fatalf("撤注入触发器: %v", err)
+	}
+	out, errOut, err = runLedgerCLI(t, dir, "card", "seat", "desktop", "set", id, "--desktop-session", "local_half-1", "--via", "page")
+	if err != nil || out != "{\"ok\":true}\n" {
+		t.Fatalf("按补救命令补写应成功: out=%q err=%v stderr=%s", out, err, errOut)
+	}
+	_, desk, has := b434SeatState(t, dir, id)
+	if !has || desk.Session != "local_half-1" || desk.Via != proto.SeatDesktopViaPage {
+		t.Fatalf("补写后记录 = %+v has=%v", desk, has)
+	}
+}
+
+// §11.2：--machine 缺省取 hostname，且本机配置有 targets 却无同名项 → stderr 提示、照常坐下；
+// 显式 --machine 不提示。
+func TestB434CardBindDesktopMachineHint(t *testing.T) {
+	clearSeatSourceEnv(t)
+	t.Setenv("CLAUDE_CODE_SESSION_ID", "claude-hint")
+	dir := t.TempDir()
+	cfg := &config.Config{
+		Listen: "127.0.0.1:0", Token: "t", DataDir: dir, StallTimeout: 2 * time.Hour,
+		Ledger:  config.LedgerConfig{Enabled: true},
+		Targets: map[string]config.Target{"b434-other-box": {Addr: "10.0.0.9:7777", Token: "x"}},
+	}
+	if err := config.Save(filepath.Join(dir, "config.yaml"), cfg); err != nil {
+		t.Fatalf("写带 targets 的配置: %v", err)
+	}
+	id := mustAddCard(t, dir, "提示卡")
+	_, errOut, err := runLedgerCLI(t, dir, "card", "bind", id, "--desktop-session", "local_hint-1")
+	if err != nil {
+		t.Fatalf("提示不应影响成败: %v", err)
+	}
+	if !strings.Contains(errOut, "提示：--machine 缺省取本机 hostname") {
+		t.Fatalf("应提示 target 名对齐，stderr=%q", errOut)
+	}
+	id2 := mustAddCard(t, dir, "显式机器卡")
+	_, errOut, err = runLedgerCLI(t, dir, "card", "bind", id2, "--desktop-session", "local_hint-2", "--machine", "b434-other-box")
+	if err != nil || strings.Contains(errOut, "提示：--machine") {
+		t.Fatalf("显式 --machine 不应提示: err=%v stderr=%q", err, errOut)
+	}
+	if _, desk, _ := b434SeatState(t, dir, id2); desk.Machine != "b434-other-box" {
+		t.Fatalf("显式 --machine 应照记，得 %q", desk.Machine)
+	}
+}
+
+// 契约 r10 第 5 条（信箱键安全）：席位 CLI 会话 id 是信箱文件名
+// ~/.handoff/desktop-wake/<CLI id>.<ns>.md 的一段——含路径分隔符或以 . 开头的 id
+// 在坐下前被拒（# 与空白已被席位编码规则拒绝，不会走到这里）。
+func TestB434CardBindDesktopRejectsUnsafeMailboxKey(t *testing.T) {
+	for _, bad := range []string{"a/b", `a\b`, ".hidden", ".."} {
+		t.Run(bad, func(t *testing.T) {
+			clearSeatSourceEnv(t)
+			t.Setenv("CLAUDE_CODE_SESSION_ID", bad)
+			dir := t.TempDir()
+			id := mustAddCard(t, dir, "信箱键卡")
+			_, _, err := runLedgerCLI(t, dir, "card", "bind", id, "--desktop-session", "local_mbox-1")
+			if err == nil || !strings.Contains(err.Error(), "不可作信箱文件名") {
+				t.Fatalf("CLI 会话 id %q 应因信箱文件名不安全被拒: %v", bad, err)
+			}
+			card, _, has := b434SeatState(t, dir, id)
+			if card.DriverSession != "" || has {
+				t.Fatalf("信箱键不安全时不得坐下: seat=%q has=%v", card.DriverSession, has)
+			}
+		})
 	}
 }

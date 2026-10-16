@@ -70,8 +70,8 @@ var cardBindCmd = &cobra.Command{
 			if err := st.SetSeatDesktop(id, identity, desk); err != nil {
 				slog.Default().Warn("CLI 坐下后记录桌面端 id 失败（席位已坐下）", "card", id,
 					"desktop_session", desk.Session, "cause", err)
-				return fmt.Errorf("已坐下卡 %s，但未记录桌面端 id（%w）；可用 handoff card seat desktop set %s --desktop-session %s 补",
-					id, err, id, desk.Session)
+				return fmt.Errorf("已坐下卡 %s，但未记录桌面端 id（%w）；可用 %s 补",
+					id, err, seatDesktopSetRemedy(id, desk))
 			}
 			slog.Default().Info("CLI 坐下已记录桌面端 id", "card", id,
 				"desktop_session", desk.Session, "machine", desk.Machine, "via", desk.Via)
