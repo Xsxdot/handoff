@@ -1,4 +1,4 @@
-// desktopwake.go —— B434 Claude 桌面端会话当协调者：控制面侧（Ticket 0 空壳）。
+// desktopwake.go —— B434 Claude 桌面端会话当协调者：控制面侧。
 //
 // 职责：
 //   - 拉起材料：按卡产出「项目在本机的根目录 + 人尺度简报」（深链、复制兜底、
@@ -12,8 +12,9 @@
 // 边界：写信箱与发深链是 gateway 对本机的出站 I/O（d_gateway），不进 d_execution，
 // 不经 keystone（keystone.Wake / LaunchForCard 对桌面端席位零调用）。本机唤醒主缝与
 // 围栏渲染层由 B434.4 落码；拉起材料由 G1 落码；来信全段、信箱补强、needs_human 唤醒、
-// 失败段、跨机转交与生产 opener 由 G2（B434.5）落码；拉起器投递与代开仍是空壳，归 G3
-// （TODO(B434)）。契约见 docs/superpowers/specs/b434-contract.md §3.5–§3.8。
+// 失败段、跨机转交与生产 opener 由 G2（B434.5）落码；拉起器代开与投递（openViaDesktopLauncher、
+// deliverDesktopLetter、renderLauncherLetter、handleDesktopDeliver、handleDesktopLauncherOpen）
+// 由 G3（B434.6）落码。契约见 docs/superpowers/specs/b434-contract.md §3.5–§3.9.1。
 package agentd
 
 import (
@@ -21,7 +22,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -33,6 +36,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Xsxdot/handoff/internal/client"
 	"github.com/Xsxdot/handoff/internal/collab/room"
 	"github.com/Xsxdot/handoff/internal/keystone"
 	"github.com/Xsxdot/handoff/internal/ledger"
@@ -596,25 +600,213 @@ func openDesktopDeepLinkDarwin(link string) error {
 	return nil
 }
 
-// deliverDesktopLetter 是拉起器投递（r5）。machine 为本机 → renderLauncherLetter
-// (req.Card) 渲染来信（唯一渲染点）→ 写信 + opener；否则（拉起器在异机，P3=A）
-// 经 clientForTarget(machine).MarkForwarded() 的 POST /api/desktop/deliver 一跳转交，
-// 只搬运 req（含 Card），不在本机渲染。席位唤醒的异机路径不走本函数（走 B389
-// transferCoordinatorWake，拍板 D3）。
+// deliverDesktopLetter 是拉起器投递（契约 §3.9.1，r5）：把「请替我开一场协调者会话」的
+// 来信投进拉起器 CLI 会话的信箱，并对拉起器桌面端会话发 continue 深链。
+//
+// 参数：machine 拉起器登记的机器（空串 / 本机名 / 指向本机的 target 名 = 本机，判据与
+// wakeDesktopSeat 同式）；req 投递请求（CLISession 信箱键、DesktopSession continue 目标、
+// Card 卡号）。
+// 分支：本机 → deliverLauncherLetterLocal（renderLauncherLetter 是唯一渲染点，按**本机**
+// 项目位置解析 Folder，条 217）；异机 → forwardLauncherLetter（POST /api/desktop/deliver，
+// 发起端不渲染、不解析 Folder，条 213/214）。
+// 返回：err == nil ⇔ 信已落盘（本机或收件机）；resp.Opened 报告 continue 是否发出——
+// opener 失败或未装配不算错误（信已保住，处置归调用方）。err != nil 时信未落盘：项目
+// 无本机位置（本机或收件机 409）→ errors.Is(err, errNoLocalProject)，收件机 409 时
+// err.Error() 逐字等于收件机 error 原文（条 220）；其余原样包装。
+// 注意：从不落 needs_human（由 openViaDesktopLauncher 统一落，被转交端从不打标）；从不读
+// 拉起器登记——machine 与 req 都由调用方给定，所以收件机 handleDesktopDeliver 以
+// machine="" 调用时恒走本机分支、零出站（一跳封顶，条 155）。席位唤醒的异机路径不走
+// 本函数（走 B389 transferCoordinatorWake，拍板 D3）。
 func (s *Server) deliverDesktopLetter(ctx context.Context, machine string, req proto.DesktopDeliverReq) (proto.DesktopDeliverResp, error) {
-	_, _, _ = ctx, machine, req
-	return proto.DesktopDeliverResp{}, proto.ErrDesktopNotImplemented // TODO(B434)
+	if scheduling.IsLocalMachine(machine) || s.IsSelfTarget(machine) {
+		return s.deliverLauncherLetterLocal(req)
+	}
+	return s.forwardLauncherLetter(ctx, machine, req)
 }
 
-// handleDesktopDeliver 是 POST /api/desktop/deliver（P3=A）：以本机身份调
-// deliverDesktopLetter 的本机分支（按 Card 在本机解析 Folder 并渲染），从不再
-// 转发（一跳封顶）；项目在本机无位置 → 409 {"error": <errNoLocalProject 包装文本>}；
-// 卡不存在 → 404（ledgerErr，error 含卡号）。按卡读共享账本，注册时须套 withLedger
-// （未配账本 503，先于体校验），鉴权沿 /api 既有 token 中间件在外层（契约 r6 §4.15）。
-// 未注册（TODO(B434)）。
+// forwardLauncherLetter 是 deliverDesktopLetter 的异机分支：经 clientForTarget(machine)
+// .MarkForwarded() 发一次 POST /api/desktop/deliver（带 X-Handoff-Forwarded，条 153），只搬运
+// req；单次时限 desktopTransferTimeout（与席位唤醒转交同一上限，契约 r12 第 4 条——对端挂住时
+// 不把代开请求无限拖住）。收件机 409（项目在它那里没有登记位置）→ desktopRemoteNoLocalProjectError
+// （文本逐字取收件机 error，可 errors.Is(errNoLocalProject)）；请求已发出却没拿到回包（超时、
+// 读回包时断连）→ *desktopDeliveryUnknownError（收件机可能已写信，调用方不得说「未投递」）；
+// 其余失败（取客户端、拨号失败、非 2xx 含 400/503/404/500）原样包装上抛，由调用方按投递失败处置。
+func (s *Server) forwardLauncherLetter(ctx context.Context, machine string, req proto.DesktopDeliverReq) (proto.DesktopDeliverResp, error) {
+	var zero proto.DesktopDeliverResp
+	c, err := s.clientForTarget(machine)
+	if err != nil {
+		s.log.Error("拉起器投递取目标客户端失败", "card", req.Card, "machine", machine, "cause", err)
+		return zero, fmt.Errorf("取拉起器机器 %s 的客户端: %w", machine, err)
+	}
+	tctx, cancel := context.WithTimeout(ctx, desktopTransferTimeout)
+	defer cancel()
+	s.log.Info("拉起器投递转交到拉起器所在机器", "card", req.Card, "machine", machine)
+	resp, err := c.MarkForwarded().DesktopDeliver(tctx, req)
+	if err != nil {
+		if code, ok := client.StatusCode(err); ok && code == http.StatusConflict {
+			text, _ := client.ServerErrorText(err)
+			s.log.Warn("拉起器所在机器上项目无登记位置", "card", req.Card, "machine", machine, "cause", text)
+			return zero, &desktopRemoteNoLocalProjectError{text: text}
+		}
+		if launcherDeliveryOutcomeUnknown(err) {
+			s.log.Error("拉起器投递请求已发出但没拿到回包，结果未知", "card", req.Card, "machine", machine, "cause", err)
+			return zero, &desktopDeliveryUnknownError{err: fmt.Errorf("投递到拉起器机器 %s: %w", machine, err)}
+		}
+		s.log.Error("拉起器投递到目标机失败", "card", req.Card, "machine", machine, "cause", err)
+		return zero, fmt.Errorf("投递到拉起器机器 %s: %w", machine, err)
+	}
+	s.log.Info("拉起器投递已由收件机受理", "card", req.Card, "machine", machine,
+		"handled_by", resp.HandledBy, "written", resp.Written, "opened", resp.Opened)
+	return *resp, nil
+}
+
+// desktopRemoteNoLocalProjectError 是收件机回 409「项目在本机没有登记位置」的透传：
+// Error() 逐字等于收件机 error 原文（条 220），Unwrap 到 errNoLocalProject，使发起端与
+// 本机无位置走同一条 409 映射、同样不落 needs_human（条 221）。
+// 机器名不进 Error()（须与收件机原文逐字相同），由 forwardLauncherLetter 的 Warn 日志记。
+type desktopRemoteNoLocalProjectError struct {
+	text string
+}
+
+func (e *desktopRemoteNoLocalProjectError) Error() string { return e.text }
+
+func (e *desktopRemoteNoLocalProjectError) Unwrap() error { return errNoLocalProject }
+
+// desktopDeliveryUnknownError 是「投递请求已发到收件机、却没拿到回包」（review minor 1）：收件机
+// 可能已经写好信、发了 continue，也可能没有。发起端据此落「投递结果未知」而非「来信未投递」，
+// 提醒人先看拉起器信箱再决定是否重来（重复代开会开出两场会话）。
+type desktopDeliveryUnknownError struct{ err error }
+
+func (e *desktopDeliveryUnknownError) Error() string { return e.err.Error() }
+
+func (e *desktopDeliveryUnknownError) Unwrap() error { return e.err }
+
+// launcherDeliveryOutcomeUnknown 判定一次 DesktopDeliver 失败是否属「请求已发出、结果未知」：
+// 拨号失败（net.OpError.Op == "dial"，含拨号阶段撞上时限）请求根本没出去 → false；读回包时的
+// 网络错误（net.OpError.Op == "read"，如 connection reset）、时限到（context.DeadlineExceeded /
+// net.Error.Timeout）、读回包时连接关闭（io.EOF / io.ErrUnexpectedEOF）→ true。HTTP 非 2xx 不经
+// 这里（已拿到回包，结果确定）。
+func launcherDeliveryOutcomeUnknown(err error) bool {
+	var op *net.OpError
+	if errors.As(err, &op) {
+		switch op.Op {
+		case "dial":
+			return false
+		case "read":
+			return true
+		}
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	var ne net.Error
+	return errors.As(err, &ne) && ne.Timeout()
+}
+
+// deliverLauncherLetterLocal 是 deliverDesktopLetter 的本机分支：渲染 → 构造 continue 深链
+// → 写信 → opener。深链先于写信构造：会话 id 非法时一封信都不落（不留发不出去的信）。
+// 信箱根取 desktopMailboxHome()（G2 收口的唯一 HOME 规则，契约 r12 第 10 条）；文件名序号取
+// desktopClock()（与席位唤醒同一时钟缝）；落盘后顺手清本会话的残留临时文件（与 wakeDesktopSeat
+// 同款，尽力而为）。
+// 返回：信落盘即 Written=true、err=nil；Opened 仅在 s.desktopOpen 非 nil 且成功时为 true。
+// 信箱键不安全时 err 包 errDesktopMailboxKeyUnsafe（收件机据此回 400）。
+func (s *Server) deliverLauncherLetterLocal(req proto.DesktopDeliverReq) (proto.DesktopDeliverResp, error) {
+	var zero proto.DesktopDeliverResp
+	letter, err := s.renderLauncherLetter(req.Card)
+	if err != nil {
+		return zero, err
+	}
+	link, err := claudeContinueURL(req.DesktopSession)
+	if err != nil {
+		return zero, err
+	}
+	home, err := s.desktopMailboxHome()
+	if err != nil {
+		return zero, fmt.Errorf("取拉起器信箱根目录: %w", err)
+	}
+	letterPath, err := writeDesktopLetter(home, req.CLISession, letter, s.desktopClock())
+	if err != nil {
+		return zero, fmt.Errorf("写拉起器信箱: %w", err)
+	}
+	s.sweepDesktopLetterTmp(home, req.CLISession)
+	s.log.Info("拉起器来信已落盘", "card", req.Card, "cli_session", req.CLISession,
+		"letter", letterPath, "bytes", len(letter))
+	resp := proto.DesktopDeliverResp{HandledBy: s.localMachineName(), Written: true}
+	if s.desktopOpen == nil {
+		s.log.Error("拉起器来信已落盘但本机未装配 continue opener", "card", req.Card, "letter", letterPath)
+		return resp, nil
+	}
+	if err := s.desktopOpen(link); err != nil {
+		s.log.Error("拉起器来信已落盘但 continue 未发出", "card", req.Card, "letter", letterPath,
+			"desktop_session", req.DesktopSession, "cause", err)
+		return resp, nil
+	}
+	resp.Opened = true
+	s.log.Info("拉起器 continue 已发出", "card", req.Card, "desktop_session", req.DesktopSession)
+	return resp, nil
+}
+
+// validateDesktopDeliverReq 校验 /api/desktop/deliver 请求体：card 非空（条 222）；
+// cli_session 能编进 cli:claude#<id> 席位语法（与拉起器登记写闸同源，proto.EncodeSeatIdentity）；
+// desktop_session 过 proto.ValidateDesktopSessionID。信箱键的路径安全（`/`、`\`、点开头）
+// 仍由 writeDesktopLetter 最后一道拦截，它以 errDesktopMailboxKeyUnsafe 哨兵拒绝，
+// handleDesktopDeliver 据此回 400（契约 r12 第 6 条）——规则只在一处定义，不在这里复制。
+func validateDesktopDeliverReq(req proto.DesktopDeliverReq) error {
+	if strings.TrimSpace(req.Card) == "" {
+		return errors.New("card 必填")
+	}
+	if _, err := proto.EncodeSeatIdentity("claude", req.CLISession); err != nil {
+		return fmt.Errorf("cli_session 非法: %w", err)
+	}
+	if err := proto.ValidateDesktopSessionID(req.DesktopSession); err != nil {
+		return fmt.Errorf("desktop_session 非法: %w", err)
+	}
+	return nil
+}
+
+// handleDesktopDeliver 是 POST /api/desktop/deliver（P3=A，收件机）：按 req.Card 经共享账本
+// 读卡、用**本机**登记的项目位置渲染拉起器来信，写信 + opener。
+// 守卫：外层 /api token 中间件（401，条 154/246）→ withLedger（503，先于体校验，条 243/245）。
+// 响应：200 DesktopDeliverResp（opener 失败或未装配 → {written:true, opened:false}，信留在信箱，
+// 条 157）；400 体解码失败、字段非法（条 222）或信箱键不安全（errDesktopMailboxKeyUnsafe，
+// 契约 r12 第 6 条）；404 卡不存在（error 含卡号，条 247）；409 卡的项目在本机无登记位置
+// （条 218）；500 其余（列项目位置失败、mgr 未装配、写信失败——发起端按投递失败处置，契约
+// r10 第 3 条）。
+// 注意：deliverDesktopLetter 的 machine 恒传 ""——不论是否带 X-Handoff-Forwarded，收件机都只在
+// 本机写信，从不出站转发（一跳封顶，条 155）；不读拉起器登记、不打 needs_human（条 171 同理：
+// 等人标只由发起端落）。
 func (s *Server) handleDesktopDeliver(w http.ResponseWriter, r *http.Request) {
-	_ = r
-	writeErr(w, http.StatusNotImplemented, proto.ErrDesktopNotImplemented) // TODO(B434)
+	var req proto.DesktopDeliverReq
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, forwardBodyLimit)).Decode(&req); err != nil {
+		s.log.Warn("拉起器投递请求体解码失败", "forwarded", isForwarded(r), "cause", err)
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("解析请求体: %w", err))
+		return
+	}
+	if err := validateDesktopDeliverReq(req); err != nil {
+		s.log.Warn("拉起器投递请求字段非法", "card", req.Card, "cause", err)
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	s.log.Info("收到拉起器投递", "card", req.Card, "cli_session", req.CLISession,
+		"desktop_session", req.DesktopSession, "forwarded", isForwarded(r))
+	resp, err := s.deliverDesktopLetter(r.Context(), "", req)
+	switch {
+	case err == nil:
+		s.log.Info("拉起器投递完成", "card", req.Card, "written", resp.Written, "opened", resp.Opened)
+		writeJSON(w, http.StatusOK, resp)
+	case errors.Is(err, errDesktopMailboxKeyUnsafe):
+		s.log.Warn("拉起器投递被拒：信箱键不安全", "card", req.Card, "cli_session", req.CLISession, "cause", err)
+		writeErr(w, http.StatusBadRequest, err)
+	case errors.Is(err, errNoLocalProject):
+		s.log.Warn("拉起器投递被拒：项目在本机无登记位置", "card", req.Card, "cause", err)
+		writeErr(w, http.StatusConflict, err)
+	case errors.Is(err, ledger.ErrNotFound):
+		s.log.Warn("拉起器投递被拒：卡不存在", "card", req.Card, "cause", err)
+		writeErr(w, http.StatusNotFound, err)
+	default:
+		s.log.Error("拉起器投递失败", "card", req.Card, "cause", err)
+		writeErr(w, http.StatusInternalServerError, err)
+	}
 }
 
 // desktopUndeliveredError 标记「信未落盘的桌面端唤醒失败」（本机写信/渲染失败、
@@ -792,12 +984,32 @@ func (s *Server) desktopMailboxHome() (string, error) {
 	return home, nil
 }
 
-// renderLauncherLetter 渲染拉起器来信（r5，唯一渲染点，只在拉起器所在机器调用）：
-// desktopLaunchMaterial(card, SeatDesktopViaLauncher) → 套 §3.6 拉起器来信模板。
-// 项目在本机无位置 → 透传 errNoLocalProject 包装错误。
+// desktopQuoteKindBrief 是拉起器来信里简报围栏的种类（契约 r12 第 7 条）。只用于拉起器来信，
+// 席位唤醒信（desktopLetter）的种类全集不变。
+const desktopQuoteKindBrief = "brief"
+
+// desktopLauncherLetterAuthor 是简报围栏的作者：简报由 agentd 按账本渲染（r12 第 7 条）。
+const desktopLauncherLetterAuthor = "agentd"
+
+// renderLauncherLetter 渲染拉起器来信（契约 §3.6 拉起器来信模板，r5 唯一渲染点，只在拉起器
+// 所在机器经 deliverLauncherLetterLocal 调用）：desktopLaunchMaterial(card,
+// SeatDesktopViaLauncher) 的 Folder 与 Brief 套进模板，逐字为
+// DesktopWakeMarker + " 请替我开一场协调者会话。\n\n项目根目录：<Folder>\n\n用桌面端会话管理工具
+// 在上述目录新建会话，把下面整段简报作为首条消息发出：\n\n" + 简报围栏块。
+// 为什么简报进围栏（契约 r12 第 7 条，P9 精神覆盖拉起器来信）：简报含卡标题——建卡人写的
+// 第三方文本，拉起器会话按常设授权以 asUser 执行来信，裸放会让标题里的指令性文本越过信任
+// 边界。围栏复用来信围栏渲染（desktopQuoteBlock：作者 agentd、kind=brief，正文三反引号转义）；
+// seq 写 0，因为简报不是某条账本事件。Folder 来自本机项目登记（操作者写入），留在骨架里。
+// 返回：材料错误原样透传（项目无本机位置 → errNoLocalProject 包装文本；卡不存在 → 包
+// ledger.ErrNotFound）。纯读：不写账本、不打日志（成败由边界层记）。
 func (s *Server) renderLauncherLetter(card string) (string, error) {
-	_ = card
-	return "", proto.ErrDesktopNotImplemented // TODO(B434)
+	m, err := s.desktopLaunchMaterial(card, proto.SeatDesktopViaLauncher)
+	if err != nil {
+		return "", err
+	}
+	return proto.DesktopWakeMarker + " 请替我开一场协调者会话。\n\n项目根目录：" + m.Folder +
+		"\n\n用桌面端会话管理工具在上述目录新建会话，把下面整段简报作为首条消息发出：\n\n" +
+		desktopQuoteBlock(desktopQuote{Author: desktopLauncherLetterAuthor, Kind: desktopQuoteKindBrief, Body: m.Brief}), nil
 }
 
 // desktopNeedsHumanSystemActors 是「系统组件自打」的 needs_human actor 精确值表
@@ -994,12 +1206,162 @@ func (s *Server) clearDesktopWakeStall(card, reason string) {
 	}
 }
 
-// openViaDesktopLauncher 是拉起器代开：读项目拉起器 → 投递装着拉起材料
-// （via=launcher）的来信。无登记 → MarkNeedsHuman(desktopNoLauncherReason) +
-// errNoDesktopLauncher。
+// openViaDesktopLauncher 是拉起器代开（契约 §3.9 POST 行、§3.9.1；故事 5、6）：空座前置 →
+// 读项目拉起器 → deliverDesktopLetter(launcher.Machine, {cli_session, desktop_session, card})。
+//
+// 返回（按判定顺序）：卡不存在 → 包 ledger.ErrNotFound；席位有人（DriverSession 或
+// DriverSource 非空，判据同 card coordinate）→ *desktopSeatOccupiedError（先于拉起器查找，
+// 零写信零打标，条 261）；读拉起器登记失败 → *desktopLaunchInternalError（不打标，500）；无登记 →
+// MarkNeedsHuman(card, desktopNoLauncherReason, "agentd") 恰一次后返回 errNoDesktopLauncher
+// （条 144–147）；项目在写信机器上无登记位置 → errors.Is(errNoLocalProject)，不打标（条 220–221）；
+// 其余投递失败（信未落盘，或信已落盘但 continue 没发出）→ 落一条 needs_human（reason 以
+// desktopWakeFailReasonPrefix 开头；信已落盘时附「信已在拉起器信箱，勿重复代开」，契约 r12
+// 第 6 条）后返回 *desktopLaunchFailedError（条 158、249–250）；打标本身失败 →
+// *desktopLaunchInternalError（500，不冒充已打标）。成功 → {Launcher: 拉起器桌面端会话 id,
+// Machine: 拉起器登记的机器原值（r12 第 8 条）, HandledBy: 实际写信的机器}。
+// 注意：needs_human 只由本函数（发起端）落；不经 desktopWakeStall / recordAdmissionStall——
+// 代开是一次请求一次结果，不进消费循环的失败段；不经 keystone/scheduling（条 162、254）。
 func (s *Server) openViaDesktopLauncher(ctx context.Context, card string) (proto.DesktopLauncherOpenResp, error) {
-	_, _ = ctx, card
-	return proto.DesktopLauncherOpenResp{}, proto.ErrDesktopNotImplemented // TODO(B434)
+	var zero proto.DesktopLauncherOpenResp
+	c, err := s.ledger.GetCard(card)
+	if err != nil {
+		return zero, err
+	}
+	if c.DriverSession != "" || c.DriverSource != "" {
+		return zero, &desktopSeatOccupiedError{card: card}
+	}
+	launcher, ok, err := s.ledger.DesktopLauncherOf(c.Project)
+	if err != nil {
+		s.log.Error("拉起器代开读拉起器登记失败（不打标）", "card", card, "project", c.Project, "cause", err)
+		return zero, &desktopLaunchInternalError{err: fmt.Errorf("读项目 %s 的拉起器登记: %w", c.Project, err)}
+	}
+	if !ok {
+		if err := s.ledger.MarkNeedsHuman(card, desktopNoLauncherReason, "agentd"); err != nil {
+			s.log.Error("无拉起器且落 needs_human 失败", "card", card, "project", c.Project, "cause", err)
+			return zero, &desktopLaunchInternalError{err: fmt.Errorf("%s；落 needs_human 失败: %w", desktopNoLauncherReason, err)}
+		}
+		s.log.Warn("项目未登记拉起器，已落 needs_human", "card", card, "project", c.Project)
+		return zero, errNoDesktopLauncher
+	}
+	req := proto.DesktopDeliverReq{CLISession: launcher.CLISession, DesktopSession: launcher.DesktopSession, Card: card}
+	resp, err := s.deliverDesktopLetter(ctx, launcher.Machine, req)
+	var unknown *desktopDeliveryUnknownError
+	switch {
+	case errors.Is(err, errNoLocalProject):
+		return zero, err
+	case errors.As(err, &unknown):
+		return zero, s.launcherDeliveryFailed(card, launcher.Machine,
+			"投递结果未知（"+unknown.Error()+"）；若信已到拉起器信箱则勿重复代开", nil)
+	case err != nil:
+		return zero, s.launcherDeliveryFailed(card, launcher.Machine, "来信未投递", err)
+	case !resp.Opened:
+		return zero, s.launcherDeliveryFailed(card, launcher.Machine,
+			"来信已落盘（"+resp.HandledBy+" 信箱）但 continue 深链未发出；"+desktopLauncherLetterKeptHint, nil)
+	}
+	return proto.DesktopLauncherOpenResp{Launcher: launcher.DesktopSession, Machine: launcher.Machine,
+		HandledBy: resp.HandledBy}, nil
+}
+
+// desktopLauncherLetterKeptHint 是「信已落盘、continue 未发出」时 502 error 与 needs_human
+// reason 的尾句（契约 r12 第 6 条）：信大概率会被活着的拉起器轮询取走，重复代开会开出两场会话。
+const desktopLauncherLetterKeptHint = "信已在拉起器信箱，勿重复代开"
+
+// launcherDeliveryFailed 为拉起器投递失败落一条 needs_human（actor "agentd"——系统组件，
+// 不会叫醒桌面端席位，契约 §3.8.1 规则 3）并返回 *desktopLaunchFailedError；打标失败时返回
+// *desktopLaunchInternalError（端点据此回 500 而非 502，避免「说已打标其实没打」）。
+// 参数：machine 拉起器登记的机器（空串记作「本机」）；what 失败描述（骨架文本）；cause 底层原因
+// （可为 nil，信已落盘、continue 未发出时无底层错误）。
+func (s *Server) launcherDeliveryFailed(card, machine, what string, cause error) error {
+	where := machine
+	if where == "" {
+		where = "本机"
+	}
+	reason := desktopWakeFailReasonPrefix + "拉起器（" + where + "）代开卡 " + card + " 失败，" + what
+	if cause != nil {
+		reason += "：" + launcherFailureCauseText(cause)
+	}
+	if err := s.ledger.MarkNeedsHuman(card, reason, "agentd"); err != nil {
+		s.log.Error("拉起器投递失败且落 needs_human 失败", "card", card, "machine", machine, "reason", reason, "cause", err)
+		return &desktopLaunchInternalError{err: fmt.Errorf("%s；落 needs_human 失败: %w", reason, err)}
+	}
+	s.log.Error("拉起器投递失败，已落 needs_human", "card", card, "machine", machine, "reason", reason)
+	return &desktopLaunchFailedError{reason: reason, cause: cause}
+}
+
+// launcherFailureCauseText 是投递失败原因进 needs_human reason 的文本（review minor 2）：收件机回了
+// 非 2xx → 「拉起器所在机器回 <码>：<error 原文>」（client.ServerErrorText 去掉 `状态码 N: {"error":…}`
+// 外壳，人读到的是收件机的可行动文案）；否则 cause.Error() 原样（不可达、取客户端失败等）。
+func launcherFailureCauseText(cause error) string {
+	text, ok := client.ServerErrorText(cause)
+	if !ok {
+		return cause.Error()
+	}
+	if code, ok := client.StatusCode(cause); ok {
+		return fmt.Sprintf("拉起器所在机器回 %d：%s", code, text)
+	}
+	return text
+}
+
+// desktopSeatOccupiedError 是代开端点的空座前置拒绝（r7 条 261）：文本逐字为
+// 「卡 <id> 已有人坐，换人用 handoff card rebind <id> --self 或 --launch」。
+type desktopSeatOccupiedError struct{ card string }
+
+func (e *desktopSeatOccupiedError) Error() string {
+	return "卡 " + e.card + " 已有人坐，换人用 handoff card rebind " + e.card + " --self 或 --launch"
+}
+
+// desktopLaunchInternalError 是代开路径上的服务端故障：读拉起器登记失败，或该落的 needs_human
+// 没落成（契约 r12 第 6 条）。端点据此显式回 500——不经 ledgerErr（底层错误可能包
+// ErrNotFound/CAS，会被映射成 404/409），也不回 409/502（那两个码对人意味着「已打标」）。
+// Error() 透传底层原因；Unwrap 供日志与上层判别。
+type desktopLaunchInternalError struct{ err error }
+
+func (e *desktopLaunchInternalError) Error() string { return e.err.Error() }
+
+func (e *desktopLaunchInternalError) Unwrap() error { return e.err }
+
+// desktopLaunchFailedError 是「拉起器投递失败且已落 needs_human」：Error() 等于落标的
+// reason（端点 502 的 error 与卡上等人原因逐字相同）；Unwrap 到底层原因（可能为 nil）。
+type desktopLaunchFailedError struct {
+	reason string
+	cause  error
+}
+
+func (e *desktopLaunchFailedError) Error() string { return e.reason }
+
+func (e *desktopLaunchFailedError) Unwrap() error { return e.cause }
+
+// handleDesktopLauncherOpen 是 POST /api/cards/{id}/coordinator/desktop-launch（契约 §3.9，
+// 体 `{}` 不读）：调 openViaDesktopLauncher 并映射状态码。注册时只套 withLedger。
+// 响应：200 DesktopLauncherOpenResp（三键恒出）；404 卡不存在；409 席位有人 / 无拉起器（已落
+// needs_human）/ 项目无本机位置（本机或收件机，error 逐字透传）；502 投递失败（已落 needs_human，
+// error = 落标 reason）；500 读拉起器登记失败或打标失败（显式 writeErr，不经 ledgerErr——打标
+// 失败的底层错误可能包 ErrNotFound/CAS，经 ledgerErr 会被映射成 404/409，契约 r12 第 6 条）。
+// 非 2xx 体一律 {"error": <原文>}。
+func (s *Server) handleDesktopLauncherOpen(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	s.log.Info("收到拉起器代开请求", "card", id)
+	resp, err := s.openViaDesktopLauncher(r.Context(), id)
+	var occupied *desktopSeatOccupiedError
+	var internal *desktopLaunchInternalError
+	var failed *desktopLaunchFailedError
+	switch {
+	case err == nil:
+		s.log.Info("拉起器代开已投递", "card", id, "launcher", resp.Launcher,
+			"machine", resp.Machine, "handled_by", resp.HandledBy)
+		writeJSON(w, http.StatusOK, resp)
+	case errors.As(err, &internal):
+		s.log.Error("拉起器代开服务端故障", "card", id, "cause", err)
+		writeErr(w, http.StatusInternalServerError, err)
+	case errors.As(err, &failed):
+		writeErr(w, http.StatusBadGateway, err)
+	case errors.As(err, &occupied), errors.Is(err, errNoDesktopLauncher), errors.Is(err, errNoLocalProject):
+		s.log.Warn("拉起器代开被拒", "card", id, "cause", err)
+		writeErr(w, http.StatusConflict, err)
+	default:
+		s.log.Warn("拉起器代开失败", "card", id, "cause", err)
+		ledgerErr(w, err)
+	}
 }
 
 // ---- 来信围栏（B434 P9=丁，契约 §3.6、条 263–279）----

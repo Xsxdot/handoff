@@ -124,6 +124,23 @@ func ServerErrorText(err error) (string, bool) {
 	return fmt.Sprintf("agentd 返回状态码 %d", he.code), true
 }
 
+// StatusCode 取出 agentd 非 2xx 响应的 HTTP 状态码。
+//
+// 参数：err 任意错误（通常来自 Client 方法）。
+// 返回：ok=false 表示 err 链上没有 agentd 的 HTTP 状态错误（连接失败、解码失败、
+// ctx 取消等）；ok=true 时 code 为对端回的状态码。
+// 为什么需要它：agentd→agentd 的调用方要按对端状态码分流处置（B434 拉起器投递：
+// 收件机 409「项目在本机没有登记位置」逐字透传、不打等人标；其余非 2xx 按投递失败
+// 处置，契约 §3.9），而 httpStatusError 不导出；与 ServerErrorText 并列，只投影、不改错误
+// （契约 r12 第 5 条：两个正交投影，不新开导出类型）。
+func StatusCode(err error) (int, bool) {
+	var he *httpStatusError
+	if !errors.As(err, &he) {
+		return 0, false
+	}
+	return he.code, true
+}
+
 // isPermanent 判定错误是否属于「重试无意义」的永久性失败。
 //
 // 判定来源：
