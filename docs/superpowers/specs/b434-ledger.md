@@ -221,3 +221,9 @@
 - 产出：`docs/superpowers/plans/b434.{5,6}-plan.md` 与各自 `-plan-ledger.md`（出稿者在各自 worktree 只写不提交，协调者搬到卡分支统一提交）。审计复跑：G2 scratch 回归集 96 PASS；G3 overlay 18 PASS（源码守卫在 overlay 下读真文件属预期）；**G2+G3 合并实测**（80eeba66 + G2 终态 + G3 编辑块）：`go build ./...`/vet 通过，agentd 整包 64s ok、client ok、cmd `-run TestB434` ok、`-race` ok；冲突面只有一处 import 锚。
 - 三样：冻结物矛盾两处（`session read` 不存在 → `room read`；`rename` → `os.Link` 发布）进 r12；跨卡签名 G3 Consumes ↔ G2 Produces 四项一致，HOME 规则重复由 G2 收口；spec 故事 1–9 全部指到卡/task，剩余端到端项归 I 卡。
 - 协调者拍板：契约 r12 共 10 条（含否决生产代码 `testing.Testing()` 闸、改为 `cmd/agentd.go` 装配 + 源码守卫；拉起器简报进围栏；命名测试须顶层函数；502+needs_human 口径；哨兵 400）；拆解稿 r5 调整 G2/G3 文件集；两份 plan §14 回写；G2 顺手修换绑清失败段。
+
+### 第三波 G2 implement/review/合并（2026-10-16）
+
+- **G2（B434.5）**：实现 7 提交（1af6214e…e54a1400，16 文件 +2703/−75），22 条 plan 变异 + §14 项全部红。review 轮 1 **fail**：I-1 规则 4 冒泡场景无测试锁、I-2 退避形状与 `letter_unopened` 不落 fail 行无测试锁（三发变异存活）；m1–m6。修复 917eaabb（I-1/I-2a/I-2b/m1/m3/m5 补测试、m2 注释、m4 takeover 清段改为「载荷 `to` == 卡当前 `DriverSession` 才清」+ 子例「运行锁过期抢占不清段」）；增量复审 **pass**（三发存活变异转红，另两发亦红；m1 子例靠日志 reason 断言记为 minor 欠账，可改 `inSegment` 断言；m6 不改）。合并 02eed4c6（--no-ff，无冲突）；agentd ok 65.582s、cmd ok 54.108s、proto ok。
+- **事故记录**：实现者变异 N4（关 darwin 前缀闸）在 §14④ 去掉 testing 闸后真调了 `open`（`https://example.com/x` 与 `claude://code/new?folder=/tmp`）；协调者核 `list_sessions` 未见 `/tmp` 会话，副作用仅浏览器页；后续凡变异 opener 先换替身，已写进 G3 与审阅者 brief。
+- 审阅者转 I 卡：未投递时游标停批导致的疑似队头饿死（`EventsFromAsc` 500 窗口），B389 起既有，I 卡评估。
