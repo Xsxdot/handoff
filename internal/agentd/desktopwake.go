@@ -22,7 +22,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -626,8 +628,9 @@ func (s *Server) deliverDesktopLetter(ctx context.Context, machine string, req p
 // .MarkForwarded() 发一次 POST /api/desktop/deliver（带 X-Handoff-Forwarded，条 153），只搬运
 // req；单次时限 desktopTransferTimeout（与席位唤醒转交同一上限，契约 r12 第 4 条——对端挂住时
 // 不把代开请求无限拖住）。收件机 409（项目在它那里没有登记位置）→ desktopRemoteNoLocalProjectError
-// （文本逐字取收件机 error，可 errors.Is(errNoLocalProject)）；其余失败（取客户端、不可达、超时、
-// 非 2xx 含 400/503/404/500）原样包装上抛，由调用方按投递失败处置。
+// （文本逐字取收件机 error，可 errors.Is(errNoLocalProject)）；请求已发出却没拿到回包（超时、
+// 读回包时断连）→ *desktopDeliveryUnknownError（收件机可能已写信，调用方不得说「未投递」）；
+// 其余失败（取客户端、拨号失败、非 2xx 含 400/503/404/500）原样包装上抛，由调用方按投递失败处置。
 func (s *Server) forwardLauncherLetter(ctx context.Context, machine string, req proto.DesktopDeliverReq) (proto.DesktopDeliverResp, error) {
 	var zero proto.DesktopDeliverResp
 	c, err := s.clientForTarget(machine)
@@ -643,7 +646,11 @@ func (s *Server) forwardLauncherLetter(ctx context.Context, machine string, req 
 		if code, ok := client.StatusCode(err); ok && code == http.StatusConflict {
 			text, _ := client.ServerErrorText(err)
 			s.log.Warn("拉起器所在机器上项目无登记位置", "card", req.Card, "machine", machine, "cause", text)
-			return zero, &desktopRemoteNoLocalProjectError{machine: machine, text: text}
+			return zero, &desktopRemoteNoLocalProjectError{text: text}
+		}
+		if launcherDeliveryOutcomeUnknown(err) {
+			s.log.Error("拉起器投递请求已发出但没拿到回包，结果未知", "card", req.Card, "machine", machine, "cause", err)
+			return zero, &desktopDeliveryUnknownError{err: fmt.Errorf("投递到拉起器机器 %s: %w", machine, err)}
 		}
 		s.log.Error("拉起器投递到目标机失败", "card", req.Card, "machine", machine, "cause", err)
 		return zero, fmt.Errorf("投递到拉起器机器 %s: %w", machine, err)
@@ -656,14 +663,45 @@ func (s *Server) forwardLauncherLetter(ctx context.Context, machine string, req 
 // desktopRemoteNoLocalProjectError 是收件机回 409「项目在本机没有登记位置」的透传：
 // Error() 逐字等于收件机 error 原文（条 220），Unwrap 到 errNoLocalProject，使发起端与
 // 本机无位置走同一条 409 映射、同样不落 needs_human（条 221）。
+// 机器名不进 Error()（须与收件机原文逐字相同），由 forwardLauncherLetter 的 Warn 日志记。
 type desktopRemoteNoLocalProjectError struct {
-	machine string
-	text    string
+	text string
 }
 
 func (e *desktopRemoteNoLocalProjectError) Error() string { return e.text }
 
 func (e *desktopRemoteNoLocalProjectError) Unwrap() error { return errNoLocalProject }
+
+// desktopDeliveryUnknownError 是「投递请求已发到收件机、却没拿到回包」（review minor 1）：收件机
+// 可能已经写好信、发了 continue，也可能没有。发起端据此落「投递结果未知」而非「来信未投递」，
+// 提醒人先看拉起器信箱再决定是否重来（重复代开会开出两场会话）。
+type desktopDeliveryUnknownError struct{ err error }
+
+func (e *desktopDeliveryUnknownError) Error() string { return e.err.Error() }
+
+func (e *desktopDeliveryUnknownError) Unwrap() error { return e.err }
+
+// launcherDeliveryOutcomeUnknown 判定一次 DesktopDeliver 失败是否属「请求已发出、结果未知」：
+// 拨号失败（net.OpError.Op == "dial"，含拨号阶段撞上时限）请求根本没出去 → false；读回包时的
+// 网络错误（net.OpError.Op == "read"，如 connection reset）、时限到（context.DeadlineExceeded /
+// net.Error.Timeout）、读回包时连接关闭（io.EOF / io.ErrUnexpectedEOF）→ true。HTTP 非 2xx 不经
+// 这里（已拿到回包，结果确定）。
+func launcherDeliveryOutcomeUnknown(err error) bool {
+	var op *net.OpError
+	if errors.As(err, &op) {
+		switch op.Op {
+		case "dial":
+			return false
+		case "read":
+			return true
+		}
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	var ne net.Error
+	return errors.As(err, &ne) && ne.Timeout()
+}
 
 // deliverLauncherLetterLocal 是 deliverDesktopLetter 的本机分支：渲染 → 构造 continue 深链
 // → 写信 → opener。深链先于写信构造：会话 id 非法时一封信都不落（不留发不出去的信）。
@@ -1207,9 +1245,13 @@ func (s *Server) openViaDesktopLauncher(ctx context.Context, card string) (proto
 	}
 	req := proto.DesktopDeliverReq{CLISession: launcher.CLISession, DesktopSession: launcher.DesktopSession, Card: card}
 	resp, err := s.deliverDesktopLetter(ctx, launcher.Machine, req)
+	var unknown *desktopDeliveryUnknownError
 	switch {
 	case errors.Is(err, errNoLocalProject):
 		return zero, err
+	case errors.As(err, &unknown):
+		return zero, s.launcherDeliveryFailed(card, launcher.Machine,
+			"投递结果未知（"+unknown.Error()+"）；若信已到拉起器信箱则勿重复代开", nil)
 	case err != nil:
 		return zero, s.launcherDeliveryFailed(card, launcher.Machine, "来信未投递", err)
 	case !resp.Opened:
@@ -1236,14 +1278,28 @@ func (s *Server) launcherDeliveryFailed(card, machine, what string, cause error)
 	}
 	reason := desktopWakeFailReasonPrefix + "拉起器（" + where + "）代开卡 " + card + " 失败，" + what
 	if cause != nil {
-		reason += "：" + cause.Error()
+		reason += "：" + launcherFailureCauseText(cause)
 	}
 	if err := s.ledger.MarkNeedsHuman(card, reason, "agentd"); err != nil {
-		s.log.Error("拉起器投递失败且落 needs_human 失败", "card", card, "machine", where, "reason", reason, "cause", err)
+		s.log.Error("拉起器投递失败且落 needs_human 失败", "card", card, "machine", machine, "reason", reason, "cause", err)
 		return &desktopLaunchInternalError{err: fmt.Errorf("%s；落 needs_human 失败: %w", reason, err)}
 	}
-	s.log.Error("拉起器投递失败，已落 needs_human", "card", card, "machine", where, "reason", reason)
+	s.log.Error("拉起器投递失败，已落 needs_human", "card", card, "machine", machine, "reason", reason)
 	return &desktopLaunchFailedError{reason: reason, cause: cause}
+}
+
+// launcherFailureCauseText 是投递失败原因进 needs_human reason 的文本（review minor 2）：收件机回了
+// 非 2xx → 「拉起器所在机器回 <码>：<error 原文>」（client.ServerErrorText 去掉 `状态码 N: {"error":…}`
+// 外壳，人读到的是收件机的可行动文案）；否则 cause.Error() 原样（不可达、取客户端失败等）。
+func launcherFailureCauseText(cause error) string {
+	text, ok := client.ServerErrorText(cause)
+	if !ok {
+		return cause.Error()
+	}
+	if code, ok := client.StatusCode(cause); ok {
+		return fmt.Sprintf("拉起器所在机器回 %d：%s", code, text)
+	}
+	return text
 }
 
 // desktopSeatOccupiedError 是代开端点的空座前置拒绝（r7 条 261）：文本逐字为

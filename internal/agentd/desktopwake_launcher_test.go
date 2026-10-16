@@ -284,9 +284,13 @@ const b434HangTarget = "mac-04"
 // b434HangDelay 是 b434HangTarget 回包前的停顿。
 const b434HangDelay = 3 * time.Second
 
+// b434DropTarget 是一台「读完请求就断连、不回包」的机器：请求已到对端，结果未知（review minor 1）。
+const b434DropTarget = "mac-05"
+
 // newB434Pair 起两台 agentd：收件机登记 handoff → b434RecvRoot，发起端登记 handoff →
 // b434InitRoot，targets[mac-02] 指向收件机前门、targets[mac-03] 指向已关闭的地址、
-// targets[mac-04] 指向迟迟不回的服务（b434HangTarget）。
+// targets[mac-04] 指向迟迟不回的服务（b434HangTarget）、targets[mac-05] 指向读完请求就断连的
+// 服务（b434DropTarget）。
 // shared=true 时发起端改用收件机账本（模拟共享 PG）；false 时两边各自账本（收件机查不到
 // 卡 → 404 场景）。卡与拉起器（machine=mac-02）建在发起端所用账本里。
 func newB434Pair(t *testing.T, shared bool) *b434Pair {
@@ -309,10 +313,20 @@ func newB434Pair(t *testing.T, shared bool) *b434Pair {
 			_, _ = w.Write([]byte(`{"handled_by":"mac-04","written":true,"opened":true}`))
 		}
 	}))
+	drop := testhttp.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		conn, _, err := http.NewResponseController(w).Hijack()
+		if err != nil {
+			t.Errorf("drop 目标劫持连接: %v", err)
+			return
+		}
+		_ = conn.Close()
+	}))
 	init := newNoPTYLedgerEnvWithTargets(t, map[string]config.Target{
 		b434RemoteName: {Addr: front, Token: testToken},
 		b434DeadTarget: {Addr: deadURL, Token: testToken},
 		b434HangTarget: {Addr: hang.URL, Token: testToken},
+		b434DropTarget: {Addr: drop.URL, Token: testToken},
 	})
 	if err := init.st.CreateProjectLocation(&proto.ProjectLocation{Name: b434MaterialProject, Path: b434InitRoot}); err != nil {
 		t.Fatalf("发起端登记项目位置: %v", err)
@@ -791,27 +805,35 @@ func TestB434LauncherOpenRemoteNoLocalProject409(t *testing.T) {
 type b434RemoteFailureCase struct {
 	shared      bool
 	arm         func(t *testing.T, p *b434Pair)
-	wantHits    int // 收件机前门收到的 deliver 次数
-	wantLetters int // 收件机信箱信件数（>0 即「信已落盘」，502 error 须附 b434LetterKeptHint）
+	wantHits    int    // 收件机前门收到的 deliver 次数
+	wantLetters int    // 收件机信箱信件数（>0 即「信已落盘」，502 error 须附 b434LetterKeptHint）
+	wantUnknown bool   // 请求已发出但没拿到回包：502 error 须为「投递结果未知」句式（review minor 1）
+	wantSub     string // 502 error 须含的收件机 error 原文（不带 `状态码 N: {"error":…}` 外壳，review minor 2）
 }
 
 // b434RemoteFailureCases 是条 158、249–250 与 r10 第 3 条的同一张表；条 249/250 另有顶层
 // 薄包装（契约 r12 第 9 条：-run 可单独命中）。
 var b434RemoteFailureCases = map[string]b434RemoteFailureCase{
-	"Remote503":        {false, func(t *testing.T, p *b434Pair) { p.recv.srv.SetLedger(nil) }, 1, 0},
-	"Remote404":        {false, func(t *testing.T, p *b434Pair) {}, 1, 0},
-	"Remote500_mgr未装配": {true, func(t *testing.T, p *b434Pair) { p.recv.srv.mgr = nil }, 1, 0},
-	"Remote400_信箱键不安全": {true, func(t *testing.T, p *b434Pair) {
+	"Remote503": {shared: false, arm: func(t *testing.T, p *b434Pair) { p.recv.srv.SetLedger(nil) },
+		wantHits: 1, wantSub: "账本库未配置（config.ledger.dsn 或单机回退）"},
+	"Remote404": {shared: false, arm: func(t *testing.T, p *b434Pair) {}, wantHits: 1, wantSub: "ledger: 记录不存在"},
+	"Remote500_mgr未装配": {shared: true, arm: func(t *testing.T, p *b434Pair) { p.recv.srv.mgr = nil },
+		wantHits: 1, wantSub: "项目位置服务未装配（SetManager 未执行）"},
+	"Remote400_信箱键不安全": {shared: true, arm: func(t *testing.T, p *b434Pair) {
 		// 登记写闸会拒点开头的 CLI 会话 id，这里绕过写闸直改账本，模拟「坏登记已在库里」。
 		b434SQL(t, p.recv, `UPDATE desktop_launchers SET cli_session = '.hidden'`)
-	}, 1, 0},
-	"不可达": {true, func(t *testing.T, p *b434Pair) {
+	}, wantHits: 1, wantSub: "信箱键不安全"},
+	"不可达": {shared: true, arm: func(t *testing.T, p *b434Pair) {
 		b434RegisterLauncherOn(t, p.init.ledger, b434MaterialProject, b434DeadTarget)
-	}, 0, 0},
-	"机器名未登记": {true, func(t *testing.T, p *b434Pair) {
+	}},
+	"机器名未登记": {shared: true, arm: func(t *testing.T, p *b434Pair) {
 		b434RegisterLauncherOn(t, p.init.ledger, b434MaterialProject, "mac-unknown")
-	}, 0, 0},
-	"收件机opener失败": {true, func(t *testing.T, p *b434Pair) { p.recvSpy.err = io.ErrClosedPipe }, 1, 1},
+	}},
+	"收件机断连_结果未知": {shared: true, arm: func(t *testing.T, p *b434Pair) {
+		b434RegisterLauncherOn(t, p.init.ledger, b434MaterialProject, b434DropTarget)
+	}, wantUnknown: true},
+	"收件机opener失败": {shared: true, arm: func(t *testing.T, p *b434Pair) { p.recvSpy.err = io.ErrClosedPipe },
+		wantHits: 1, wantLetters: 1},
 }
 
 // b434RunRemoteFailure 跑一例异机投递失败：发起端 502 + 恰一条 needs_human（reason 以前缀开头
@@ -848,6 +870,17 @@ func b434RunRemoteFailure(t *testing.T, c b434RemoteFailureCase) {
 		t.Fatalf("r12 第 6 条：信已落盘=%v 时 502 error 含「%s」须为 %v：%q",
 			c.wantLetters > 0, b434LetterKeptHint, c.wantLetters > 0, text)
 	}
+	unknown := strings.Contains(text, "投递结果未知（") && strings.Contains(text, "；若信已到拉起器信箱则勿重复代开")
+	if unknown != c.wantUnknown || (c.wantUnknown && strings.Contains(text, "来信未投递")) {
+		t.Fatalf("review minor 1：结果未知=%v 时 502 error 须（不）为「投递结果未知（…）；若信已到拉起器信箱则勿重复代开」且不混「来信未投递」：%q",
+			c.wantUnknown, text)
+	}
+	if strings.Contains(text, `{"error"`) || strings.Contains(text, "状态码 ") {
+		t.Fatalf("review minor 2：502 error 不得带收件机 HTTP 错误外壳：%q", text)
+	}
+	if c.wantSub != "" && !strings.Contains(text, c.wantSub) {
+		t.Fatalf("review minor 2：502 error 须含收件机 error 原文 %q：%q", c.wantSub, text)
+	}
 	if after := b434StallSnapshot(p.init); !reflect.DeepEqual(after, stall) {
 		t.Fatalf("代开失败不进消费循环失败段：前 %v 后 %v", stall, after)
 	}
@@ -855,7 +888,7 @@ func b434RunRemoteFailure(t *testing.T, c b434RemoteFailureCase) {
 
 // TestB434LauncherDeliverRemoteFailures 跑整张表（含条 249/250 两例，与顶层薄包装同一 runner）：
 // 收件机 503（未配账本）/ 404（卡不在其账本）/ 500（mgr 未装配）/ 400（信箱键不安全）/ 不可达 /
-// 机器名未登记 / 信已落盘但 continue 未发出。
+// 机器名未登记 / 收件机读完请求后断连（结果未知）/ 信已落盘但 continue 未发出。
 func TestB434LauncherDeliverRemoteFailures(t *testing.T) {
 	names := make([]string, 0, len(b434RemoteFailureCases))
 	for name := range b434RemoteFailureCases {
@@ -880,7 +913,8 @@ func TestB434LauncherDeliverRemote404(t *testing.T) {
 // TestB434LauncherDeliverRemoteTimeout 锁契约 r12 第 4 条「异机转交单次时限 desktopTransferTimeout，
 // G3 复用」：收件机可达但迟迟不回（b434HangTarget 3s 后才回合法 200）→ 发起端在时限内放弃、
 // 502 + 恰一条 needs_human，不把迟到的 200 当成功。desktopTransferTimeout 是包级 var：在建 env
-// 之前改、在全部服务关闭之后还原（Cleanup 后进先出），避免 -race 报写读竞争。
+// 之前改、在全部服务关闭之后还原（Cleanup 后进先出），避免 -race 报写读竞争。请求已发出、
+// 回包没等到 → 502 文案为「投递结果未知」（review minor 1），不是「来信未投递」。
 func TestB434LauncherDeliverRemoteTimeout(t *testing.T) {
 	old := desktopTransferTimeout
 	desktopTransferTimeout = 300 * time.Millisecond
@@ -888,7 +922,7 @@ func TestB434LauncherDeliverRemoteTimeout(t *testing.T) {
 	start := time.Now()
 	b434RunRemoteFailure(t, b434RemoteFailureCase{shared: true, arm: func(t *testing.T, p *b434Pair) {
 		b434RegisterLauncherOn(t, p.init.ledger, b434MaterialProject, b434HangTarget)
-	}})
+	}, wantUnknown: true})
 	if elapsed := time.Since(start); elapsed >= b434HangDelay {
 		t.Fatalf("转交须在 desktopTransferTimeout 内放弃，实际耗时 %v", elapsed)
 	}
@@ -1159,8 +1193,10 @@ func TestB434LauncherLetterFencesBrief(t *testing.T) {
 }
 
 // TestB434LauncherWireMatchesFixtures 锁序列化边界的对侧真源：三个 DTO 由 V 冻结的 web fixture
-// 解码后，经本卡端点所用的同一编码路径（writeJSON / client 出站 json.Marshal）再缩进，须与
-// fixture 原文逐字相同——键名、键序、零值出键（machine:""、opened:false）任一漂移都红。
+// 解码后，经服务端响应的编码路径 writeJSON 再缩进，须与 fixture 原文逐字相同——键名、键序、
+// 零值出键（machine:""、opened:false）任一漂移都红。只走 writeJSON；client 出站请求体
+// （c.do 的 json.Marshal）由 client 包的 TestB434DesktopDeliverPostsRequest 与本包的
+// TestB434LauncherOpenRemote（截线上体比键集与键序）覆盖。
 func TestB434LauncherWireMatchesFixtures(t *testing.T) {
 	for name, v := range map[string]any{
 		"DesktopLauncherOpenResp": &proto.DesktopLauncherOpenResp{},
