@@ -24,6 +24,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/Xsxdot/handoff/internal/proto"
@@ -154,25 +156,127 @@ type DesktopLauncher struct {
 	Actor          string
 }
 
+// validateDesktopLauncher 执法登记形态：项目名非空且无首尾空白；桌面端会话 id 过
+// proto.ValidateDesktopSessionID；CLI 会话 id 必须能编进 cli:claude#<id> 席位语法，
+// 且不含路径分隔符（它是信箱文件名 ~/.handoff/desktop-wake/<CLI id>.<ns>.md 的一段）；
+// actor 非空。全部失败包 ErrBadState。
+func validateDesktopLauncher(l DesktopLauncher) error {
+	if l.Project == "" || strings.TrimSpace(l.Project) != l.Project {
+		return fmt.Errorf("拉起器登记项目名非法 %q: %w", l.Project, ErrBadState)
+	}
+	if err := proto.ValidateDesktopSessionID(l.DesktopSession); err != nil {
+		return fmt.Errorf("拉起器桌面端会话 id 非法（%v）: %w", err, ErrBadState)
+	}
+	if _, err := proto.EncodeSeatIdentity("claude", l.CLISession); err != nil {
+		return fmt.Errorf("拉起器 CLI 会话 id 非法（%v）: %w", err, ErrBadState)
+	}
+	if strings.ContainsAny(l.CLISession, `/\`) {
+		return fmt.Errorf("拉起器 CLI 会话 id 含路径分隔符 %q: %w", l.CLISession, ErrBadState)
+	}
+	if strings.TrimSpace(l.Actor) == "" {
+		return fmt.Errorf("拉起器登记缺 actor: %w", ErrBadState)
+	}
+	return nil
+}
+
 // RegisterDesktopLauncher 登记（覆盖）项目的拉起器；每项目至多一条。
+//
+// 参数：l 登记内容——Project/DesktopSession/CLISession/Actor 必填且合形（见
+// validateDesktopLauncher），Machine 允许空串（= 本机），RegisteredAt 被忽略（由账本
+// 时钟写入）。返回：形态不合法包 ErrBadState 且不写；写库失败原样包装返回。
+// 注意：不落任何卡事件；覆盖式（同项目再登记直接替换前一条）。
 func (s *Store) RegisterDesktopLauncher(l DesktopLauncher) error {
-	_ = l
-	return proto.ErrDesktopNotImplemented // TODO(B434)
+	log().Info("开始登记拉起器", "project", l.Project, "desktop_session", l.DesktopSession,
+		"machine", l.Machine, "actor", l.Actor)
+	if err := validateDesktopLauncher(l); err != nil {
+		log().Warn("登记拉起器被拒", "project", l.Project, "cause", err)
+		return err
+	}
+	err := s.mutate(func(tx *sql.Tx, _ *eventSink) error {
+		if _, err := tx.Exec(s.q(`INSERT INTO desktop_launchers
+				(project, desktop_session, cli_session, machine, actor, registered_at)
+				VALUES (?, ?, ?, ?, ?, ?)
+				ON CONFLICT(project) DO UPDATE SET desktop_session = excluded.desktop_session,
+					cli_session = excluded.cli_session, machine = excluded.machine,
+					actor = excluded.actor, registered_at = excluded.registered_at`),
+			l.Project, l.DesktopSession, l.CLISession, l.Machine, l.Actor, s.tval(s.timeNow())); err != nil {
+			return fmt.Errorf("写拉起器登记 %s: %w", l.Project, err)
+		}
+		return nil
+	})
+	if err != nil {
+		log().Warn("登记拉起器失败", "project", l.Project, "cause", err)
+		return err
+	}
+	log().Info("拉起器登记完成", "project", l.Project, "desktop_session", l.DesktopSession, "machine", l.Machine)
+	return nil
 }
 
 // DesktopLauncherOf 读项目的拉起器；无登记返回 ok=false 且不报错。
 func (s *Store) DesktopLauncherOf(project string) (DesktopLauncher, bool, error) {
-	_ = project
-	return DesktopLauncher{}, false, proto.ErrDesktopNotImplemented // TODO(B434)
+	var l DesktopLauncher
+	var registeredAt any
+	err := s.db.QueryRow(s.q(`SELECT project, desktop_session, cli_session, machine, actor, registered_at
+		FROM desktop_launchers WHERE project = ?`), project).
+		Scan(&l.Project, &l.DesktopSession, &l.CLISession, &l.Machine, &l.Actor, &registeredAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return DesktopLauncher{}, false, nil
+	}
+	if err != nil {
+		log().Warn("读拉起器登记失败", "project", project, "cause", err)
+		return DesktopLauncher{}, false, fmt.Errorf("读拉起器登记 %s: %w", project, err)
+	}
+	l.RegisteredAt = toTime(registeredAt)
+	return l, true, nil
 }
 
-// UnregisterDesktopLauncher 删除项目的拉起器登记（幂等）。
+// UnregisterDesktopLauncher 删除项目的拉起器登记（幂等：无登记仍返回 nil）。
 func (s *Store) UnregisterDesktopLauncher(project string) error {
-	_ = project
-	return proto.ErrDesktopNotImplemented // TODO(B434)
+	removed := false
+	err := s.mutate(func(tx *sql.Tx, _ *eventSink) error {
+		res, err := tx.Exec(s.q(`DELETE FROM desktop_launchers WHERE project = ?`), project)
+		if err != nil {
+			return fmt.Errorf("删拉起器登记 %s: %w", project, err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("读删除影响行数: %w", err)
+		}
+		removed = n > 0
+		return nil
+	})
+	if err != nil {
+		log().Warn("注销拉起器失败", "project", project, "cause", err)
+		return err
+	}
+	log().Info("拉起器登记已注销", "project", project, "had_row", removed)
+	return nil
 }
 
-// ListDesktopLaunchers 列出全部拉起器登记，按 project 升序。
+// ListDesktopLaunchers 列出全部拉起器登记，按 project 字节序升序；无登记返回空切片。
+// 排序在 Go 侧做而非 ORDER BY：PG 的默认 collation 可能非 C（大小写、标点不按字节
+// 序），两方言结果会分叉；字节序在两方言一致。
 func (s *Store) ListDesktopLaunchers() ([]DesktopLauncher, error) {
-	return nil, proto.ErrDesktopNotImplemented // TODO(B434)
+	rows, err := s.db.Query(`SELECT project, desktop_session, cli_session, machine, actor, registered_at
+		FROM desktop_launchers`)
+	if err != nil {
+		log().Warn("列拉起器登记失败", "cause", err)
+		return nil, fmt.Errorf("列拉起器登记: %w", err)
+	}
+	defer rows.Close()
+	out := []DesktopLauncher{}
+	for rows.Next() {
+		var l DesktopLauncher
+		var registeredAt any
+		if err := rows.Scan(&l.Project, &l.DesktopSession, &l.CLISession, &l.Machine, &l.Actor, &registeredAt); err != nil {
+			return nil, fmt.Errorf("扫拉起器登记: %w", err)
+		}
+		l.RegisteredAt = toTime(registeredAt)
+		out = append(out, l)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("列拉起器登记: %w", err)
+	}
+	slices.SortFunc(out, func(a, b DesktopLauncher) int { return strings.Compare(a.Project, b.Project) })
+	return out, nil
 }

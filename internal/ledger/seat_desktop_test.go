@@ -13,6 +13,7 @@ package ledger
 import (
 	"encoding/json"
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -509,5 +510,179 @@ func TestB434BindSeatLeavesSeatDesktopUntouched(t *testing.T) {
 	}
 	if n := b434SeatDesktopRows(t, s, ghost.ID); n != 1 {
 		t.Fatalf("BindSeat 不应删 seat_desktops 行，得 %d 行", n)
+	}
+}
+
+// b434LauncherRows 数 desktop_launchers 里该项目的行数。
+func b434LauncherRows(t *testing.T, s *Store, project string) int {
+	t.Helper()
+	var n int
+	if err := s.db.QueryRow(s.q(`SELECT COUNT(*) FROM desktop_launchers WHERE project = ?`), project).Scan(&n); err != nil {
+		t.Fatalf("数 desktop_launchers: %v", err)
+	}
+	return n
+}
+
+// b434TotalEvents 数整张 card_events 表（拉起器登记「不落任何卡事件」的反面断言）。
+func b434TotalEvents(t *testing.T, s *Store) int {
+	t.Helper()
+	var n int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM card_events`).Scan(&n); err != nil {
+		t.Fatalf("数 card_events: %v", err)
+	}
+	return n
+}
+
+// TestB434DesktopLauncherRegistry 锁条 139/140/142/143 的 Store 一侧与 §3.4：
+// 登记后读回逐字段相等（RegisteredAt 取账本时钟）；同项目再登记覆盖（每项目至多
+// 一条）；ListDesktopLaunchers 按 project 字节序升序；注销幂等；全程不落任何卡事件。
+func TestB434DesktopLauncherRegistry(t *testing.T) {
+	s := seedStore(t)
+	fixed := time.Date(2026, 10, 16, 20, 0, 0, 654321000, time.FixedZone("CST", 8*3600))
+	s.now = func() time.Time { return fixed }
+	if _, err := s.CreateCard(NewCard{Title: "事件基线", Project: "proj-b", Workflow: "bug", Actor: "t"}); err != nil {
+		t.Fatal(err)
+	}
+	baseline := b434TotalEvents(t, s)
+
+	if _, ok, err := s.DesktopLauncherOf("proj-b"); err != nil || ok {
+		t.Fatalf("未登记应 ok=false 且不报错: ok=%v err=%v", ok, err)
+	}
+	if list, err := s.ListDesktopLaunchers(); err != nil || len(list) != 0 {
+		t.Fatalf("空表列表应为空: %v err=%v", list, err)
+	}
+
+	lb := DesktopLauncher{Project: "proj-b", DesktopSession: b434DesktopSession, CLISession: "cli-launcher-b",
+		Machine: "mbp-01", Actor: "cli:claude#cli-launcher-b", RegisteredAt: time.Date(2001, 1, 1, 0, 0, 0, 0, time.UTC)}
+	if err := s.RegisterDesktopLauncher(lb); err != nil {
+		t.Fatalf("登记: %v", err)
+	}
+	got, ok, err := s.DesktopLauncherOf("proj-b")
+	if err != nil || !ok {
+		t.Fatalf("读登记: ok=%v err=%v", ok, err)
+	}
+	if got.Project != lb.Project || got.DesktopSession != lb.DesktopSession || got.CLISession != lb.CLISession ||
+		got.Machine != lb.Machine || got.Actor != lb.Actor || !got.RegisteredAt.Equal(fixed) {
+		t.Fatalf("读回 %+v，期望 %+v 且 RegisteredAt=%v", got, lb, fixed)
+	}
+
+	// 条 140：同项目再登记覆盖前一条。
+	later := fixed.Add(time.Minute)
+	s.now = func() time.Time { return later }
+	lb2 := DesktopLauncher{Project: "proj-b", DesktopSession: "local_second-0002", CLISession: "cli-launcher-b2",
+		Machine: "", Actor: "cli:claude#cli-launcher-b2"}
+	if err := s.RegisterDesktopLauncher(lb2); err != nil {
+		t.Fatalf("覆盖登记: %v", err)
+	}
+	if n := b434LauncherRows(t, s, "proj-b"); n != 1 {
+		t.Fatalf("覆盖后 proj-b 行数 = %d，期望 1", n)
+	}
+	got2, ok, err := s.DesktopLauncherOf("proj-b")
+	if err != nil || !ok || got2.DesktopSession != lb2.DesktopSession || got2.CLISession != lb2.CLISession ||
+		got2.Machine != "" || got2.Actor != lb2.Actor || !got2.RegisteredAt.Equal(later) {
+		t.Fatalf("覆盖后读回 %+v ok=%v err=%v，期望 %+v 且 RegisteredAt=%v", got2, ok, err, lb2, later)
+	}
+
+	// 字节序升序（"Proj-Z" < "proj-a" < "proj-b"）。
+	for _, p := range []string{"proj-a", "Proj-Z"} {
+		if err := s.RegisterDesktopLauncher(DesktopLauncher{Project: p, DesktopSession: b434DesktopSession,
+			CLISession: "cli-" + strings.ToLower(p), Machine: "mbp-01", Actor: "t"}); err != nil {
+			t.Fatalf("登记 %s: %v", p, err)
+		}
+	}
+	list, err := s.ListDesktopLaunchers()
+	if err != nil {
+		t.Fatalf("列登记: %v", err)
+	}
+	var order []string
+	for _, l := range list {
+		order = append(order, l.Project)
+	}
+	if strings.Join(order, ",") != "Proj-Z,proj-a,proj-b" {
+		t.Fatalf("列表顺序 = %v，期望按 project 字节序升序 [Proj-Z proj-a proj-b]", order)
+	}
+
+	// 条 142：注销幂等（含从未登记的项目）。
+	for i := 0; i < 2; i++ {
+		if err := s.UnregisterDesktopLauncher("proj-b"); err != nil {
+			t.Fatalf("第 %d 次注销: %v", i+1, err)
+		}
+	}
+	if err := s.UnregisterDesktopLauncher("never-registered"); err != nil {
+		t.Fatalf("注销从未登记的项目应成功: %v", err)
+	}
+	if _, ok, err := s.DesktopLauncherOf("proj-b"); err != nil || ok {
+		t.Fatalf("注销后应 ok=false 且不报错: ok=%v err=%v", ok, err)
+	}
+
+	// 条 143：登记、覆盖、注销全程不落任何卡事件。
+	if n := b434TotalEvents(t, s); n != baseline {
+		t.Fatalf("card_events 总数 %d → %d，拉起器登记不应落任何卡事件", baseline, n)
+	}
+}
+
+// TestB434DesktopLaunchersDDLBothDialects 锁 §3.4 DDL：desktop_launchers 在两方言各登记
+// 一次、列集齐全、registered_at 按方言分型。
+func TestB434DesktopLaunchersDDLBothDialects(t *testing.T) {
+	for _, pg := range []bool{true, false} {
+		b434AssertTableDDL(t, pg, "desktop_launchers", []string{"project TEXT PRIMARY KEY",
+			"desktop_session TEXT NOT NULL", "cli_session TEXT NOT NULL", "machine TEXT NOT NULL",
+			"actor TEXT NOT NULL", "registered_at " + b434TimeType(pg) + " NOT NULL"})
+	}
+}
+
+// TestB434DesktopTablesReopenIdempotent 锁旧库升级：新表随 ensureSchema 建出，
+// 二次 Open 幂等（CREATE TABLE IF NOT EXISTS）。
+func TestB434DesktopTablesReopenIdempotent(t *testing.T) {
+	s := newTestStore(t)
+	for _, tbl := range []string{"seat_desktops", "desktop_launchers"} {
+		if _, err := s.db.Exec("SELECT * FROM " + tbl + " LIMIT 0"); err != nil {
+			t.Fatalf("表 %s 不存在: %v", tbl, err)
+		}
+	}
+	s2, err := Open(filepath.Join(filepath.Dir(s.path), "ledger.db"))
+	if err != nil {
+		t.Fatalf("二次 Open 应幂等: %v", err)
+	}
+	s2.Close()
+}
+
+// TestB434RegisterDesktopLauncherRejectsInvalid 锁拉起器写闸：项目名、桌面端会话 id、
+// CLI 会话 id（信箱文件名的一段）、actor 不合法时报 ErrBadState 且不写行。
+func TestB434RegisterDesktopLauncherRejectsInvalid(t *testing.T) {
+	s := seedStore(t)
+	valid := DesktopLauncher{Project: "proj-x", DesktopSession: b434DesktopSession, CLISession: "cli-ok",
+		Machine: "mbp-01", Actor: "cli:claude#cli-ok"}
+	cases := []struct {
+		name   string
+		mutate func(l *DesktopLauncher)
+	}{
+		{"项目名为空", func(l *DesktopLauncher) { l.Project = "" }},
+		{"项目名带首尾空白", func(l *DesktopLauncher) { l.Project = " proj-x" }},
+		{"桌面端会话 id 只有前缀", func(l *DesktopLauncher) { l.DesktopSession = "local_" }},
+		{"桌面端会话 id 无前缀", func(l *DesktopLauncher) { l.DesktopSession = "31eda11a" }},
+		{"CLI 会话 id 为空", func(l *DesktopLauncher) { l.CLISession = "" }},
+		{"CLI 会话 id 含路径分隔符", func(l *DesktopLauncher) { l.CLISession = "../etc" }},
+		{"CLI 会话 id 含反斜杠", func(l *DesktopLauncher) { l.CLISession = `a\b` }},
+		{"CLI 会话 id 含#", func(l *DesktopLauncher) { l.CLISession = "a#b" }},
+		{"CLI 会话 id 含空白", func(l *DesktopLauncher) { l.CLISession = "a b" }},
+		{"actor 为空", func(l *DesktopLauncher) { l.Actor = " " }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			l := valid
+			tc.mutate(&l)
+			err := s.RegisterDesktopLauncher(l)
+			if !errors.Is(err, ErrBadState) || errors.Is(err, proto.ErrDesktopNotImplemented) {
+				t.Fatalf("应 ErrBadState（且非空壳错误），得 %v", err)
+			}
+			if n := b434LauncherRows(t, s, l.Project); n != 0 {
+				t.Fatalf("拒绝后 %q 行数 = %d，期望 0", l.Project, n)
+			}
+		})
+	}
+	// 正控制：合法登记能成功。
+	if err := s.RegisterDesktopLauncher(valid); err != nil {
+		t.Fatalf("正控制登记失败: %v", err)
 	}
 }
