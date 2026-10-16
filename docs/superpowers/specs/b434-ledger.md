@@ -240,3 +240,10 @@
 - **G3（B434.6）**：实现 6 提交（4ac36f56…b6d1908e，8 文件 +1979/−29），plan 18 发 + §14 新增 M19–M31 全部红。review 轮 1 pass（审阅者复现 M27/M22/M5 红绿一致，亲自构造 needs_human 回声场景通过）；minor 1（异机结果未知口径）、minor 2（reason 经 `ServerErrorText` 去外壳）、minor 3–5 修复 419d4284（M32/M33/M34 红）。合并 62ce8eb6（--no-ff，无冲突）。
 - 契约 r13（brief 围栏 seq=0、拉起器首条消息口径、结果未知文案）+ `skills/handoff/SKILL.md` 拉起器一句补充（df355058；`internal/skill`/`cmd` B434 用例仍绿）。
 - **全量回归（62ce8eb6）**：`gofmt -l` 空；`go vet ./...` 0；`go build ./...` 0；`env -u CLAUDE_CODE_SESSION_ID go test ./... -count=1` → **65 ok / 0 FAIL**（原始输出 scratchpad `gotest_full.txt`）。
+
+### 图对账（2026-10-16，本地 subagent opus，提交 365f0c55，只动 `codegraph/diffs/cards-B434-charter-1.json`）
+
+- 视图：+233 节点（173 func / 52 model / 8 entry；约 175 为 B434 新改符号，58 为本分支触及文件里此前未入图的 B389 符号，26 为 TS 节点）、+10 容器、1 节点修改（`m_agentd_Server` 新字段）、+329 边、−2 边（`resolveCoordWorkdir` 的两条调用迁入 `resolveLocalProjectRoot`）、2 条 proto↔TS 孪生投影。边全部来自 go/types 类型检查，无裸名撞库。
+- `codegraph validate` → exit 0（issues null）；`validate --stale` → 1416 失鲜节点（main 既有 1322，本分支行号漂移 +94，均非视图节点）；`resolve --doc b434-contract.md --view …` → ok 19 / moved 28 / file_missing 10（契约以裸文件名写锚，非图缺口）/ vanished 0。抽查 `SetSeatDesktop`/`wakeDesktopSeat`/`buildClaudeNewSessionURL` 均命中。
+- **`check --view` 3 处跨域超预算（真实代码边，未改 target.json，留用户裁决）**：`d_ledger→d_protocol` 5>2（`SetSeatDesktop`/`validateDesktopLauncher` → `proto.ValidateDesktopSessionID`/`EncodeSeatIdentity`）；`d_cli→d_maintenance` 27>25（`skill` 命令 → `ClaudeModStatus`/`InstallClaudeMod`）；`d_gateway→d_collab` 1>0（`desktopLetterAssembler` 与 B389 旧码 `roomMessageWakeEvents` → `collab`）。另：9 个新 agentd 容器与 `k_ledger_SeatBearing` 在 best.json 无落位。
+- 留给人：`desktop/` 独立模块与 mod TS 未入图；接口分派调用（`s.mgr.ListProjectLocations`、`SchedulingClient.*`）未记边；SeatDesktop/DesktopLauncher/SeatBearing 实体无 creator/writer（upsert 是否算 creator待定）；基线里 `consumeAutomationEventsOnce` 四条过期调用边（B389 前遗留）待 absorb 时清理；仓内另有错位视图 `codegraph/diffs/cards/B233.28-charter.json`（非本卡）。
