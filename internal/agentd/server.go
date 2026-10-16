@@ -214,6 +214,11 @@ type Server struct {
 	// 不标 seen）；这里只数连续失败次数，用于恰一次落 needs_human 的去重阈值。
 	// 成功或遇非准入错误即清。进程内存：重启后重新计数，安全方向。
 	automationStall map[string]int
+	// desktopWakeStall 是每张卡当前的桌面端失败段（B434 契约 §3.7）：连续失败次数（0→1
+	// 落一条 needs_human）、未落盘重试的退避截止与段内复用的 wake_round 轮次。与
+	// automationStall 独立（不经 recordAdmissionStall）。受 automationMu 保护；成功即删。
+	// 进程内存：重启清零，同段最多多落一条 needs_human（契约写明可接受）。
+	desktopWakeStall map[string]desktopWakeStallEntry
 	// wakeQueueRounds 锁定「一轮」的队列路径身份：IgnitionRequest 身份键
 	// （wakeQueueRoundKey）→ 未收尾的 wake roundID。契约是「同一 IgnitionRequest
 	// 为一轮」（plan r2），不是「同一卡为一轮」——同卡换节点是新请求、新开一轮
@@ -330,6 +335,7 @@ func NewServer(cfg *config.Config, st *store.Store, log *slog.Logger) *Server {
 		automationKick:          make(chan struct{}, 1),
 		automationSeen:          make(map[int64]struct{}),
 		automationStall:         make(map[string]int),
+		desktopWakeStall:        make(map[string]desktopWakeStallEntry),
 		wakeQueueRounds:         make(map[string]string),
 	}
 	s.pty = ptyhost.New(s.ptyRootPath, exe, log)

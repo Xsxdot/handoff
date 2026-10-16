@@ -768,6 +768,108 @@ func (s *Server) desktopNeedsHumanWakes(ev proto.LedgerEvent) ([]keystone.WakeEv
 	return []keystone.WakeEvent{{Kind: keystone.WakeTaskTerminal, Card: ev.CardID, Summary: "needs_human: " + reason}}, nil
 }
 
+// desktopWakeStallEntry 是一张卡当前「桌面端失败段」的进程内状态（段 = 两次成功之间的
+// 连续失败）。受 Server.automationMu 保护；agentd 重启清零（契约 §3.7：重启后同段可能
+// 再多落一条 needs_human，可接受）。
+type desktopWakeStallEntry struct {
+	Failures int       // 本段连续失败次数；0→1 的那一次落 needs_human
+	RetryAt  time.Time // 「信未落盘」后下一次重试的最早时刻（desktopClock 读数）；零值 = 不限
+	Round    string    // 本段 wake_round 轮次标识：段内重试复用，转交失败行一段一行（B393 一轮一组）
+}
+
+// desktopWakeRetryBase / desktopWakeRetryMax 是「信未落盘」重试退避（契约 §11.3 交 plan 定）：
+// 第 n 次连续失败后至少等 base·2^(n-1)，封顶 max。为什么要退避：转交对端不可达时每次
+// 尝试要吃满拨号超时（client.dialTimeout=10s），消费循环是单协程，2s 节拍下会把所有卡的
+// 唤醒拖慢；退避期间认领留在飞（消费循环每轮重新认领即续租），事件不标 seen、不丢。
+const (
+	desktopWakeRetryBase = 2 * time.Second
+	desktopWakeRetryMax  = time.Minute
+)
+
+// desktopWakeRetryDelay 返回第 failures 次连续「未落盘」失败后的退避时长。
+func desktopWakeRetryDelay(failures int) time.Duration {
+	d := desktopWakeRetryBase
+	for i := 1; i < failures && d < desktopWakeRetryMax; i++ {
+		d *= 2
+	}
+	return min(d, desktopWakeRetryMax)
+}
+
+// desktopWakeRound 返回卡当前失败段的 wake_round 轮次标识；不在失败段返回 ""。
+func (s *Server) desktopWakeRound(card string) string {
+	s.automationMu.Lock()
+	defer s.automationMu.Unlock()
+	return s.desktopWakeStall[card].Round
+}
+
+// desktopWakeRetryPending 报告卡是否处在「信未落盘」退避窗内，并返回窗口截止时刻。
+func (s *Server) desktopWakeRetryPending(card string) (time.Time, bool) {
+	now := s.desktopClock()
+	s.automationMu.Lock()
+	defer s.automationMu.Unlock()
+	until := s.desktopWakeStall[card].RetryAt
+	return until, !until.IsZero() && now.Before(until)
+}
+
+// recordDesktopWakeFailure 把一次桌面端唤醒失败（desktopUndelivered 或 desktopUnopened）
+// 计入卡的失败段：Failures+1；首次记下本段轮次 roundID；未落盘失败设退避窗。计数从 0
+// 变 1 的那一次落 MarkNeedsHuman(card, desktopWakeFailReasonPrefix+<原因>, "agentd")——
+// needs_human 只由认领本批的发起端在这里写（契约 §3.7 单一原则），不经 recordAdmissionStall、
+// 不动 automationStall（条 173/174）。落标失败：Error + 计数退回 0，让下一次失败重试落标
+// （不让一次账本抖动把整段变成无人可见）。
+func (s *Server) recordDesktopWakeFailure(card, roundID string, cause error) {
+	undelivered := desktopUndelivered(cause)
+	retryAt := time.Time{}
+	s.automationMu.Lock()
+	if s.desktopWakeStall == nil {
+		s.desktopWakeStall = make(map[string]desktopWakeStallEntry)
+	}
+	e := s.desktopWakeStall[card]
+	e.Failures++
+	if e.Round == "" {
+		e.Round = roundID
+	}
+	e.RetryAt = time.Time{}
+	if undelivered {
+		retryAt = s.desktopClock().Add(desktopWakeRetryDelay(e.Failures))
+		e.RetryAt = retryAt
+	}
+	s.desktopWakeStall[card] = e
+	s.automationMu.Unlock()
+
+	s.log.Warn("桌面端唤醒失败，计入失败段", "card", card, "failures", e.Failures,
+		"undelivered", undelivered, "retry_at", retryAt, "round_id", e.Round, "cause", cause)
+	if e.Failures != 1 {
+		return
+	}
+	reason := desktopWakeFailReasonPrefix + cause.Error()
+	if err := s.ledger.MarkNeedsHuman(card, reason, "agentd"); err != nil {
+		s.log.Error("桌面端失败段落 needs_human 失败，下一次失败重试落标", "card", card, "cause", err)
+		s.automationMu.Lock()
+		if cur := s.desktopWakeStall[card]; cur.Failures == 1 {
+			cur.Failures = 0
+			s.desktopWakeStall[card] = cur
+		}
+		s.automationMu.Unlock()
+		return
+	}
+	s.log.Error("桌面端失败段已落 needs_human", "card", card, "round_id", e.Round)
+}
+
+// clearDesktopWakeStall 结束该卡的桌面端失败段：一次唤醒成功后（契约 §3.7：段 = 两次成功
+// 之间），或席位换绑 / 桌面端记录重写事件流经消费循环时（契约 r12 第 4 条末句：旧段的退避窗、
+// 已落标计数与段轮次不得被新席位继承）。reason 只进日志，区分两种结束。对不在失败段的卡
+// 是空操作。
+func (s *Server) clearDesktopWakeStall(card, reason string) {
+	s.automationMu.Lock()
+	e, ok := s.desktopWakeStall[card]
+	delete(s.desktopWakeStall, card)
+	s.automationMu.Unlock()
+	if ok {
+		s.log.Info("桌面端失败段结束", "card", card, "reason", reason, "failures", e.Failures, "round_id", e.Round)
+	}
+}
+
 // openViaDesktopLauncher 是拉起器代开：读项目拉起器 → 投递装着拉起材料
 // （via=launcher）的来信。无登记 → MarkNeedsHuman(desktopNoLauncherReason) +
 // errNoDesktopLauncher。

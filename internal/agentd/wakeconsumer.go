@@ -725,6 +725,13 @@ func (s *Server) consumeAutomationEventsOnce(ctx context.Context) (processed int
 				"type", ev.Type, "cause", mapErr)
 			return processed, escalated, mapErr
 		}
+		// B434 契约 r12 第 4 条末句：席位换绑（driver_takeover / driver_seat_bound）或桌面端记录
+		// 重写（seat_desktop_set）意味着该卡的唤醒去向变了——旧桌面端失败段（退避窗、已落标计数、
+		// 段轮次）不得被新席位继承，在此清掉。三者都是不唤醒的结构事件，下面照常标 seen。
+		switch ev.Type {
+		case ledger.EvSeatDesktopSet, ledger.EvDriverTakeover, ledger.EvDriverSeatBound:
+			s.clearDesktopWakeStall(ev.CardID, "席位换绑或桌面端记录重写（"+ev.Type+"）")
+		}
 		// B432 旁路（plan 决策 D1）：在唤醒分类与 seen 判定之外喂扇出——
 		// needs_human 这类不唤醒协调者的事件也要推。只入队不阻塞，唤醒路径
 		// 完全不感知它的存在（队满即丢，见 PushFanout.Notify）。
@@ -817,6 +824,13 @@ func (s *Server) consumeAutomationEventsOnce(ctx context.Context) (processed int
 			raws = append(raws, item.raw)
 			claimedSeqs = append(claimedSeqs, item.seq)
 		}
+		// B434 桌面端失败段退避窗（契约 §3.7、§11.3）：上次「信未落盘」后窗口未到——**不**
+		// complete、**不**标 seen，认领留在飞（本轮 claimWakeBatch 已续租），窗口过后再试。
+		if until, pending := s.desktopWakeRetryPending(card); pending {
+			s.log.Debug("桌面端唤醒退避窗内，保留认领下轮再试", "card", card,
+				"retry_at", until, "event_count", len(claimedSeqs))
+			continue
+		}
 		// 退避闸（§3.5.4）：同卡同 seq 在退避窗内不重复试跑，认领照常收尾。
 		if s.shouldSkipByBackoff(card, maxSeqOf(claimedSeqs)) {
 			s.log.Info("唤醒退避窗内，跳过同 seq 重复试跑", "card", card)
@@ -837,8 +851,15 @@ func (s *Server) consumeAutomationEventsOnce(ctx context.Context) (processed int
 			}
 			return processed, escalated, nil
 		}
+		// 轮次标识由本循环给出：桌面端失败段内的重试复用段轮次（B393「同一逻辑唤醒的重试
+		// 共享 roundID」），转交失败的 wake_round fail 行一段一行而不是每次重试一行；不在
+		// 失败段则每批新开一轮（与原 wakeCoordinatorRoundRaw 同义）。
+		roundID := s.desktopWakeRound(card)
+		if roundID == "" {
+			roundID = nextWakeRoundID()
+		}
 		stopRenew := s.startWakeClaimRenewal(card, claimedSeqs)
-		result, wakeErr := s.wakeCoordinatorRoundRaw(ctx, card, evs, raws)
+		result, wakeErr := s.wakeCoordinatorRoundID(ctx, card, evs, raws, roundID)
 		stopRenew()
 		if wakeErr != nil {
 			s.log.Error("自动化事件批次唤醒失败", "card", card,
@@ -851,6 +872,34 @@ func (s *Server) consumeAutomationEventsOnce(ctx context.Context) (processed int
 				s.recordAdmissionStall(card)
 				if result.Escalated {
 					escalated = true
+				}
+				if firstWakeErr == nil {
+					firstWakeErr = wakeErr
+				}
+				continue
+			}
+			if desktopUndelivered(wakeErr) {
+				// B434 D5「信未落盘」（本机写信/渲染失败、转交失败、一跳封顶）：与准入满员同为
+				// 可恢复排队态——**不** completeWakeBatch、**不**标 seen、**不**记 automationBackoff
+				// （它的跳过分支会 complete），认领留在飞挡水位，退避窗过后重试；计入独立的桌面端
+				// 失败段（段内首次落 needs_human），**不**调 recordAdmissionStall（条 173/174）。
+				// 设 firstWakeErr：本轮对调用方报错（竖切「信箱键不安全」子例依赖它）。
+				s.recordDesktopWakeFailure(card, roundID, wakeErr)
+				if firstWakeErr == nil {
+					firstWakeErr = wakeErr
+				}
+				continue
+			}
+			if desktopUnopened(wakeErr) {
+				// B434 D5「信已落盘、continue 未发出」：信已保住事件，重试只会多一封同批信——终局
+				// 收尾（complete + 标 seen），不记 automationBackoff、不碰 automationStall；计入桌面端
+				// 失败段（段内首次落 needs_human，条 109–111、169/170）。
+				s.recordDesktopWakeFailure(card, roundID, wakeErr)
+				s.completeWakeBatch(card, claimedSeqs)
+				for _, seq := range claimedSeqs {
+					s.automationMu.Lock()
+					s.automationSeen[seq] = struct{}{}
+					s.automationMu.Unlock()
 				}
 				if firstWakeErr == nil {
 					firstWakeErr = wakeErr
@@ -877,6 +926,7 @@ func (s *Server) consumeAutomationEventsOnce(ctx context.Context) (processed int
 			continue
 		}
 		s.clearWakeStall(card)
+		s.clearDesktopWakeStall(card, "唤醒成功")
 		s.completeWakeBatch(card, claimedSeqs)
 		if s.automationRoundHook != nil {
 			s.automationRoundHook(card, result)
