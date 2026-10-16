@@ -156,6 +156,7 @@ export function requestTitlebarZoom(): boolean {
 // 返回：找到并发出 external bridge 时为 true；浏览器里（无 bridge）为 false，调用方
 // 走普通链接或「复制简报」兜底。
 // TODO(B434)：Ticket 0 空壳，恒返回 false。
-export function requestOpenDeepLink(_url: string): boolean {
+export function requestOpenDeepLink(url: string): boolean {
+  void url
   return false
 }

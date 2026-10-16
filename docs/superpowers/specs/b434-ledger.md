@@ -76,3 +76,13 @@
 - 修复轮 2 提交（历史读数，随后 amend 一次，hash 会变）：`git commit -q -F <scratchpad>/r1/msg2.txt && git log --oneline -1` → `4887e073 docs(b434): contract r2 — 跨机失败路径收口`；`5 files changed, 138 insertions(+), 42 deletions(-)`。未 push。
 
 - 审阅轮 3（a806a608）：裁决 pass-with-debts，无阻塞项；顺手修两处行号引用（§3.9 `:160`→`:183`，§3.11「见移交 4」→「见欠账 §10.7」）。非阻塞建议 1（未投递/未打开互斥断言）、2（「未打开」走独立分支不经 clearWakeStall）交 plan 吸收。
+
+### contract r3 补跑（2026-10-16，本机装工具链后）
+
+- 用户裁决原文：「同意在本机安装 Go 与 Node 工具链（从官方源下载），然后在 worktree 里跑 go build/vet/test 与 web typecheck/lint，拿到编译证据后把 B434 移到 breakdown。」
+- 安装：`go1.26.1.darwin-arm64.tar.gz`（sha256 `353df43a…541f` 与 go.dev `?mode=json&include=all` 发布值一致，64654450 B）；`node-v24.22.0-darwin-arm64.tar.gz`（`SHASUMS256.txt` 核对 OK）。落 `~/.local/sdk/{go,node}`，`~/.zshrc` 追加 PATH 一行。`go version go1.26.1 darwin/arm64`、`node v24.22.0`、`npm 11.19.1`。
+- 主模块（worktree `cards/B434-charter-1`）：`go build ./...` exit=0；`go vet ./...` exit=0；`go test ./... -count=1` → 64 包 ok、`cmd` FAIL（`TestSessionSendActorResolution`：`--cli/--session 与当前环境会话不一致`，因本会话 `CLAUDE_CODE_SESSION_ID` 已设；baseline main 同样 FAIL；`env -u CLAUDE_CODE_SESSION_ID … go test ./cmd/` → ok 53.271s）。
+- 金样本：`go test ./internal/proto/ -run 'TestB434|TestCoordinatorWakeWire' -v` → 三支 PASS ok 0.383s；`internal/ledger`、`internal/agentd` 过滤跑 ok。
+- desktop 子模块：`go build ./internal/...` exit=0、`go vet ./internal/...` exit=0；`go test ./internal/shell/ -run TestExternalDeepLink` PASS ok 0.460s；`go build ./...` → `main.go:42:12: pattern all:frontend/dist: no matching files found`，baseline main 同样（需先建 desktop 前端），非本卡。
+- web：`npm ci` ok；`npm run typecheck` exit=0；`npm run lint` 全仓 5 error / 38 warning，其中 3 error 在 B434 文件（`claudeDeepLink.ts:28` `_folder/_brief`、`desktopShell.ts:159` `_url` 未用）→ 改为 `void` 引用后 B434 五文件 `eslint` exit=0；其余 2 error 既有（`MobileWorkspace.tsx:156`、`TerminalTab.test.tsx:37`）。`npx vitest run` 两个 B434 文件 12 passed；全量 145 files / 1880 tests passed（20.75s）。
+- 图：`go run github.com/Xsxdot/charter/graph/cmd/codegraph --repo . validate` 0 issue（views: cards-B383-charter）；`check` crossDomainEdges 1261、misplacedSkipped 0、exit 0；`resolve --doc b434-contract.md` → ok 8 / moved 27 / file_missing 9 / vanished 4（`facade.go#Manager.ListProjectLocations` 等，`codegraph sym` 报「不在图中」，源码 :73 实在 → 图未覆盖），命令非零退出。分支视图 diff 未产出，欠账 §10.3 保留，图对账列核对。

@@ -25,6 +25,9 @@ export type ClaudeDeepLinkResult = { ok: true; url: string } | { ok: false; reas
  * 参数：folder 项目根目录（绝对路径）、brief 简报正文；
  * 返回：`claude://code/new?folder=<enc>&q=<enc>` 或拒绝原因。
  */
-export function buildClaudeNewSessionURL(_folder: string, _brief: string): ClaudeDeepLinkResult {
+export function buildClaudeNewSessionURL(folder: string, brief: string): ClaudeDeepLinkResult {
+  // TODO(B434)：Ticket 0 空壳，参数在实现节点使用；void 仅为让 lint 不把它们当未用形参。
+  void folder
+  void brief
   return { ok: false, reason: 'not_implemented' }
 }

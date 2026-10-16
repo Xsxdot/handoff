@@ -736,15 +736,17 @@ func ClaudeModStatus(mod fs.FS, home string) Site    // 逐文件哈希比对 + 
 
 未落（刻意）：DDL、路由注册、CLI flag 与子命令、消费循环分支改接、`plugins/claude-desktop-wake/` 与其 `go:embed`、`internal/skill/claudemod.go`——在无法编译验证的条件下加 embed 目录或注册路由会把编译错误/行为改变带进冻结提交。全部进 §10。
 
-### 9.2 编译与测试（**本轮未能执行**）
+### 9.2 编译与测试（r3 补跑，2026-10-16，全部通过）
 
-本机无 Go 与 Node 工具链（台账原文：`command not found: go`；`go not found / node not found / npx not found`；`find / -type f -name go -perm +111` 零命中；`web/node_modules` 不存在）。因此：
+r0–r2 三轮本机无 Go/Node 工具链（台账原文：`command not found: go`）。用户裁决后从官方源安装 go1.26.1 与 node v24.22.0（`~/.local/sdk`，台账有哈希核对读数），在 worktree `cards/B434-charter-1` 上补跑：
 
-- `go build ./...`、`go vet ./...`：**未跑**。
-- `go test ./internal/proto/ -run TestB434DesktopWireLiterals`、`cd desktop && go test ./internal/shell/ -run TestExternalDeepLinkMessagePrefixLiteral`：**未跑**。
-- `cd web && npm run typecheck`（`tsc -b`）、`npm run lint`、`npx vitest run src/app/lib/desktopShell.test.ts src/app/lib/claudeDeepLink.test.ts`：**未跑**。
+- `go build ./...` exit 0；`go vet ./...` exit 0。
+- `go test ./... -count=1`：64 个包 ok；`cmd` 包在本会话环境下因 `CLAUDE_CODE_SESSION_ID` 已设而 `TestSessionSendActorResolution` 失败，**与 B434 无关**（baseline main 同样失败；`env -u CLAUDE_CODE_SESSION_ID` 重跑 `cmd` 包 ok 53.3s）。
+- 金样本：`TestB434DesktopWireLiterals`、`TestB434CoordinatorWakeRespLetterUnopenedWire`、既有 `TestCoordinatorWakeWire` PASS；`desktop/internal/shell` `TestExternalDeepLinkMessagePrefixLiteral` PASS。
+- desktop 子模块：`go build ./internal/...`、`go vet ./internal/...` exit 0；`go build ./...` 在 `main.go:42` 的 `go:embed all:frontend/dist` 处失败，**baseline main 同样失败**（需先构建 desktop 前端），与本卡无关。
+- web：`npm ci` 后 `npm run typecheck`（`tsc -b`）exit 0；`npx vitest run` 全量 145 文件 / 1880 用例通过，其中 `desktopShell.test.ts` + `claudeDeepLink.test.ts` 12 用例通过；`npm run lint` 对 B434 五个文件 exit 0——r3 把骨架空壳的 `_folder/_brief/_url` 改为 `void` 引用后清零（审阅轮 1 建议 5 言中）；仓内另有两处**既有** lint error（`MobileWorkspace.tsx:156`、`TerminalTab.test.tsx:37`），不在本卡范围。
 
-Ticket 0 为纯空壳，已逐文件人工核对导入均被使用、标识符无冲突（`grep` 读数见台账），但**「编译通过」这一法定证据缺失**，作为第一号欠账交协调者认账（§10.1）。
+收尾自检第 3、4 项由此转 ✅。
 
 ### 9.3 直通竖切（重档法定步骤）——**未落，欠账**
 
@@ -763,9 +765,9 @@ Ticket 0 为纯空壳，已逐文件人工核对导入均被使用、标识符�
 
 ## 10. 本节点欠账（逐条，协调者显式认账）
 
-1. **Ticket 0 编译证据**：在有工具链的机器上跑 `go build ./...`、`go vet ./...`、`(cd desktop && go build ./... && go vet ./...)`、`cd web && npm ci && npm run typecheck && npm run lint`，贴退出码；红即回本节点修骨架。
-2. **金样本本轮未跑**：`TestB434DesktopWireLiterals`、`TestB434CoordinatorWakeRespLetterUnopenedWire`、`TestExternalDeepLinkMessagePrefixLiteral`、`desktopShell.test.ts` 新用例、`claudeDeepLink.test.ts`。
-3. **图**：工具链到位后 `go build -o <tmp>/codegraph ./cmd/codegraph`（charter/graph），按 `docs/codegraph-scan-recipe.md` 产出 `codegraph/diffs/cards-B434-charter-1.json`（含 §9.1 全部新符号），跑 `codegraph validate --view cards-B434-charter-1` 与 `check`，并 `codegraph resolve --doc docs/superpowers/specs/b434-contract.md`。
+1. ~~**Ticket 0 编译证据**~~ **已清（r3，§9.2）**。
+2. ~~**金样本本轮未跑**~~ **已清（r3，§9.2）**。
+3. **图（部分已清）**：r3 已跑 `codegraph validate`（0 issue，现有视图 `cards-B383-charter`）、`check`（跨域边 1261 条全在契约面内）、`resolve --doc` 本文件：ok 8 / moved 27（基线行号漂移，正常再锚定）/ file_missing 9（Ticket 0 新文件尚无视图条目）/ vanished 4（含 `internal/orchestration/facade.go#Manager.ListProjectLocations`——源码 `:73` 实在，是**图未覆盖**，与 §1.4 图覆盖债同类）。**仍欠**：按 `docs/codegraph-scan-recipe.md` 产出分支视图 diff `codegraph/diffs/cards-B434-charter-1.json`（含 §9.1 全部新符号与上述 4 个未覆盖存量符号），再跑 `validate --view cards-B434-charter-1` 与 `resolve --doc` 至零 vanished/file_missing。法定检查点是「图对账」列。
 4. **直通竖切**：§9.3 整条。
 5. **DTO fixture**：`contract_fixture_test.go` 加 `DesktopLaunchMaterial`、`DesktopLauncherOpenResp`、`DesktopDeliverReq`、`DesktopDeliverResp` 样本并 `-update` 生成 `web/src/api/testdata/*.json`；`contract.test.ts` 加读取用例。
 6. **外部事实：`CLAUDE_CODE_PLUGIN_DIRS` 多目录分隔符**——**plan 前必须钉**（本节点负责）：从 `claude-code.d.ts` 或 CLI 文档钉死，台账只读到「绝对路径或 ~ 开头」。阻塞条 129–130。
@@ -795,12 +797,14 @@ Ticket 0 为纯空壳，已逐文件人工核对导入均被使用、标识符�
 
 1. 契约增量文档：本文件；每个签名带现状出处（§1.1）或「新增 + Ticket 0 行号」（§3）。✅
 2. 目标图：`target.json` 不改（无新方向，§5）——随本提交冻结；分支视图 diff **缺**（无工具链），欠账 §10.3。⚠️
-3. Ticket 0 本轮编译通过：**缺**——本机无 Go/Node，命令未能执行（§9.2），欠账 §10.1。❌
-4. 可执行冻结：金样本已写（Go 三支：两支字面量 + `letter_unopened` wire；TS 两支：`desktopShell.test.ts` 新用例、`claudeDeepLink.test.ts`）但**本轮未跑**，欠账 §10.2；DTO fixture 欠账 §10.5。无哈希/密钥派生命中。⚠️
+3. Ticket 0 编译通过：r3 补跑 `go build/vet ./...` exit 0、desktop `./internal/...` exit 0、web `tsc -b` exit 0、B434 文件 lint exit 0（§9.2）。✅
+4. 可执行冻结：金样本 Go 三支、TS 两支（12 用例）r3 全部 PASS（§9.2）；DTO fixture 仍欠账 §10.5。无哈希/密钥派生命中。⚠️（仅余 fixture）
 5. 三重闸门：§8 命中五条（D1–D5），另记审过不立四条（含 r1 删除的旧 D5）。✅
 
-**缺项没有静默出口**：第 2、3、4 项的缺口已逐条写进 §10，交棒声明须由协调者显式认账后方可进 breakdown。
+**缺项没有静默出口**：第 2 项（分支视图 diff）与第 4 项（DTO fixture）的缺口写在 §10.3 / §10.5，协调者已认账（卡 note），交棒 breakdown。
 
 > **修订记录（r1 修复轮，2026-10-16）**：独立审阅 fail 三阻塞项处置——B1 来信补齐命中条全文/引用条/未读数/工单原文（§3.6，条 74–80）；B2 补异机转交失败 needs_human 与「不标 seen」保事件、被转交端一跳封顶（§3.7–§3.8，条 95–108，拍板 D5）；B3 删除旧 D5（与条 13 矛盾）。协调者拍板 P1/P2/P3=A 落入正文，R2 关闭，spec r2.1 勘误。非阻塞七条：外部事实三条移入欠账 §10.6–§10.8；计数纠错（六个 Store 方法、测试注释引用条号）；复合条目拆开、编号重排（r0 104 条 → r1 164 条）；`claudeDeepLink.test.ts` 落字面量用例；§10.1 加 `npm run lint`；§3.10 写明 rebind 与桌面端记录；§4 头部如实改为「测试已写、本轮未跑」。
 >
 > **修订记录（r2 修复轮，2026-10-16）**：第二轮审阅 B2 跨机一侧三处收口——B4 被转交端「信已落盘、opener 失败」回 200 + `CoordinatorWakeResp.LetterUnopened=true`（proto 增 omitempty 键 + 金样本），发起端据此标 seen，原移交「opener 失败的错误返回形态」收回冻结（`desktopUnopenedError`，条 109–111、165–170）；B5 被转交端一律不落 needs_human、一跳封顶拒转只回 502 带原因，needs_human 统一由认领本批的发起端写（条 99、171–172）；B6 桌面端失败段用独立进程内计数表、不经 `recordAdmissionStall`，不产生「准入」理由的等人标，agentd 重启清零可能多落一条且写明可接受（§3.7，条 103、173–174）。小错：`desktopOpener` 行号 :53 → :54。条 99–111 改写，追加条 165–176。
+>
+> **修订记录（r3 补跑，2026-10-16）**：用户裁决本机安装官方 Go/Node 后补齐编译与测试证据（§9.2），§10.1/§10.2 清账、§10.3 部分清账（validate/check/resolve 已跑，视图 diff 仍欠）；lint 清零改动：`claudeDeepLink.ts`、`desktopShell.ts` 空壳形参去下划线改 `void` 引用；§12 第 3 项 ✅、第 4 项仅余 fixture。审阅轮 3 非阻塞建议 1（未投递/未打开互斥断言）、2（「未打开」走独立分支不经 `clearWakeStall`）交 plan 吸收。
