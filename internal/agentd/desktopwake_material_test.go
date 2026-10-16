@@ -139,6 +139,11 @@ func TestB434MaterialRouteServesWithoutAutomation(t *testing.T) {
 	if want == "" || m.Folder != want {
 		t.Fatalf("条 5：folder = %q，resolveCoordWorkdir = %q（须相等且非空）", m.Folder, want)
 	}
+	// 契约 §3.5：Folder 等于登记的 loc.Path 本身——上面的相等断言两端共用解析点，
+	// 同改同变，锁不住值（review m1）。
+	if m.Folder != b434MaterialRoot {
+		t.Fatalf("条 5：folder = %q，须逐字等于登记路径 %q", m.Folder, b434MaterialRoot)
+	}
 }
 
 // TestB434MaterialUnknownCard404 锁契约 §3.9「404 卡不存在（ledgerErr）」：必须是
@@ -358,16 +363,35 @@ func (failingLocationsClient) ListProjectLocations() ([]proto.ProjectLocation, e
 // TestB434MaterialLocationListFailureNot409 锁静默失败族：列项目位置的 I/O 故障不得
 // 伪装成「没登记」——不回 409、不叫人去跑 handoff project add，回 500 带原因。
 func TestB434MaterialLocationListFailureNot409(t *testing.T) {
-	env := newB434MaterialEnv(t)
-	card := b434BareCard(t, env, b434MaterialProject)
-	env.srv.SetManager(failingLocationsClient{})
-	code, body := ledgerGet(t, env.testAgentdEnv, b434MaterialPath(card))
-	if code != http.StatusInternalServerError {
-		t.Fatalf("列项目位置失败应 500，得 %d %s", code, body)
-	}
-	if strings.Contains(body, "handoff project add") || !strings.Contains(body, "项目位置库不可读") {
-		t.Fatalf("500 体须带真实原因、不得指路登记：%s", body)
-	}
+	t.Run("列位置失败", func(t *testing.T) {
+		env := newB434MaterialEnv(t)
+		card := b434BareCard(t, env, b434MaterialProject)
+		env.srv.SetManager(failingLocationsClient{})
+		code, body := ledgerGet(t, env.testAgentdEnv, b434MaterialPath(card))
+		if code != http.StatusInternalServerError {
+			t.Fatalf("列项目位置失败应 500，得 %d %s", code, body)
+		}
+		if strings.Contains(body, "handoff project add") || !strings.Contains(body, "项目位置库不可读") {
+			t.Fatalf("500 体须带真实原因、不得指路登记：%s", body)
+		}
+	})
+	// mgr 未装配是装配缺口，同样不得冒充「没登记」（契约 r10 第 3 条，review m2）。
+	t.Run("mgr未装配", func(t *testing.T) {
+		env := newB434MaterialEnv(t)
+		card := b434BareCard(t, env, b434MaterialProject)
+		env.srv.mgr = nil
+		code, body := ledgerGet(t, env.testAgentdEnv, b434MaterialPath(card))
+		if code != http.StatusInternalServerError {
+			t.Fatalf("mgr 未装配应 500，得 %d %s", code, body)
+		}
+		var e map[string]string
+		if err := json.Unmarshal([]byte(body), &e); err != nil {
+			t.Fatalf("500 体须为 JSON: %v %s", err, body)
+		}
+		if strings.Contains(e["error"], "项目在本机没有登记位置") {
+			t.Fatalf("mgr 未装配不得报成「没登记」：%s", body)
+		}
+	})
 }
 
 // ---------- T4：拉起器字段（条 200–202；序列化边界） ----------
@@ -547,4 +571,78 @@ func TestB434MaterialSourceGuard(t *testing.T) {
 			t.Errorf("desktopwake.go 缺函数 %s（守卫失去对象）", name)
 		}
 	}
+}
+
+// ---------- review m3：一次 GET 只在边界层记一条日志 ----------
+
+// b434CaptureLog 把 env.srv.log 换成 Info 级文本 logger，返回缓冲与还原函数。
+func b434CaptureLog(env *ledgerEnv) (*bytes.Buffer, func()) {
+	var buf bytes.Buffer
+	prev := env.srv.log
+	env.srv.log = slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	return &buf, func() { env.srv.log = prev }
+}
+
+// b434LogLines 取缓冲里的非空行并清空缓冲。
+func b434LogLines(buf *bytes.Buffer) []string {
+	var out []string
+	for _, line := range strings.Split(buf.String(), "\n") {
+		if strings.TrimSpace(line) != "" {
+			out = append(out, line)
+		}
+	}
+	buf.Reset()
+	return out
+}
+
+// TestB434MaterialOneLogLinePerGet 锁 review m3：控制台 5s 轮询材料端点，每次 GET 只在
+// handleDesktopLaunchMaterial 记一条——200 一条 INFO（card、via、has_launcher），409/404/500
+// 一条 WARN（card、cause）；resolveCoordWorkdir 的「项目未登记」路径保持 B434 前的一条 Warn。
+func TestB434MaterialOneLogLinePerGet(t *testing.T) {
+	env := newB434MaterialEnv(t)
+	okCard := b434BareCard(t, env, b434MaterialProject)
+	b434RegisterLauncher(t, env)
+	ghost := b434BareCard(t, env, "ghost")
+	buf, restore := b434CaptureLog(env)
+	defer restore()
+
+	expectOne := func(name string, want ...string) {
+		t.Helper()
+		lines := b434LogLines(buf)
+		if len(lines) != 1 {
+			t.Fatalf("%s：应恰好一条日志，得 %d 条：\n%s", name, len(lines), strings.Join(lines, "\n"))
+		}
+		for _, w := range want {
+			if !strings.Contains(lines[0], w) {
+				t.Fatalf("%s：日志缺 %q：%s", name, w, lines[0])
+			}
+		}
+	}
+
+	if code, body := ledgerGet(t, env.testAgentdEnv, b434MaterialPath(okCard)); code != http.StatusOK {
+		t.Fatalf("200 路径得 %d %s", code, body)
+	}
+	expectOne("200", "level=INFO", "card="+okCard, "via=page", "has_launcher=true")
+
+	if code, body := ledgerGet(t, env.testAgentdEnv, b434MaterialPath(ghost)); code != http.StatusConflict {
+		t.Fatalf("409 路径得 %d %s", code, body)
+	}
+	expectOne("409", "level=WARN", "card="+ghost, "cause=")
+
+	if code, body := ledgerGet(t, env.testAgentdEnv, b434MaterialPath("B999")); code != http.StatusNotFound {
+		t.Fatalf("404 路径得 %d %s", code, body)
+	}
+	expectOne("404", "level=WARN", "card=B999", "cause=")
+
+	if root := env.srv.resolveCoordWorkdir(ghost); root != "" {
+		t.Fatalf("ghost 卡工作目录应为空，得 %q", root)
+	}
+	expectOne("resolveCoordWorkdir 项目未登记", "level=WARN", "协调者工作目录解析失败：项目未登记", "card="+ghost)
+
+	env.srv.SetManager(failingLocationsClient{})
+	b434LogLines(buf) // 丢弃 SetManager 自身的挂接日志，只数下面这次 GET
+	if code, body := ledgerGet(t, env.testAgentdEnv, b434MaterialPath(okCard)); code != http.StatusInternalServerError {
+		t.Fatalf("500 路径得 %d %s", code, body)
+	}
+	expectOne("500", "level=WARN", "card="+okCard, "项目位置库不可读")
 }

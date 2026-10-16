@@ -353,7 +353,9 @@ var errProjectLocationsUnavailable = errors.New("项目位置服务未装配（S
 // 列项目位置失败 → 原样包装、不包 errNoLocalProject（那是 I/O 故障，叫人去登记是误导，
 // 契约 r10 第 3 条窄读）；mgr 未注入 → errProjectLocationsUnavailable。
 // 注意：ListProjectLocations 必须经 s.mgr（b23328 源码守卫的执法面含本文件）；
-// 不判路径是否真实存在（与 workspace.ResolveProject 同口径）。
+// 不判路径是否真实存在（与 workspace.ResolveProject 同口径）。本函数不打日志：
+// 两个调用方各自在边界记一条（resolveCoordWorkdir 保持 B434 前的 Warn 口径，
+// 材料端点由 handleDesktopLaunchMaterial 记），这里再记就是同一失败两行。
 func (s *Server) resolveLocalProjectRoot(card ledger.Card) (string, error) {
 	if s.mgr == nil {
 		return "", errProjectLocationsUnavailable
@@ -364,8 +366,7 @@ func (s *Server) resolveLocalProjectRoot(card ledger.Card) (string, error) {
 	}
 	loc, err := workspace.ResolveProject("", card.Project, entries)
 	if err != nil {
-		// ResolveProject 的原因（含本机已登记清单）只进日志；对外文本按契约 §3.5 冻结。
-		s.log.Warn("项目在本机无登记位置", "card", card.ID, "project", card.Project, "cause", err)
+		// 对外文本按契约 §3.5 冻结，不带 ResolveProject 的原始原因。
 		return "", fmt.Errorf("%w：%s（handoff project add 登记后可用）", errNoLocalProject, card.Project)
 	}
 	return loc.Path, nil
