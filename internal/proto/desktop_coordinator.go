@@ -4,13 +4,12 @@
 // （信箱目录、来信标记、深链形状、桌面端会话 id 前缀、拉起来源词表）与
 // 两个 HTTP DTO。契约见 docs/superpowers/specs/b434-contract.md §3。
 //
-// 边界：本文件只有常量、类型与空壳；写信箱、发深链、拼简报等行为在
-// internal/agentd 与 cmd 实现节点落码（TODO(B434)）。mod 是独立交付物，
+// 边界：本文件只有常量与类型；写信箱、发深链、拼简报等行为在
+// internal/agentd 与 cmd 落码。mod 是独立交付物，
 // 不 import 本包——两侧字面量一致性由金样本测试锁定。
 package proto
 
 import (
-	"errors"
 	"fmt"
 	"strings"
 )
@@ -46,9 +45,6 @@ const (
 	SeatDesktopViaLauncher = "launcher"
 	SeatDesktopViaManual   = "manual"
 )
-
-// ErrDesktopNotImplemented 是 Ticket 0 空壳的统一返回值；实现节点删除。
-var ErrDesktopNotImplemented = errors.New("B434 桌面端协调者：尚未实现") // TODO(B434)
 
 // DesktopLaunchMaterial 是「用 Claude Code 坐下」的拉起材料
 // （GET /api/cards/{id}/coordinator/desktop-launch 的 200 响应体）。同一份材料

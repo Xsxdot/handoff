@@ -26,7 +26,6 @@ import (
 const b434DesktopSession = "local_31eda11a-a6fe-4a5c-a229-fc12d682d1b6"
 
 // TestB434ValidateDesktopSessionID 锁契约条 55–59：前缀 local_ + 余部非空且只含 [A-Za-z0-9-]。
-// 拒绝用例同时断言错误不是 ErrDesktopNotImplemented——否则空壳的恒错会让反例假绿。
 func TestB434ValidateDesktopSessionID(t *testing.T) {
 	cases := []struct {
 		name string
@@ -56,9 +55,6 @@ func TestB434ValidateDesktopSessionID(t *testing.T) {
 			if !tc.ok {
 				if err == nil {
 					t.Fatalf("ValidateDesktopSessionID(%q) 应报错", tc.id)
-				}
-				if errors.Is(err, proto.ErrDesktopNotImplemented) {
-					t.Fatalf("ValidateDesktopSessionID(%q) 返回空壳错误，不是形状判定: %v", tc.id, err)
 				}
 			}
 		})
@@ -316,8 +312,8 @@ func TestB434SetSeatDesktopRejectsWithoutSideEffects(t *testing.T) {
 			bd := desk
 			bd.Session = bad
 			err := s.SetSeatDesktop(card, seat, bd)
-			if !errors.Is(err, ErrBadState) || errors.Is(err, proto.ErrDesktopNotImplemented) {
-				t.Fatalf("非法 id %q 应 ErrBadState（且非空壳错误），得 %v", bad, err)
+			if !errors.Is(err, ErrBadState) {
+				t.Fatalf("非法 id %q 应 ErrBadState，得 %v", bad, err)
 			}
 		}
 		assertUntouched(t, card)
@@ -695,8 +691,8 @@ func TestB434RegisterDesktopLauncherRejectsInvalid(t *testing.T) {
 			l.Project = fmt.Sprintf("proj-x-%02d", i)
 			tc.mutate(&l)
 			err := s.RegisterDesktopLauncher(l)
-			if !errors.Is(err, ErrBadState) || errors.Is(err, proto.ErrDesktopNotImplemented) {
-				t.Fatalf("应 ErrBadState（且非空壳错误），得 %v", err)
+			if !errors.Is(err, ErrBadState) {
+				t.Fatalf("应 ErrBadState，得 %v", err)
 			}
 			for _, p := range []string{l.Project, strings.TrimSpace(l.Project)} {
 				if n := b434LauncherRows(t, s, p); n != 0 {
