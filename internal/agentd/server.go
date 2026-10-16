@@ -232,6 +232,16 @@ type Server struct {
 	desktopAt    time.Time
 	// desktopNow 是 TTL 测试缝；生产为 nil，使用 time.Now。
 	desktopNow func() time.Time
+	// desktopOpen 把 claude://code/continue 深链交给本机 Claude 桌面端（B434 契约 §3.7）。
+	// 本字段由 B434.4（V）定名，只作注入点：同包测试直接赋 spy；生产装配（darwin
+	// `open`、其它平台报「本平台不支持 Claude 桌面端深链」）归 B434 G2 在 NewServer 落。
+	// nil = 本机不能发深链：wakeDesktopSeat 按「信已落盘、continue 未发出」返回
+	// desktopUnopenedError。只在装配期写、运行期只读，不加锁。
+	desktopOpen desktopOpener
+	// desktopHome 是桌面端信箱的根目录（信箱 = <desktopHome>/.handoff/desktop-wake，
+	// 契约 r10 第 11 条）。空 = os.UserHomeDir()（信箱属写信进程用户）；测试注入
+	// t.TempDir()，不改进程 HOME。只在装配期写、运行期只读，不加锁。
+	desktopHome string
 	// upgradeMu / machineUpgrades 保护后台执行机升级：同一台机器同时只允许一个，
 	// 且记住最近一次的终态——**终态是控制台唯一的「失败出口」**（见
 	// proto.MachineUpgrade 的说明），丢了它界面就会一直停在「升级中」。

@@ -428,6 +428,8 @@ func (s *Server) wakeCoordinatorRoundRaw(ctx context.Context, card string,
 
 // wakeCoordinatorRoundID 是唤醒回合的现行实现。roundID 非空时沿用调用方给定的
 // 轮次标识（队列路径跨重试复用，一轮一组为上限）；空串则新开一轮。
+// bind 席位有桌面端记录时转 wakeDesktopSeat（B434），该分支不落 wake_round 行（写信不落账，契约条 81）；
+// 队列出队合成唤醒（raws 为空）对桌面端席位不写信、直接放行（契约 r10 第 10 条）。
 // 失败出口审计（B393 复评）：start 之前/转交/回合中的错误分支都尽量本机落一行
 // wake_round fail（键含 roundID，一轮一组）。例外两条：
 //  1. GetCard 失败——EnsureComment 同样要读卡，落行必败，只上抛错误；
@@ -449,6 +451,30 @@ func (s *Server) wakeCoordinatorRoundID(ctx context.Context, card string,
 		return zero, nil
 	}
 	if current.DriverSource == string(proto.SeatSourceBind) {
+		// B434（契约 §3.8）：有桌面端记录的 bind 席位走信箱 + continue 深链。插在 bind
+		// 早退处 = 先于 SeatBearingOf / resolveCoordinatorSquad / AdmitSeatCarrier，桌面端
+		// 不占协调者小队名额（拆解稿 §2.4 第 4 条），也不经 keystone（不调 Forget/Wake）。
+		desk, hasDesktop, derr := s.ledger.SeatDesktopOf(card)
+		switch {
+		case derr != nil && len(raws) == 0:
+			// 队列出队对桌面端席位本就不写信（下方守卫），读不到记录也不影响结局：降级为
+			// 原 bind 跳过，startCardStep 与执行者清队不被一次读失败阻断（契约 r10 第 10 条）。
+			s.log.Warn("读桌面端席位记录失败，队列出队按 bind 跳过", "card", card, "round_id", roundID, "cause", derr)
+			hasDesktop = false
+		case derr != nil:
+			s.log.Error("读桌面端席位记录失败，本轮不唤醒", "card", card, "round_id", roundID, "cause", derr)
+			return zero, fmt.Errorf("读取桌面端席位记录: %w", derr)
+		}
+		if hasDesktop {
+			if len(raws) == 0 {
+				// 队列出队合成唤醒（WakeQueueRelease，drainIgnitionRequest 传 nil raws）没有账本
+				// 事件可写信：与 B434 前 bind 席位同款直接放行，startCardStep 与执行者清队不被阻断
+				// （契约 r10 第 10 条；否则 scheddrain 每轮回填并停清队，堵死整条队列）。
+				s.log.Info("桌面端席位队列出队不写信，直接进节点再入口", "card", card, "round_id", roundID)
+				return zero, nil
+			}
+			return s.wakeDesktopSeat(ctx, card, current.DriverSession, desk, evs, raws, roundID)
+		}
 		s.keystone.Forget(card)
 		s.log.Info("bind 席位跳过协调者唤醒", "card", card, "event_count", len(evs))
 		return zero, nil

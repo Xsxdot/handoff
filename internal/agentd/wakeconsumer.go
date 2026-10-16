@@ -486,9 +486,12 @@ func (s *Server) writeWakeRoundFail(card, roundID, class, reason string) {
 	}
 }
 
-// resolveWakeCard 把唤醒目标从事件卡收到真正有 coordinate 席位的卡。
-// 事件卡自己有 coordinate 席位 → 自己；事件卡是 bind → 空（bind 靠 CLI wait）；
-// 空座沿 parent_id 上走，bind 祖先跳过，coordinate 祖先接手。不改账本 card_id。
+// resolveWakeCard 把唤醒目标从事件卡收到真正能被叫醒的席位卡。
+// 事件卡自己有 coordinate 席位 → 自己；事件卡是 bind：有桌面端记录（seat_desktops，
+// B434）→ 自己（走信箱 + continue 深链），无记录 → 空（bind 靠 CLI wait）；空座沿
+// parent_id 上走，无记录的 bind 祖先跳过，coordinate 祖先与有桌面端记录的 bind 祖先
+// 接手（契约 §3.8、P2=A）。读桌面端记录失败：起始卡 Warn + 空（同读卡失败）；祖先
+// Warn 后按无记录继续上走。不改账本 card_id。
 func (s *Server) resolveWakeCard(cardID string) string {
 	if s.ledger == nil || cardID == "" {
 		return ""
@@ -509,6 +512,19 @@ func (s *Server) resolveWakeCard(cardID string) string {
 		occupied := card.DriverSession != "" || card.DriverSource != ""
 		if occupied {
 			if card.DriverSource == string(proto.SeatSourceBind) {
+				_, hasDesktop, derr := s.ledger.SeatDesktopOf(cardID)
+				if derr != nil {
+					s.log.Warn("自动化唤醒读桌面端席位记录失败", "origin", origin, "card", cardID, "cause", derr)
+					if cardID == origin {
+						return ""
+					}
+					// 祖先 bind 读失败：按无记录处理继续上走，保留「找更上层 coordinate 祖先」语义。
+					cardID = card.ParentID
+					continue
+				}
+				if hasDesktop {
+					return cardID
+				}
 				if cardID == origin {
 					return ""
 				}
