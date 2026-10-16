@@ -8,9 +8,11 @@
 package agentd
 
 import (
+	"bytes"
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -361,4 +363,72 @@ func TestB434MaterialLocationListFailureNot409(t *testing.T) {
 	if strings.Contains(body, "handoff project add") || !strings.Contains(body, "项目位置库不可读") {
 		t.Fatalf("500 体须带真实原因、不得指路登记：%s", body)
 	}
+}
+
+// ---------- T4：拉起器字段（条 200–202；序列化边界） ----------
+
+// TestB434MaterialLauncherField 锁条 200–202：已登记 → launcher 等于其 DesktopSession；
+// 未登记 → JSON 无 launcher 键；读登记失败 → 仍 200、无键，且 s.log 留一条带卡号与
+// 原因的 Warn（有意降级不静默）。
+func TestB434MaterialLauncherField(t *testing.T) {
+	t.Run("未登记无键", func(t *testing.T) {
+		env := newB434MaterialEnv(t)
+		card := b434BareCard(t, env, b434MaterialProject)
+		code, body := ledgerGet(t, env.testAgentdEnv, b434MaterialPath(card))
+		if code != http.StatusOK {
+			t.Fatalf("应 200，得 %d %s", code, body)
+		}
+		if _, keys := b434DecodeMaterial(t, body); keys["launcher"] != nil {
+			t.Fatalf("条 201：未登记时 JSON 不得有 launcher 键：%s", body)
+		}
+	})
+	t.Run("已登记等值", func(t *testing.T) {
+		env := newB434MaterialEnv(t)
+		card := b434BareCard(t, env, b434MaterialProject)
+		b434RegisterLauncher(t, env)
+		code, body := ledgerGet(t, env.testAgentdEnv, b434MaterialPath(card))
+		if code != http.StatusOK {
+			t.Fatalf("应 200，得 %d %s", code, body)
+		}
+		m, keys := b434DecodeMaterial(t, body)
+		if keys["launcher"] == nil || m.Launcher != b434MaterialLauncher {
+			t.Fatalf("条 200：launcher = %q（键在=%v），期望 %q", m.Launcher, keys["launcher"] != nil, b434MaterialLauncher)
+		}
+	})
+	t.Run("读登记失败降级", func(t *testing.T) {
+		env := newB434MaterialEnv(t)
+		card := b434BareCard(t, env, b434MaterialProject)
+		raw, err := sql.Open("sqlite", env.ledgerPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := raw.Exec(`DROP TABLE desktop_launchers`); err != nil {
+			raw.Close()
+			t.Fatalf("注入读登记失败: %v", err)
+		}
+		if err := raw.Close(); err != nil {
+			t.Fatal(err)
+		}
+		var logs bytes.Buffer
+		prev := env.srv.log
+		env.srv.log = slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
+		defer func() { env.srv.log = prev }()
+		code, body := ledgerGet(t, env.testAgentdEnv, b434MaterialPath(card))
+		if code != http.StatusOK {
+			t.Fatalf("条 202：读登记失败仍应 200，得 %d %s", code, body)
+		}
+		if _, keys := b434DecodeMaterial(t, body); keys["launcher"] != nil {
+			t.Fatalf("条 202：读登记失败时不得有 launcher 键：%s", body)
+		}
+		var hit string
+		for _, line := range strings.Split(logs.String(), "\n") {
+			if strings.Contains(line, "level=WARN") && strings.Contains(line, "card="+card) &&
+				strings.Contains(line, "拉起器") && strings.Contains(line, "desktop_launchers") {
+				hit = line
+			}
+		}
+		if hit == "" {
+			t.Fatalf("降级须留 Warn（带卡号与原因），日志：\n%s", logs.String())
+		}
+	})
 }

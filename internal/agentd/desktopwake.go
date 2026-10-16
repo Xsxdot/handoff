@@ -110,6 +110,14 @@ func (s *Server) desktopLaunchMaterial(card, via string) (proto.DesktopLaunchMat
 		Brief: desktopBrief(desktopBriefInput{Card: card, Title: c.Title, BaseBranch: base,
 			Session: session, Owner: owner, Folder: folder, Via: via}),
 	}
+	launcher, ok, err := s.ledger.DesktopLauncherOf(c.Project)
+	switch {
+	case err != nil:
+		// 有意降级（契约条 202）：材料其余字段照给，「让拉起器代开」不出现；Warn 让它不静默。
+		s.log.Warn("拉起材料读拉起器登记失败，按未登记处理", "card", card, "project", c.Project, "cause", err)
+	case ok:
+		m.Launcher = launcher.DesktopSession
+	}
 	s.log.Info("桌面端拉起材料已产出", "card", card, "via", via, "folder", folder,
 		"session", session, "has_launcher", m.Launcher != "")
 	return m, nil
