@@ -227,3 +227,10 @@
 - **G2（B434.5）**：实现 7 提交（1af6214e…e54a1400，16 文件 +2703/−75），22 条 plan 变异 + §14 项全部红。review 轮 1 **fail**：I-1 规则 4 冒泡场景无测试锁、I-2 退避形状与 `letter_unopened` 不落 fail 行无测试锁（三发变异存活）；m1–m6。修复 917eaabb（I-1/I-2a/I-2b/m1/m3/m5 补测试、m2 注释、m4 takeover 清段改为「载荷 `to` == 卡当前 `DriverSession` 才清」+ 子例「运行锁过期抢占不清段」）；增量复审 **pass**（三发存活变异转红，另两发亦红；m1 子例靠日志 reason 断言记为 minor 欠账，可改 `inSegment` 断言；m6 不改）。合并 02eed4c6（--no-ff，无冲突）；agentd ok 65.582s、cmd ok 54.108s、proto ok。
 - **事故记录**：实现者变异 N4（关 darwin 前缀闸）在 §14④ 去掉 testing 闸后真调了 `open`（`https://example.com/x` 与 `claude://code/new?folder=/tmp`）；协调者核 `list_sessions` 未见 `/tmp` 会话，副作用仅浏览器页；后续凡变异 opener 先换替身，已写进 G3 与审阅者 brief。
 - 审阅者转 I 卡：未投递时游标停批导致的疑似队头饿死（`EventsFromAsc` 500 窗口），B389 起既有，I 卡评估。
+
+### 父卡 integrate 回归（非 G3 部分，2026-10-16，卡分支 ccb9be19）
+
+- web：`npx vitest run` → Test Files 146 passed、Tests 1947 passed；`npm run typecheck` 0；`npm run lint` → 2 errors / 38 warnings，两处 error 在 `src/app/tree/MobileWorkspace.tsx:156` 与 `src/app/workbench/TerminalTab.test.tsx:37`，`git diff main..HEAD` 对这两个文件为空 → **main 既有，非本卡引入**。
+- desktop：`go vet ./internal/...` 0；`go test ./internal/...` → embedbin ok 0.974s、shell ok 0.818s（`go build ./...` 仍因 `main.go:42` embed `all:frontend/dist` 预存失败，overlay 已在 D 卡核过）。
+- mod：PATH 上的 `~/.local/bin/claude` 2.1.220 无 `plugin test` 子命令；用桌面端内嵌 CLI（`…/claude-code/2.1.295/…/claude.app/Contents/MacOS/claude`）：`plugin validate --strict` → Validation passed（exit 0）；`plugin test` → 12 pass / 0 fail。
+- Go 全量 `go test ./...` 与 codegraph 视图 diff 留到 G3 合入后。
