@@ -975,3 +975,14 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 ## 来自 2026-10-15 拖拽覆盖终端修复
 
 - 已部署本机并完成真实浏览器拖拽点验：实际覆盖先确认，取消后清单及原PID不变，确认后旧会话与PID消失、新终端显示；本轮测试终端已清理，原有3会话全部保留。源码保护失败/取消和确认期间源或目标变化；普通分屏、空格、自身投放不误触资源释放。全 Web 144文件/1877项、构建与承重变异通过。SuperDev接口不可达，核验实际服务为既有launchd托管后沿受管链更新。尚未逐一运行原生桌面/手机拖放与各machine/content/位置变化组合；实际覆盖以 `docs/superpowers/ledgers/2026-10-15-terminal-drop-replace.ledger` 与独立review为准。代码图已回灌基线，check/独立validate通过；全仓validate的既有 `diffs/cards` 子目录问题仍在。
+
+## 来自 B434 spec（2026-10-16，本期不做）
+
+- **已绑定态「回到那场会话」**：Claude 桌面端会话 id（`local_…`）与席位里记的 CLI `CLAUDE_CODE_SESSION_ID` 不是同一个 id，缺可核映射；有了映射再加按钮（`claude://code/continue?session=local_<id>` 已存在）。来源：`docs/superpowers/specs/b434.md` 弃选。
+- **`claude --desktop` 第二通道**：文档化但要 CLI ≥ 2.1.285 且不带 prompt；CLI 升版后作为深链之外的拉起路径。来源：同上弃选。
+- **远端项目用深链 SSH 变体拉起**：`claude://code/new?ssh_host=&ssh_folder=&q=` 文档化（桌面端 ≥ 2.110.0），能把开发机上的项目位置也开成 Claude 桌面端会话；要先定 handoff 的 target 与桌面端 SSH 连接名的对应。来源：同上 Out of Scope。
+- **bind 席位心跳过期与自动换绑**：会话关了席位还在；三期范围。来源：同上 Out of Scope。
+- **主 agent 身份自动入群**：从桌面端会话把 `agent:<名字>` 登记为会话成员，免手填。来源：同上 Out of Scope。
+- **给 claude 开无头协调能力（`coordination` 能力位 + Launch/Resume）或用 `claude --bg` 后台会话当协调者**：用户 2026-10-16 两次弃选（只要桌面端会话形态）；`--bg` 本机已验可无人值守拉起（台账 `6184b87b`），若将来要不依赖桌面端的协调者再重走 spec。来源：同上弃选。
+- **handoff 移动壳内查看/进入桌面端协调者会话**：今天靠 Claude 手机端 Remote Control；要 handoff 自己的面需先有会话 id 映射。来源：同上 Out of Scope。
+- **定时巡场兜底**：桌面端本地定时任务每 N 分钟开一场新会话扫账本，作拉起器缺席时的无人值守兜底；B434 r2 弃选为主路径，保留为可选。来源：`docs/superpowers/specs/b434.md` 弃选。
