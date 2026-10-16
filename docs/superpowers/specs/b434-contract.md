@@ -1119,3 +1119,9 @@ r0–r2 三轮本机无 Go/Node 工具链（台账原文：`command not found: g
 > 8. **§3.2**：`DesktopLauncherOpenResp.Machine` 回登记原值，不归一为空串；只有空串定义为「本机」。
 > 9. **条 249/250 命名测试**：`TestB434LauncherDeliverRemote503`/`…Remote404` 须为顶层函数（可作薄包装调用同一表驱动 runner），保证 `-run` 可单独命中。
 > 10. **信箱 HOME 规则唯一定义**：G2 抽出 `func (s *Server) desktopMailboxHome() (string, error)`（`desktopHome` 为空 → `os.UserHomeDir()`）列入 Produces；`wakeDesktopSeat` 与 G3 收件机均消费它。
+>
+> **修订记录（r13 B434.6 review 回写，2026-10-16）**：三条澄清，不改签名、不改编号。
+> 1. **§3.6 拉起器来信（r12 第 7 条补充）**：`kind=brief` 围栏的开栏行为 `author=agentd seq=0 kind=brief`，`seq=0` 恒定，表示简报不对应任何账本事件；正文为 via=launcher 简报全文经 `desktopQuoteBlock` 同款转义。
+> 2. **拉起器首条消息口径（归 skill 文本，`skills/handoff/SKILL.md`「主 agent 回路」）**：拉起器只发围栏正文、不带开栏/闭栏行，并把转义的反引号还原后再作为新会话首条消息；模板句「把下面整段简报作为首条消息发出」据此读。I 卡真机 R1 验证新会话收到的首条消息形态。
+> 3. **§3.9 异机投递结果未知**：请求已发出后超时或连接断开（`DeadlineExceeded`、超时类 `net.Error`、EOF）与「未投递」区分：needs_human reason 与 502 文案写「投递结果未知；若信已到拉起器信箱则勿重复代开」；reason 中的服务端原文经 `client.ServerErrorText` 提取，不带状态码/JSON 外壳。
+

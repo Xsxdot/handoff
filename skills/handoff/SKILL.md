@@ -383,7 +383,7 @@ handoff done <task> --note "已验收：重试与失败用例都符合预期"
 
 **桌面端协调者与拉起器**。手机/异地要叫桌面端协调者用 `handoff card coordinate <id> --desktop`：它只请本项目登记的拉起器代开一场 Claude 桌面端协调者会话，不查协调者小队、不经准入；成功时 stdout 一行 JSON（`launcher` / `machine` / `handled_by`）。卡上已有人坐时被拒并指向 `card rebind`；项目没有登记拉起器时被拒，卡上同时亮起「需要人：无拉起器，请在桌面端开一场并登记」——回到电脑开一场桌面端会话并登记它。等人标记由 agentd 打，不要再手工补打。
 
-拉起器就是项目里由人开过的一场普通桌面端会话，通常就是主 agent 这一场：在里面执行 `handoff launcher register --project <项目> --desktop-session <自己的 local_… id>`；`handoff status` 的「拉起器」段列出各项目拉起器在哪台机器、够不够得着。拉起器被叫醒时会收到一封以 `[handoff]` 开头、写着「请替我开一场协调者会话」的来信：用桌面端会话管理工具在信里给的项目根目录新建会话，把信里整段简报作为首条消息发出，然后不再介入。
+拉起器就是项目里由人开过的一场普通桌面端会话，通常就是主 agent 这一场：在里面执行 `handoff launcher register --project <项目> --desktop-session <自己的 local_… id>`；`handoff status` 的「拉起器」段列出各项目拉起器在哪台机器、够不够得着。拉起器被叫醒时会收到一封以 `[handoff]` 开头、写着「请替我开一场协调者会话」的来信：用桌面端会话管理工具在信里给的项目根目录新建会话，把信里的简报作为首条消息发出，然后不再介入。简报在信里装在一个 `author=agentd seq=0 kind=brief` 的围栏块里（seq=0 表示它不是账本事件）：只发围栏**正文**，不带开栏/闭栏行；正文里被转义的反引号（`` \` ``）先还原成原样再发。
 
 拉起器要真的执行这类来信，项目 CLAUDE.md 里必须有一条常设授权，否则它会把来信当观察数据。CLAUDE.md 常设授权片段（原样粘进项目 CLAUDE.md）：
 
