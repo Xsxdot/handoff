@@ -193,3 +193,9 @@
 - 跨卡审计裁决：三卡均 pass-with-notes；一条承重契约缺口由协调者在代码里复核属实（`scheddrain.go:201` 传 nil raws，`:155-160` 出错即回填并停清队）→ 契约 r10 第 10 条，V 加守卫与测试。三样：冻结物逐条无签名矛盾（G1 `(card, via string)`、V 四签名、C `DesktopLauncherOpen` 均逐字）；跨卡签名 C↔L 六方法逐字、C↔G3 按 §3.9、C↔M 无撞文件、G1∥V 函数体无交集（冲突面只在 import 块）、V↔W 锚点行仍在、V↔G2 缺口三处（opener 失败注入、HOME 注入、firstWakeErr 写法）→ r10 第 11 条 + 拆解稿 r4；spec 故事 1–9 全部指到卡/task。
 - 协调者拍板：审计 13 条契约修订全部采纳（r10）；非阻塞 6 条全部采纳并写进各 plan §14（C：信箱键校验、补救命令带 `--via`、status 本机判定、SKILL.md 一句澄清；G1：源码守卫加 `desktopOpen`；V：内部锁理由删「运行期 seq」、注入点、命名测试归 G2）。
 - 合并顺序：C 独立；G1 先于 V，V 在 G1 之后 rebase。
+
+### 探针遗留清理（2026-10-16，协调者本机，M 真机安装前置）
+
+- 删除定时任务 `b434-probe-visible`（已禁用一次性）与 `b434-probe-wake`（手动），各自 SKILL.md 留在 `~/.claude/scheduled-tasks/` 下；探针会话保留不删。
+- `~/.claude/settings.json` 移除原型 `env.CLAUDE_CODE_PLUGIN_DIRS`（值为 dev-mods 原型路径），`env` 段随之为空删除；备份 `~/.claude/settings.json.bak-b434` 保留。删除原型 mod 目录 `~/.claude/dev-mods/<本会话>/handoff-autosend/`。
+- 现状：`~/.claude/plugins/` 下无 handoff mod，`handoff skill install` 将从干净状态落 mod（契约 §3.13 条 131 键序断言可在真机核）。
