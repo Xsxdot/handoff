@@ -9,7 +9,11 @@
 // 不 import 本包——两侧字面量一致性由金样本测试锁定。
 package proto
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+	"strings"
+)
 
 // DesktopWakeMarker 是 handoff 发给桌面端会话的一切文本（深链 q 简报、信箱
 // 来信）的首个标记。mod 只对以它开头的预填草稿代按发送；项目 CLAUDE.md 的
@@ -86,7 +90,22 @@ type DesktopDeliverResp struct {
 
 // ValidateDesktopSessionID 校验桌面端会话 id 形状：DesktopSessionPrefix 开头，
 // 余部非空且只含 [A-Za-z0-9-]。
+//
+// 参数：id 待校验值（原样比较，不裁剪空白；前缀大小写敏感）。
+// 返回：nil = 合形；否则返回描述首个违例的错误（不包任何哨兵，调用方按需包装）。
+// 注意：只校验形状，不证明该会话在桌面端真实存在。
 func ValidateDesktopSessionID(id string) error {
-	_ = id
-	return ErrDesktopNotImplemented // TODO(B434)
+	if !strings.HasPrefix(id, DesktopSessionPrefix) {
+		return fmt.Errorf("桌面端会话 id 必须以 %q 开头: %q", DesktopSessionPrefix, id)
+	}
+	rest := id[len(DesktopSessionPrefix):]
+	if rest == "" {
+		return fmt.Errorf("桌面端会话 id 在 %q 之后为空", DesktopSessionPrefix)
+	}
+	for _, r := range rest {
+		if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '-' {
+			return fmt.Errorf("桌面端会话 id 含非法字符 %q（只允许 [A-Za-z0-9-]）: %q", r, id)
+		}
+	}
+	return nil
 }

@@ -83,8 +83,8 @@ const (
 	EvDriverSeatBound = "driver_seat_bound"
 	// EvSeatDesktopSet 桌面端席位记录写入（B434）：bind 席位自报 Claude 桌面端
 	// 会话 id 与所在机器的落账事实，载荷 {identity, desktop_session, machine, via}，
-	// via ∈ proto.SeatDesktopVia*。结构事件，不唤醒任何人。TODO(B434) 生产写入者
-	// 是 Store.SetSeatDesktop。
+	// via ∈ proto.SeatDesktopVia*。结构事件，不唤醒任何人。唯一生产写入者是
+	// Store.SetSeatDesktop（seat_desktop.go），actor = 席位身份。
 	EvSeatDesktopSet = "seat_desktop_set"
 	// EvRoomMessage 协作房间域（B156.2）的唯一内容事件；kind 受控词表在
 	// proto.RoomMsgKind*。卡会话消息 CardID=卡号；项目群/全员群消息
