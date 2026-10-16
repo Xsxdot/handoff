@@ -67,6 +67,8 @@ vi.mock('../../api/ledger', async (importOriginal) => ({
 vi.mock('../../api/scheduling', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../api/scheduling')>()),
   getCoordinatorStatus: vi.fn().mockResolvedValue({ bound: false, attach_active: false, attach: null }),
+  // why 挂起：抽屉用例只看协调者三态与入口，不看坐席材料；挂起 = 材料读取中，不打真 fetch、不依赖 jsdom 网络失败的形状
+  getDesktopLaunchMaterial: vi.fn(() => new Promise(() => {})),
 }))
 
 describe('抽屉一处看', () => {

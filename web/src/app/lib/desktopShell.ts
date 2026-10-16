@@ -152,11 +152,32 @@ export function requestTitlebarZoom(): boolean {
 }
 
 // requestOpenDeepLink 请求桌面宿主打开一条 Claude 桌面端深链（B434）。
-// 参数：url 由 claudeDeepLink.ts 的 buildClaudeNewSessionURL 产出，调用方不得手拼。
-// 返回：找到并发出 external bridge 时为 true；浏览器里（无 bridge）为 false，调用方
-// 走普通链接或「复制简报」兜底。
-// TODO(B434)：Ticket 0 空壳，恒返回 false。
+//
+// 参数：
+//   - url: 由 claudeDeepLink.ts 的 buildClaudeNewSessionURL 产出，调用方不得手拼
+//
+// 返回：找到 external bridge 且 postMessage 未抛错时为 true；浏览器里（无 bridge）或
+// postMessage 抛错时为 false，调用方据此展开复制兜底。
+//
+// 注意：
+//   - 本函数不校验 scheme/host/path：白名单只在宿主侧一处
+//     （desktop/internal/shell/external_deeplink.go#validateClaudeDeepLink），前端再校一份只会和它漂移
+//   - true 只表示消息已交给宿主，不表示桌面端收到——Wails OpenURL 不回报 open 的退出码
+//     （契约 §10 欠账 7 读数），所以面板打开后给信任提示，不报「已打开」
+//   - 日志只记 URL 长度不记全文：q 里是整份简报
 export function requestOpenDeepLink(url: string): boolean {
-  void url
-  return false
+  const bridge = window as unknown as WebkitBridge
+  const post = bridge.webkit?.messageHandlers?.external?.postMessage
+  if (!post) {
+    console.info('desktop.open_deeplink.no_bridge', { url_chars: url.length })
+    return false
+  }
+  try {
+    post.call(bridge.webkit!.messageHandlers!.external, `${OPEN_DEEPLINK_MESSAGE_PREFIX}${url}`)
+  } catch (cause) {
+    console.error('desktop.open_deeplink.post_failed', { url_chars: url.length, cause })
+    return false
+  }
+  console.info('desktop.open_deeplink.sent', { url_chars: url.length })
+  return true
 }
