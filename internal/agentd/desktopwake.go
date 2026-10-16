@@ -19,6 +19,8 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/Xsxdot/handoff/internal/keystone"
@@ -279,29 +281,103 @@ type desktopLetterSection struct {
 }
 
 // escapeDesktopQuoteBody 转义围栏正文：每段连续 ≥3 个反引号中的每个反引号前加
-// 一个反斜杠；1–2 个连续反引号与其它字符原样（条 270–271）。
+// 一个反斜杠；1–2 个连续反引号与其它字符（含已有反斜杠）原样（条 270–271）。
+// 为什么选反斜杠而不选变长围栏：开栏/闭栏行固定为三反引号，名册与 kind 解析不随
+// 正文变，金样本能锁死字面量（契约 §3.6 围栏规则）。按字节扫描安全：反引号是
+// ASCII，不会出现在 UTF-8 多字节序列内部。
 func escapeDesktopQuoteBody(body string) string {
-	_ = body
-	return "" // TODO(B434)
+	var b strings.Builder
+	b.Grow(len(body))
+	for i := 0; i < len(body); {
+		if body[i] != '`' {
+			b.WriteByte(body[i])
+			i++
+			continue
+		}
+		j := i
+		for j < len(body) && body[j] == '`' {
+			j++
+		}
+		if j-i >= 3 {
+			for k := i; k < j; k++ {
+				b.WriteString("\\`")
+			}
+		} else {
+			b.WriteString(body[i:j])
+		}
+		i = j
+	}
+	return b.String()
 }
+
+// desktopQuoteAuthorReplacer 把作者值里会破坏开栏行的字符换成 "_"（条 272）。
+var desktopQuoteAuthorReplacer = strings.NewReplacer(" ", "_", "\t", "_", "\r", "_", "\n", "_", "`", "_")
 
 // sanitizeDesktopQuoteAuthor 把 actor 中的空格、\t、\r、\n 与反引号各替换为 "_"，
-// 保证开栏行单行且不可被提前闭栏（条 272）。
+// 保证开栏行单行且不可被提前闭栏（条 272）。名册用同一清洗值。
 func sanitizeDesktopQuoteAuthor(actor string) string {
-	_ = actor
-	return "" // TODO(B434)
+	return desktopQuoteAuthorReplacer.Replace(actor)
 }
 
-// desktopQuoteBlock 渲染一个围栏块：开栏行、转义后正文、闭栏行（条 267）。
+// desktopQuoteBlock 渲染一个围栏块：开栏行（desktopQuoteFenceOpen + " author=<清洗后>
+// seq=<n> kind=<k>"）、转义后正文、闭栏行，各以 "\n" 结尾（条 267）。
 func desktopQuoteBlock(q desktopQuote) string {
-	_ = q
-	return "" // TODO(B434)
+	var b strings.Builder
+	b.WriteString(desktopQuoteFenceOpen)
+	b.WriteString(" author=")
+	b.WriteString(sanitizeDesktopQuoteAuthor(q.Author))
+	b.WriteString(" seq=")
+	b.WriteString(strconv.FormatInt(q.Seq, 10))
+	b.WriteString(" kind=")
+	b.WriteString(q.Kind)
+	b.WriteByte('\n')
+	b.WriteString(escapeDesktopQuoteBody(q.Body))
+	b.WriteByte('\n')
+	b.WriteString(desktopQuoteFenceClose)
+	b.WriteByte('\n')
+	return b.String()
 }
 
-// renderDesktopLetter 是来信纯渲染层：首行 head（以 DesktopWakeMarker 开头）→
-// 作者名册行 → 各段 → 尾行 tail。desktopLetter 负责取数并组装 sections，
-// 不自行拼接任何第三方文本（条 263–275）。
+// renderDesktopLetter 是来信纯渲染层（契约 §3.6 布局）：第 1 行 head（以
+// DesktopWakeMarker 开头）→ 第 2 行作者名册（全部围栏块清洗后的 author 按首次出现
+// 顺序去重，系统 actor 照列）→ 空行 → 每段「标题行 + 各部件 + 空行」→ 末行 tail，
+// 每行以 "\n" 结尾。部件 Quote 非 nil 渲染围栏块，否则渲染 Skeleton 骨架行。
+// desktopLetter 负责取数并组装 sections，不自行拼接任何第三方文本（条 263–275）。
 func renderDesktopLetter(head string, sections []desktopLetterSection, tail string) string {
-	_, _, _ = head, sections, tail
-	return "" // TODO(B434)
+	var authors []string
+	seen := make(map[string]bool)
+	for _, sec := range sections {
+		for _, part := range sec.Parts {
+			if part.Quote == nil {
+				continue
+			}
+			author := sanitizeDesktopQuoteAuthor(part.Quote.Author)
+			if !seen[author] {
+				seen[author] = true
+				authors = append(authors, author)
+			}
+		}
+	}
+	var b strings.Builder
+	b.WriteString(head)
+	b.WriteByte('\n')
+	b.WriteString(desktopAuthorRosterPrefix)
+	b.WriteString(strings.Join(authors, desktopAuthorRosterSep))
+	b.WriteString("\n\n")
+	for _, sec := range sections {
+		b.WriteString(sec.Heading)
+		b.WriteByte('\n')
+		for _, part := range sec.Parts {
+			if part.Quote != nil {
+				b.WriteString(desktopQuoteBlock(*part.Quote))
+				continue
+			}
+			b.WriteString(part.Skeleton)
+			b.WriteByte('\n')
+		}
+		b.WriteByte('\n')
+	}
+	b.WriteString(tail)
+	b.WriteByte('\n')
+	return b.String()
 }
