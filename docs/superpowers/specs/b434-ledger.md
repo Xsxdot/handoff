@@ -234,3 +234,9 @@
 - desktop：`go vet ./internal/...` 0；`go test ./internal/...` → embedbin ok 0.974s、shell ok 0.818s（`go build ./...` 仍因 `main.go:42` embed `all:frontend/dist` 预存失败，overlay 已在 D 卡核过）。
 - mod：PATH 上的 `~/.local/bin/claude` 2.1.220 无 `plugin test` 子命令；用桌面端内嵌 CLI（`…/claude-code/2.1.295/…/claude.app/Contents/MacOS/claude`）：`plugin validate --strict` → Validation passed（exit 0）；`plugin test` → 12 pass / 0 fail。
 - Go 全量 `go test ./...` 与 codegraph 视图 diff 留到 G3 合入后。
+
+### 第三波 G3 implement/review/合并与全量回归（2026-10-16）
+
+- **G3（B434.6）**：实现 6 提交（4ac36f56…b6d1908e，8 文件 +1979/−29），plan 18 发 + §14 新增 M19–M31 全部红。review 轮 1 pass（审阅者复现 M27/M22/M5 红绿一致，亲自构造 needs_human 回声场景通过）；minor 1（异机结果未知口径）、minor 2（reason 经 `ServerErrorText` 去外壳）、minor 3–5 修复 419d4284（M32/M33/M34 红）。合并 62ce8eb6（--no-ff，无冲突）。
+- 契约 r13（brief 围栏 seq=0、拉起器首条消息口径、结果未知文案）+ `skills/handoff/SKILL.md` 拉起器一句补充（df355058；`internal/skill`/`cmd` B434 用例仍绿）。
+- **全量回归（62ce8eb6）**：`gofmt -l` 空；`go vet ./...` 0；`go build ./...` 0；`env -u CLAUDE_CODE_SESSION_ID go test ./... -count=1` → **65 ok / 0 FAIL**（原始输出 scratchpad `gotest_full.txt`）。
