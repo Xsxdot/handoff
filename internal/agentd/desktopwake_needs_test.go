@@ -173,6 +173,28 @@ func TestB434NeedsHumanExclusions(t *testing.T) {
 			}
 		})
 	}
+	// review I-1：规则 4「协调者自打」比的是**被叫醒席位**（resolveWakeCard 的目标卡）的身份，
+	// 不是事件卡自己的席位——父卡桌面端席位在空座子卡上打标，事件卡席位为空，目标是父卡。
+	t.Run("父卡席位在空座子卡上自打", func(t *testing.T) {
+		env, _, spy, home := newDesktopSliceEnv(t)
+		parentID := createCoordCard(t, env)
+		seat := bindDesktopSeat(t, env, parentID, "excl-parent", "local_excl-parent")
+		childID := splitCoordChild(t, env, parentID)
+		drainAutomation(t, env)
+		if err := env.ledger.MarkNeedsHuman(childID, "父卡协调者在子卡上打的标", seat); err != nil {
+			t.Fatal(err)
+		}
+		ev := lastEventOfType(t, env, childID, ledger.EvNeedsHuman)
+		if wakes, err := env.srv.automationWakeEvents(ev); err != nil || len(wakes) != 0 {
+			t.Fatalf("父卡席位 %s 在子卡 %s 自打应零唤醒，实得 %v err=%v", seat, childID, wakes, err)
+		}
+		if _, _, err := env.srv.consumeAutomationEventsOnce(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if n := len(desktopLettersIn(t, home)); n != 0 || len(spy.calls()) != 0 {
+			t.Fatalf("父卡席位自打不得写信/开 opener：信 %d 封、opener %v", n, spy.calls())
+		}
+	})
 }
 
 // TestB434NeedsHumanNonDesktopSeatsStaySilent 锁条 185、186、192：coordinate 席位与无记录 bind

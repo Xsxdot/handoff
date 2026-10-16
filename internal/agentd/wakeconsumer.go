@@ -728,8 +728,9 @@ func (s *Server) consumeAutomationEventsOnce(ctx context.Context) (processed int
 		// B434 契约 r12 第 4 条末句：席位换绑（driver_takeover / driver_seat_bound）或桌面端记录
 		// 重写（seat_desktop_set）意味着该卡的唤醒去向变了——旧桌面端失败段（退避窗、已落标计数、
 		// 段轮次）不得被新席位继承，在此清掉。三者都是不唤醒的结构事件，下面照常标 seen。
-		switch ev.Type {
-		case ledger.EvSeatDesktopSet, ledger.EvDriverTakeover, ledger.EvDriverSeatBound:
+		switch {
+		case ev.Type == ledger.EvSeatDesktopSet, ev.Type == ledger.EvDriverSeatBound,
+			ev.Type == ledger.EvDriverTakeover && s.driverTakeoverChangedSeat(ev):
 			s.clearDesktopWakeStall(ev.CardID, "席位换绑或桌面端记录重写（"+ev.Type+"）")
 		}
 		// B432 旁路（plan 决策 D1）：在唤醒分类与 seen 判定之外喂扇出——

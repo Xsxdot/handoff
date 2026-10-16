@@ -8,14 +8,17 @@
 package agentd
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Xsxdot/handoff/internal/keystone"
 	"github.com/Xsxdot/handoff/internal/ledger"
@@ -314,4 +317,65 @@ func TestB434DesktopRebindClearsFailureSegment(t *testing.T) {
 			t.Fatal("换绑事件流经消费循环后，该卡旧失败段应被清掉")
 		}
 	})
+
+	// review m1：解绑后从空座以 coordinate 坐下只落 driver_seat_bound（无 seat_desktop_set、
+	// 无 driver_takeover）。保住的批次随后会经 coordinate 路径唤醒并在成功出口再清一次段，
+	// 所以这里以日志 reason 区分「被 driver_seat_bound 清」与「被唤醒成功清」。
+	t.Run("解绑后coordinate坐下", func(t *testing.T) {
+		env, _, cardID, _ := setup(t)
+		var logs bytes.Buffer
+		env.srv.log = slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+		if err := env.ledger.ClearSeat(cardID); err != nil {
+			t.Fatal(err)
+		}
+		coord, err := proto.EncodeSeatIdentity("opencode", "rebind-coord")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := env.ledger.BindSeat(cardID, coord, proto.SeatSourceCoordinate,
+			ledger.SeatBearing{Carrier: "coord-carrier", Machine: "local"}); err != nil {
+			t.Fatalf("coordinate 坐下: %v", err)
+		}
+		_, _, _ = env.srv.consumeAutomationEventsOnce(context.Background())
+		const want = "reason=席位换绑或桌面端记录重写（driver_seat_bound）"
+		if !strings.Contains(logs.String(), want) {
+			t.Fatalf("driver_seat_bound 流经消费循环应清掉旧失败段（日志 %s），实得：\n%s", want, logs.String())
+		}
+	})
+
+	// review m4：运行锁过期抢占也落 driver_takeover（载荷 from/to 是运行锁持有者），但席位没换——
+	// 不得清段：时钟未推进时仍在退避窗内，本轮不重试、不新落标。
+	t.Run("运行锁过期抢占不清段", func(t *testing.T) {
+		env, _, cardID, _ := setup(t)
+		if _, acq, err := env.ledger.AcquireRunLock(cardID, "review", "run:old#1#1", -time.Minute); err != nil || !acq {
+			t.Fatalf("取运行锁: acq=%v err=%v", acq, err)
+		}
+		if _, acq, err := env.ledger.AcquireRunLock(cardID, "review", "run:new#2#2", 5*time.Minute); err != nil || !acq {
+			t.Fatalf("抢占运行锁: acq=%v err=%v", acq, err)
+		}
+		lastEventOfType(t, env, cardID, ledger.EvDriverTakeover) // 夹具自检：确有抢占事件
+		if _, _, err := env.srv.consumeAutomationEventsOnce(context.Background()); err != nil {
+			t.Fatalf("运行锁抢占不得清段（应仍在退避窗内静默跳过），实得 %v", err)
+		}
+		if !inSegment(env, cardID) {
+			t.Fatal("运行锁抢占后失败段应仍在")
+		}
+		assertOneDesktopFailMark(t, env, cardID, 1)
+	})
+}
+
+// TestB434DesktopWakeRetryDelayTable 锁契约 r12 第 4 条 / §11.3 的退避取值：第 n 次连续「信未
+// 落盘」后等 2s·2^(n-1)，封顶 60s（review I-2a：行为测试只用 desktopWakeRetryMax 推进时钟，
+// 量级本身无人看着）。
+func TestB434DesktopWakeRetryDelayTable(t *testing.T) {
+	for _, tc := range []struct {
+		failures int
+		want     time.Duration
+	}{
+		{1, 2 * time.Second}, {2, 4 * time.Second}, {5, 32 * time.Second}, {6, time.Minute}, {20, time.Minute},
+	} {
+		if got := desktopWakeRetryDelay(tc.failures); got != tc.want {
+			t.Errorf("desktopWakeRetryDelay(%d) = %v，want %v", tc.failures, got, tc.want)
+		}
+	}
 }

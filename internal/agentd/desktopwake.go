@@ -244,6 +244,10 @@ func (s *Server) desktopLetter(card, seat string, evs []keystone.WakeEvent, raws
 // 这一处常量与 TestB434DesktopLetterTailSessionClause、V 金样本的 tail 字串。
 const desktopLetterSessionReadCmd = "handoff room read "
 
+// desktopLetterSessionCmdSep 连接尾行里多个会话的读消息命令（契约 r10 第 8 条「以『、』连接」）。
+// 与作者名册分隔符 desktopAuthorRosterSep 同值但是两条独立规则，各自一处定义，改一个不牵动另一个。
+const desktopLetterSessionCmdSep = "、"
+
 // desktopLetterTail 渲染来信尾行（契约 §3.6，r10 第 8 条）：rooms 为空时省去整段
 // 「；会话消息：…」分句；多个会话按首次出现顺序、每个会话一条完整命令，以「、」连接。
 func desktopLetterTail(card string, rooms []string) string {
@@ -253,7 +257,7 @@ func desktopLetterTail(card string, rooms []string) string {
 		for i, room := range rooms {
 			cmds[i] = desktopLetterSessionReadCmd + room
 		}
-		tail += "；会话消息：" + strings.Join(cmds, desktopAuthorRosterSep)
+		tail += "；会话消息：" + strings.Join(cmds, desktopLetterSessionCmdSep)
 	}
 	return tail + "。处置完不必挂订阅，有事会再叫醒你。"
 }
@@ -679,7 +683,8 @@ func isForwardedWake(ctx context.Context) bool {
 //
 // 本机分支成功返回 RoundResult{Woke: true, SessionID: desk.Session}（handleCoordWake 据 Woke
 // 回 200）；信箱根取 desktopMailboxHome()（信箱属写信进程用户，契约 r10 第 11 条、r12 第 10
-// 条）；opener 取 s.desktopOpen（NewServer 按平台装配，nil 视为不能发深链）。异机分支见
+// 条）；opener 取 s.desktopOpen（cmd 组装点经 SetDesktopOpener 装配；NewServer 不装配，nil 视为不能
+// 发深链）。异机分支见
 // wakeRemoteDesktopSeat。零 keystone 调用；本函数自身零账本写（转交失败的 wake_round fail 行
 // 由 transferCoordinatorWake 落，B389 既有）。
 func (s *Server) wakeDesktopSeat(ctx context.Context, card, seat string, desk ledger.SeatDesktop,
@@ -859,6 +864,32 @@ func (s *Server) desktopNeedsHumanWakes(ev proto.LedgerEvent) ([]keystone.WakeEv
 	}
 	s.log.Info("needs_human 唤醒桌面端席位", "seq", ev.Seq, "card", ev.CardID, "target", target, "actor", ev.Actor)
 	return []keystone.WakeEvent{{Kind: keystone.WakeTaskTerminal, Card: ev.CardID, Summary: "needs_human: " + reason}}, nil
+}
+
+// driverTakeoverChangedSeat 报告一条 driver_takeover 是否真的换了卡上席位（review m4）：
+// 换绑（RebindSeat）载荷 to = 新席位身份；运行锁过期抢占（AcquireRunLock）复用同一事件类型，
+// 载荷 to 却是运行锁持有者，席位并没变——清失败段只该发生在前者。判据：载荷 to 等于卡上当前
+// DriverSession。之后若又换绑，后一条 takeover 自会命中，故读「当前」而非「事件当时」不漏清。
+// 载荷解不开或读卡失败 → Warn 并按「换了」处理：多清一次段的代价是同段可能多落一条
+// needs_human，少清的代价是新席位继承旧退避窗，前者是安全方向。
+func (s *Server) driverTakeoverChangedSeat(ev proto.LedgerEvent) bool {
+	var p struct {
+		To string `json:"to"`
+	}
+	if err := json.Unmarshal(ev.Payload, &p); err != nil {
+		s.log.Warn("driver_takeover 载荷解码失败，按席位已变清失败段", "seq", ev.Seq, "card", ev.CardID, "cause", err)
+		return true
+	}
+	card, err := s.ledger.GetCard(ev.CardID)
+	if err != nil {
+		s.log.Warn("driver_takeover 读卡失败，按席位已变清失败段", "seq", ev.Seq, "card", ev.CardID, "cause", err)
+		return true
+	}
+	if p.To != card.DriverSession {
+		s.log.Debug("driver_takeover 未换席位（运行锁抢占），不清失败段", "seq", ev.Seq, "card", ev.CardID, "to", p.To)
+		return false
+	}
+	return true
 }
 
 // desktopWakeStallEntry 是一张卡当前「桌面端失败段」的进程内状态（段 = 两次成功之间的

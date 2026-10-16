@@ -365,6 +365,9 @@ func TestB434DesktopRemoteLetterUnopened(t *testing.T) {
 		t.Fatalf("条 169：该批应标 seen 且游标越过 seq %d", seq)
 	}
 	assertOneDesktopFailMark(t, env, cardID, 1) // 条 170
+	if n := wakeRoundFailRows(t, env, cardID); n != 0 {
+		t.Fatalf("r12 第 4 条：letter_unopened 回传不落 wake_round fail 行，实得 %d 行", n)
+	}
 	if _, _, err := env.srv.consumeAutomationEventsOnce(context.Background()); err != nil {
 		t.Fatalf("回声轮: %v", err)
 	}
@@ -449,5 +452,13 @@ func TestB434DesktopMailboxHomeRule(t *testing.T) {
 	want, wantErr := os.UserHomeDir()
 	if got, err := env.srv.desktopMailboxHome(); got != want || (err == nil) != (wantErr == nil) {
 		t.Fatalf("desktopHome 为空时应取 os.UserHomeDir()=%q（err=%v），实得 %q err=%v", want, wantErr, got, err)
+	}
+}
+
+// TestB434DesktopTransferTimeoutValue 锁契约 r12 第 4 条的取值：异机转交单次时限 30s
+// （G3 forwardLauncherLetter 复用同一变量）。
+func TestB434DesktopTransferTimeoutValue(t *testing.T) {
+	if desktopTransferTimeout != 30*time.Second {
+		t.Fatalf("desktopTransferTimeout = %v，契约值 30s", desktopTransferTimeout)
 	}
 }
