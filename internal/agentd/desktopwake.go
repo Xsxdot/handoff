@@ -21,10 +21,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -399,24 +401,38 @@ func desktopNeedsHumanReason(ev proto.LedgerEvent) (string, bool) {
 	return *p.Reason, true
 }
 
+// errDesktopMailboxKeyUnsafe 是 writeDesktopLetter 拒绝不安全信箱键（CLI 会话 id 为空、
+// 含路径分隔符、以 '.' 开头）时包装的哨兵（契约 r12 第 6 条）：G3 收件机据此把请求映射
+// 为 400，席位唤醒侧仍按「未投递」处置（拒绝逻辑本身是 V 落的，这里只加可判别的身份）。
+var errDesktopMailboxKeyUnsafe = errors.New("信箱键不安全")
+
+// desktopLetterNameRetries 是同一 CLI 会话、同一纳秒（或并发写者撞名）时文件名序号
+// 顺延的上限：每撞一次 UnixNano 段 +1。64 远大于同纳秒能出现的写者数，超过即报错
+// （按「未投递」处置）而不是覆盖。
+const desktopLetterNameRetries = 64
+
 // writeDesktopLetter 把 letter 原子写进 home 下的信箱（契约 §3.6，P1=A）。
 //
 // 参数：home 写信进程用户的 HOME；cliSession 席位身份里的 CLI 会话 id（信箱键）；
 // letter 来信全文；now 取 UnixNano 作文件名序号。
 // 返回：最终路径 $home/.handoff/desktop-wake/<cliSession>.<19 位零填充 UnixNano>.md。
 // 过程：目录不存在以 0o700 创建（条 70）；同目录写 .<最终名>.tmp（O_EXCL、0o600）→
-// Sync → rename 成最终名，并发读者只见完整信（条 69；mod 跳过点开头文件）。
+// Sync → os.Link 成最终名 → 删临时名。并发读者只见完整信（条 69；mod 跳过点开头文件）。
+// 为什么用 Link 不用 Rename：rename 会静默覆盖同名信——同会话同纳秒两次写信（测试固定
+// 时钟、或转交收件与本机消费循环并发）第二封会吞掉第一封（条 68，台账 L4 实测）；Link
+// 遇已存在的最终名返回 EEXIST，据此把序号 +1 重试，从不覆盖。
 // 注意：cliSession 为空、含 '/' 或 '\'、以 '.' 开头一律拒绝且不碰文件系统——席位
 // session_id 段允许这些字符（proto.validateSeatPart），不拦会把信写出信箱目录或写成
-// mod 不读的隐藏文件。失败时清理临时文件。同纳秒碰撞与并发写的补强归 B434 G2（条 68）。
+// mod 不读的隐藏文件；拒绝错误包 errDesktopMailboxKeyUnsafe（契约 r12 第 6 条，G3 收件机
+// 映射 400）。HOME 为空不属信箱键问题，不包该哨兵。失败时清理本次临时文件。
 func writeDesktopLetter(home, cliSession, letter string, now time.Time) (string, error) {
 	switch {
 	case cliSession == "":
-		return "", errors.New("信箱键（CLI 会话 id）为空")
+		return "", fmt.Errorf("%w：CLI 会话 id 为空", errDesktopMailboxKeyUnsafe)
 	case strings.ContainsAny(cliSession, `/\`):
-		return "", fmt.Errorf("信箱键 %q 含路径分隔符，拒绝写信", cliSession)
+		return "", fmt.Errorf("%w：%q 含路径分隔符，拒绝写信", errDesktopMailboxKeyUnsafe, cliSession)
 	case strings.HasPrefix(cliSession, "."):
-		return "", fmt.Errorf("信箱键 %q 以点开头（会被当成临时/隐藏文件），拒绝写信", cliSession)
+		return "", fmt.Errorf("%w：%q 以点开头（会被当成临时/隐藏文件），拒绝写信", errDesktopMailboxKeyUnsafe, cliSession)
 	case strings.TrimSpace(home) == "":
 		return "", errors.New("信箱所在 HOME 为空")
 	}
@@ -424,32 +440,101 @@ func writeDesktopLetter(home, cliSession, letter string, now time.Time) (string,
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", fmt.Errorf("建信箱目录 %s: %w", dir, err)
 	}
-	name := fmt.Sprintf("%s.%019d.md", cliSession, now.UnixNano())
-	final := filepath.Join(dir, name)
-	tmp := filepath.Join(dir, "."+name+".tmp")
+	base := now.UnixNano()
+	for i := int64(0); i < desktopLetterNameRetries; i++ {
+		name := fmt.Sprintf("%s.%019d.md", cliSession, base+i)
+		final := filepath.Join(dir, name)
+		taken, err := writeDesktopLetterOnce(filepath.Join(dir, "."+name+".tmp"), final, letter)
+		if err != nil {
+			return "", err
+		}
+		if !taken {
+			return final, nil
+		}
+	}
+	return "", fmt.Errorf("信箱 %s 里 %s 起连续 %d 个序号都已占用，拒绝覆盖", dir, cliSession, desktopLetterNameRetries)
+}
+
+// writeDesktopLetterOnce 以 tmp → final 的固定名写一次信：tmp 或 final 已存在 →
+// taken=true（调用方换下一个序号，不覆盖）；其余失败返回错误并删除本次 tmp。
+// Link 成功后删 tmp 失败不报错：信已按最终名落盘（mod 只读最终名），残留的点开头
+// tmp 由 sweepDesktopLetterTmp 按年龄清理。
+func writeDesktopLetterOnce(tmp, final, letter string) (taken bool, err error) {
 	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if errors.Is(err, fs.ErrExist) {
+		return true, nil
+	}
 	if err != nil {
-		return "", fmt.Errorf("建信箱临时文件 %s: %w", tmp, err)
+		return false, fmt.Errorf("建信箱临时文件 %s: %w", tmp, err)
 	}
 	if _, err := f.WriteString(letter); err != nil {
 		_ = f.Close()
 		_ = os.Remove(tmp)
-		return "", fmt.Errorf("写信箱临时文件 %s: %w", tmp, err)
+		return false, fmt.Errorf("写信箱临时文件 %s: %w", tmp, err)
 	}
 	if err := f.Sync(); err != nil {
 		_ = f.Close()
 		_ = os.Remove(tmp)
-		return "", fmt.Errorf("落盘信箱临时文件 %s: %w", tmp, err)
+		return false, fmt.Errorf("落盘信箱临时文件 %s: %w", tmp, err)
 	}
 	if err := f.Close(); err != nil {
 		_ = os.Remove(tmp)
-		return "", fmt.Errorf("关闭信箱临时文件 %s: %w", tmp, err)
+		return false, fmt.Errorf("关闭信箱临时文件 %s: %w", tmp, err)
 	}
-	if err := os.Rename(tmp, final); err != nil {
+	if err := os.Link(tmp, final); err != nil {
 		_ = os.Remove(tmp)
-		return "", fmt.Errorf("信件改名 %s → %s: %w", tmp, final, err)
+		if errors.Is(err, fs.ErrExist) {
+			return true, nil
+		}
+		return false, fmt.Errorf("信件落名 %s → %s: %w", tmp, final, err)
 	}
-	return final, nil
+	_ = os.Remove(tmp)
+	return false, nil
+}
+
+// desktopLetterTmpMaxAge 是信箱临时文件的残留判定年龄：正常写信从建 tmp 到删 tmp 在
+// 毫秒级，超过一小时仍在的只可能是写信中途进程崩溃的遗留（V review 遗留项）。
+const desktopLetterTmpMaxAge = time.Hour
+
+// sweepDesktopLetterTmp 删除 home 信箱里本 CLI 会话、修改时间早于 desktopLetterTmpMaxAge
+// 的临时文件（.<cliSession>.<19 位>.md.tmp）。只在本会话一封信成功落盘后调用（此时
+// cliSession 已过 writeDesktopLetter 的安全校验）；用真实墙钟比 mtime（不用 desktopClock
+// 测试缝——缝被固定到未来时会误删并发写者的新 tmp）。尽力而为：失败只 Warn，不影响投递。
+func (s *Server) sweepDesktopLetterTmp(home, cliSession string) {
+	dir := filepath.Join(home, proto.DesktopWakeDirRel)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		s.log.Warn("清理信箱临时文件：读目录失败", "dir", dir, "cause", err)
+		return
+	}
+	pattern := regexp.MustCompile(`^\.` + regexp.QuoteMeta(cliSession) + `\.[0-9]{19}\.md\.tmp$`)
+	removed := 0
+	for _, e := range entries {
+		if e.IsDir() || !pattern.MatchString(e.Name()) {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil || time.Since(info.ModTime()) < desktopLetterTmpMaxAge {
+			continue
+		}
+		if err := os.Remove(filepath.Join(dir, e.Name())); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			s.log.Warn("清理信箱临时文件失败", "file", e.Name(), "cause", err)
+			continue
+		}
+		removed++
+	}
+	if removed > 0 {
+		s.log.Info("已清理信箱残留临时文件", "dir", dir, "cli_session", cliSession, "removed", removed)
+	}
+}
+
+// desktopClock 是桌面端时钟缝（V review m3）：生产 desktopNow 为 nil 取 time.Now；测试固定
+// 它来复现同纳秒写信、推进失败段退避窗。与薄壳状态 TTL（desktopstate.go）共用同一缝。
+func (s *Server) desktopClock() time.Time {
+	if s.desktopNow != nil {
+		return s.desktopNow()
+	}
+	return time.Now()
 }
 
 // claudeContinueURL 构造 claude://code/continue?session=<url 编码的桌面端会话 id>（条 83）。
@@ -583,10 +668,11 @@ func (s *Server) wakeDesktopSeat(ctx context.Context, card, seat string, desk le
 			return undelivered("取 HOME", err)
 		}
 	}
-	letterPath, err := writeDesktopLetter(home, cliSession, letter, time.Now())
+	letterPath, err := writeDesktopLetter(home, cliSession, letter, s.desktopClock())
 	if err != nil {
 		return undelivered("写信箱", err)
 	}
+	s.sweepDesktopLetterTmp(home, cliSession)
 	s.log.Info("桌面端来信已落盘", "card", card, "letter", letterPath, "bytes", len(letter), "round_id", roundID)
 	unopened := func(stage string, cause error) (keystone.RoundResult, error) {
 		s.log.Error("桌面端来信已落盘但 continue 未发出", "card", card, "letter", letterPath,
