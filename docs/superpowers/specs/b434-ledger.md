@@ -163,3 +163,11 @@
 - 命令与退出码（`export PATH="$HOME/.local/sdk/go/bin:$HOME/.local/sdk/node/bin:$PATH"`）：`go build ./...` exit=0；`go vet ./...` exit=0；`go test -count=1 ./internal/agentd/ ./internal/proto/ ./internal/ledger/ ./internal/skill/` exit=0（四包 ok）；`-run TestB434`：6 PASS / 3 SKIP（SKIP 即上述三支渲染金样本）；`gofmt -l` 四个 Go 文件无输出；`cd web && npm run typecheck` exit=0；`npx eslint` B434 四文件 + `CoordinatorPanel.tsx` exit=0；`npx vitest run` 三文件 14 用例 exit=0（web 本轮未改）。
 - 脚本插曲：本机 `python3` 为 3.9.6，含超长中文行的编辑脚本从文件运行时报 `SyntaxError: Non-UTF-8 code starting with '\xe6'`（文件本身 UTF-8 合法，属分词器长行缓冲问题）；脚本首行加 `# -*- coding: utf-8 -*-` 后正常。
 - r7 提交（历史读数，随后 amend 一次，hash 会变）：`git commit -q -F <scratchpad>/r7/msg.txt` → `1bd0de74`；`7 files changed, 433 insertions(+), 52 deletions(-)`。未 push，未跑 `handoff card`；trailer `Claude Opus 5.5`（如实写本会话模型）。
+
+## breakdown r2（2026-10-16，基于 `30979524` 契约 r7；回写 P7/P9 用户裁决）
+
+- 前置核对：`git merge-base --is-ancestor 30979524 HEAD` → on-top（HEAD 即 `30979524 docs(b434): contract r7 — 补签 P7=d 主 agent 代开 CLI 与 P9=丁 来信围栏`）；工作树干净。契约头部冻结状态行已为「冻结到 r7」。读契约 §4.14（条 223–242，r6 坐下按钮）、§4.15（243–251，r6 deliver 守卫）、§4.16（252–262，r7 P7=d）、§4.17（263–280，r7 P9=丁）、欠账 18。
+- 归属分歧（如实记）：协调者转达要求把 §4.17 条 263–280 记到 G2 卡①；契约欠账 18 原文把「`desktopLetter` 组装 sections 与 `renderDesktopLetter` 等实现」（条 74–79、263–275、280）归 **V**、条 279 归 **M**、条 261 归 **G3**、条 252–260/262/277–278 归 **C**。稿按契约写：V 实现围栏渲染并激活金样本；G2①列条 263–280 为「扩展来信时保持全绿」，④加 golden 文件（只读）；M①加条 279（mod 行为无改动，只断言 `asUser: true`）。待协调者确认。
+- 改动：头部状态行改「**已拍板（2026-10-16）**」；§0 P7/P9 裁决列与稿末拍板记录区回填（P7=d：不动 P4，故事 5 本就落在主 agent 回路；P9=丁：保留已验通路，围栏 + 名册 + 授权规则把第三方原文降为带来源的数据）；§2.2 增 §4.14–§4.17 归属行；§2.3 记 R-B0–R-B3 已由 r6/r7 关闭；C①④（`cmd/card_driver.go` 的 `--desktop`、`internal/skill/desktop_rule.go`、client `DesktopLauncherOpen`）与验收；V①；G2①④；G3①（243–251、261）；W①（223–242，去「条 203/204 待定」）；M①（279，注明 P9 丁对 mod 无改动）；§4 故事 6 行改为主 agent `card coordinate <卡> --desktop` 触发、归 C + G3；§5.3 门禁 (c) 与 §6 #14 去「待用户」；§6 第三批增 #20（围栏来信是否被当数据，观察项，归 I），待验总数 19 → 20；§9 C/V/G2/G3/W/M 行附件更新。
+- 自检：`codegraph resolve --doc docs/superpowers/specs/b434-breakdown.md` → exit=0，44 锚 = moved 39 / ok 5 / vanished 0 / file_missing 0。
+- r2 提交（历史读数，随后 amend 一次，hash 会变）：`git commit -q -F -` → `f2b90893 docs(b434): breakdown r2 — 回写 P7/P9 裁决，已拍板`；2 files changed, 50 insertions(+), 30 deletions(-)。未 push。
