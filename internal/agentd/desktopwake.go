@@ -10,15 +10,20 @@
 //   - 拉起器代开：给项目拉起器写一封装着拉起材料的信并 continue 唤醒它。
 //
 // 边界：写信箱与发深链是 gateway 对本机的出站 I/O（d_gateway），不进 d_execution，
-// 不经 keystone（keystone.Wake / LaunchForCard 对桌面端席位零调用）。本文件只有
-// 签名与常量；行为在实现节点落码（TODO(B434)）。契约见
-// docs/superpowers/specs/b434-contract.md §3.5–§3.8。
+// 不经 keystone（keystone.Wake / LaunchForCard 对桌面端席位零调用）。本机唤醒主缝
+// （wakeDesktopSeat 本机分支、desktopLetter 其它事件段、writeDesktopLetter、
+// claudeContinueURL、围栏渲染层）由 B434.4 落码；其余函数仍是空壳，行为在
+// G1/G2/G3 落码（TODO(B434)）。契约见 docs/superpowers/specs/b434-contract.md §3.5–§3.8。
 package agentd
 
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
+	"net/url"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -26,6 +31,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/keystone"
 	"github.com/Xsxdot/handoff/internal/ledger"
 	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/scheduling"
 )
 
 // errNoLocalProject 表示卡所属项目在本 agentd 没有登记位置；HTTP 映射 409，
@@ -68,31 +74,111 @@ func desktopBrief(in desktopBriefInput) string {
 	return "" // TODO(B434)
 }
 
-// desktopLetter 把一批唤醒事件投影成一封人可读的来信（以 DesktopWakeMarker 开头），
-// 内容与 session wait / card wait 同源（契约 §3.6）：会话消息给命中条全文、
-// 引用条（s.rooms.MessageReference）与该席位在该会话的未读数
-// （s.rooms.ListSessions(seat) 的 Unread）；工单给 task_mirrored 载荷原文。
-// 只负责取数并组装 desktopLetterSection：第三方原文一律放进 desktopQuote，
-// 交 renderDesktopLetter 渲染围栏与作者名册（P9=丁，契约条 263–275）。
-// 读引用/未读失败上抛（宁可不发信，不发残信）。
+// desktopLetter 把一批唤醒事件投影成一封来信（契约 §3.6 模板 r7）：只负责取数并组装
+// desktopLetterSection，第三方原文一律放进 desktopQuote，交 renderDesktopLetter 渲染
+// 围栏与作者名册（P9=丁，条 263–275）。
+//
+// 参数：card 被唤醒席位所在卡（resolveWakeCard 的目标，可能是事件卡的祖先）；seat 席位
+// 身份（G2 读未读数用）；evs 本批唤醒摘要（不读 Summary——它被截到 400 字）；raws 本批
+// 账本原始事件（按 seq 升序，内容的唯一来源）。
+// 返回：来信全文；raws 为空或含尚未支持的事件类型 → 错误（宁可不发信，不发残信）。
+// 现状（B434.4）：只实现「其它事件」段（decision_*、task 终态等 → kind=event，载荷原文）。
+// 会话消息（命中/引用/未读）、task_mirrored 工单、needs_human 三种段与尾行「会话消息：
+// handoff session read <会话 id>」分句由 B434 G2 补全（契约条 74–80、191）。
 func (s *Server) desktopLetter(card, seat string, evs []keystone.WakeEvent, raws []proto.LedgerEvent) (string, error) {
-	_, _, _, _ = card, seat, evs, raws
-	return "", proto.ErrDesktopNotImplemented // TODO(B434)
+	if len(raws) == 0 {
+		return "", fmt.Errorf("卡 %s 本批唤醒没有账本原始事件，无从组装来信", card)
+	}
+	sections := make([]desktopLetterSection, 0, len(raws))
+	minSeq, maxSeq := raws[0].Seq, raws[0].Seq
+	for _, ev := range raws {
+		if ev.Seq < minSeq {
+			minSeq = ev.Seq
+		}
+		if ev.Seq > maxSeq {
+			maxSeq = ev.Seq
+		}
+		switch ev.Type {
+		case ledger.EvRoomMessage, ledger.EvTaskMirrored, ledger.EvNeedsHuman:
+			s.log.Warn("来信暂不支持该事件类型，本批不写信", "card", card, "seq", ev.Seq, "type", ev.Type)
+			return "", fmt.Errorf("卡 %s 来信暂不支持事件类型 %s（seq %d）", card, ev.Type, ev.Seq)
+		default:
+			sections = append(sections, desktopLetterSection{
+				Heading: fmt.Sprintf("## %s seq %d", ev.Type, ev.Seq),
+				Parts: []desktopLetterPart{{Quote: &desktopQuote{
+					Author: ev.Actor, Seq: ev.Seq, Kind: desktopQuoteKindEvent, Body: string(ev.Payload),
+				}}},
+			})
+		}
+	}
+	head := fmt.Sprintf("%s 卡 %s 有 %d 件新事（账本 seq %d–%d）", proto.DesktopWakeMarker, card, len(raws), minSeq, maxSeq)
+	tail := fmt.Sprintf("按分诊表处置；读全文：handoff card show %s。处置完不必挂订阅，有事会再叫醒你。", card)
+	letter := renderDesktopLetter(head, sections, tail)
+	s.log.Debug("桌面端来信已组装", "card", card, "seat", seat,
+		"event_count", len(raws), "wake_count", len(evs), "bytes", len(letter))
+	return letter, nil
 }
 
-// writeDesktopLetter 把 letter 原子写进 home 下的信箱（同目录临时文件 + rename），
-// 返回最终路径。文件名 <cliSession>.<19 位零填充 UnixNano>.md，临时文件
-// .<同名>.tmp（契约 §3.6，P1=A 已拍板）。
+// writeDesktopLetter 把 letter 原子写进 home 下的信箱（契约 §3.6，P1=A）。
+//
+// 参数：home 写信进程用户的 HOME；cliSession 席位身份里的 CLI 会话 id（信箱键）；
+// letter 来信全文；now 取 UnixNano 作文件名序号。
+// 返回：最终路径 $home/.handoff/desktop-wake/<cliSession>.<19 位零填充 UnixNano>.md。
+// 过程：目录不存在以 0o700 创建（条 70）；同目录写 .<最终名>.tmp（O_EXCL、0o600）→
+// Sync → rename 成最终名，并发读者只见完整信（条 69；mod 跳过点开头文件）。
+// 注意：cliSession 为空、含 '/' 或 '\'、以 '.' 开头一律拒绝且不碰文件系统——席位
+// session_id 段允许这些字符（proto.validateSeatPart），不拦会把信写出信箱目录或写成
+// mod 不读的隐藏文件。失败时清理临时文件。同纳秒碰撞与并发写的补强归 B434 G2（条 68）。
 func writeDesktopLetter(home, cliSession, letter string, now time.Time) (string, error) {
-	_, _, _, _ = home, cliSession, letter, now
-	return "", proto.ErrDesktopNotImplemented // TODO(B434)
+	switch {
+	case cliSession == "":
+		return "", errors.New("信箱键（CLI 会话 id）为空")
+	case strings.ContainsAny(cliSession, `/\`):
+		return "", fmt.Errorf("信箱键 %q 含路径分隔符，拒绝写信", cliSession)
+	case strings.HasPrefix(cliSession, "."):
+		return "", fmt.Errorf("信箱键 %q 以点开头（会被当成临时/隐藏文件），拒绝写信", cliSession)
+	case strings.TrimSpace(home) == "":
+		return "", errors.New("信箱所在 HOME 为空")
+	}
+	dir := filepath.Join(home, proto.DesktopWakeDirRel)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", fmt.Errorf("建信箱目录 %s: %w", dir, err)
+	}
+	name := fmt.Sprintf("%s.%019d.md", cliSession, now.UnixNano())
+	final := filepath.Join(dir, name)
+	tmp := filepath.Join(dir, "."+name+".tmp")
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return "", fmt.Errorf("建信箱临时文件 %s: %w", tmp, err)
+	}
+	if _, err := f.WriteString(letter); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		return "", fmt.Errorf("写信箱临时文件 %s: %w", tmp, err)
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		return "", fmt.Errorf("落盘信箱临时文件 %s: %w", tmp, err)
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return "", fmt.Errorf("关闭信箱临时文件 %s: %w", tmp, err)
+	}
+	if err := os.Rename(tmp, final); err != nil {
+		_ = os.Remove(tmp)
+		return "", fmt.Errorf("信件改名 %s → %s: %w", tmp, final, err)
+	}
+	return final, nil
 }
 
-// claudeContinueURL 构造 claude://code/continue?session=<url 编码的桌面端会话 id>；
-// id 不合法即报错。
+// claudeContinueURL 构造 claude://code/continue?session=<url 编码的桌面端会话 id>（条 83）。
+// 先过 proto.ValidateDesktopSessionID：id 不合法即报错，调用方不得调 opener（条 84）。
 func claudeContinueURL(desktopSession string) (string, error) {
-	_ = desktopSession
-	return "", proto.ErrDesktopNotImplemented // TODO(B434)
+	if err := proto.ValidateDesktopSessionID(desktopSession); err != nil {
+		return "", fmt.Errorf("continue 深链的桌面端会话 id 非法: %w", err)
+	}
+	return proto.ClaudeContinueURLPrefix + url.QueryEscape(desktopSession), nil
 }
 
 // deliverDesktopLetter 是拉起器投递（r5）。machine 为本机 → renderLauncherLetter
@@ -179,10 +265,67 @@ func isForwardedWake(ctx context.Context) bool {
 // 类型化错误交给调用方：写信/渲染失败、转交非 2xx、异机且 isForwardedWake(ctx)
 // （一跳封顶，不再转交）→ desktopUndeliveredError；opener 失败（本机）或转交回包
 // LetterUnopened=true → desktopUnopenedError。
+//
+// 现状（B434.4）：本机分支已实现，成功返回 RoundResult{Woke: true, SessionID: desk.Session}
+// （handleCoordWake 据 Woke 回 200）；信箱根取 s.desktopHome，空则 os.UserHomeDir()
+// （信箱属写信进程用户，契约 r10 第 11 条）；
+// opener 取 s.desktopOpen，nil 视为不能发深链。异机分支暂返回 desktopUndeliveredError，
+// 由 B434 G2 换成 transferCoordinatorWake + 一跳封顶。零 keystone 调用、零账本写。
 func (s *Server) wakeDesktopSeat(ctx context.Context, card, seat string, desk ledger.SeatDesktop,
 	evs []keystone.WakeEvent, raws []proto.LedgerEvent, roundID string) (keystone.RoundResult, error) {
-	_, _, _, _, _, _, _ = ctx, card, seat, desk, evs, raws, roundID
-	return keystone.RoundResult{}, proto.ErrDesktopNotImplemented // TODO(B434)
+	var zero keystone.RoundResult
+	machine := desk.Machine
+	if machine == "" {
+		machine = "本机"
+	}
+	s.log.Info("桌面端席位唤醒开始", "card", card, "seat", seat, "desktop_session", desk.Session,
+		"machine", machine, "via", desk.Via, "event_count", len(raws), "round_id", roundID)
+	undelivered := func(stage string, cause error) (keystone.RoundResult, error) {
+		s.log.Error("桌面端席位唤醒未投递（信未落盘）", "card", card, "machine", machine,
+			"stage", stage, "round_id", roundID, "cause", cause)
+		return zero, &desktopUndeliveredError{machine: machine, err: fmt.Errorf("%s: %w", stage, cause)}
+	}
+	if !scheduling.IsLocalMachine(desk.Machine) && !s.IsSelfTarget(desk.Machine) {
+		// 跨机转交（transferCoordinatorWake、isForwardedWake 一跳封顶，用到 ctx）归 B434 G2。
+		return undelivered("跨机转交", fmt.Errorf("桌面端席位在异机 %s，跨机转交尚未接通", desk.Machine))
+	}
+	_, cliSession, err := proto.ParseSeatIdentity(seat)
+	if err != nil {
+		return undelivered("解析席位 CLI 会话 id", err)
+	}
+	letter, err := s.desktopLetter(card, seat, evs, raws)
+	if err != nil {
+		return undelivered("组装来信", err)
+	}
+	home := s.desktopHome
+	if home == "" {
+		if home, err = os.UserHomeDir(); err != nil {
+			return undelivered("取 HOME", err)
+		}
+	}
+	letterPath, err := writeDesktopLetter(home, cliSession, letter, time.Now())
+	if err != nil {
+		return undelivered("写信箱", err)
+	}
+	s.log.Info("桌面端来信已落盘", "card", card, "letter", letterPath, "bytes", len(letter), "round_id", roundID)
+	unopened := func(stage string, cause error) (keystone.RoundResult, error) {
+		s.log.Error("桌面端来信已落盘但 continue 未发出", "card", card, "letter", letterPath,
+			"stage", stage, "round_id", roundID, "cause", cause)
+		return zero, &desktopUnopenedError{letterPath: letterPath, err: fmt.Errorf("%s: %w", stage, cause)}
+	}
+	link, err := claudeContinueURL(desk.Session)
+	if err != nil {
+		return unopened("构造 continue 深链", err)
+	}
+	if s.desktopOpen == nil {
+		return unopened("发 continue 深链", errors.New("本机未装配桌面端深链 opener"))
+	}
+	if err := s.desktopOpen(link); err != nil {
+		return unopened("发 continue 深链", err)
+	}
+	s.log.Info("桌面端席位唤醒完成", "card", card, "desktop_session", desk.Session,
+		"letter", letterPath, "round_id", roundID)
+	return keystone.RoundResult{Woke: true, SessionID: desk.Session}, nil
 }
 
 // renderLauncherLetter 渲染拉起器来信（r5，唯一渲染点，只在拉起器所在机器调用）：
