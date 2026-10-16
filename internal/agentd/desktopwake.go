@@ -103,8 +103,10 @@ func (s *Server) deliverDesktopLetter(ctx context.Context, machine string, req p
 
 // handleDesktopDeliver 是 POST /api/desktop/deliver（P3=A）：以本机身份调
 // deliverDesktopLetter 的本机分支（按 Card 在本机解析 Folder 并渲染），从不再
-// 转发（一跳封顶）；项目在本机无位置 → 409 {"error": <errNoLocalProject 包装文本>}。
-// 鉴权沿 /api 既有 token 中间件。未注册（TODO(B434)）。
+// 转发（一跳封顶）；项目在本机无位置 → 409 {"error": <errNoLocalProject 包装文本>}；
+// 卡不存在 → 404（ledgerErr，error 含卡号）。按卡读共享账本，注册时须套 withLedger
+// （未配账本 503，先于体校验），鉴权沿 /api 既有 token 中间件在外层（契约 r6 §4.15）。
+// 未注册（TODO(B434)）。
 func (s *Server) handleDesktopDeliver(w http.ResponseWriter, r *http.Request) {
 	_ = r
 	writeErr(w, http.StatusNotImplemented, proto.ErrDesktopNotImplemented) // TODO(B434)
