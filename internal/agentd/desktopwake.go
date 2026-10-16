@@ -70,6 +70,8 @@ func desktopBrief(in desktopBriefInput) string {
 // 内容与 session wait / card wait 同源（契约 §3.6）：会话消息给命中条全文、
 // 引用条（s.rooms.MessageReference）与该席位在该会话的未读数
 // （s.rooms.ListSessions(seat) 的 Unread）；工单给 task_mirrored 载荷原文。
+// 只负责取数并组装 desktopLetterSection：第三方原文一律放进 desktopQuote，
+// 交 renderDesktopLetter 渲染围栏与作者名册（P9=丁，契约条 263–275）。
 // 读引用/未读失败上抛（宁可不发信，不发残信）。
 func (s *Server) desktopLetter(card, seat string, evs []keystone.WakeEvent, raws []proto.LedgerEvent) (string, error) {
 	_, _, _, _ = card, seat, evs, raws
@@ -223,4 +225,83 @@ func (s *Server) desktopNeedsHumanWakes(ev proto.LedgerEvent) ([]keystone.WakeEv
 func (s *Server) openViaDesktopLauncher(ctx context.Context, card string) (proto.DesktopLauncherOpenResp, error) {
 	_, _ = ctx, card
 	return proto.DesktopLauncherOpenResp{}, proto.ErrDesktopNotImplemented // TODO(B434)
+}
+
+// ---- 来信围栏（B434 P9=丁，契约 §3.6、条 263–279）----
+//
+// 来信里每段第三方原文（命中条、引用条、工单载荷、needs_human 原因、其它事件
+// 载荷）都放进一个围栏块，开栏行标注作者身份（账本 actor 原值，经
+// sanitizeDesktopQuoteAuthor）、seq 与种类；围栏外只允许 handoff 自生成的骨架
+// 文本（卡号、seq、未读数、处置提示）。来信仍以 asUser:true 提交（拍板 D7），
+// 授权边界由围栏 + skill.DesktopLetterAuthorizationRule 承担。
+
+// desktopQuoteFenceOpen 是围栏开栏行前缀；完整开栏行为
+// desktopQuoteFenceOpen + " author=<a> seq=<n> kind=<k>"。
+const desktopQuoteFenceOpen = "```handoff-quote"
+
+// desktopQuoteFenceClose 是闭栏行（独占一行）。
+const desktopQuoteFenceClose = "```"
+
+// 围栏种类（开栏行 kind= 的取值全集）。
+const (
+	desktopQuoteKindRoomMessage = "room_message" // 会话消息命中条与引用条
+	desktopQuoteKindTicket      = "ticket"       // task_mirrored 工单载荷
+	desktopQuoteKindNeedsHuman  = "needs_human"  // needs_human 原因
+	desktopQuoteKindEvent       = "event"        // 其它事件（decision_*、task 终态）载荷
+)
+
+// desktopAuthorRosterPrefix 与 desktopAuthorRosterSep 组成来信第 2 行作者名册：
+// prefix + 去重身份按首次出现顺序以 sep 连接。
+const (
+	desktopAuthorRosterPrefix = "本信含以下身份的原文："
+	desktopAuthorRosterSep    = "、"
+)
+
+// desktopQuote 是一段第三方原文：Author 为账本 actor 原值，Body 为未转义原文。
+type desktopQuote struct {
+	Author string
+	Seq    int64
+	Kind   string
+	Body   string
+}
+
+// desktopLetterPart 是来信段内的一个部件：Skeleton 非空 = handoff 自生成的骨架行；
+// Quote 非 nil = 第三方原文围栏块。二者恰有其一。
+type desktopLetterPart struct {
+	Skeleton string
+	Quote    *desktopQuote
+}
+
+// desktopLetterSection 是来信的一段：Heading 为骨架段标题（不含 actor），Parts 依序渲染。
+type desktopLetterSection struct {
+	Heading string
+	Parts   []desktopLetterPart
+}
+
+// escapeDesktopQuoteBody 转义围栏正文：每段连续 ≥3 个反引号中的每个反引号前加
+// 一个反斜杠；1–2 个连续反引号与其它字符原样（条 270–271）。
+func escapeDesktopQuoteBody(body string) string {
+	_ = body
+	return "" // TODO(B434)
+}
+
+// sanitizeDesktopQuoteAuthor 把 actor 中的空格、\t、\r、\n 与反引号各替换为 "_"，
+// 保证开栏行单行且不可被提前闭栏（条 272）。
+func sanitizeDesktopQuoteAuthor(actor string) string {
+	_ = actor
+	return "" // TODO(B434)
+}
+
+// desktopQuoteBlock 渲染一个围栏块：开栏行、转义后正文、闭栏行（条 267）。
+func desktopQuoteBlock(q desktopQuote) string {
+	_ = q
+	return "" // TODO(B434)
+}
+
+// renderDesktopLetter 是来信纯渲染层：首行 head（以 DesktopWakeMarker 开头）→
+// 作者名册行 → 各段 → 尾行 tail。desktopLetter 负责取数并组装 sections，
+// 不自行拼接任何第三方文本（条 263–275）。
+func renderDesktopLetter(head string, sections []desktopLetterSection, tail string) string {
+	_, _, _ = head, sections, tail
+	return "" // TODO(B434)
 }
