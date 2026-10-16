@@ -15,11 +15,17 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"os"
 	"time"
 
+	"github.com/Xsxdot/handoff/internal/client"
+	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/ledger"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/spf13/cobra"
@@ -184,4 +190,107 @@ func init() {
 	_ = launcherUnregisterCmd.MarkFlagRequired("project")
 	launcherCmd.AddCommand(launcherRegisterCmd, launcherShowCmd, launcherUnregisterCmd)
 	rootCmd.AddCommand(launcherCmd)
+}
+
+// launcherProbeTimeout 是 status 段对每台拉起器机器探活的上限：status 是诊断命令，
+// 一台挂掉的机器不该把整条命令拖住。
+const launcherProbeTimeout = 3 * time.Second
+
+// launcherProbe 是 status「拉起器」段的一行。
+type launcherProbe struct {
+	Launcher ledger.DesktopLauncher
+	Reach    string // 可达 / 不可达（原因）/ 不可探（非本机）
+	Warn     string // 非空时行尾追加「⚠ <Warn>」
+}
+
+// probeLaunchers 逐条探活拉起器所在机器，顺序与入参一致（ListDesktopLaunchers 的 project 字节序）。
+// 参数：ctx 为命令上下文；ls 为账本登记。返回：每条登记一行结论；ls 为空返回 nil。
+func probeLaunchers(ctx context.Context, ls []ledger.DesktopLauncher) []launcherProbe {
+	if len(ls) == 0 {
+		return nil
+	}
+	cfg := loadCLIConfig()
+	host, err := os.Hostname()
+	if err != nil {
+		slog.Default().Warn("status 取本机 hostname 失败，拉起器本机判定只认空机器名", "cause", err)
+	}
+	out := make([]launcherProbe, 0, len(ls))
+	for _, l := range ls {
+		reach, warn := probeLauncherMachine(ctx, cfg, host, l.Machine)
+		slog.Default().Info("status 拉起器探活", "project", l.Project, "machine", l.Machine, "reach", reach)
+		out = append(out, launcherProbe{Launcher: l, Reach: reach, Warn: warn})
+	}
+	return out
+}
+
+// probeLauncherMachine 判一台拉起器机器够不够得着。
+//
+// 参数：cfg 为本机 CLI 配置；host 为本机 hostname（取不到为空串）；machine 为登记值。
+// 返回：reach ∈ {可达, 不可达（原因）, 不可探（非本机）}；warn 非空表示机器名不利于异机寻址。
+// 判定顺序（契约 §3.10、r10 第 6 条）：空串、local、本机或等于 hostname → 探本机 agentd
+// （LocalEndpoint，不受 --target 影响）；本机配置 targets 里有同名项 → 经该 target 探；
+// 其它名字 → 不可探（非本机）+ 告警。
+// 为什么别名照探本机却仍告警：在本机看它们确实指本机，但异机发起的代开会把 local / 本机 /
+// 空串解释成发起机自己——对拉起器登记而言恰是该提醒的错配（契约 §11.2）。本机别名词表与
+// scheduling.IsLocalMachine 同义而不复用它：d_cli 无到 d_scheduling 的契约方向。
+func probeLauncherMachine(ctx context.Context, cfg *config.Config, host, machine string) (string, string) {
+	ctx, cancel := context.WithTimeout(ctx, launcherProbeTimeout)
+	defer cancel()
+	if machine == "" || machine == "local" || machine == "本机" || (host != "" && machine == host) {
+		addr, token, err := LocalEndpoint()
+		if err != nil {
+			return fmt.Sprintf("不可达（%v）", err), ""
+		}
+		reach := agentdReach(ctx, client.New(addr, token))
+		if machine == host {
+			return reach, ""
+		}
+		return reach, fmt.Sprintf("机器名 %q 是本机别名：异机发起的代开会把它当成发起机自己，请用 --machine <本机 target 名> 重新登记", machine)
+	}
+	if _, ok := cfg.Targets[machine]; ok {
+		c, done, err := newTargetClientNamed(machine)
+		if err != nil {
+			return fmt.Sprintf("不可达（%v）", err), ""
+		}
+		defer done()
+		return agentdReach(ctx, c), ""
+	}
+	return "不可探（非本机）", fmt.Sprintf("机器名 %q 既不是本机也不在本机配置 targets 里；异机转交按 target 名寻址，请确认它与各 agentd 的 targets 一致", machine)
+}
+
+// agentdReach 用 /api/status 判一台 agentd 够不够得着；老 agentd 的 404（不支持
+// /api/status）已证明 TCP、HTTP 与 Bearer 全通，算可达（与 statusCmd 同一判据）。
+func agentdReach(ctx context.Context, c *client.Client) string {
+	if _, err := c.Status(ctx); err != nil && !errors.Is(err, client.ErrStatusUnsupported) {
+		return fmt.Sprintf("不可达（%v）", err)
+	}
+	return "可达"
+}
+
+// renderLauncherSection 渲染 status「拉起器」段。
+// 参数：rows 为探活结论；listErr 为读登记的错误。
+// 注意：无登记且读成功时整段不打（不改变既有输出）；读登记失败只打一行原因——status 是
+// 诊断命令，账本故障不该把它整体打挂。
+func renderLauncherSection(w io.Writer, rows []launcherProbe, listErr error) {
+	if listErr != nil {
+		fmt.Fprintln(w)
+		fmt.Fprintf(w, "拉起器   读登记失败：%v\n", listErr)
+		return
+	}
+	if len(rows) == 0 {
+		return
+	}
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "拉起器")
+	for _, r := range rows {
+		machine := r.Launcher.Machine
+		if machine == "" {
+			machine = "（空）"
+		}
+		line := fmt.Sprintf("  %s  %s  %s  %s", r.Launcher.Project, r.Launcher.DesktopSession, machine, r.Reach)
+		if r.Warn != "" {
+			line += "  ⚠ " + r.Warn
+		}
+		fmt.Fprintln(w, line)
+	}
 }

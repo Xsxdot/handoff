@@ -8,9 +8,15 @@ package cmd
 
 import (
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Xsxdot/handoff/internal/ledger"
 )
 
 // b434LauncherWireKeys 是 launcher register/show 的 stdout 键集（与 desktop_launchers 列名同名）。
@@ -137,5 +143,114 @@ func TestB434LauncherRegisterRequiresClaudeSession(t *testing.T) {
 				t.Fatalf("被拒时不得写登记: ok=%v err=%v", ok, err)
 			}
 		})
+	}
+}
+
+// b434StatusOK 是最小可用的 /api/status 回包（无活跃任务）。
+const b434StatusOK = `{"listen":"0.0.0.0:7777","data_dir":"/data","started_at":"2026-08-10T00:00:00Z",
+	"version":{},"executors":["opencode"],"default_executor":"opencode","task_counts":{}}`
+
+func b434StatusServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(b434StatusOK))
+	}))
+	t.Cleanup(ts.Close)
+	return ts
+}
+
+// 条 159–161 + §11.2 + 契约 r10 第 6 条：逐项目列 project / desktop_session / machine / 可达，
+// 按 project 字节序；target 可达 / 不可达、本机 hostname 可达、本机别名 local / 本机 探本机
+// （可达，并告警别名不利于异机寻址）、其它名字「不可探（非本机）」并告警。
+func TestB434StatusListsLaunchers(t *testing.T) {
+	targetName = ""
+	resetFlags(t)
+	local := b434StatusServer(t)
+	up := b434StatusServer(t)
+	down := httptest.NewServer(http.NotFoundHandler())
+	downAddr := strings.TrimPrefix(down.URL, "http://")
+	down.Close()
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	body := "listen: 127.0.0.1:7777\ntoken: " + testToken + "\ndatadir: " + dir + "\n" +
+		"targets:\n" +
+		"  mac-up:\n    addr: \"" + strings.TrimPrefix(up.URL, "http://") + "\"\n    token: \"" + testToken + "\"\n" +
+		"  mac-down:\n    addr: \"" + downAddr + "\"\n    token: \"" + testToken + "\"\n"
+	if err := os.WriteFile(cfgPath, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	host := b434Hostname(t)
+	lst, err := ledger.Open(filepath.Join(dir, "ledger.db"))
+	if err != nil {
+		t.Fatalf("开账本: %v", err)
+	}
+	for _, l := range []ledger.DesktopLauncher{
+		{Project: "gamma", DesktopSession: "local_g1", CLISession: "cli-g", Machine: "nowhere", Actor: "cli:claude#cli-g"},
+		{Project: "alpha", DesktopSession: "local_a1", CLISession: "cli-a", Machine: "mac-up", Actor: "cli:claude#cli-a"},
+		{Project: "demo", DesktopSession: "local_d1", CLISession: "cli-d", Machine: host, Actor: "cli:claude#cli-d"},
+		{Project: "beta", DesktopSession: "local_b1", CLISession: "cli-b", Machine: "mac-down", Actor: "cli:claude#cli-b"},
+		{Project: "epsilon", DesktopSession: "local_e1", CLISession: "cli-e", Machine: "local", Actor: "cli:claude#cli-e"},
+		{Project: "zeta", DesktopSession: "local_z1", CLISession: "cli-z", Machine: "本机", Actor: "cli:claude#cli-z"},
+	} {
+		if err := lst.RegisterDesktopLauncher(l); err != nil {
+			t.Fatalf("种拉起器 %s: %v", l.Project, err)
+		}
+	}
+	if err := lst.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := runStatus(t, cfgPath, local.URL)
+	if err != nil {
+		t.Fatalf("status 应成功: %v\n%s", err, out)
+	}
+	idx := strings.Index(out, "\n拉起器\n")
+	if idx < 0 {
+		t.Fatalf("应有「拉起器」段:\n%s", out)
+	}
+	lines := nonEmptyLines(out[idx+len("\n拉起器\n"):])
+	if len(lines) != 6 {
+		t.Fatalf("拉起器段应恰 6 行，得 %q", lines)
+	}
+	wantOrder := []struct{ project, session, machine string }{
+		{"alpha", "local_a1", "mac-up"}, {"beta", "local_b1", "mac-down"},
+		{"demo", "local_d1", host}, {"epsilon", "local_e1", "local"},
+		{"gamma", "local_g1", "nowhere"}, {"zeta", "local_z1", "本机"},
+	}
+	for i, w := range wantOrder {
+		for _, part := range []string{w.project, w.session, w.machine} {
+			if !strings.Contains(lines[i], part) {
+				t.Fatalf("第 %d 行应含 %q: %q", i+1, part, lines[i])
+			}
+		}
+	}
+	if !strings.HasSuffix(lines[0], "  可达") || !strings.HasSuffix(lines[2], "  可达") {
+		t.Fatalf("alpha（target 可达）与 demo（本机）应以「可达」收尾: %q / %q", lines[0], lines[2])
+	}
+	if !strings.Contains(lines[1], "不可达（") {
+		t.Fatalf("beta（target 已关）应不可达: %q", lines[1])
+	}
+	for _, i := range []int{3, 5} {
+		if !strings.Contains(lines[i], "  可达") || strings.Contains(lines[i], "不可") || !strings.Contains(lines[i], "⚠") {
+			t.Fatalf("本机别名（local / 本机）应探本机得可达并告警: %q", lines[i])
+		}
+	}
+	if !strings.Contains(lines[4], "不可探（非本机）") || !strings.Contains(lines[4], "⚠") {
+		t.Fatalf("gamma（未知机器名）应「不可探（非本机）」并告警: %q", lines[4])
+	}
+}
+
+// 无登记时不打段：既有 status 输出不变。
+func TestB434StatusOmitsLauncherSectionWhenNone(t *testing.T) {
+	targetName = ""
+	resetFlags(t)
+	ts := b434StatusServer(t)
+	out, err := runStatus(t, writeStatusConfig(t), ts.URL)
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if strings.Contains(out, "拉起器") {
+		t.Fatalf("无登记时不应出现拉起器段:\n%s", out)
 	}
 }

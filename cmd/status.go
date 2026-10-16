@@ -4,6 +4,7 @@
 //   - 调 client.Status 取服务端聚合结果，渲染人读文本（默认）或 JSON（--json）
 //   - 把老 agentd 的 404 直译成一条**成功的**诊断结论
 //   - 退出码只回答「能不能用」：0=可达且鉴权通过，1=够不着
+//   - 有拉起器登记时追加「拉起器」段（B434，渲染与探活在 launcher.go；该段会探各拉起器机器的 /api/status）
 //
 // 边界：
 //   - 不做探活：判据在各 adapter 里，服务端已经做完，本层只渲染
@@ -22,6 +23,7 @@ import (
 
 	"github.com/Xsxdot/handoff/internal/buildinfo"
 	"github.com/Xsxdot/handoff/internal/client"
+	"github.com/Xsxdot/handoff/internal/ledger"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/skill"
 	"github.com/spf13/cobra"
@@ -80,6 +82,9 @@ var statusCmd = &cobra.Command{
 				Reachable: true, CLI: cliVer, Agentd: st})
 		}
 		var lookup func(taskID string) (cardID, driver string, heartbeatAt time.Time, ok bool)
+		// B434：拉起器段与卡驱动两格共用这一次开库；读登记失败只在段里报一行。
+		var launchers []ledger.DesktopLauncher
+		var launchersErr error
 		// 账本是必需品（B229 §2.6：enabled 开关已退休）：恒尝试开库取归属。
 		// 任何打开/查询失败都静默退回只看 watchers 的旧判据——status 是诊断
 		// 命令，账本故障不该把它整个打挂，只损失卡驱动两格补充信息。
@@ -96,8 +101,10 @@ var statusCmd = &cobra.Command{
 				}
 				return card.ID, card.DriverSession, card.DriverHeartbeatAt, true
 			}
+			launchers, launchersErr = ledgerStore.ListDesktopLaunchers()
 		}
 		renderStatusWithLookup(out, addr, cliVer, st, lookup)
+		renderLauncherSection(out, probeLaunchers(cmd.Context(), launchers), launchersErr)
 		return nil
 	},
 }
