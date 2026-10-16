@@ -18,6 +18,7 @@ package agentd
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -45,6 +46,7 @@ type desktopBriefInput struct {
 	Title      string // 卡标题
 	BaseBranch string // 有效基线分支（EffectiveBaseBranch）
 	Session    string // 卡所在 IM 会话 id（SessionOfCard，空串 = 不属任何会话）
+	Owner      string // 所在会话群主身份（Session.Owner 原值，统一记法 user:<name>/agent:<name>）；未入群为空
 	Folder     string // 项目根目录（本机）
 	Via        string // proto.SeatDesktopVia*：写进 bind 命令行的 --via
 }
@@ -53,10 +55,63 @@ type desktopBriefInput struct {
 // 测试注入 spy；nil 视为「本机不能发深链」。
 type desktopOpener func(url string) error
 
-// desktopLaunchMaterial 按卡产出拉起材料。项目无本机位置 → errNoLocalProject。
+// desktopLaunchMaterial 按卡产出拉起材料（契约 §3.5）：Folder = 本机项目根目录
+// （resolveLocalProjectRoot，与 resolveCoordWorkdir 同一解析点）、Brief = desktopBrief
+// 渲染的人尺度简报、Launcher = 项目已登记拉起器的桌面端会话 id。
+//
+// 参数：card 卡号；via 写进简报 bind 命令行的 --via，只接受 proto.SeatDesktopViaPage
+// （GET 材料端点）与 proto.SeatDesktopViaLauncher（renderLauncherLetter 复用，契约 §3.9.1）。
+// 返回：卡不存在 → 包 ledger.ErrNotFound；项目无本机位置 → 包 errNoLocalProject；
+// via 非法或其它读失败 → 包装后返回。读拉起器登记失败**不**返回错误：记 Warn 后按
+// 未登记处理（Launcher 留空、JSON 不出键，契约条 202）。
+// 注意：只读——不写账本、不打标、不碰进程内计数（条 14）；不经 keystone/scheduling
+// （条 13、162）。
 func (s *Server) desktopLaunchMaterial(card, via string) (proto.DesktopLaunchMaterial, error) {
-	_, _ = card, via
-	return proto.DesktopLaunchMaterial{}, proto.ErrDesktopNotImplemented // TODO(B434)
+	s.log.Info("产出桌面端拉起材料", "card", card, "via", via)
+	if via != proto.SeatDesktopViaPage && via != proto.SeatDesktopViaLauncher {
+		err := fmt.Errorf("拉起材料的 via 只能是 %q 或 %q，收到 %q",
+			proto.SeatDesktopViaPage, proto.SeatDesktopViaLauncher, via)
+		s.log.Error("拉起材料参数非法", "card", card, "via", via, "cause", err)
+		return proto.DesktopLaunchMaterial{}, err
+	}
+	c, err := s.ledger.GetCard(card)
+	if err != nil {
+		s.log.Warn("拉起材料读卡失败", "card", card, "cause", err)
+		return proto.DesktopLaunchMaterial{}, err
+	}
+	folder, err := s.resolveLocalProjectRoot(c)
+	if err != nil {
+		s.log.Warn("拉起材料解析项目根目录失败", "card", card, "project", c.Project, "cause", err)
+		return proto.DesktopLaunchMaterial{}, err
+	}
+	base, err := s.ledger.EffectiveBaseBranch(card)
+	if err != nil {
+		s.log.Warn("拉起材料读有效基线失败", "card", card, "cause", err)
+		return proto.DesktopLaunchMaterial{}, fmt.Errorf("读卡 %s 有效基线: %w", card, err)
+	}
+	session, err := s.ledger.SessionOfCard(card)
+	if err != nil {
+		s.log.Warn("拉起材料读所在会话失败", "card", card, "cause", err)
+		return proto.DesktopLaunchMaterial{}, fmt.Errorf("读卡 %s 所在会话: %w", card, err)
+	}
+	owner := ""
+	if session != "" {
+		sess, err := s.ledger.GetSession(session)
+		if err != nil {
+			s.log.Warn("拉起材料读会话群主失败", "card", card, "session", session, "cause", err)
+			return proto.DesktopLaunchMaterial{}, fmt.Errorf("读会话 %s 群主: %w", session, err)
+		}
+		owner = sess.Owner
+	}
+	m := proto.DesktopLaunchMaterial{
+		Card:   card,
+		Folder: folder,
+		Brief: desktopBrief(desktopBriefInput{Card: card, Title: c.Title, BaseBranch: base,
+			Session: session, Owner: owner, Folder: folder, Via: via}),
+	}
+	s.log.Info("桌面端拉起材料已产出", "card", card, "via", via, "folder", folder,
+		"session", session, "has_launcher", m.Launcher != "")
+	return m, nil
 }
 
 // desktopBrief 渲染人尺度简报：以 proto.DesktopWakeMarker 开头，含卡号/标题/
@@ -64,6 +119,23 @@ func (s *Server) desktopLaunchMaterial(card, via string) (proto.DesktopLaunchMat
 func desktopBrief(in desktopBriefInput) string {
 	_ = in
 	return "" // TODO(B434)
+}
+
+// handleDesktopLaunchMaterial 是 GET /api/cards/{id}/coordinator/desktop-launch
+// （契约 §3.9）：返回 via=page 的拉起材料。注册时只套 withLedger、不套
+// withCoordinator（条 13）。
+// 响应：200 DesktopLaunchMaterial；404 卡不存在（ledgerErr）；其余读失败经
+// ledgerErr（多为 500）。只读：不写账本、不打标、不动进程内计数（条 14）。
+func (s *Server) handleDesktopLaunchMaterial(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	s.log.Info("读取桌面端拉起材料", "card", id)
+	m, err := s.desktopLaunchMaterial(id, proto.SeatDesktopViaPage)
+	if err != nil {
+		s.log.Warn("桌面端拉起材料不可用", "card", id, "cause", err)
+		ledgerErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, m)
 }
 
 // desktopLetter 把一批唤醒事件投影成一封人可读的来信（以 DesktopWakeMarker 开头），
