@@ -187,3 +187,9 @@
 - 文字小误顺手修：L §5 条 66 归属、D 变异计数、M T2 步骤 1 原文照列、W T0 预期与命令对齐；四份状态行改「已审」。
 - 本机环境读数（出稿者台账）：`claude plugin test` 可用，M 的 7 用例在真实 harness 通过；W 在 web 副本干跑 129 用例全绿；L 用 `go test -overlay` 逐段红绿；D 用 overlay 绕 `main.go` embed 做 vet/build。
 
+### 第二波 plan（C/G1/V，2026-10-16，本地 subagent opus 出稿 ×3 并行，独立跨卡审计 ×1）
+
+- 产出：`docs/superpowers/plans/b434.{2,3,4}-plan.md` 与各自 `-plan-ledger.md`（出稿者只写不提交，协调者统一提交）。审计基线复核：HEAD `5a7dad19` 下 `go build ./...` 通过，`TestB434|TestB23328…|TestCoordStatus|TestAutomationWakeDoesNotWakeBindParent`、`internal/skill`、`internal/proto`、cmd 子集 ok，`contract.test.ts` 47 passed。
+- 跨卡审计裁决：三卡均 pass-with-notes；一条承重契约缺口由协调者在代码里复核属实（`scheddrain.go:201` 传 nil raws，`:155-160` 出错即回填并停清队）→ 契约 r10 第 10 条，V 加守卫与测试。三样：冻结物逐条无签名矛盾（G1 `(card, via string)`、V 四签名、C `DesktopLauncherOpen` 均逐字）；跨卡签名 C↔L 六方法逐字、C↔G3 按 §3.9、C↔M 无撞文件、G1∥V 函数体无交集（冲突面只在 import 块）、V↔W 锚点行仍在、V↔G2 缺口三处（opener 失败注入、HOME 注入、firstWakeErr 写法）→ r10 第 11 条 + 拆解稿 r4；spec 故事 1–9 全部指到卡/task。
+- 协调者拍板：审计 13 条契约修订全部采纳（r10）；非阻塞 6 条全部采纳并写进各 plan §14（C：信箱键校验、补救命令带 `--via`、status 本机判定、SKILL.md 一句澄清；G1：源码守卫加 `desktopOpen`；V：内部锁理由删「运行期 seq」、注入点、命名测试归 G2）。
+- 合并顺序：C 独立；G1 先于 V，V 在 G1 之后 rebase。

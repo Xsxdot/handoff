@@ -1087,4 +1087,18 @@ r0–r2 三轮本机无 Go/Node 工具链（台账原文：`command not found: g
 > **修订记录（r8 跨卡审计回写，2026-10-16）**：§3.13 mod 内嵌由「`//go:embed all:plugins/claude-desktop-wake`」改为显式列三件（理由见 §3.13 r8 修订与 B434.9 plan 台账 L4），签名与条 127–138 不变。条 131「其余键逐字不变」口径定为「键序不变、值压缩后逐字节相等」，允许重排缩进（文本级编辑风险更高）。条 136 状态口径：`CLAUDE_CODE_PLUGIN_DIRS` 缺目录而 mod 文件完好时报 `stale`（触发重装提示），不报 `missing`。以上均由跨卡审计提出、协调者拍板。
 >
 > **修订记录（r9 第一波 review 回写，2026-10-16）**：以下为实现澄清，不改签名、不改条目编号；邻卡（C/G1/V/G2/G3）据此消费。**§3.3/§3.4（B434.1 review I1）**：`SetSeatDesktop`/`RegisterDesktopLauncher` 忽略入参 `BoundAt`/`RegisteredAt`，统一取账本时钟（沿 `writeSeatBearing` 先例）；`RegisterDesktopLauncher` 校验 `DesktopSession` 形状（`ValidateDesktopSessionID`）且 `CLISession` 必须能编成 `cli:claude#<id>`、不含 `/`、`\`、`#`、空白（信箱文件名安全）；`ListDesktopLaunchers` 的「升序」为字节序、Go 侧排序，无登记返回空切片非 nil；`SetSeatDesktop` 错误约定：非法 id / via 词表外 / 空座 / 非 bind 席位 / 存量态「来源 bind 身份为空」→ `ErrBadState`，`expect` 不符 → `ErrCASConflict`，卡不存在 → `ErrNotFound`。**§3.13/§4.7（B434.9 review M1/M2）**：条 121「预填以 `[handoff]` 开头」为严格前缀，前导空白不代发；mod 读到空信（去空白后为空）删除且不提交——agentd 来信必以 `[handoff]` 打头，空信只可能是异常残留，不构成一轮；条 112「逐封读、删、提交」据此澄清为「非空信逐封提交」。
-
+>
+> **修订记录（r10 第二波跨卡审计回写，2026-10-16）**：以下 13 条由独立跨卡审计提出、协调者逐条拍板采纳；除第 1、4、5 条为 §3 签名/结构体增补外，其余为条目澄清，编号不变。
+> 1. **§3.5** `desktopBriefInput` 增加 `Owner string`（所在会话群主 `Session.Owner` 原值，未入群为空）。G3 只调 `desktopLaunchMaterial`，不受影响。
+> 2. **§3.5 模板第 3 行**：「需要人就 `@user:<群主>`」改为「需要人就 `@<群主>`」，`<群主>` 代入 `Session.Owner` 原值（统一记法已含 `user:`/`agent:` 前缀，原模板会渲染成 `@user:user:sy`）；已入群但群主为空时该句改为「需要人就打 needs_human」。
+> 3. **§3.5 `errNoLocalProject` 窄读**：只包「项目在本机没有登记位置 / 卡无 project」；`ListProjectLocations` I/O 失败或 `s.mgr` 未装配不包、回 500（文本「列项目位置: …」）。同口径适用于 §3.9 deliver 收件机：500 在发起端按投递失败处置（needs_human + 502）。
+> 4. **§3.10 Produces** 增加 `internal/client` 导出 `func ServerErrorText(err error) (string, bool)`：从 `*client.ServerError`（非 2xx）取 `{"error":…}` 文本，供 `card coordinate --desktop` 逐字显示（条 258）。
+> 5. **§3.10** `card seat desktop set <id> --desktop-session <local_…> [--machine <名>] [--via page|launcher|manual]`：`--via` 三值均接受、缺省 `manual`；同样执法席位 cli 段必须是 `claude`；**不要求**调用者是席位持有人（CAS 判据是卡上席位，无提权）。`bind` 两步中第二步失败时的补救命令须带上原 `--via`（不降成 manual，保故事 9 的来源信息）。`prepareSeatDesktop` 增加信箱键安全校验：席位 CLI 会话 id 不含 `/`、`\`、`#`、空白、不以 `.` 开头（与 §3.4 r9 拉起器写闸同一规则），违者不坐下。
+> 6. **条 258** 断言面是 cobra 的错误输出行（stderr 末行逐字等于服务端 `error`）；client 的 slog 诊断行（`body="{\"error\":…}"`，所有拨 agentd 的 CLI 既有行为）不在断言面内。`handoff status` 的拉起器段：`--target` 为空、`local`、`本机` 或等于 `os.Hostname()` 均视为本机、探本机；其它目标显示「不可探（非本机）」。
+> 7. **条 93 改写**：(a) 消费循环入口（`consumeAutomationEventsOnce`）：无桌面端记录的 bind 席位零写信、零 opener，事件不入 pending，留 Debug「自动化事件无 coordinate 席位可叫醒」并按既有语义标 seen（V 锁）；(b) 经 `wakeCoordinatorRoundID` 直入（转交收件 / 队列出队）时仍留 Info「bind 席位跳过协调者唤醒」（G2 锁）。
+> 8. **§3.6 来信尾行**：「；会话消息：`handoff session read <会话 id>`」只在本批含 `room_message` 时出现；多个会话以「、」连接；无会话消息时该分句整段省略（G2 落；V 的 golden 直接传入 tail 不受影响）。
+> 9. **§3.6 段标题**：事件卡 ≠ 来信卡（子卡冒泡到祖先席位，条 87）时，段标题骨架追加「（卡 <事件卡号>）」；不含 actor，条 275 不受影响（G2 落）。
+> 10. **§3.7 / §11.4 新增（承重）**：`wakeCoordinatorRoundID` 的桌面端分支在 `len(raws)==0`（`WakeQueueRelease` 队列出队合成唤醒，`drainIgnitionRequest` 传 nil）时**不写信、不发深链、返回 `zero, nil`** 并留 Info「桌面端席位队列出队不写信，直接进节点再入口」——与 B434 前 bind 席位同款，`startCardStep` 与执行者清队不得被阻断（审计实测：否则 `scheddrain.go:155-160` 每轮回填并停清队，堵死整条队列）。V 加该守卫并补测试「桌面端 bind 卡队列出队仍进 `startCardStep`」；G2 异机 / 写信失败落在队列路径时同样遵守「不阻断清队」（队列路径对桌面端席位永不写信，故无写信失败面）。
+> 11. **§3.7 注入点定名**：opener 字段 `Server.desktopOpen desktopOpener`；信箱根目录字段 `Server.desktopHome string`（空 → `os.UserHomeDir()`），两者只在装配期写、运行期只读；测试替身 `desktopOpenerSpy` 带 `err error` 字段供 G2 注入失败 opener。V 落，G2 复用不另造夹具。
+> 12. **§4.17 / 欠账 18**：条 266、268、275 的命名测试 `TestB434DesktopLetterRosterMatchesQuotes`、`TestB434DesktopLetterKindByEventType`、`TestB434DesktopLetterHeadingsHaveNoActor` 明确归 G2；V 只锁 event 段与转义/名册/开栏行的竖切面。
+> 13. **§11 区头吸收标注**：§11.1 采纳（`resolveLocalProjectRoot` 唯一解析点，`resolveCoordWorkdir` 签名不改、改为委托）；§11.2 由 C 吸收；§11.5（`handleCoordStatus` 桌面端字段）不做。另：G1 的 `TestB434MaterialSourceGuard` 顺带禁止 GET 材料端点触碰 `desktopOpen`（GET 绝不发深链）。

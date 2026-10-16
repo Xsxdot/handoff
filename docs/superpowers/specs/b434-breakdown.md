@@ -220,7 +220,7 @@
 - 缺陷族结论（§5）：静默失败——两步提交的半态必须让命令非零退出并打印「已坐下但未记录桌面端 id，可用 card seat desktop set 补」；门禁——`launcher register` 任何 claude 会话都能覆盖，属已知面（§5.5）。
 - 架构法备注：`cmd` 第三条信号命中，已答可圈（§1.1）。
 
-**④入口指针与有界文件集**：`cmd/card_driver.go#cardBindCmd`、`cmd/card_driver.go`（`card coordinate` 加 `--desktop`）、`internal/skill/desktop_rule.go`（授权规则常量，只读引用）、client 侧新增 `DesktopLauncherOpen` 方法（落点按既有 `client.Client` 协调者方法同文件，plan 定）、`cmd/card_bearing.go#cardSeatCmd`、`cmd/card_records.go#cardNeedsCmd`、`cmd/status.go#statusCmd`、`cmd/card_seat.go#currentSeatIdentity`（只调用，不改）；新建 `cmd/card_seat_desktop.go`、`cmd/launcher.go`；测试 `cmd/*_test.go`；`skills/handoff/SKILL.md`（P6=甲）。**禁止**碰 `cmd/skill.go`、`main.go`（归 M）、`internal/**` 生产代码。
+**④入口指针与有界文件集**：`cmd/card_driver.go#cardBindCmd`、`cmd/card.go#cardCoordinateCmd`（`card coordinate` 加 `--desktop`；r4 更正：原误写 `card_driver.go`，契约 §3.10 本来就对）、`internal/skill/desktop_rule.go`（授权规则常量，只读引用）、client 侧新增 `DesktopLauncherOpen` 方法（落点按既有 `client.Client` 协调者方法同文件，plan 定）、`cmd/card_bearing.go#cardSeatCmd`、`cmd/card_records.go#cardNeedsCmd`、`cmd/status.go#statusCmd`、`cmd/card_seat.go#currentSeatIdentity`（只调用，不改）；新建 `cmd/card_seat_desktop.go`、`cmd/launcher.go`；测试 `cmd/*_test.go`；`skills/handoff/SKILL.md`（P6=甲）。**禁止**碰 `cmd/skill.go`、`main.go`（归 M）、`internal/**` 生产代码。
 
 ### 3.3 B434-G1：拉起材料端点与简报（S1 网关，`d_gateway`，边界型）
 
@@ -579,3 +579,5 @@ S1 = L 的 `seat_desktops` 部分 + C 的 bind/seat 部分 + G1 + W 的坐下按
 （全部岔口已裁，头部状态行「已拍板（2026-10-16）」与本表一致。R-B0/R-B2/R-B3 已由契约 r6（`35334dbb`）回写；R-B1/P7、P9 已由契约 r7（`30979524`）补签。）
 
 > **修订记录（r3，2026-10-16，跨卡审计回写）**：第一波 plan（L/D/M/W）跨卡审计 pass-with-notes；I 卡补 PG 往返项；G2/C/V plan 前置约束写进 §3.10。D 卡 Task 2（`main.go` 接线）无缝级断言、以源码守卫 + overlay 编译 + 真机 R1 替代，协调者认可豁免（`package main` 闭包从声明缝构造不出）。
+
+> **修订记录（r4，2026-10-16，第二波跨卡审计回写）**：C/G1/V plan 跨卡审计 pass-with-notes；契约 r10 吸收 13 条。本稿更正 §3.2④ `card_driver.go` 笔误。**G2（B434.5）plan 前置约束**：①`desktopWakeStall` 必须并入 G1 的 `b434StallSnapshot`（条 14），G2 文件清单含 `internal/agentd/desktopwake_material_test.go`；②新增「不收尾」分支须照准入停摆分支设 `firstWakeErr`，否则 V 的竖切子例「信箱键不安全 → `desktopUndelivered`」变红；③`writeDesktopLetter` 用 `rename` 覆盖，同会话同纳秒双写丢信（条 68）归 G2 处置；④条 86–88 祖先接手已由 V 实现并锁，G2 首跑即绿须附变异读数；⑤条 266/268/275 命名测试归 G2（契约 r10 第 12 条）；⑥G2 复用 V 的 `Server.desktopHome` / `desktopOpenerSpy.err` 注入点（r10 第 11 条），不另造夹具；⑦队列出队路径对桌面端席位不写信（r10 第 10 条），G2 的异机转交分支同样不得阻断清队。**I 卡**必须在 G2 合入之后（G2 合入前生产 `desktopOpen` 为 nil，写信不发深链）。
