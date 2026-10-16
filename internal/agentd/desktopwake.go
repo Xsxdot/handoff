@@ -1111,11 +1111,43 @@ func (s *Server) openViaDesktopLauncher(ctx context.Context, card string) (proto
 	}
 	req := proto.DesktopDeliverReq{CLISession: launcher.CLISession, DesktopSession: launcher.DesktopSession, Card: card}
 	resp, err := s.deliverDesktopLetter(ctx, launcher.Machine, req)
-	if err != nil {
+	switch {
+	case errors.Is(err, errNoLocalProject):
 		return zero, err
+	case err != nil:
+		return zero, s.launcherDeliveryFailed(card, launcher.Machine, "来信未投递", err)
+	case !resp.Opened:
+		return zero, s.launcherDeliveryFailed(card, launcher.Machine,
+			"来信已落盘（"+resp.HandledBy+" 信箱）但 continue 深链未发出；"+desktopLauncherLetterKeptHint, nil)
 	}
 	return proto.DesktopLauncherOpenResp{Launcher: launcher.DesktopSession, Machine: launcher.Machine,
 		HandledBy: resp.HandledBy}, nil
+}
+
+// desktopLauncherLetterKeptHint 是「信已落盘、continue 未发出」时 502 error 与 needs_human
+// reason 的尾句（契约 r12 第 6 条）：信大概率会被活着的拉起器轮询取走，重复代开会开出两场会话。
+const desktopLauncherLetterKeptHint = "信已在拉起器信箱，勿重复代开"
+
+// launcherDeliveryFailed 为拉起器投递失败落一条 needs_human（actor "agentd"——系统组件，
+// 不会叫醒桌面端席位，契约 §3.8.1 规则 3）并返回 *desktopLaunchFailedError；打标失败时返回
+// *desktopLaunchInternalError（端点据此回 500 而非 502，避免「说已打标其实没打」）。
+// 参数：machine 拉起器登记的机器（空串记作「本机」）；what 失败描述（骨架文本）；cause 底层原因
+// （可为 nil，信已落盘、continue 未发出时无底层错误）。
+func (s *Server) launcherDeliveryFailed(card, machine, what string, cause error) error {
+	where := machine
+	if where == "" {
+		where = "本机"
+	}
+	reason := desktopWakeFailReasonPrefix + "拉起器（" + where + "）代开卡 " + card + " 失败，" + what
+	if cause != nil {
+		reason += "：" + cause.Error()
+	}
+	if err := s.ledger.MarkNeedsHuman(card, reason, "agentd"); err != nil {
+		s.log.Error("拉起器投递失败且落 needs_human 失败", "card", card, "machine", where, "reason", reason, "cause", err)
+		return &desktopLaunchInternalError{err: fmt.Errorf("%s；落 needs_human 失败: %w", reason, err)}
+	}
+	s.log.Error("拉起器投递失败，已落 needs_human", "card", card, "machine", where, "reason", reason)
+	return &desktopLaunchFailedError{reason: reason, cause: cause}
 }
 
 // desktopSeatOccupiedError 是代开端点的空座前置拒绝（r7 条 261）：文本逐字为
@@ -1136,6 +1168,17 @@ func (e *desktopLaunchInternalError) Error() string { return e.err.Error() }
 
 func (e *desktopLaunchInternalError) Unwrap() error { return e.err }
 
+// desktopLaunchFailedError 是「拉起器投递失败且已落 needs_human」：Error() 等于落标的
+// reason（端点 502 的 error 与卡上等人原因逐字相同）；Unwrap 到底层原因（可能为 nil）。
+type desktopLaunchFailedError struct {
+	reason string
+	cause  error
+}
+
+func (e *desktopLaunchFailedError) Error() string { return e.reason }
+
+func (e *desktopLaunchFailedError) Unwrap() error { return e.cause }
+
 // handleDesktopLauncherOpen 是 POST /api/cards/{id}/coordinator/desktop-launch（契约 §3.9，
 // 体 `{}` 不读）：调 openViaDesktopLauncher 并映射状态码。注册时只套 withLedger。
 // 响应：200 DesktopLauncherOpenResp（三键恒出）；404 卡不存在；409 席位有人 / 无拉起器（已落
@@ -1149,6 +1192,7 @@ func (s *Server) handleDesktopLauncherOpen(w http.ResponseWriter, r *http.Reques
 	resp, err := s.openViaDesktopLauncher(r.Context(), id)
 	var occupied *desktopSeatOccupiedError
 	var internal *desktopLaunchInternalError
+	var failed *desktopLaunchFailedError
 	switch {
 	case err == nil:
 		s.log.Info("拉起器代开已投递", "card", id, "launcher", resp.Launcher,
@@ -1157,6 +1201,8 @@ func (s *Server) handleDesktopLauncherOpen(w http.ResponseWriter, r *http.Reques
 	case errors.As(err, &internal):
 		s.log.Error("拉起器代开服务端故障", "card", id, "cause", err)
 		writeErr(w, http.StatusInternalServerError, err)
+	case errors.As(err, &failed):
+		writeErr(w, http.StatusBadGateway, err)
 	case errors.As(err, &occupied), errors.Is(err, errNoDesktopLauncher), errors.Is(err, errNoLocalProject):
 		s.log.Warn("拉起器代开被拒", "card", id, "cause", err)
 		writeErr(w, http.StatusConflict, err)
