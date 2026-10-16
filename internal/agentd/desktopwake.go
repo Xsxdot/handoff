@@ -18,7 +18,9 @@ package agentd
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/Xsxdot/handoff/internal/keystone"
@@ -45,6 +47,7 @@ type desktopBriefInput struct {
 	Title      string // 卡标题
 	BaseBranch string // 有效基线分支（EffectiveBaseBranch）
 	Session    string // 卡所在 IM 会话 id（SessionOfCard，空串 = 不属任何会话）
+	Owner      string // 所在会话群主身份（Session.Owner 原值，统一记法 user:<name>/agent:<name>）；未入群为空
 	Folder     string // 项目根目录（本机）
 	Via        string // proto.SeatDesktopVia*：写进 bind 命令行的 --via
 }
@@ -53,17 +56,132 @@ type desktopBriefInput struct {
 // 测试注入 spy；nil 视为「本机不能发深链」。
 type desktopOpener func(url string) error
 
-// desktopLaunchMaterial 按卡产出拉起材料。项目无本机位置 → errNoLocalProject。
+// desktopLaunchMaterial 按卡产出拉起材料（契约 §3.5）：Folder = 本机项目根目录
+// （resolveLocalProjectRoot，与 resolveCoordWorkdir 同一解析点）、Brief = desktopBrief
+// 渲染的人尺度简报、Launcher = 项目已登记拉起器的桌面端会话 id。
+//
+// 参数：card 卡号；via 写进简报 bind 命令行的 --via，只接受 proto.SeatDesktopViaPage
+// （GET 材料端点）与 proto.SeatDesktopViaLauncher（renderLauncherLetter 复用，契约 §3.9.1）。
+// 返回：卡不存在 → 包 ledger.ErrNotFound；项目无本机位置 → 包 errNoLocalProject；
+// via 非法或其它读失败 → 包装后返回（错误文本已带卡号与原因）。读拉起器登记失败**不**
+// 返回错误：记 Warn 后按未登记处理（Launcher 留空、JSON 不出键，契约条 202）。
+// 注意：只读——不写账本、不打标、不碰进程内计数（条 14）；不经 keystone/scheduling
+// （条 13、162）。日志：本函数只打契约条 202 要求的那条降级 Warn（它是该降级唯一的
+// 痕迹，调用方拿不到）；成败日志由调用方边界层记一条（GET 为 handleDesktopLaunchMaterial），
+// 避免 5s 轮询下一次请求多行重复。
 func (s *Server) desktopLaunchMaterial(card, via string) (proto.DesktopLaunchMaterial, error) {
-	_, _ = card, via
-	return proto.DesktopLaunchMaterial{}, proto.ErrDesktopNotImplemented // TODO(B434)
+	if via != proto.SeatDesktopViaPage && via != proto.SeatDesktopViaLauncher {
+		err := fmt.Errorf("拉起材料的 via 只能是 %q 或 %q，收到 %q",
+			proto.SeatDesktopViaPage, proto.SeatDesktopViaLauncher, via)
+		return proto.DesktopLaunchMaterial{}, err
+	}
+	c, err := s.ledger.GetCard(card)
+	if err != nil {
+		return proto.DesktopLaunchMaterial{}, err
+	}
+	folder, err := s.resolveLocalProjectRoot(c)
+	if err != nil {
+		return proto.DesktopLaunchMaterial{}, err
+	}
+	base, err := s.ledger.EffectiveBaseBranch(card)
+	if err != nil {
+		return proto.DesktopLaunchMaterial{}, fmt.Errorf("读卡 %s 有效基线: %w", card, err)
+	}
+	session, err := s.ledger.SessionOfCard(card)
+	if err != nil {
+		return proto.DesktopLaunchMaterial{}, fmt.Errorf("读卡 %s 所在会话: %w", card, err)
+	}
+	owner := ""
+	if session != "" {
+		sess, err := s.ledger.GetSession(session)
+		if err != nil {
+			return proto.DesktopLaunchMaterial{}, fmt.Errorf("读会话 %s 群主: %w", session, err)
+		}
+		owner = sess.Owner
+	}
+	m := proto.DesktopLaunchMaterial{
+		Card:   card,
+		Folder: folder,
+		Brief: desktopBrief(desktopBriefInput{Card: card, Title: c.Title, BaseBranch: base,
+			Session: session, Owner: owner, Folder: folder, Via: via}),
+	}
+	launcher, ok, err := s.ledger.DesktopLauncherOf(c.Project)
+	switch {
+	case err != nil:
+		// 有意降级（契约条 202）：材料其余字段照给，「让拉起器代开」不出现；Warn 让它不静默。
+		s.log.Warn("拉起材料读拉起器登记失败，按未登记处理", "card", card, "project", c.Project, "cause", err)
+	case ok:
+		m.Launcher = launcher.DesktopSession
+	}
+	return m, nil
 }
 
-// desktopBrief 渲染人尺度简报：以 proto.DesktopWakeMarker 开头，含卡号/标题/
-// 有效基线/会话 id/项目根目录与三步指引；不含「一次性回合」。
+// desktopBrief 渲染人尺度简报（契约 §3.5 模板逐行，r10 第 2 条修订第 3 行）：以
+// proto.DesktopWakeMarker 开头，含卡号/标题/有效基线（空 →「未设」）/所在会话
+// （空 →「未入群」）/项目根目录与三步指引；第 3 步末句三分支——入群且有群主
+// →「需要人就 `@<群主>`」，入群但群主为空 →「需要人就打 needs_human」，未入群
+// →「需要人就在卡上打 needs_human」；不含「一次性回合」。
+// 纯函数：不读任何状态、不打日志（日志只在边界层记一条，见 desktopLaunchMaterial），
+// 同输入同输出（G3 拉起器来信经 desktopLaunchMaterial 复用它）。
 func desktopBrief(in desktopBriefInput) string {
-	_ = in
-	return "" // TODO(B434)
+	base := in.BaseBranch
+	if base == "" {
+		base = "未设"
+	}
+	session := in.Session
+	if session == "" {
+		session = "未入群"
+	}
+	// 群主已是统一记法 user:<name>/agent:<name>，可寻址写法是 "@"+群主原值（模板旧写
+	// 「@user:<群主>」会渲染成 @user:user:sy，r10 已改）。没有可 @ 的升级终点时改为打标。
+	escalate := "需要人就在卡上打 needs_human"
+	switch {
+	case in.Session != "" && in.Owner != "":
+		escalate = "需要人就 `@" + in.Owner + "`"
+	case in.Session != "":
+		escalate = "需要人就打 needs_human"
+	}
+	lines := []string{
+		proto.DesktopWakeMarker + " 你是卡 " + in.Card + " 的协调者，坐在这场 Claude 桌面端会话里。",
+		"",
+		"- 卡号：" + in.Card,
+		"- 标题：" + in.Title,
+		"- 有效基线分支：" + base,
+		"- 所在会话：" + session,
+		"- 项目根目录：" + in.Folder,
+		"",
+		"请按三步开始：",
+		"1. 读 handoff skill。",
+		"2. 用桌面端会话管理工具读到你自己的桌面端会话 id（" + proto.DesktopSessionPrefix + " 开头），然后执行：",
+		"   handoff card bind " + in.Card + " --desktop-session <你的桌面端会话 id> --via " + in.Via,
+		"3. 之后有事 handoff 会叫醒你，不必挂订阅；推卡按 charter 节点逐节点点火，升级按三档，" + escalate + "。",
+	}
+	return strings.Join(lines, "\n")
+}
+
+// handleDesktopLaunchMaterial 是 GET /api/cards/{id}/coordinator/desktop-launch
+// （契约 §3.9）：返回 via=page 的拉起材料。注册时只套 withLedger、不套
+// withCoordinator（条 13）。
+// 响应：200 DesktopLaunchMaterial；404 卡不存在（ledgerErr）；409 项目无本机位置
+// （{"error": <errNoLocalProject 包装文本>}，前端逐字显示为禁用原因）；其余读失败经
+// ledgerErr（多为 500）。只读：不写账本、不打标、不动进程内计数（条 14）。
+// 日志：控制台以 5s 节拍轮询本端点，每次请求只在这里记一条——200 一条 Info，
+// 失败一条 Warn（cause 即下层错误，已带原因）；下层不再各记一遍。
+func (s *Server) handleDesktopLaunchMaterial(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	m, err := s.desktopLaunchMaterial(id, proto.SeatDesktopViaPage)
+	switch {
+	case err == nil:
+		s.log.Info("桌面端拉起材料已产出", "card", id, "via", proto.SeatDesktopViaPage,
+			"has_launcher", m.Launcher != "")
+		writeJSON(w, http.StatusOK, m)
+	case errors.Is(err, errNoLocalProject):
+		s.log.Warn("桌面端拉起材料不可用：项目在本机无登记位置", "card", id, "cause", err)
+		writeErr(w, http.StatusConflict, err)
+	default:
+		s.log.Warn("桌面端拉起材料不可用", "card", id, "cause", err)
+		ledgerErr(w, err)
+	}
 }
 
 // desktopLetter 把一批唤醒事件投影成一封人可读的来信（以 DesktopWakeMarker 开头），
