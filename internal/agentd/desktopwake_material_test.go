@@ -8,12 +8,16 @@
 package agentd
 
 import (
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/Xsxdot/handoff/internal/ledger"
+	"github.com/Xsxdot/handoff/internal/orchestration"
 	"github.com/Xsxdot/handoff/internal/proto"
 )
 
@@ -256,5 +260,105 @@ func TestB434MaterialViaLauncher(t *testing.T) {
 	}
 	if _, err := env.srv.desktopLaunchMaterial(card, proto.SeatDesktopViaManual); err == nil {
 		t.Fatalf("via=manual 不是拉起材料的合法来源，应报错")
+	}
+}
+
+// ---------- T3：错误路径（条 1–3；静默失败族） ----------
+
+// b434LedgerSnapshot 把账本全部表的行数、事件最大 seq 与 cards 的可变列拍成一行文本。
+func b434LedgerSnapshot(t *testing.T, env *ledgerEnv) string {
+	t.Helper()
+	raw, err := sql.Open("sqlite", env.ledgerPath+"?_pragma=busy_timeout(5000)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	rows, err := raw.Query(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name`)
+	if err != nil {
+		t.Fatalf("列账本表: %v", err)
+	}
+	var tables []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatal(err)
+		}
+		tables = append(tables, name)
+	}
+	rows.Close()
+	var b strings.Builder
+	for _, name := range tables {
+		var n int64
+		if err := raw.QueryRow(`SELECT COUNT(*) FROM "` + name + `"`).Scan(&n); err != nil {
+			t.Fatalf("数 %s 行: %v", name, err)
+		}
+		b.WriteString(name + "=" + strconv.FormatInt(n, 10) + ";")
+	}
+	var maxSeq int64
+	if err := raw.QueryRow(`SELECT COALESCE(MAX(seq), 0) FROM card_events`).Scan(&maxSeq); err != nil {
+		t.Fatalf("读事件 seq: %v", err)
+	}
+	b.WriteString("max_seq=" + strconv.FormatInt(maxSeq, 10) + ";")
+	cr, err := raw.Query(`SELECT id, status, COALESCE(driver_session,''), COALESCE(driver_source,''), updated_at FROM cards ORDER BY id`)
+	if err != nil {
+		t.Fatalf("读卡可变列: %v", err)
+	}
+	defer cr.Close()
+	for cr.Next() {
+		var id, status, ds, src, upd string
+		if err := cr.Scan(&id, &status, &ds, &src, &upd); err != nil {
+			t.Fatal(err)
+		}
+		b.WriteString(id + "|" + status + "|" + ds + "|" + src + "|" + upd + ";")
+	}
+	return b.String()
+}
+
+// TestB434MaterialNoLocalProject409 锁条 1–3：项目无本机位置 → 409，error 逐字为
+// errNoLocalProject 包装文本且含 project 名；该路径不落任何账本事件。
+func TestB434MaterialNoLocalProject409(t *testing.T) {
+	env := newB434MaterialEnv(t)
+	card := b434BareCard(t, env, "ghost")
+	before := b434LedgerSnapshot(t, env)
+	code, body := ledgerGet(t, env.testAgentdEnv, b434MaterialPath(card))
+	if code != http.StatusConflict {
+		t.Fatalf("条 1：无本机位置应 409，得 %d %s", code, body)
+	}
+	var e map[string]string
+	if err := json.Unmarshal([]byte(body), &e); err != nil {
+		t.Fatalf("409 体须为 JSON: %v %s", err, body)
+	}
+	if want := "项目在本机没有登记位置：ghost（handoff project add 登记后可用）"; e["error"] != want {
+		t.Fatalf("条 2：409 error = %q，期望 %q", e["error"], want)
+	}
+	if after := b434LedgerSnapshot(t, env); after != before {
+		t.Fatalf("条 3：409 路径改了账本：\n前 %s\n后 %s", before, after)
+	}
+	if _, err := env.srv.desktopLaunchMaterial(card, proto.SeatDesktopViaPage); !errors.Is(err, errNoLocalProject) {
+		t.Fatalf("desktopLaunchMaterial 须返回可 errors.Is(errNoLocalProject) 的错误（G3 据此回 409），得 %v", err)
+	}
+}
+
+// failingLocationsClient 让 ListProjectLocations 失败，其余方法未实现（被调即 panic）。
+type failingLocationsClient struct {
+	orchestration.OrchestrationClient
+}
+
+func (failingLocationsClient) ListProjectLocations() ([]proto.ProjectLocation, error) {
+	return nil, errors.New("模拟：项目位置库不可读")
+}
+
+// TestB434MaterialLocationListFailureNot409 锁静默失败族：列项目位置的 I/O 故障不得
+// 伪装成「没登记」——不回 409、不叫人去跑 handoff project add，回 500 带原因。
+func TestB434MaterialLocationListFailureNot409(t *testing.T) {
+	env := newB434MaterialEnv(t)
+	card := b434BareCard(t, env, b434MaterialProject)
+	env.srv.SetManager(failingLocationsClient{})
+	code, body := ledgerGet(t, env.testAgentdEnv, b434MaterialPath(card))
+	if code != http.StatusInternalServerError {
+		t.Fatalf("列项目位置失败应 500，得 %d %s", code, body)
+	}
+	if strings.Contains(body, "handoff project add") || !strings.Contains(body, "项目位置库不可读") {
+		t.Fatalf("500 体须带真实原因、不得指路登记：%s", body)
 	}
 }

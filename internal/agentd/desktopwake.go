@@ -161,18 +161,23 @@ func desktopBrief(in desktopBriefInput) string {
 // handleDesktopLaunchMaterial 是 GET /api/cards/{id}/coordinator/desktop-launch
 // （契约 §3.9）：返回 via=page 的拉起材料。注册时只套 withLedger、不套
 // withCoordinator（条 13）。
-// 响应：200 DesktopLaunchMaterial；404 卡不存在（ledgerErr）；其余读失败经
+// 响应：200 DesktopLaunchMaterial；404 卡不存在（ledgerErr）；409 项目无本机位置
+// （{"error": <errNoLocalProject 包装文本>}，前端逐字显示为禁用原因）；其余读失败经
 // ledgerErr（多为 500）。只读：不写账本、不打标、不动进程内计数（条 14）。
 func (s *Server) handleDesktopLaunchMaterial(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	s.log.Info("读取桌面端拉起材料", "card", id)
 	m, err := s.desktopLaunchMaterial(id, proto.SeatDesktopViaPage)
-	if err != nil {
+	switch {
+	case err == nil:
+		writeJSON(w, http.StatusOK, m)
+	case errors.Is(err, errNoLocalProject):
+		s.log.Warn("桌面端拉起材料不可用：项目在本机无登记位置", "card", id, "cause", err)
+		writeErr(w, http.StatusConflict, err)
+	default:
 		s.log.Warn("桌面端拉起材料不可用", "card", id, "cause", err)
 		ledgerErr(w, err)
-		return
 	}
-	writeJSON(w, http.StatusOK, m)
 }
 
 // desktopLetter 把一批唤醒事件投影成一封人可读的来信（以 DesktopWakeMarker 开头），
