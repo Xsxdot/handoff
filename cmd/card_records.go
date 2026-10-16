@@ -92,15 +92,35 @@ var cardNeedsCmd = &cobra.Command{
 			fmt.Fprintf(cmd.OutOrStdout(), "已清除等人标记：%s\n", id)
 			return nil
 		}
-		slog.Info("打等人标记", "card", id, "reason", reason)
-		if err := st.MarkNeedsHuman(id, reason, actor); err != nil {
-			slog.Error("打等人标记失败", "card", id, "reason", reason, "err", err)
+		markActor := needsMarkActor(cmd, id, actor)
+		slog.Info("打等人标记", "card", id, "reason", reason, "actor", markActor)
+		if err := st.MarkNeedsHuman(id, reason, markActor); err != nil {
+			slog.Error("打等人标记失败", "card", id, "reason", reason, "actor", markActor, "err", err)
 			return err
 		}
 		slog.Info("等人标记已落账", "card", id, "reason", reason)
 		fmt.Fprintf(cmd.OutOrStdout(), "已标记等人：%s（%s）\n", id, reason)
 		return nil
 	},
+}
+
+// needsMarkActor 决定打等人标记的 actor（契约 §3.8.1「席位自打的前提」、条 189/190）。
+//
+// 参数：cmd 用于 stderr 提示；card 卡号（只进日志）；fallback 是出示失败时的回落值
+// （ledgerActor()）。
+// 返回：当前会话能出示席位身份就返回席位身份，否则返回 fallback。
+// 为什么：桌面端唤醒规则 4 按「actor == 目标卡 driver_session」排除协调者自打的标；
+// 若仍记 cli:<USER>@<host>，协调者在自己会话里打的标与人在终端打的标无从区分，会被
+// 自己的标叫醒（回声环）。出示失败（普通终端）不是错误：回落、照常落标、命令成功，
+// 只在 stderr 留一行提示（拆解稿 §5.2：回落若成常态，规则 4 会静默失效，得让人看见）。
+func needsMarkActor(cmd *cobra.Command, card, fallback string) string {
+	identity, err := currentSeatIdentity("", "")
+	if err != nil {
+		slog.Warn("等人标记未出示席位身份，actor 回落终端身份", "card", card, "actor", fallback, "cause", err)
+		fmt.Fprintf(cmd.ErrOrStderr(), "提示：当前会话未出示席位身份，等人标记记在 %s 名下\n", fallback)
+		return fallback
+	}
+	return identity
 }
 
 func init() {
