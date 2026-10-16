@@ -17,7 +17,7 @@ import { isDesktopShell, requestOpenDeepLink } from '../lib/desktopShell'
 import { useWorkbench, type BaseDir } from '../workbench/useWorkbench'
 import { CoordinatorPanel } from './CoordinatorPanel'
 import panelSource from './CoordinatorPanel.tsx?raw'
-import { DESKTOP_COPY_BRIEF_BUTTON, DESKTOP_COPY_BRIEF_HINT, DESKTOP_SEAT_BUTTON, DESKTOP_TRUST_HINT } from './desktopSeatCopy'
+import { DESKTOP_COPY_BRIEF_BUTTON, DESKTOP_COPY_BRIEF_HINT, DESKTOP_LAUNCHER_BUTTON, DESKTOP_LAUNCHER_SENT, DESKTOP_SEAT_BUTTON, DESKTOP_TRUST_HINT } from './desktopSeatCopy'
 
 const termInstance = {
   cols: 100,
@@ -433,5 +433,101 @@ describe('协调者面板', () => {
     await renderReady()
     await userEvent.setup().click(screen.getByRole('button', { name: DESKTOP_COPY_BRIEF_BUTTON }))
     expect(await screen.findByRole('alert')).toHaveTextContent('剪贴板')
+  })
+
+  // ---- B434 「让拉起器代开」（契约 §4.12 条 203–210；P7=d 显示条件不变） ----
+
+  // withLauncher 是项目已登记拉起器时的材料（契约条 200：launcher = 拉起器 DesktopSession）。
+  const withLauncher: DesktopLaunchMaterial = { ...material, launcher: 'local_launcher-1' }
+  const launcherButton = () => screen.queryByRole('button', { name: DESKTOP_LAUNCHER_BUTTON })
+
+  it('条203 材料带 launcher 时空座渲染让拉起器代开', async () => {
+    vi.mocked(getDesktopLaunchMaterial).mockResolvedValue(withLauncher)
+    await renderReady()
+    expect(launcherButton()).toBeVisible()
+  })
+
+  it.each([
+    ['缺键', material],
+    ['空串', { ...material, launcher: '' }],
+  ])('条203 材料 launcher %s 时不渲染让拉起器代开', async (_label, m) => {
+    vi.mocked(getDesktopLaunchMaterial).mockResolvedValue(m)
+    await renderReady()
+    expect(launcherButton()).not.toBeInTheDocument()
+  })
+
+  it('条204 材料 409 时不渲染让拉起器代开', async () => {
+    await renderUnavailable()
+    expect(launcherButton()).not.toBeInTheDocument()
+  })
+
+  it('条204 材料读取失败（非 409）时不渲染让拉起器代开', async () => {
+    await renderUnavailable('无法连接 agentd（反代失败？）：fetch failed')
+    expect(launcherButton()).not.toBeInTheDocument()
+  })
+
+  it('条205 已绑定态不渲染让拉起器代开', async () => {
+    vi.mocked(getDesktopLaunchMaterial).mockResolvedValue(withLauncher)
+    vi.mocked(usePoll).mockReturnValue(pollState({ bound: true, attach_active: false, attach: null }) as never)
+    render(<CoordinatorPanel cardId="B1" onOpenTerminal={vi.fn()} />)
+    expect(await screen.findByText('已绑定')).toBeVisible()
+    expect(launcherButton()).not.toBeInTheDocument()
+  })
+
+  it('条206 空座三按钮顺序为叫机器人、坐下、让拉起器代开', async () => {
+    vi.mocked(getDesktopLaunchMaterial).mockResolvedValue(withLauncher)
+    await renderReady()
+    await screen.findByRole('button', { name: DESKTOP_LAUNCHER_BUTTON })
+    const names = screen.getAllByRole('button').map((b) => b.textContent ?? '')
+    const order = ['▶ 叫机器人', DESKTOP_SEAT_BUTTON, DESKTOP_LAUNCHER_BUTTON].map((n) => names.indexOf(n))
+    expect(order.every((i) => i >= 0)).toBe(true)
+    expect(order).toEqual([...order].sort((a, b) => a - b))
+  })
+
+  it('条207 点击让拉起器代开恰发一次代开请求', async () => {
+    vi.mocked(getDesktopLaunchMaterial).mockResolvedValue(withLauncher)
+    await renderReady()
+    await userEvent.setup().click(await screen.findByRole('button', { name: DESKTOP_LAUNCHER_BUTTON }))
+    expect(openViaDesktopLauncher).toHaveBeenCalledTimes(1)
+    expect(openViaDesktopLauncher).toHaveBeenCalledWith('B1')
+  })
+
+  it('条208 代开成功显示已请拉起器代开', async () => {
+    vi.mocked(getDesktopLaunchMaterial).mockResolvedValue(withLauncher)
+    await renderReady()
+    await userEvent.setup().click(await screen.findByRole('button', { name: DESKTOP_LAUNCHER_BUTTON }))
+    expect(await screen.findByText(DESKTOP_LAUNCHER_SENT)).toBeVisible()
+    expect(refresh).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    [409, '无拉起器，请在桌面端开一场并登记'],
+    [409, '卡 B1 已有人坐，换人用 handoff card rebind B1 --self 或 --launch'],
+    [502, '桌面端协调者唤醒失败：拉起器所在机不可达'],
+  ])('条209 代开失败 %i 逐字进 alert 段', async (status, text) => {
+    vi.mocked(getDesktopLaunchMaterial).mockResolvedValue(withLauncher)
+    vi.mocked(openViaDesktopLauncher).mockRejectedValue(new ApiError(status, text, { error: text }))
+    await renderReady()
+    await userEvent.setup().click(await screen.findByRole('button', { name: DESKTOP_LAUNCHER_BUTTON }))
+    expect((await screen.findByRole('alert')).textContent).toBe(text)
+    expect(screen.queryByText(DESKTOP_LAUNCHER_SENT)).not.toBeInTheDocument()
+  })
+
+  it('条210 代开请求进行中让拉起器代开禁用', async () => {
+    vi.mocked(getDesktopLaunchMaterial).mockResolvedValue(withLauncher)
+    vi.mocked(openViaDesktopLauncher).mockReturnValue(new Promise(() => {}))
+    await renderReady()
+    const button = await screen.findByRole('button', { name: DESKTOP_LAUNCHER_BUTTON })
+    expect(button).toBeEnabled()
+    await userEvent.setup().click(button)
+    expect(button).toBeDisabled()
+  })
+
+  it('条210 断连时让拉起器代开禁用', async () => {
+    vi.mocked(getDesktopLaunchMaterial).mockResolvedValue(withLauncher)
+    vi.mocked(usePoll).mockReturnValue(pollState(unbound, { disconnected: true }) as never)
+    render(<CoordinatorPanel cardId="B1" onOpenTerminal={vi.fn()} />)
+    const button = await screen.findByRole('button', { name: DESKTOP_LAUNCHER_BUTTON })
+    expect(button).toBeDisabled()
   })
 })

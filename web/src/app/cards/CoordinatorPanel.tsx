@@ -9,7 +9,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ReactElement } from 'react'
 import { flushSync } from 'react-dom'
-import { attachCoordinator, getCoordinatorStatus, getDesktopLaunchMaterial, launchCoordinator, rebindCoordinatorLaunch, releaseCoordinator } from '../../api/scheduling'
+import { attachCoordinator, getCoordinatorStatus, getDesktopLaunchMaterial, launchCoordinator, openViaDesktopLauncher, rebindCoordinatorLaunch, releaseCoordinator } from '../../api/scheduling'
 import type { CoordinatorAttachInfo, CoordinatorStatus, DesktopLaunchMaterial } from '../../api/scheduling'
 import { usePoll } from '../data/usePoll'
 import { DisconnectedBanner, LoadFailed, SessionExpiredBanner } from '../lib/Banners'
@@ -20,7 +20,7 @@ import { ConfirmDialog } from '../lib/ConfirmDialog'
 import { isDesktopShell, requestOpenDeepLink } from '../lib/desktopShell'
 import { errorMessage } from '../lib/format'
 import { Button } from '@/components/ui/button'
-import { DESKTOP_COPY_BRIEF_BUTTON, DESKTOP_COPY_BRIEF_HINT, DESKTOP_SEAT_BUTTON, DESKTOP_TRUST_HINT } from './desktopSeatCopy'
+import { DESKTOP_COPY_BRIEF_BUTTON, DESKTOP_COPY_BRIEF_HINT, DESKTOP_LAUNCHER_BUTTON, DESKTOP_LAUNCHER_SENT, DESKTOP_SEAT_BUTTON, DESKTOP_TRUST_HINT } from './desktopSeatCopy'
 
 /** 参数：完整 cardId 与终端回调；回调接收服务端原样 AttachInfo，调用方负责打开终端。 */
 export interface CoordinatorPanelProps {
@@ -30,7 +30,7 @@ export interface CoordinatorPanelProps {
 
 type CoordinatorView = 'unbound' | 'bound' | 'attach-active' | 'invalid'
 
-type CoordinatorBusy = 'launch' | 'rebind' | 'attach' | 'release'
+type CoordinatorBusy = 'launch' | 'rebind' | 'attach' | 'release' | 'desktop-launcher'
 
 // DesktopMaterialState 是拉起材料的读取态：loading 期间坐下按钮禁用；unavailable 的 reason
 // 是服务端 error 原文（409 无本机位置等），逐字进按钮 title 与说明文字。
@@ -207,6 +207,26 @@ export function CoordinatorPanel({ cardId, onOpenTerminal }: CoordinatorPanelPro
     })
   }
 
+  // openLauncher 请项目登记的拉起器代开一场桌面端会话（契约 §3.12 拉起器代开入口）。成功只给提示、
+  // 不刷新绑定态：拉起器开会话、新会话 card bind 要几分钟，由 5s 轮询自然读到已绑定。
+  // 失败文本逐字取服务端 error（409 无拉起器 / 席位有人 / 无本机位置、502 投递失败），不加前缀。
+  const openLauncher = async (): Promise<void> => {
+    setBusy('desktop-launcher')
+    setActionError('')
+    setLaunchOutput('')
+    console.info('coordinator.desktop_launcher.start', { card: cardId })
+    try {
+      const result = await openViaDesktopLauncher(cardId)
+      console.info('coordinator.desktop_launcher.done', { card: cardId, launcher: result.launcher, machine: result.machine, handled_by: result.handled_by })
+      setLaunchOutput(DESKTOP_LAUNCHER_SENT)
+    } catch (cause) {
+      console.error('coordinator.desktop_launcher.error', { card: cardId, cause })
+      setActionError(errorMessage(cause))
+    } finally {
+      setBusy(null)
+    }
+  }
+
   const rebind = async (): Promise<void> => {
     setBusy('rebind')
     setActionError('')
@@ -274,6 +294,8 @@ export function CoordinatorPanel({ cardId, onOpenTerminal }: CoordinatorPanelPro
   const disabled = state.disconnected || busy !== null
   const shell = isDesktopShell()
   const seatDisabled = disabled || material.kind !== 'ready'
+  // 拉起器按钮是「不出现」而非禁用：材料未就绪、409、读取失败、launcher 缺键或空串一律不渲染（条 203/204）。
+  const showLauncher = material.kind === 'ready' && (material.material.launcher ?? '') !== ''
   // 浏览器形态常驻：<a href="claude://…"> 失败时页面感知不到；薄壳形态只在打不开时展开。
   const showCopy = material.kind === 'ready' && (!shell || openState.kind === 'fallback')
 
@@ -288,6 +310,7 @@ export function CoordinatorPanel({ cardId, onOpenTerminal }: CoordinatorPanelPro
         <div className="mt-2 flex flex-wrap gap-2">
           <Button size="sm" disabled={disabled} onClick={() => void launch()}>▶ 叫机器人</Button>
           <Button size="sm" variant="outline" disabled={seatDisabled} title={material.kind === 'unavailable' ? material.reason : undefined} onClick={seatWithClaudeCode}>{DESKTOP_SEAT_BUTTON}</Button>
+          {showLauncher && <Button size="sm" variant="outline" disabled={disabled} onClick={() => void openLauncher()}>{DESKTOP_LAUNCHER_BUTTON}</Button>}
         </div>
       )}
       {view === 'unbound' && material.kind === 'unavailable' && <p className="mt-1 break-words text-xs text-muted-foreground">{material.reason}</p>}
