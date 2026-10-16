@@ -1,6 +1,7 @@
 // card_driver.go 把协调者席位与兼容归属命令接出 CLI。
 // 边界：bind/rebind --self 只调用 ledger.Store 的席位原子操作；机器人换绑走
 // agentd；release/takeover 保留旧命令但不再改变协调者席位。
+// B434：bind 可带 --desktop-session 同时记录 Claude 桌面端会话 id（两步提交，拍板 D2）。
 package cmd
 
 import (
@@ -15,6 +16,10 @@ import (
 )
 
 var cardBindCLI, cardBindSession string
+
+// cardBindDesktopSession / cardBindMachine / cardBindVia 是 bind 的桌面端记录 flag（B434 §3.10）。
+var cardBindDesktopSession, cardBindMachine, cardBindVia string
+
 var cardRebindCLI, cardRebindSession string
 
 var cardBindCmd = &cobra.Command{
@@ -23,11 +28,33 @@ var cardBindCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		id := args[0]
-		slog.Default().Info("CLI 坐下入口", "card", id)
+		withDesktop := cardBindDesktopSession != ""
+		slog.Default().Info("CLI 坐下入口", "card", id, "desktop", withDesktop)
+		if !withDesktop && (cmd.Flags().Changed("machine") || cmd.Flags().Changed("via")) {
+			err := fmt.Errorf("--machine / --via 只能与 --desktop-session 一起使用")
+			slog.Default().Warn("CLI 坐下拒绝孤立的桌面端 flag", "card", id, "cause", err)
+			return err
+		}
 		identity, err := currentSeatIdentity(cardBindCLI, cardBindSession)
 		if err != nil {
 			slog.Default().Warn("CLI 坐下身份出示失败", "card", id, "cause", err)
 			return err
+		}
+		var desk ledger.SeatDesktop
+		if withDesktop {
+			// 入参在坐下之前全部校验：两步提交只该在「第二步写库本身失败」时留下半态。
+			d, hint, err := prepareSeatDesktop(identity, desktopSeatInput{
+				Session: cardBindDesktopSession, Machine: cardBindMachine,
+				MachineChanged: cmd.Flags().Changed("machine"), Via: cardBindVia,
+			})
+			if err != nil {
+				slog.Default().Warn("CLI 坐下拒绝桌面端入参", "card", id, "cause", err)
+				return fmt.Errorf("坐下卡 %s: %w", id, err)
+			}
+			if hint != "" {
+				fmt.Fprintln(cmd.ErrOrStderr(), hint)
+			}
+			desk = d
 		}
 		st, err := openLedger()
 		if err != nil {
@@ -38,6 +65,16 @@ var cardBindCmd = &cobra.Command{
 		if err := st.BindSeat(id, identity, proto.SeatSourceBind, ledger.SeatBearing{}); err != nil {
 			slog.Default().Warn("CLI 坐下失败", "card", id, "cause", err)
 			return fmt.Errorf("坐下卡 %s: %w", id, err)
+		}
+		if withDesktop {
+			if err := st.SetSeatDesktop(id, identity, desk); err != nil {
+				slog.Default().Warn("CLI 坐下后记录桌面端 id 失败（席位已坐下）", "card", id,
+					"desktop_session", desk.Session, "cause", err)
+				return fmt.Errorf("已坐下卡 %s，但未记录桌面端 id（%w）；可用 %s 补",
+					id, err, seatDesktopSetRemedy(id, desk, cmd.Flags().Changed("machine")))
+			}
+			slog.Default().Info("CLI 坐下已记录桌面端 id", "card", id,
+				"desktop_session", desk.Session, "machine", desk.Machine, "via", desk.Via)
 		}
 		slog.Default().Info("CLI 坐下完成", "card", id)
 		fmt.Fprintln(cmd.OutOrStdout(), `{"ok":true}`)
@@ -163,6 +200,9 @@ var cardRebindSelf, cardRebindLaunch bool
 func init() {
 	cardBindCmd.Flags().StringVar(&cardBindCLI, "cli", "", "手填当前会话物种名（需与 --session 成对）")
 	cardBindCmd.Flags().StringVar(&cardBindSession, "session", "", "手填当前会话 id（需与 --cli 成对）")
+	cardBindCmd.Flags().StringVar(&cardBindDesktopSession, "desktop-session", "", "同时记录这场 claude 会话的 Claude 桌面端会话 id（local_…），供信箱唤醒")
+	cardBindCmd.Flags().StringVar(&cardBindMachine, "machine", "", "桌面端会话所在机器（缺省本机 hostname；仅与 --desktop-session 同用）")
+	cardBindCmd.Flags().StringVar(&cardBindVia, "via", proto.SeatDesktopViaManual, "这场会话怎么开出来的：page|launcher|manual（仅与 --desktop-session 同用）")
 	cardRebindCmd.Flags().BoolVar(&cardRebindSelf, "self", false, "当前会话接班")
 	cardRebindCmd.Flags().BoolVar(&cardRebindLaunch, "launch", false, "叫机器人接班")
 	cardRebindCmd.Flags().StringVar(&cardRebindCLI, "cli", "", "手填接班会话物种名（仅 --self，需与 --session 成对）")
