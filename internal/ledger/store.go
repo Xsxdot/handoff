@@ -334,6 +334,16 @@ func ddlStatements(pg bool) []string {
 				workdir TEXT NOT NULL,
 				model TEXT NOT NULL,
 				bound_at TIMESTAMPTZ NOT NULL)`,
+			// B434 桌面端席位记录：bind 席位的 Claude 桌面端会话 id、所在机器与拉起来源。
+			// 不并入 seat_bearings（拍板 D1：那张表的存在即意味着 coordinate 席位）；
+			// identity 只是写入时的席位一致性见证，席位真源仍是 cards.driver_session。
+			`CREATE TABLE IF NOT EXISTS seat_desktops (
+				card_id TEXT PRIMARY KEY,
+				identity TEXT NOT NULL,
+				desktop_session TEXT NOT NULL,
+				machine TEXT NOT NULL,
+				via TEXT NOT NULL,
+				bound_at TIMESTAMPTZ NOT NULL)`,
 			// B389 唤醒认领：共库下同一张卡的同一事件只允许一台机器处理。
 			// 主键是 (card, seq) 复合键——card_events.seq 全局唯一，但一条事件可
 			// 合法扇出到多张卡（room_message 寻址），单键会让第二张卡认领失败并
@@ -503,6 +513,13 @@ func ddlStatements(pg bool) []string {
 				home_dir TEXT NOT NULL,
 				workdir TEXT NOT NULL,
 				model TEXT NOT NULL,
+				bound_at TEXT NOT NULL)`,
+			`CREATE TABLE IF NOT EXISTS seat_desktops (
+				card_id TEXT PRIMARY KEY,
+				identity TEXT NOT NULL,
+				desktop_session TEXT NOT NULL,
+				machine TEXT NOT NULL,
+				via TEXT NOT NULL,
 				bound_at TEXT NOT NULL)`,
 			`CREATE TABLE IF NOT EXISTS wake_claims (
 				card TEXT NOT NULL,

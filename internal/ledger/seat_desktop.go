@@ -1,17 +1,29 @@
-// seat_desktop.go —— B434 桌面端席位记录与项目拉起器登记（Ticket 0 空壳）。
+// seat_desktop.go —— B434 桌面端席位记录与项目拉起器登记。
 //
-// 职责：bind 席位的「Claude 桌面端会话 id + 所在机器」与每项目至多一个的
-// 拉起器登记。两者都是账本行，与 cards.driver_session 的席位真源分开存放：
-// 席位真源不变（bind / cli:claude#<CLI 会话 id>），本记录只回答「怎样把这场
-// 会话叫醒」。不复用 seat_bearings：那张表的存在即意味着 coordinate 席位
-// （B389 规则 4，见 binding.go#validateSeatBearing），见契约拍板 D1。
+// 职责：bind 席位的「Claude 桌面端会话 id + 所在机器 + 拉起来源」（seat_desktops）
+// 与每项目至多一个的拉起器登记（desktop_launchers）。两者都是账本行，与
+// cards.driver_session 的席位真源分开存放：席位真源不变（bind / cli:claude#<CLI
+// 会话 id>），本记录只回答「怎样把这场会话叫醒」。不复用 seat_bearings：那张表
+// 的存在即意味着 coordinate 席位（B389 规则 4，见 binding.go#validateSeatBearing），
+// 见契约拍板 D1。
 //
-// 边界：本文件只有类型与方法签名；DDL、与 BindSeat/RebindSeat/clearSeatTx 的
-// 生命周期联动、事件落账在实现节点落码（TODO(B434)）。契约见
-// docs/superpowers/specs/b434-contract.md §3.3–§3.4。
+// 边界：
+//   - SetSeatDesktop 是 seat_desktops 唯一写面（CAS：expect = 卡上席位、来源必须是
+//     bind），与 BindSeat 两步提交（拍板 D2）；删行只经 deleteSeatDesktopTx，由
+//     RebindSeat 与 clearSeatTx 在各自事务内调用（生命周期联动）。BindSeat 不写也不删。
+//   - 拉起器登记不落任何卡事件（无卡归属），来源由 actor 列追溯；没有生命周期联动
+//     （会话被删后登记仍在），由 handoff status 的可达探测与 launcher unregister 兜底。
+//   - 时间列 bound_at / registered_at 由 Store 取账本时钟写入，入参里的
+//     BoundAt / RegisteredAt 被忽略。
+//   - 本文件不校验席位 cli 段是否为 claude（契约条 60/141 在 CLI 一侧执法）。
+//
+// 契约见 docs/superpowers/specs/b434-contract.md §3.3–§3.4、§8 D1/D2/D4。
 package ledger
 
 import (
+	"database/sql"
+	"errors"
+	"fmt"
 	"time"
 
 	"github.com/Xsxdot/handoff/internal/proto"
@@ -26,19 +38,59 @@ type SeatDesktop struct {
 	BoundAt time.Time
 }
 
-// SetSeatDesktop 为卡上已有的 bind 席位写入桌面端记录（upsert）。CAS 断言卡上
-// 席位身份等于 expect，且来源为 bind；同事务落恰一条 EvSeatDesktopSet。
-// coordinate 席位、空座、身份不符一律显式报错，不静默忽略。
+// SetSeatDesktop 为卡上已有的 bind 席位写入桌面端记录（upsert，覆盖旧值）。
+// T2 最薄路径版：只有正路径；写闸（id/via 校验、来源判定、CAS）由 T3 补齐。
 func (s *Store) SetSeatDesktop(id, expect string, desk SeatDesktop) error {
-	_, _, _ = id, expect, desk
-	return proto.ErrDesktopNotImplemented // TODO(B434)
+	log().Info("开始写桌面端席位记录", "card", id, "has_expect", expect != "",
+		"desktop_session", desk.Session, "machine", desk.Machine, "via", desk.Via)
+	err := s.mutate(func(tx *sql.Tx, sink *eventSink) error {
+		card, err := getCardTx(s, tx, id)
+		if err != nil {
+			return fmt.Errorf("写桌面端记录读卡 %s: %w", id, err)
+		}
+		if _, err := tx.Exec(s.q(`INSERT INTO seat_desktops
+				(card_id, identity, desktop_session, machine, via, bound_at)
+				VALUES (?, ?, ?, ?, ?, ?)
+				ON CONFLICT(card_id) DO UPDATE SET identity = excluded.identity,
+					desktop_session = excluded.desktop_session, machine = excluded.machine,
+					via = excluded.via, bound_at = excluded.bound_at`),
+			id, card.DriverSession, desk.Session, desk.Machine, desk.Via, s.tval(s.timeNow())); err != nil {
+			return fmt.Errorf("写桌面端记录 %s: %w", id, err)
+		}
+		if _, err := s.appendEvent(tx, sink, id, EvSeatDesktopSet, card.DriverSession, map[string]string{
+			"identity":        card.DriverSession,
+			"desktop_session": desk.Session,
+			"machine":         desk.Machine,
+			"via":             desk.Via,
+		}); err != nil {
+			return fmt.Errorf("桌面端记录落事件 %s: %w", id, err)
+		}
+		return nil
+	})
+	if err != nil {
+		log().Warn("写桌面端席位记录失败", "card", id, "cause", err)
+		return err
+	}
+	log().Info("写桌面端席位记录完成", "card", id, "desktop_session", desk.Session, "machine", desk.Machine, "via", desk.Via)
+	return nil
 }
 
 // SeatDesktopOf 读该卡的桌面端记录；无记录返回 ok=false 且不报错。
 // 它不参与「是不是空座」的判定——空座只由 cards 两列判。
 func (s *Store) SeatDesktopOf(id string) (SeatDesktop, bool, error) {
-	_ = id
-	return SeatDesktop{}, false, proto.ErrDesktopNotImplemented // TODO(B434)
+	var d SeatDesktop
+	var boundAt any
+	err := s.db.QueryRow(s.q(`SELECT desktop_session, machine, via, bound_at
+		FROM seat_desktops WHERE card_id = ?`), id).Scan(&d.Session, &d.Machine, &d.Via, &boundAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return SeatDesktop{}, false, nil
+	}
+	if err != nil {
+		log().Warn("读桌面端席位记录失败", "card", id, "cause", err)
+		return SeatDesktop{}, false, fmt.Errorf("读桌面端记录 %s: %w", id, err)
+	}
+	d.BoundAt = toTime(boundAt)
+	return d, true, nil
 }
 
 // DesktopLauncher 是某项目的拉起器登记：一场由人开过的普通桌面端会话，
