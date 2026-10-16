@@ -1,4 +1,4 @@
-// desktopwake.go —— B434 Claude 桌面端会话当协调者：控制面侧（Ticket 0 空壳）。
+// desktopwake.go —— B434 Claude 桌面端会话当协调者：控制面侧。
 //
 // 职责：
 //   - 拉起材料：按卡产出「项目在本机的根目录 + 人尺度简报」（深链、复制兜底、
@@ -664,15 +664,67 @@ func (s *Server) deliverLauncherLetterLocal(req proto.DesktopDeliverReq) (proto.
 	return resp, nil
 }
 
-// handleDesktopDeliver 是 POST /api/desktop/deliver（P3=A）：以本机身份调
-// deliverDesktopLetter 的本机分支（按 Card 在本机解析 Folder 并渲染），从不再
-// 转发（一跳封顶）；项目在本机无位置 → 409 {"error": <errNoLocalProject 包装文本>}；
-// 卡不存在 → 404（ledgerErr，error 含卡号）。按卡读共享账本，注册时须套 withLedger
-// （未配账本 503，先于体校验），鉴权沿 /api 既有 token 中间件在外层（契约 r6 §4.15）。
-// 未注册（TODO(B434)）。
+// validateDesktopDeliverReq 校验 /api/desktop/deliver 请求体：card 非空（条 222）；
+// cli_session 能编进 cli:claude#<id> 席位语法（与拉起器登记写闸同源，proto.EncodeSeatIdentity）；
+// desktop_session 过 proto.ValidateDesktopSessionID。信箱键的路径安全（`/`、`\`、点开头）
+// 仍由 writeDesktopLetter 最后一道拦截，它以 errDesktopMailboxKeyUnsafe 哨兵拒绝，
+// handleDesktopDeliver 据此回 400（契约 r12 第 6 条）——规则只在一处定义，不在这里复制。
+func validateDesktopDeliverReq(req proto.DesktopDeliverReq) error {
+	if strings.TrimSpace(req.Card) == "" {
+		return errors.New("card 必填")
+	}
+	if _, err := proto.EncodeSeatIdentity("claude", req.CLISession); err != nil {
+		return fmt.Errorf("cli_session 非法: %w", err)
+	}
+	if err := proto.ValidateDesktopSessionID(req.DesktopSession); err != nil {
+		return fmt.Errorf("desktop_session 非法: %w", err)
+	}
+	return nil
+}
+
+// handleDesktopDeliver 是 POST /api/desktop/deliver（P3=A，收件机）：按 req.Card 经共享账本
+// 读卡、用**本机**登记的项目位置渲染拉起器来信，写信 + opener。
+// 守卫：外层 /api token 中间件（401，条 154/246）→ withLedger（503，先于体校验，条 243/245）。
+// 响应：200 DesktopDeliverResp（opener 失败或未装配 → {written:true, opened:false}，信留在信箱，
+// 条 157）；400 体解码失败、字段非法（条 222）或信箱键不安全（errDesktopMailboxKeyUnsafe，
+// 契约 r12 第 6 条）；404 卡不存在（error 含卡号，条 247）；409 卡的项目在本机无登记位置
+// （条 218）；500 其余（列项目位置失败、mgr 未装配、写信失败——发起端按投递失败处置，契约
+// r10 第 3 条）。
+// 注意：deliverDesktopLetter 的 machine 恒传 ""——不论是否带 X-Handoff-Forwarded，收件机都只在
+// 本机写信，从不出站转发（一跳封顶，条 155）；不读拉起器登记、不打 needs_human（条 171 同理：
+// 等人标只由发起端落）。
 func (s *Server) handleDesktopDeliver(w http.ResponseWriter, r *http.Request) {
-	_ = r
-	writeErr(w, http.StatusNotImplemented, proto.ErrDesktopNotImplemented) // TODO(B434)
+	var req proto.DesktopDeliverReq
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, forwardBodyLimit)).Decode(&req); err != nil {
+		s.log.Warn("拉起器投递请求体解码失败", "forwarded", isForwarded(r), "cause", err)
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("解析请求体: %w", err))
+		return
+	}
+	if err := validateDesktopDeliverReq(req); err != nil {
+		s.log.Warn("拉起器投递请求字段非法", "card", req.Card, "cause", err)
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	s.log.Info("收到拉起器投递", "card", req.Card, "cli_session", req.CLISession,
+		"desktop_session", req.DesktopSession, "forwarded", isForwarded(r))
+	resp, err := s.deliverDesktopLetter(r.Context(), "", req)
+	switch {
+	case err == nil:
+		s.log.Info("拉起器投递完成", "card", req.Card, "written", resp.Written, "opened", resp.Opened)
+		writeJSON(w, http.StatusOK, resp)
+	case errors.Is(err, errDesktopMailboxKeyUnsafe):
+		s.log.Warn("拉起器投递被拒：信箱键不安全", "card", req.Card, "cli_session", req.CLISession, "cause", err)
+		writeErr(w, http.StatusBadRequest, err)
+	case errors.Is(err, errNoLocalProject):
+		s.log.Warn("拉起器投递被拒：项目在本机无登记位置", "card", req.Card, "cause", err)
+		writeErr(w, http.StatusConflict, err)
+	case errors.Is(err, ledger.ErrNotFound):
+		s.log.Warn("拉起器投递被拒：卡不存在", "card", req.Card, "cause", err)
+		writeErr(w, http.StatusNotFound, err)
+	default:
+		s.log.Error("拉起器投递失败", "card", req.Card, "cause", err)
+		writeErr(w, http.StatusInternalServerError, err)
+	}
 }
 
 // desktopUndeliveredError 标记「信未落盘的桌面端唤醒失败」（本机写信/渲染失败、

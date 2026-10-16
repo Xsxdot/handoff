@@ -923,6 +923,10 @@ func (s *Server) Handler() http.Handler {
 	s.registerLedgerRoutes(api)
 	s.registerSchedulingRoutes(api)
 	s.registerCoordRoutes(api)
+	// B434 G3：agentd→agentd 拉起器投递（契约 §3.9 P3=A、r6）。挂在 api mux 内即在 auth
+	// token 中间件之内（401 最外层，条 246）；只套 withLedger（未配账本 503 先于体校验，
+	// 条 243/245），不套 withCoordinator——收件机按卡读共享账本渲染，不依赖自动化层。
+	api.HandleFunc("POST /api/desktop/deliver", s.withLedger(s.handleDesktopDeliver))
 	// B432：iOS 推送设备登记（spec §契约面 1）。独立注册函数与 ledger/scheduling
 	// 同款，避免 Handler() 主表继续膨胀。
 	s.registerPushRoutes(api)
