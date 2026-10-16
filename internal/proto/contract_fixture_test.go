@@ -191,6 +191,26 @@ func TestContractFixtures(t *testing.T) {
 		{"HomeWakeResp", HomeWakeResp{Outcome: "need_login", Detail: "需要登录。"}},
 		{"CarrierDetectResp", CarrierDetectResp{Name: "mbp-codex", Status: "pending", LastError: "需要登录。", Version: 2}},
 		{"CarrierRunCommandResp", CarrierRunCommandResp{Command: "HOME=~/.handoff/home/mbp-codex codex"}},
+		// B434（契约 §6 DTO 行）：拉起材料两条——已登记拉起器（launcher 在场）与未登记
+		// （omitempty：launcher 缺键，TS 侧 hasOwnProperty=false，不是空串）。
+		{"DesktopLaunchMaterial", DesktopLaunchMaterial{
+			Card: "B434", Folder: "/Users/dev/workspace/handoff",
+			Brief:    "[handoff] 你是卡 B434 的协调者，坐在这场 Claude 桌面端会话里。\n\n- 卡号：B434",
+			Launcher: "local_6f1c-launcher",
+		}},
+		{"DesktopLaunchMaterialNoLauncher", DesktopLaunchMaterial{
+			Card: "B434", Folder: "/Users/dev/workspace/handoff",
+			Brief: "[handoff] 你是卡 B434 的协调者，坐在这场 Claude 桌面端会话里。\n\n- 卡号：B434",
+		}},
+		// machine 空串 = 本机：零值必须在场（非 omitempty）。
+		{"DesktopLauncherOpenResp", DesktopLauncherOpenResp{
+			Launcher: "local_6f1c-launcher", Machine: "", HandledBy: "mac-01",
+		}},
+		// agentd↔agentd 投递 wire（P3=A、r5：携带卡号不携带正文）；opened=false 零值在场。
+		{"DesktopDeliverReq", DesktopDeliverReq{
+			CLISession: "9b2e7c1a-4d", DesktopSession: "local_6f1c-launcher", Card: "B434",
+		}},
+		{"DesktopDeliverResp", DesktopDeliverResp{HandledBy: "mac-01", Written: true, Opened: false}},
 	}
 
 	dir := fixtureDir(t)
