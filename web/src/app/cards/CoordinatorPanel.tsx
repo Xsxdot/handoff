@@ -101,16 +101,19 @@ export function CoordinatorPanel({ cardId, onOpenTerminal }: CoordinatorPanelPro
   const [material, setMaterial] = useState<DesktopMaterialState>(MATERIAL_LOADING)
   const [openState, setOpenState] = useState<DesktopOpenState>(OPEN_IDLE)
   const anchorRef = useRef<HTMLAnchorElement>(null)
+  // materialRetry 每加一即重读一次材料；只由断连恢复触发（见下方第二个 effect）。
+  const [materialRetry, setMaterialRetry] = useState(0)
+  const wasDisconnected = useRef(state.disconnected)
   const unbound = state.data !== null && coordinatorView(state.data) === 'unbound'
 
-  // 空座时读一次拉起材料；换卡或从已绑定回到空座时重读。不走 usePoll：材料只在空座有用，
-  // 每 5s 重读会让服务端反复解析项目位置与简报；cancelled 防止换卡后旧卡的材料落到新卡上。
+  // 空座时读一次拉起材料；换卡、从已绑定回到空座、或断连恢复（materialRetry）时重读。不走 usePoll：
+  // 材料只在空座有用，每 5s 重读会让服务端反复解析项目位置与简报；cancelled 防止换卡后旧卡的材料落到新卡上。
   useEffect(() => {
     if (!unbound) return
     let cancelled = false
     setMaterial(MATERIAL_LOADING)
     setOpenState(OPEN_IDLE)
-    console.info('coordinator.desktop_material.start', { card: cardId })
+    console.info('coordinator.desktop_material.start', { card: cardId, retry: materialRetry })
     getDesktopLaunchMaterial(cardId).then(
       (result) => {
         if (cancelled) return
@@ -126,7 +129,18 @@ export function CoordinatorPanel({ cardId, onOpenTerminal }: CoordinatorPanelPro
     return () => {
       cancelled = true
     }
-  }, [cardId, unbound])
+  }, [cardId, unbound, materialRetry])
+
+  // 断连恢复重读：材料读取失败多半是 agentd 断连（与状态轮询同源），恢复后不重读的话人只能重开抽屉。
+  // 只在「材料不可用 且 disconnected 由 true 变 false」时重读一次；材料已就绪或断连状态未变（正常 5s
+  // 轮询）都不重读，免得服务端反复解析项目位置与简报。
+  useEffect(() => {
+    const recovered = wasDisconnected.current && !state.disconnected
+    wasDisconnected.current = state.disconnected
+    if (!recovered || material.kind !== 'unavailable') return
+    console.info('coordinator.desktop_material.retry', { card: cardId, reason: 'reconnected' })
+    setMaterialRetry((n) => n + 1)
+  }, [cardId, state.disconnected, material.kind])
 
   const launch = async (): Promise<void> => {
     setBusy('launch')

@@ -5,7 +5,7 @@
 // 编码函数自身的行为由 claudeDeepLink.test.ts 锁，这里只锁面板怎么用它。
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { MockInstance } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { ApiError } from '../../api/client'
 import { attachCoordinator, getCoordinatorStatus, getDesktopLaunchMaterial, launchCoordinator, openViaDesktopLauncher, releaseCoordinator } from '../../api/scheduling'
@@ -399,6 +399,66 @@ describe('协调者面板', () => {
     await renderReady()
     await userEvent.setup().click(seatButton())
     expect(screen.queryByText(DESKTOP_TRUST_HINT)).not.toBeInTheDocument()
+  })
+
+  // 换卡守卫：B1 的材料请求晚于 B2 落定时不得覆盖 B2 的材料（effect 清理里的 cancelled），
+  // 且换卡时上一张卡的坐下结果（信任提示、<a>）不得残留到新卡（effect 里重置 openState）。
+  it('换卡后旧卡迟到的材料不串入、坐下结果不跨卡残留', async () => {
+    vi.mocked(isDesktopShell).mockReturnValue(true)
+    const materialB2: DesktopLaunchMaterial = { card: 'B2', folder: '/repo/other', brief: '[handoff] 你是卡 B2 的协调者' }
+    let resolveB1: (m: DesktopLaunchMaterial) => void = () => {}
+    let b1Calls = 0
+    vi.mocked(getDesktopLaunchMaterial).mockImplementation((cardId: string) => {
+      if (cardId === 'B2') return Promise.resolve(materialB2)
+      b1Calls++
+      // 首次 B1 请求挂起到 B2 落定之后再放行；回到 B1 的第二次请求永远挂起，只看重置是否发生
+      return b1Calls === 1 ? new Promise((resolve) => { resolveB1 = resolve }) : new Promise(() => {})
+    })
+    const { rerender } = render(<CoordinatorPanel cardId="B1" onOpenTerminal={vi.fn()} />)
+    rerender(<CoordinatorPanel cardId="B2" onOpenTerminal={vi.fn()} />)
+    await waitFor(() => expect(seatButton()).toBeEnabled())
+    await act(async () => { resolveB1(material) })
+    const user = userEvent.setup()
+    await user.click(seatButton())
+    expect(buildClaudeNewSessionURL).toHaveBeenLastCalledWith(materialB2.folder, materialB2.brief)
+    expect(screen.getByText(DESKTOP_TRUST_HINT)).toBeVisible()
+
+    rerender(<CoordinatorPanel cardId="B1" onOpenTerminal={vi.fn()} />)
+    expect(screen.queryByText(DESKTOP_TRUST_HINT)).not.toBeInTheDocument()
+  })
+
+  // 断连恢复重读：材料因 agentd 断连读失败后，断连恢复（disconnected true→false）时重读一次；
+  // 材料已就绪时断连再恢复不重读，正常轮询（disconnected 不变）也不重读。
+  it('断连恢复后重读材料，正常态不重读', async () => {
+    const offline = '无法连接 agentd（反代失败？）：fetch failed'
+    const panel = <CoordinatorPanel cardId="B1" onOpenTerminal={vi.fn()} />
+    vi.mocked(usePoll).mockReturnValue(pollState(unbound, { disconnected: true }) as never)
+    vi.mocked(getDesktopLaunchMaterial).mockRejectedValue(new ApiError(0, offline, null))
+    const view = render(panel)
+    const { rerender } = view
+    await waitFor(() => expect(seatButton()).toHaveAttribute('title', offline))
+    expect(getDesktopLaunchMaterial).toHaveBeenCalledTimes(1)
+
+    vi.mocked(getDesktopLaunchMaterial).mockResolvedValue(material)
+    vi.mocked(usePoll).mockReturnValue(pollState(unbound) as never)
+    rerender(<CoordinatorPanel cardId="B1" onOpenTerminal={vi.fn()} />)
+    await waitFor(() => expect(seatButton()).toBeEnabled())
+    expect(getDesktopLaunchMaterial).toHaveBeenCalledTimes(2)
+
+    rerender(<CoordinatorPanel cardId="B1" onOpenTerminal={vi.fn()} />)
+    vi.mocked(usePoll).mockReturnValue(pollState(unbound, { disconnected: true }) as never)
+    rerender(<CoordinatorPanel cardId="B1" onOpenTerminal={vi.fn()} />)
+    vi.mocked(usePoll).mockReturnValue(pollState(unbound) as never)
+    rerender(<CoordinatorPanel cardId="B1" onOpenTerminal={vi.fn()} />)
+    await waitFor(() => expect(seatButton()).toBeEnabled())
+    expect(getDesktopLaunchMaterial).toHaveBeenCalledTimes(2)
+    view.unmount()
+
+    // 一直在线时材料 409：不是断连恢复，不得重读（否则 409 → 重读 → 409 会自激成请求风暴）
+    vi.mocked(getDesktopLaunchMaterial).mockClear()
+    await renderUnavailable()
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)) })
+    expect(getDesktopLaunchMaterial).toHaveBeenCalledTimes(1)
   })
 
   it('坐下文案只取常量', () => {
