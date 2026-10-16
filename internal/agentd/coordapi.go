@@ -50,6 +50,9 @@ func (s *Server) registerCoordRoutes(api *http.ServeMux) {
 	// B434 G1：拉起材料只读端点只套 withLedger、不套 withCoordinator（契约 §3.9、条 13）——
 	// 没装自动化层的 agentd 也要能给「用 Claude Code 坐下」出材料。
 	api.HandleFunc("GET /api/cards/{id}/coordinator/desktop-launch", s.withLedger(s.handleDesktopLaunchMaterial))
+	// B434 G3：拉起器代开（契约 §3.9 POST 行）同样只套 withLedger——代开不经协调者小队
+	// 识别与准入（条 254），没装自动化层的 agentd 也要能请拉起器代开。
+	api.HandleFunc("POST /api/cards/{id}/coordinator/desktop-launch", s.withLedger(s.handleDesktopLauncherOpen))
 }
 
 // withCoordinator 守卫自动化层装配：keystone 或 scheduling 未装配时 503。
