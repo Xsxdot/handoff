@@ -295,7 +295,8 @@ func decodeRoomMessageForWake(ev proto.LedgerEvent) (proto.RoomMessage, bool, er
 
 // automationWakeEvents 是消费循环的统一映射入口（B358.3 改接寻址后）。
 // 会话消息（无卡事件）不再被首行卡闸一刀切拦下——改走 roomMessageWakeEvents
-// 寻址分流（条 29/30）；其余事件类型的映射沿用 automationWakeEvent，其中
+// 寻址分流（条 29/30）；needs_human 先经 desktopNeedsHumanWakes（B434 P5=B：只叫醒
+// 桌面端 bind 席位）；其余事件类型的映射沿用 automationWakeEvent，其中
 // 无卡事件是结构事实（session_*/driver_* 等），条 31 不唤醒任何人。
 func (s *Server) automationWakeEvents(ev proto.LedgerEvent) ([]keystone.WakeEvent, error) {
 	if ev.Type == ledger.EvRoomMessage {
@@ -304,6 +305,12 @@ func (s *Server) automationWakeEvents(ev proto.LedgerEvent) ([]keystone.WakeEven
 	if ev.CardID == "" {
 		s.log.Debug("无卡结构事件不唤醒", "seq", ev.Seq, "type", ev.Type)
 		return nil, nil
+	}
+	if ev.Type == ledger.EvNeedsHuman {
+		// B434 P5=B（契约 §3.8.1）：needs_human 先于纯函数分流——桌面端 bind 席位按排除规则
+		// 唤醒；coordinate 与无记录 bind 由 desktopNeedsHumanWakes 返回空、维持 B394。纯函数
+		// automationWakeEvent 不改（条 192）。消费循环与转交收件 handleCoordWake 同经本入口。
+		return s.desktopNeedsHumanWakes(ev)
 	}
 	wake, yes, err := automationWakeEvent(ev)
 	if err != nil {

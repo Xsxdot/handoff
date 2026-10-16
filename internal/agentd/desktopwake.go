@@ -714,20 +714,58 @@ const desktopNeedsHumanSystemActorPrefix = "node:"
 
 // isSystemNeedsHumanActor 报告 actor 是否为系统组件（精确命中
 // desktopNeedsHumanSystemActors 或以 desktopNeedsHumanSystemActorPrefix 开头）。
+// 用精确值表而不是「不含 ':'」之类的形状判据：人与会话身份也可能是裸词（如 actor
+// "test"），形状判据会把人打的标误当系统标吞掉（契约 §3.8.1 规则 3）。
 func isSystemNeedsHumanActor(actor string) bool {
-	_ = actor
-	return false // TODO(B434)
+	return slices.Contains(desktopNeedsHumanSystemActors, actor) ||
+		strings.HasPrefix(actor, desktopNeedsHumanSystemActorPrefix)
 }
 
-// desktopNeedsHumanWakes 是 needs_human 对桌面端席位的唤醒映射（P5=B），由
-// automationWakeEvents 在调用纯函数 automationWakeEvent 之前对 EvNeedsHuman 分流：
-// 目标 = resolveWakeCard(ev.CardID)；目标须是有桌面端记录的 bind 席位，否则返回空
-// （coordinate 席位与无记录 bind 维持 B394 现行判据）；actor 为系统组件或等于目标
-// 席位身份 → 返回空；命中 → 一条 keystone.WakeTaskTerminal（Card=ev.CardID，
-// Summary="needs_human: <reason>"）。
+// desktopNeedsHumanWakes 是 needs_human 对桌面端席位的唤醒映射（P5=B，契约 §3.8.1），由
+// automationWakeEvents 在调用纯函数 automationWakeEvent 之前对 EvNeedsHuman 分流。判定按
+// 契约规则顺序：1 目标 = resolveWakeCard(ev.CardID)，空 → 不唤醒；2 目标须是 bind 席位且
+// SeatDesktopOf 命中，否则不唤醒（coordinate 与无记录 bind 维持 B394）；3 actor 是系统组件
+// → 不唤醒（本卡失败段与无拉起器标的 actor 都是 agentd，切断回声环，条 187）；4 actor 等于
+// 目标席位身份（协调者自打）→ 不唤醒；5 命中 → 一条 WakeTaskTerminal（Card=ev.CardID，
+// Summary="needs_human: <reason>"）——复用 WakeTaskTerminal 是为过 keystone.Decide 的种类清单。
+// 返回：读目标卡或桌面端记录失败 → 错误（消费循环本轮中止、下轮重读，同会话寻址读失败）；
+// 不唤醒的每条判定留 Debug（判定理由可查）。
 func (s *Server) desktopNeedsHumanWakes(ev proto.LedgerEvent) ([]keystone.WakeEvent, error) {
-	_ = ev
-	return nil, proto.ErrDesktopNotImplemented // TODO(B434)
+	target := s.resolveWakeCard(ev.CardID)
+	if target == "" {
+		s.log.Debug("needs_human 不唤醒：无可叫醒的席位卡", "seq", ev.Seq, "card", ev.CardID)
+		return nil, nil
+	}
+	card, err := s.ledger.GetCard(target)
+	if err != nil {
+		return nil, fmt.Errorf("needs_human seq %d 唤醒判定读席位卡 %s: %w", ev.Seq, target, err)
+	}
+	if card.DriverSource != string(proto.SeatSourceBind) {
+		s.log.Debug("needs_human 不唤醒：目标是 coordinate 席位（B394）", "seq", ev.Seq, "card", ev.CardID, "target", target)
+		return nil, nil
+	}
+	_, hasDesktop, err := s.ledger.SeatDesktopOf(target)
+	if err != nil {
+		return nil, fmt.Errorf("needs_human seq %d 唤醒判定读桌面端记录 %s: %w", ev.Seq, target, err)
+	}
+	if !hasDesktop {
+		s.log.Debug("needs_human 不唤醒：目标 bind 席位无桌面端记录", "seq", ev.Seq, "card", ev.CardID, "target", target)
+		return nil, nil
+	}
+	if isSystemNeedsHumanActor(ev.Actor) {
+		s.log.Debug("needs_human 不唤醒：系统组件自打", "seq", ev.Seq, "card", ev.CardID, "actor", ev.Actor)
+		return nil, nil
+	}
+	if ev.Actor == card.DriverSession {
+		s.log.Debug("needs_human 不唤醒：席位自打", "seq", ev.Seq, "card", ev.CardID, "actor", ev.Actor)
+		return nil, nil
+	}
+	reason, ok := desktopNeedsHumanReason(ev)
+	if !ok {
+		s.log.Warn("needs_human 载荷无 reason，摘要按载荷原文", "seq", ev.Seq, "card", ev.CardID)
+	}
+	s.log.Info("needs_human 唤醒桌面端席位", "seq", ev.Seq, "card", ev.CardID, "target", target, "actor", ev.Actor)
+	return []keystone.WakeEvent{{Kind: keystone.WakeTaskTerminal, Card: ev.CardID, Summary: "needs_human: " + reason}}, nil
 }
 
 // openViaDesktopLauncher 是拉起器代开：读项目拉起器 → 投递装着拉起材料
