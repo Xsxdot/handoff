@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/fstest"
 
 	"github.com/Xsxdot/handoff/internal/skill"
 )
@@ -136,5 +137,65 @@ func TestSkillContentEmptyIsRefused(t *testing.T) {
 	SetSkillContent("")
 	if _, err := runSkill(t, "install"); err == nil {
 		t.Fatal("内嵌内容为空必须拒绝安装，而不是装一份空文件")
+	}
+}
+
+// claudeModForTest 是三件形状的假 mod；version 不同即内容不同，用来造 stale。
+func claudeModForTest(version string) fstest.MapFS {
+	return fstest.MapFS{
+		".claude-plugin/plugin.json": {Data: []byte(`{"name":"handoff-desktop-wake","version":"` + version + `"}`)},
+		"hooks/hooks.json":           {Data: []byte(`{ "modules": ["./register.ts"] }`)},
+		"hooks/register.ts":          {Data: []byte("// " + version + "\n")},
+	}
+}
+
+// TestB434SkillInstallInstallsClaudeMod：handoff skill install 在装了 Claude Code 的机器上写入唤醒 mod、
+// 登记 CLAUDE_CODE_PLUGIN_DIRS，并把落点打出来（契约 §3.13：install 追加一行；条 128/129 的命令层入口）。
+func TestB434SkillInstallInstallsClaudeMod(t *testing.T) {
+	home := t.TempDir()
+	os.MkdirAll(filepath.Join(home, ".claude"), 0o755)
+	t.Setenv("HOME", home)
+	SetSkillContent("测试内容")
+	SetPluginContent("plugin-src")
+	SetClaudeModFS(claudeModForTest("1"))
+	t.Cleanup(func() { SetClaudeModFS(nil) })
+
+	out, err := runSkill(t, "install")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "handoff-desktop-wake") {
+		t.Fatalf("输出应含唤醒 mod 落点:\n%s", out)
+	}
+	if _, err := os.Stat(filepath.Join(home, skill.ClaudeModRelDir, ".claude-plugin", "plugin.json")); err != nil {
+		t.Fatalf("mod 清单未写入: %v", err)
+	}
+	b, err := os.ReadFile(filepath.Join(home, ".claude", "settings.json"))
+	if err != nil || !strings.Contains(string(b), "CLAUDE_CODE_PLUGIN_DIRS") {
+		t.Fatalf("settings.json 未登记 CLAUDE_CODE_PLUGIN_DIRS（err=%v）:\n%s", err, b)
+	}
+}
+
+// TestB434SkillReportsStaleClaudeMod：内嵌 mod 换了版本，handoff skill 必须点名它旧了并提示重装
+// （契约 §3.13：status 追加一行；条 135 的命令层入口）。
+func TestB434SkillReportsStaleClaudeMod(t *testing.T) {
+	home := t.TempDir()
+	os.MkdirAll(filepath.Join(home, ".claude"), 0o755)
+	t.Setenv("HOME", home)
+	SetSkillContent("skill-v1")
+	SetPluginContent("plugin-v1")
+	skill.InstallClaudeMod(claudeModForTest("1"), home)
+	SetClaudeModFS(claudeModForTest("2"))
+	t.Cleanup(func() { SetClaudeModFS(nil) })
+
+	out, err := runSkill(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "handoff-desktop-wake") || !strings.Contains(out, "旧") {
+		t.Fatalf("应点名唤醒 mod 旧了:\n%s", out)
+	}
+	if !strings.Contains(out, "handoff skill install") {
+		t.Fatalf("mod 旧了应提示重新同步:\n%s", out)
 	}
 }
