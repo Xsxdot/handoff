@@ -210,3 +210,8 @@
 
 - C（B434.2）review 轮 1 pass；契约 r11 三处措辞更正（`*client.ServerError` 笔误、status 段 machine 值与 targets 探活、r10 第 5 条「同一规则」与 r9 写闸不符）。
 - L 接缝修复：`internal/ledger/seat_desktop.go#validateDesktopLauncher` 补「CLI 会话 id 不以 `.` 开头」拒绝（点开头信箱文件名会被 mod 与 `writeDesktopLetter` 同时跳过）。先红：`TestB434RegisterDesktopLauncherRejectsInvalid` 新子例「CLI 会话 id 以点开头」→ `--- FAIL … FAIL ledger 1.325s`；加闸后 `go test ./internal/ledger/ -count=1` → `ok 5.988s`；gofmt 空、vet 0。
+
+### 第二波 C 合并（2026-10-16）
+
+- **C（B434.2）**：实现 10 提交（cd84bd25…f57c303a），review 轮 1 pass；m2（补救命令带显式 `--machine`，三条变异红 + 新增 `TestB434CardBindDesktopRemedyOmitsDefaults`）、m3（status.go 文件头）、m4（launcher.go 六条错误路径补 Warn）、m8（台账原始行）修复 aa539d0d。合并 424de56b（--no-ff，无冲突）；`go vet ./...` 0、`go build ./...` 0；cmd ok 54.751s、client ok 10.326s、skill ok 1.444s、ledger ok 5.920s。
+- 第二波三卡全部已完成；卡分支 HEAD 424de56b。
