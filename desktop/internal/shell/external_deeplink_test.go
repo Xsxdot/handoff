@@ -170,30 +170,42 @@ func TestHandleExternalDeepLinkMessageOpenerFailure(t *testing.T) {
 // 条 41：成功、拒绝、畸形、opener 失败四条路径的日志都不出现完整目标 URL 与 q。
 func TestHandleExternalDeepLinkMessageLogsNoURL(t *testing.T) {
 	malformed := "claude://[code/new?q=" + deepLinkBriefMarker
+	// source 为空串时取 deepLinkSource；nilOpen 为 true 时不注入 opener。
 	cases := []struct {
-		name, target string
-		openErr      error
-		wantResult   string
+		name, target, source string
+		openErr              error
+		nilOpen              bool
+		wantResult           string
 	}{
-		{"成功", deepLinkNewURL, nil, "opened"},
-		{"host 拒绝", strings.Replace(deepLinkNewURL, "//code/", "//chat/", 1), nil, "invalid_target"},
-		{"畸形", malformed, nil, "invalid_target"},
-		{"opener 失败", deepLinkNewURL, errors.New("open " + deepLinkNewURL + " failed"), "open_failed"},
+		{"成功", deepLinkNewURL, "", nil, false, "opened"},
+		{"host 拒绝", strings.Replace(deepLinkNewURL, "//code/", "//chat/", 1), "", nil, false, "invalid_target"},
+		{"畸形", malformed, "", nil, false, "invalid_target"},
+		{"opener 失败", deepLinkNewURL, "", errors.New("open " + deepLinkNewURL + " failed"), false, "open_failed"},
+		{"来源拒绝", deepLinkNewURL, "file:///x?ticket=source-secret", nil, false, "invalid_source"},
+		{"opener 未配置", deepLinkNewURL, "", nil, true, "opener_unconfigured"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var logs bytes.Buffer
 			log := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+			source := tc.source
+			if source == "" {
+				source = deepLinkSource
+			}
 			spy := &openSpy{err: tc.openErr}
+			open := spy.open
+			if tc.nilOpen {
+				open = nil
+			}
 			if !shell.HandleExternalDeepLinkMessage(
-				log, shell.ExternalDeepLinkMessagePrefix+tc.target, deepLinkSource, spy.open) {
+				log, shell.ExternalDeepLinkMessagePrefix+tc.target, source, open) {
 				t.Fatal("本协议消息必须被消费")
 			}
 			out := logs.String()
 			if !strings.Contains(out, "result="+tc.wantResult) {
 				t.Fatalf("日志缺 result=%s：%q", tc.wantResult, out)
 			}
-			for _, leak := range []string{deepLinkBriefMarker, tc.target, "source-secret"} {
+			for _, leak := range []string{deepLinkBriefMarker, tc.target, source, "source-secret"} {
 				if strings.Contains(out, leak) {
 					t.Fatalf("日志泄露 %q：%q", leak, out)
 				}
