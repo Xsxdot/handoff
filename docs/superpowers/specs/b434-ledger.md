@@ -171,3 +171,10 @@
 - 改动：头部状态行改「**已拍板（2026-10-16）**」；§0 P7/P9 裁决列与稿末拍板记录区回填（P7=d：不动 P4，故事 5 本就落在主 agent 回路；P9=丁：保留已验通路，围栏 + 名册 + 授权规则把第三方原文降为带来源的数据）；§2.2 增 §4.14–§4.17 归属行；§2.3 记 R-B0–R-B3 已由 r6/r7 关闭；C①④（`cmd/card_driver.go` 的 `--desktop`、`internal/skill/desktop_rule.go`、client `DesktopLauncherOpen`）与验收；V①；G2①④；G3①（243–251、261）；W①（223–242，去「条 203/204 待定」）；M①（279，注明 P9 丁对 mod 无改动）；§4 故事 6 行改为主 agent `card coordinate <卡> --desktop` 触发、归 C + G3；§5.3 门禁 (c) 与 §6 #14 去「待用户」；§6 第三批增 #20（围栏来信是否被当数据，观察项，归 I），待验总数 19 → 20；§9 C/V/G2/G3/W/M 行附件更新。
 - 自检：`codegraph resolve --doc docs/superpowers/specs/b434-breakdown.md` → exit=0，44 锚 = moved 39 / ok 5 / vanished 0 / file_missing 0。
 - r2 提交（历史读数，随后 amend 一次，hash 会变）：`git commit -q -F -` → `f2b90893 docs(b434): breakdown r2 — 回写 P7/P9 裁决，已拍板`；2 files changed, 50 insertions(+), 30 deletions(-)。未 push。
+
+### 扇出（2026-10-16 19:10–19:20，协调者）
+
+- 拆解稿 r2（291fd573）头部「已拍板（2026-10-16）」；契约 r7（30979524）。
+- `handoff card split B434 "<标题>"` × 9 → B434.1（L 账本层）、B434.2（C 命令面）、B434.3（G1 拉起材料端点）、B434.4（V 直通竖切 + DTO fixture，协调者本机）、B434.5（G2 唤醒信箱与分流）、B434.6（G3 拉起器代开与 deliver）、B434.7（W 控制台）、B434.8（D 薄壳）、B434.9（M mod，本机）。每张 `card update --attach spec:/contract:/breakdown:` 三件、`card note` 来源、`card move <id> plan`（status 均返回 plan；JSON 读数在协调者会话 fanout.out）。每张卡 split+attach+move 约 60s（CLI 每次调用约 8–10s 开远端账本，B411 慢读遗留）。
+- 父卡 `card move B434 integrate`。I 不 split，在父卡执行。
+- V 与 G2 的围栏渲染归属按契约欠账 18 定（V 实现渲染，G2 只读 golden）；拆解稿台账已记分歧与结论。
