@@ -343,6 +343,7 @@
 **③验收**：前两批真机检查点（§6 第一批、第二批）在对应子卡齐时由协调者执行；I 卡只做**第三批**（故事 5、6）与**全量回归**（前两批复跑一遍），原始读数落台账；按故事 1–9 各留一条端到端证据（截图或日志行 + 卡 timeline seq）；图对账（欠账 §10.3：分支视图 diff `codegraph/diffs/cards-B434-charter-1.json`，`validate --view`、`resolve --doc` 本稿与契约零 vanished/file_missing）。
 
 **④入口指针**：无新增源文件；证据落 `docs/superpowers/specs/b434-ledger.md`。
+- **r3 补项（跨卡审计 2026-10-16）**：B434.1 T6 的 PG 方言往返测试（`LEDGER_TEST_PG_DSN` 门控）本机无 PG，归 I 卡在专用测试库跑一次并贴读数；G2 plan 须显式吸收：信箱文件名 UnixNano 段 19 位零填充（`%019d`，mod 正则 `^<id>\.[0-9]{19}\.md$`）、`writeDesktopLetter` 对 cliSession 做文件名安全校验（拒 `/`、`\`、以 `.` 开头，失败走条 106）；C/V plan 须显式吸收：`SetSeatDesktop` 的 `Via` 非空且在词表、`RegisterDesktopLauncher` 的 `Actor` 非空、`Project` 无首尾空白。
 
 ### 3.11 P1=乙（按故事切）时的映射（供对照）
 
@@ -576,3 +577,5 @@ S1 = L 的 `seat_desktops` 部分 + C 的 bind/seat 部分 + G1 + W 的坐下按
 | P10 | 甲（协调者） | 接受已知限制；opener `Run()` 属实现细节。 |
 
 （全部岔口已裁，头部状态行「已拍板（2026-10-16）」与本表一致。R-B0/R-B2/R-B3 已由契约 r6（`35334dbb`）回写；R-B1/P7、P9 已由契约 r7（`30979524`）补签。）
+
+> **修订记录（r3，2026-10-16，跨卡审计回写）**：第一波 plan（L/D/M/W）跨卡审计 pass-with-notes；I 卡补 PG 往返项；G2/C/V plan 前置约束写进 §3.10。D 卡 Task 2（`main.go` 接线）无缝级断言、以源码守卫 + overlay 编译 + 真机 R1 替代，协调者认可豁免（`package main` 闭包从声明缝构造不出）。

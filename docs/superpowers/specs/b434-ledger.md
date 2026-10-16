@@ -178,3 +178,12 @@
 - `handoff card split B434 "<标题>"` × 9 → B434.1（L 账本层）、B434.2（C 命令面）、B434.3（G1 拉起材料端点）、B434.4（V 直通竖切 + DTO fixture，协调者本机）、B434.5（G2 唤醒信箱与分流）、B434.6（G3 拉起器代开与 deliver）、B434.7（W 控制台）、B434.8（D 薄壳）、B434.9（M mod，本机）。每张 `card update --attach spec:/contract:/breakdown:` 三件、`card note` 来源、`card move <id> plan`（status 均返回 plan；JSON 读数在协调者会话 fanout.out）。每张卡 split+attach+move 约 60s（CLI 每次调用约 8–10s 开远端账本，B411 慢读遗留）。
 - 父卡 `card move B434 integrate`。I 不 split，在父卡执行。
 - V 与 G2 的围栏渲染归属按契约欠账 18 定（V 实现渲染，G2 只读 golden）；拆解稿台账已记分歧与结论。
+
+### 第一波 plan（L/D/M/W，2026-10-16，本地 subagent opus 出稿 ×4 并行，独立跨卡审计 ×1）
+
+- 产出：`docs/superpowers/plans/b434.{1,8,9,7}-plan.md` 与各自 `-plan-ledger.md`（出稿者只写不提交，协调者统一提交）。
+- 跨卡审计裁决：四卡均 pass-with-notes，无阻塞。三样：冻结物逐条无矛盾（M 的 embed 写法字面矛盾 → 契约 r8 修订行）；跨卡签名逐字一致（L 六方法 ↔ 契约 §3.3/§3.4；D 拒绝面不误拒 W 产出 URL；M ↔ §3.13；W DTO mock ↔ §3.2）；spec 故事 1–9 全部指到具体卡/task。
+- 协调者拍板：出稿者自报裁决点全部按审计意见直接拍（L 8 条、D 6 条、M 6 条、W 5 条）；D Task 2 内部锁豁免认可；M 探针遗留清理待用户；PG 往返归 I 卡；G2/C/V 前置约束写进拆解稿 §3.10。
+- 文字小误顺手修：L §5 条 66 归属、D 变异计数、M T2 步骤 1 原文照列、W T0 预期与命令对齐；四份状态行改「已审」。
+- 本机环境读数（出稿者台账）：`claude plugin test` 可用，M 的 7 用例在真实 harness 通过；W 在 web 副本干跑 129 用例全绿；L 用 `go test -overlay` 逐段红绿；D 用 overlay 绕 `main.go` embed 做 vet/build。
+
