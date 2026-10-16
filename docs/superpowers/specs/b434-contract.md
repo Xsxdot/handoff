@@ -376,7 +376,7 @@ type CoordinatorWakeResp struct {
 ```go
 var errNoDesktopLauncher = errors.New(desktopNoLauncherReason)                                   // :34
 const desktopNoLauncherReason = "无拉起器，请在桌面端开一场并登记"                                  // :37
-func (s *Server) openViaDesktopLauncher(ctx context.Context, card string) (proto.DesktopLauncherOpenResp, error)  // :160
+func (s *Server) openViaDesktopLauncher(ctx context.Context, card string) (proto.DesktopLauncherOpenResp, error)  // :183
 ```
 
 ### 3.10 CLI 面（实现节点落）
@@ -406,7 +406,7 @@ func HandleExternalDeepLinkMessage(log *slog.Logger, message, sourceFrameURL str
 func validateClaudeDeepLink(raw string) (*url.URL, error)                               // :44
 ```
 
-`desktop/main.go` RawMessageHandler 在剪贴板、系统浏览器之后第三个尝试本处理器，opener 生产注入与 §3.7 同一取舍（Wails `Browser.OpenURL` 若不处理自定义 scheme 则改 `exec.Command("open", url)`，见移交 4）。
+`desktop/main.go` RawMessageHandler 在剪贴板、系统浏览器之后第三个尝试本处理器，opener 生产注入与 §3.7 同一取舍（Wails `Browser.OpenURL` 若不处理自定义 scheme 则改 `exec.Command("open", url)`，见欠账 §10.7）。
 
 ### 3.12 控制台（`web/`）
 

@@ -74,3 +74,5 @@
 - 小错：`desktopOpener` 行号 :53 → :54。条 99–111 改写，追加条 165–176（不重排已对账编号）；§11 删去已冻结的 opener 返回形态条并重编号。
 - 工具链仍缺：go build/vet/test、tsc、lint、vitest、codegraph 本轮均未执行。
 - 修复轮 2 提交（历史读数，随后 amend 一次，hash 会变）：`git commit -q -F <scratchpad>/r1/msg2.txt && git log --oneline -1` → `4887e073 docs(b434): contract r2 — 跨机失败路径收口`；`5 files changed, 138 insertions(+), 42 deletions(-)`。未 push。
+
+- 审阅轮 3（a806a608）：裁决 pass-with-debts，无阻塞项；顺手修两处行号引用（§3.9 `:160`→`:183`，§3.11「见移交 4」→「见欠账 §10.7」）。非阻塞建议 1（未投递/未打开互斥断言）、2（「未打开」走独立分支不经 clearWakeStall）交 plan 吸收。
