@@ -1093,12 +1093,20 @@ func (s *Server) openViaDesktopLauncher(ctx context.Context, card string) (proto
 	if err != nil {
 		return zero, err
 	}
+	if c.DriverSession != "" || c.DriverSource != "" {
+		return zero, &desktopSeatOccupiedError{card: card}
+	}
 	launcher, ok, err := s.ledger.DesktopLauncherOf(c.Project)
 	if err != nil {
-		return zero, fmt.Errorf("读项目 %s 的拉起器登记: %w", c.Project, err)
+		s.log.Error("拉起器代开读拉起器登记失败（不打标）", "card", card, "project", c.Project, "cause", err)
+		return zero, &desktopLaunchInternalError{err: fmt.Errorf("读项目 %s 的拉起器登记: %w", c.Project, err)}
 	}
 	if !ok {
-		s.log.Warn("项目未登记拉起器", "card", card, "project", c.Project)
+		if err := s.ledger.MarkNeedsHuman(card, desktopNoLauncherReason, "agentd"); err != nil {
+			s.log.Error("无拉起器且落 needs_human 失败", "card", card, "project", c.Project, "cause", err)
+			return zero, &desktopLaunchInternalError{err: fmt.Errorf("%s；落 needs_human 失败: %w", desktopNoLauncherReason, err)}
+		}
+		s.log.Warn("项目未登记拉起器，已落 needs_human", "card", card, "project", c.Project)
 		return zero, errNoDesktopLauncher
 	}
 	req := proto.DesktopDeliverReq{CLISession: launcher.CLISession, DesktopSession: launcher.DesktopSession, Card: card}
@@ -1109,6 +1117,24 @@ func (s *Server) openViaDesktopLauncher(ctx context.Context, card string) (proto
 	return proto.DesktopLauncherOpenResp{Launcher: launcher.DesktopSession, Machine: launcher.Machine,
 		HandledBy: resp.HandledBy}, nil
 }
+
+// desktopSeatOccupiedError 是代开端点的空座前置拒绝（r7 条 261）：文本逐字为
+// 「卡 <id> 已有人坐，换人用 handoff card rebind <id> --self 或 --launch」。
+type desktopSeatOccupiedError struct{ card string }
+
+func (e *desktopSeatOccupiedError) Error() string {
+	return "卡 " + e.card + " 已有人坐，换人用 handoff card rebind " + e.card + " --self 或 --launch"
+}
+
+// desktopLaunchInternalError 是代开路径上的服务端故障：读拉起器登记失败，或该落的 needs_human
+// 没落成（契约 r12 第 6 条）。端点据此显式回 500——不经 ledgerErr（底层错误可能包
+// ErrNotFound/CAS，会被映射成 404/409），也不回 409/502（那两个码对人意味着「已打标」）。
+// Error() 透传底层原因；Unwrap 供日志与上层判别。
+type desktopLaunchInternalError struct{ err error }
+
+func (e *desktopLaunchInternalError) Error() string { return e.err.Error() }
+
+func (e *desktopLaunchInternalError) Unwrap() error { return e.err }
 
 // handleDesktopLauncherOpen 是 POST /api/cards/{id}/coordinator/desktop-launch（契约 §3.9，
 // 体 `{}` 不读）：调 openViaDesktopLauncher 并映射状态码。注册时只套 withLedger。
@@ -1121,12 +1147,17 @@ func (s *Server) handleDesktopLauncherOpen(w http.ResponseWriter, r *http.Reques
 	id := r.PathValue("id")
 	s.log.Info("收到拉起器代开请求", "card", id)
 	resp, err := s.openViaDesktopLauncher(r.Context(), id)
+	var occupied *desktopSeatOccupiedError
+	var internal *desktopLaunchInternalError
 	switch {
 	case err == nil:
 		s.log.Info("拉起器代开已投递", "card", id, "launcher", resp.Launcher,
 			"machine", resp.Machine, "handled_by", resp.HandledBy)
 		writeJSON(w, http.StatusOK, resp)
-	case errors.Is(err, errNoDesktopLauncher), errors.Is(err, errNoLocalProject):
+	case errors.As(err, &internal):
+		s.log.Error("拉起器代开服务端故障", "card", id, "cause", err)
+		writeErr(w, http.StatusInternalServerError, err)
+	case errors.As(err, &occupied), errors.Is(err, errNoDesktopLauncher), errors.Is(err, errNoLocalProject):
 		s.log.Warn("拉起器代开被拒", "card", id, "cause", err)
 		writeErr(w, http.StatusConflict, err)
 	default:
