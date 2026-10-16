@@ -2,10 +2,10 @@
 
 **上游状态：已批准**（源 spec：`docs/superpowers/specs/b434.md`，头部状态行「**状态**：**已批准**（r2；用户 2026-10-16：「批准 B434 spec r2。回写批准到 spec 头部，把卡移到 contract 列。」）」——本轮已对工作树复核一致，无需回写）
 **级别：L3 ｜ 选档复核：重档确认**（依据见 §8）
-**冻结状态：r2 修复轮（2026-10-16，第二轮审阅后，跨机失败路径收口）；r1 修复轮（审阅 fail 后）：本提交随 Ticket 0 骨架、字面量金样本、spec r2.1 勘误与台账冻结；`codegraph/target.json` 不变（无新方向，§5）；分支视图 diff 与直通竖切因本机无 Go/Node 工具链未落，列欠账（§9）**
+**冻结状态：r4 补签轮（2026-10-16，用户裁决 P5=B、P4=推荐）；r2 修复轮（2026-10-16，第二轮审阅后，跨机失败路径收口）；r1 修复轮（审阅 fail 后）：本提交随 Ticket 0 骨架、字面量金样本、spec r2.1 勘误与台账冻结；`codegraph/target.json` 不变（无新方向，§5）；分支视图 diff 与直通竖切因本机无 Go/Node 工具链未落，列欠账（§9）**
 **有效基线：** `main` @ `e020380a`（worktree `handoff-B434`，分支 `cards/B434-charter-1`）
 **架构形态：** 按子系统分域的平铺领域包，无横向 controller/service/dao 分层（沿用 `codegraph/best.json`；本卡不新增领域）
-**交棒：** breakdown。**P1–P3 已由协调者拍板（§7.1）；仍带两项待用户裁决（P4 阻塞 S3 控制台入口、P5 随退回 spec 候选 R1），breakdown 可先拆 S1/S2，S3 控制台部分与 needs_human 唤醒条目待裁决。**
+**交棒：** breakdown。**P1–P3 由协调者拍板、P4/P5 由用户裁决（2026-10-16），§7 已无待裁决项；R1/R2 均已关闭。**
 
 本文档把已批准 spec r2 的「契约语义与接缝」翻译成现状代码可接的签名、HTTP/CLI 面、文件 wire 与依赖方向。本节点只落空壳（§9.1）；写信箱、发深链、拼简报、唤醒分支、CLI 与控制台接线全部列入交棒欠账（§10），不能被「已有空壳」冒充完成。
 
@@ -144,6 +144,7 @@ type DesktopLaunchMaterial struct {          // :52
     Card   string `json:"card"`
     Folder string `json:"folder"`           // 本 agentd 登记的项目绝对根目录
     Brief  string `json:"brief"`            // 以 DesktopWakeMarker 开头
+    Launcher string `json:"launcher,omitempty"` // r4（P4）：项目已登记拉起器的桌面端会话 id；未登记不出键（:58）
 }
 type DesktopLauncherOpenResp struct {        // :60
     Launcher  string `json:"launcher"`       // 拉起器桌面端会话 id
@@ -221,6 +222,7 @@ func desktopBrief(in desktopBriefInput) string                                  
 ```
 
 - `Folder` 的唯一来源 = `resolveCoordWorkdir` 同款解析（`s.mgr.ListProjectLocations()` + `workspace.ResolveProject("", card.Project, …)`）；解析失败 → `fmt.Errorf("%w：%s（handoff project add 登记后可用）", errNoLocalProject, card.Project)`。`ListProjectLocations` 必须经 `s.mgr`（`TestB23328GatewayNoDirectStoreTaskProjectCalls` 既有执法面）。
+- `Launcher`（r4，P4）= `DesktopLauncherOf(card.Project)` 命中时的 `DesktopSession`，未登记留空串（omitempty 不出键）；读拉起器失败不影响材料其余字段，记 Warn 后按未登记处理。
 - `Title` = `GetCard(card).Title`；`BaseBranch` = `EffectiveBaseBranch(card)`（空 → 「未设」）；`Session` = `SessionOfCard(card)`（空 → 「未入群」）。
 
 **简报模板**（实现节点照此渲染；`<…>` 为占位）：
@@ -270,6 +272,7 @@ func (s *Server) desktopLetter(card, seat string, evs []keystone.WakeEvent, raws
 | 同上，`ReplyTo>0` 且可解析 | 引用条：seq、actor、**正文全文** | `s.rooms.MessageReference(msg)`（`internal/collab/sessions.go:295`），同 `buildSessionWake` 的 `Referenced` |
 | 同上 | 未读数：该席位身份在该会话的未读条数（含命中条） | `s.rooms.ListSessions(seat)` 中 `ID == msg.Room` 的 `Unread`（`internal/collab/sessions.go:33`），同 `buildSessionWake` 的 `Unread` |
 | `task_mirrored`（`permission_request`/`question` 等工单） | 工单：seq、task_type、**载荷原文全文** | `mirroredTaskTypeAndPayload(ev)`（`wakeconsumer.go:173`） |
+| `needs_human`（r4，P5=B，仅桌面端席位会收到） | seq、打标者 actor、**原因文本全文** | 载荷 `{"reason": …}`（`internal/ledger/events.go#Store.MarkNeedsHuman` `:458`） |
 | 其它（`decision_*`、task 终态） | seq、事件类型、载荷原文 | `ev.Payload` |
 
 读引用或未读投影失败 → `desktopLetter` 返回错误，本批不写信（宁可不发信，不发残信），走 §3.7 的「信未落盘」处置。
@@ -289,6 +292,9 @@ func (s *Server) desktopLetter(card, seat string, evs []keystone.WakeEvent, raws
 
 ## 工单 seq <seq>（<task_type>）
 <载荷原文全文>
+
+## 需要人 seq <seq>（<actor>）
+<needs_human 原因文本全文>
 
 ## <事件类型> seq <seq>
 <载荷原文>
@@ -361,7 +367,37 @@ type CoordinatorWakeResp struct {
 | `scheddrain.go#transferCoordinatorWake`（`:361`） | 回包映射 `Woke/SessionID/Rebuilt/Escalated/Output` | 增：`resp.LetterUnopened` → 返回 `*desktopUnopenedError` |
 | `coordapi.go#handleCoordWake` 回包（`:209-212`） | 任何错误 → 502 | `desktopUnopened(err)` → 200 + `LetterUnopened=true`、`Woke=false`；其余错误维持 502 |
 | `keystone.go#Service.Wake`（`:123`） | bind → no-op | **不变** |
-| 唤醒事件集 | `automationWakeEvents` | **不变**（needs_human 是否叫醒见 R1/P5） |
+| `wakeconsumer.go#automationWakeEvents`（`:300`） | 非 room_message 一律交纯函数 `automationWakeEvent` | r4：在 `ev.CardID == ""` 判定之后、调 `automationWakeEvent` 之前，`ev.Type == ledger.EvNeedsHuman` → `return s.desktopNeedsHumanWakes(ev)`（§3.8.1）；其余不变 |
+| `wakeconsumer.go#automationWakeEvent`（`:216`，纯函数） | needs_human 恒不唤醒 | **不变**（coordinate 席位与无记录 bind 席位的 B394 判据由它继续承担） |
+
+### 3.8.1 needs_human 唤醒桌面端席位（r4，用户裁决 P5=B）
+
+用户原话：「P5 选 B：needs_human 叫醒桌面端协调者，但排除 agentd 和协调者自己打的标」。
+
+```go
+var desktopNeedsHumanSystemActors = []string{"agentd", "keystone", "coordinator"}   // desktopwake.go:184
+const desktopNeedsHumanSystemActorPrefix = "node:"                                   // :188
+func isSystemNeedsHumanActor(actor string) bool                                      // :192
+func (s *Server) desktopNeedsHumanWakes(ev proto.LedgerEvent) ([]keystone.WakeEvent, error)  // :203
+```
+
+**分流层：选「在 `automationWakeEvents`（Server 方法）里先于纯函数分流」，不选「给 `automationWakeEvent` 加参数」。** 依据：
+- `automationWakeEvent`（`wakeconsumer.go:216`）是无席位上下文的纯函数，对 `EvNeedsHuman` 恒返回不唤醒（`:261-264`），这正是 coordinate 席位的 B394 判据；给它加席位参数会让 coordinate 与桌面端判据混在同一个 switch 里，B394 的不变式要靠每个调用方传对参数才成立。
+- `automationWakeEvents`（`:300`）已是 `Server` 方法、有账本，且是消费循环（`:699`）与被转交端 `handleCoordWake`（`coordapi.go:196`）两个调用方的唯一映射入口，两端判定天然一致。
+- 也不选「在 `resolveWakeCard` 之后、`wakeDesktopSeat` 之前加判」：needs_human 若不在映射层产出 `WakeEvent`，根本进不了 `pendingByCard`（`:714` 起只收 `len(wakes) > 0`），后面的层看不到它。
+
+**判定规则**（`desktopNeedsHumanWakes`，按序）：
+1. `target := s.resolveWakeCard(ev.CardID)`；`target == ""` → 不唤醒。
+2. 目标卡须是 bind 席位且 `SeatDesktopOf(target)` 命中；coordinate 席位或无记录 bind → 不唤醒（维持 B394）。
+3. `isSystemNeedsHumanActor(ev.Actor)` → 不唤醒。系统组件 actor 来自现有全部 `MarkNeedsHuman` 生产者的实测取值：`"agentd"`（`wakeconsumer.go:84`、`:483`，以及本卡 §3.7 失败段与无拉起器标）、`"keystone"`（`keystone.go:178`）、`"coordinator"`（`scheddrain.go:337`）、`"node:<节点名>"`（`ledgerstep/runner.go:264`、`ledgerstep/node.go:78` `actor()`）。
+4. `ev.Actor == 目标卡 driver_session`（协调者自打）→ 不唤醒。
+5. 否则返回一条 `keystone.WakeEvent{Kind: keystone.WakeTaskTerminal, Card: ev.CardID, Summary: "needs_human: " + reason}`。复用 `WakeTaskTerminal` 而不新增 keystone 种类：消费循环在唤醒前会调 `keystone.Decide(evs[0])`（`wakeconsumer.go:803`），它对清单外的种类返回 `Wake:false` 并让整轮按 attach 暂缓提前返回（`keystone.go:87-96`）；`WakeTaskTerminal` 的注释本就把 needs_human 列为回合终态之一（`keystone.go:25`）。
+
+**actor 字段核对**：`needs_human` 是卡事件（`internal/ledger/types.go#Event` `:173`、wire `internal/proto/ledger.go#LedgerEvent` `:120`），打标者在 `Actor` 字段（json `actor`），原因在载荷 `{"reason": …}`（`events.go:458`）。**needs_human 没有 `by_system` 字段**——`by_system` 只存在于房间消息载荷（`internal/proto/rooms.go:47` `RoomMessage.BySystem`），所以「系统自打」只能按 actor 取值判，即上面的精确值表 + `node:` 前缀。
+
+**席位自打的前提（CLI 行为改动，实现节点落）**：现行 `handoff card needs`（`cmd/card_records.go:84` 取 actor、`:96` 落标）的 actor 是 `ledgerActor()` = `cli:<USER>@<hostname>`（`cmd/ledgercli.go:44-51`），**不是**席位身份；协调者在自己会话里打标与人在终端打标今天无法区分，规则 4 永远不命中。补签：`card needs` 打标（不含 `--clear`）的 actor 改为「`currentSeatIdentity("", "")` 成功则用席位身份，失败则回落 `ledgerActor()`，且回落不使命令失败」。效果：坐在卡上的桌面端会话打标 → actor 等于该卡 `driver_session` → 规则 4 排除；人在普通终端打标 → `cli:<USER>@<host>` → 唤醒；主 agent 等其它会话打标 → 其自身席位身份 ≠ 本卡席位 → 唤醒。
+
+**不变**：`needs_cleared` 对任何席位仍不唤醒（B394 回声防护，`wakeconsumer.go:247-257`）；`seat_bearing_missing` 不唤醒。
 
 ### 3.9 HTTP 面（实现节点落）
 
@@ -395,6 +431,7 @@ handoff launcher unregister --project <名>
 - `card seat desktop set`：expect = 卡上当前 `driver_session`，挂在既有 `cardSeatCmd`（`cmd/card_bearing.go`）下。
 - `card rebind --self`（`cmd/card_driver.go:126`）：**不加** `--desktop-session`；`RebindSeat` 同事务删除该卡 `seat_desktops` 行（条 62），换绑后的新席位处于「无桌面端记录的 bind」态（靠 CLI wait，不被信箱唤醒），需要信箱唤醒时由新会话再跑一次 `card seat desktop set <id> --desktop-session <自己的 id>`。取这一支而非给 rebind 加 flag 的理由：rebind 的 HTTP 面（`handleCoordRebind`）明文不接受 self 身份输入，CLI 侧加 flag 会让 self 换绑与 bind 两条命令各维护一份桌面端写入；而 `card seat desktop set` 已是独立 CAS 写面（拍板 D2），复用它零新增接缝。简报模板不涉及 rebind（新会话一律走 bind）。
 - `launcher register`：CLI 会话 id 取 `currentSeatIdentity` 解出的 session 段，cli 段必须是 `claude`。
+- `handoff card needs <id> <原因>`（r4，P5=B）：actor 改为席位身份优先、回落 `ledgerActor()`（§3.8.1）；`--clear` 不变。
 - `handoff status`：新增「拉起器」段，逐项目列 `project / desktop_session / machine / 可达`（可达 = 本机或目标客户端探活成功）；格式归 plan。
 
 ### 3.11 薄壳深链通道（`desktop/internal/shell/external_deeplink.go`，新增，Ticket 0 已落空壳）
@@ -424,13 +461,29 @@ export function buildClaudeNewSessionURL(folder: string, brief: string): ClaudeD
 //   成功值 = CLAUDE_NEW_SESSION_URL_PREFIX + 'folder=' + encodeURIComponent(folder) + '&q=' + encodeURIComponent(brief)
 
 // web/src/api/scheduling.ts（Ticket 0 已落）
-export interface DesktopLaunchMaterial { card: string; folder: string; brief: string }          // :267
-export interface DesktopLauncherOpenResp { launcher: string; machine: string; handled_by: string } // :274
-export const getDesktopLaunchMaterial = (cardId: string) => …                                     // :281
-export const openViaDesktopLauncher = (cardId: string) => …                                       // :285
+export interface DesktopLaunchMaterial { card: string; folder: string; brief: string; launcher?: string }  // :267（launcher r4 :272）
+export interface DesktopLauncherOpenResp { launcher: string; machine: string; handled_by: string } // :276
+export const getDesktopLaunchMaterial = (cardId: string) => …                                     // :283
+export const openViaDesktopLauncher = (cardId: string) => …                                       // :287
+
+// web/src/app/cards/desktopSeatCopy.ts（r4 新文件，Ticket 0 已落；金样本 desktopSeatCopy.test.ts）
+export const DESKTOP_SEAT_BUTTON = '用 Claude Code 坐下'                       // :6
+export const DESKTOP_COPY_BRIEF_BUTTON = '复制简报'                            // :8
+export const DESKTOP_COPY_BRIEF_HINT = '到 Claude 桌面端新建会话后粘贴'         // :10
+export const DESKTOP_TRUST_HINT = '如弹出信任文件夹，点信任，再按发送'           // :12
+export const DESKTOP_LAUNCHER_BUTTON = '让拉起器代开'                          // :14
+export const DESKTOP_LAUNCHER_SENT = '已请拉起器代开，几分钟内这里会显示已绑定'  // :16
 ```
 
-`CoordinatorPanel.tsx`：`view === 'unbound'` 时在「▶ 叫机器人」旁并列「用 Claude Code 坐下」；材料 409 → 按钮禁用，`title`/说明文字逐字取服务端 `error`；点击 → `buildClaudeNewSessionURL` → 薄壳内 `requestOpenDeepLink`，浏览器内以 `<a href>` 打开；编码拒绝或无桥 → 展开「复制简报」+「到 Claude 桌面端新建会话后粘贴」；首次提示「如弹出信任文件夹，点信任，再按发送」。拉起器代开入口的文案与位置见 P4。
+`CoordinatorPanel.tsx`：`view === 'unbound'` 时在「▶ 叫机器人」旁并列「用 Claude Code 坐下」；材料 409 → 按钮禁用，`title`/说明文字逐字取服务端 `error`；点击 → `buildClaudeNewSessionURL` → 薄壳内 `requestOpenDeepLink`，浏览器内以 `<a href>` 打开；编码拒绝或无桥 → 展开「复制简报」+「到 Claude 桌面端新建会话后粘贴」；首次提示「如弹出信任文件夹，点信任，再按发送」。四条文案取 `desktopSeatCopy.ts` 常量，不在组件里写字面量。
+
+**拉起器代开入口（r4，用户裁决 P4=推荐）**：
+- 位置：`view === 'unbound'` 时的第三个按钮，顺序「▶ 叫机器人」→「用 Claude Code 坐下」→「让拉起器代开」（`DESKTOP_LAUNCHER_BUTTON`）。
+- 显示条件：材料端点 200 且 `material.launcher` 为非空串；材料 409、材料读取失败、`launcher` 缺键、已绑定态 → 不渲染该按钮（不是禁用，是不出现）。
+- 点击：`openViaDesktopLauncher(cardId)`（§3.9 `POST /api/cards/{id}/coordinator/desktop-launch`，体 `{}`），每次点击恰一次请求。
+- 禁用态：沿用面板既有 `disabled = state.disconnected || busy !== null`（`CoordinatorPanel.tsx:137`），请求进行中 `busy = 'desktop-launcher'`。
+- 成功：在面板内显示 `DESKTOP_LAUNCHER_SENT`；不自行改绑定态，等 5s 轮询（`usePoll(…, 5000)`，`:40-49`）读到已绑定。
+- 失败：`actionError` 逐字显示服务端 `error`（409「无拉起器，请在桌面端开一场并登记」、409 无本机位置、502 投递失败），与面板既有错误展示同一 `role="alert"` 段（`:158`）。
 
 ### 3.13 mod 正式版与安装（实现节点落）
 
@@ -451,7 +504,7 @@ func ClaudeModStatus(mod fs.FS, home string) Site    // 逐文件哈希比对 + 
 
 ## 4. 原子冻结清单
 
-每条一支可独立判 pass/fail 的接缝断言。「T0」= Ticket 0 已写对应测试，**但本轮未跑**（本机无工具链，§9.2）；其余为实现节点对账条目。r1 修复轮拆开了复合条目并补齐来信内容与异机失败路径，编号整体重排（r0 编号作废）。r2 修复轮改写条 99–111，并在 §4.6 内追加条 165–176（编号接续全清单末尾，不再重排已对账编号）。
+每条一支可独立判 pass/fail 的接缝断言。「T0」= Ticket 0 已写对应测试，**但本轮未跑**（本机无工具链，§9.2）；其余为实现节点对账条目。r1 修复轮拆开了复合条目并补齐来信内容与异机失败路径，编号整体重排（r0 编号作废）。r2 修复轮改写条 99–111，并在 §4.6 内追加条 165–176（编号接续全清单末尾，不再重排已对账编号）。r4 补签轮追加 §4.11（条 177–193）与 §4.12（条 194–210）。
 
 ### 4.1 拉起材料（S1）
 
@@ -659,6 +712,46 @@ func ClaudeModStatus(mod fs.FS, home string) Site    // 逐文件哈希比对 + 
 163. `plugins/claude-desktop-wake` 不 import 主模块任何包。
 164. `codegraph check` 在本分支视图下无本卡新增违规（欠账：工具链到位后补跑）。
 
+### 4.11 needs_human 唤醒桌面端席位（r4，P5=B）
+
+177. 卡上落一条 `needs_human`，该卡（或 `resolveWakeCard` 上走命中的祖先）是有桌面端记录的 bind 席位、actor 非系统组件且不等于该席位身份 → `automationWakeEvents` 恰返回一条 `WakeEvent`，`Card` 等于事件卡号。
+178. 上条 `WakeEvent.Kind == keystone.WakeTaskTerminal`。
+179. 上条事件进入消费循环后，该桌面端席位恰收到一封信（经 `wakeDesktopSeat`），信中含该 needs_human 段。
+180. `desktopNeedsHumanSystemActors` 逐字等于 `["agentd", "keystone", "coordinator"]`（T0：`internal/agentd/desktopwake_b434_test.go#TestB434NeedsHumanSystemActorTable`，r4 已跑 PASS）。
+181. `desktopNeedsHumanSystemActorPrefix == "node:"`（T0：同上，r4 已跑 PASS）。
+182. actor 精确等于 `agentd`、`keystone`、`coordinator` 之一的 needs_human → 零唤醒。
+183. actor 以 `node:` 开头的 needs_human → 零唤醒。
+184. actor 等于目标卡 `driver_session` 的 needs_human → 零唤醒。
+185. 目标为 coordinate 席位的卡上的 needs_human → 零唤醒（B394 判据不变）。
+186. 目标为无桌面端记录的 bind 席位的卡上的 needs_human → 零唤醒。
+187. 本卡 §3.7 失败段落下的 needs_human（actor `agentd`）不唤醒该桌面端席位（无回声环）。
+188. actor 为 `cli:<USER>@<host>` 形（人在普通终端打标）的 needs_human → 唤醒（同条 177）。
+189. `handoff card needs <id> <原因>` 在能出示席位身份的会话里执行时，落账 actor 等于 `currentSeatIdentity` 的返回值。
+190. `handoff card needs <id> <原因>` 在 `currentSeatIdentity` 失败时 actor 等于 `ledgerActor()`，且命令退出 0。
+191. 来信 needs_human 段形如 `## 需要人 seq <seq>（<actor>）`，下一行起为 `reason` 全文（不截断）。
+192. 纯函数 `automationWakeEvent` 对 `EvNeedsHuman` 仍返回不唤醒（既有测试不改仍绿）。
+193. `needs_cleared` 对桌面端席位仍零唤醒。
+
+### 4.12 拉起器代开入口（r4，P4=推荐）
+
+194. `DESKTOP_SEAT_BUTTON === '用 Claude Code 坐下'`（T0：`web/src/app/cards/desktopSeatCopy.test.ts`，r4 已跑 PASS）。
+195. `DESKTOP_COPY_BRIEF_BUTTON === '复制简报'`（T0：同上）。
+196. `DESKTOP_COPY_BRIEF_HINT === '到 Claude 桌面端新建会话后粘贴'`（T0：同上）。
+197. `DESKTOP_TRUST_HINT === '如弹出信任文件夹，点信任，再按发送'`（T0：同上）。
+198. `DESKTOP_LAUNCHER_BUTTON === '让拉起器代开'`（T0：同上）。
+199. `DESKTOP_LAUNCHER_SENT === '已请拉起器代开，几分钟内这里会显示已绑定'`（T0：同上）。
+200. 项目已登记拉起器时，材料端点 200 体 `launcher` 等于该拉起器的 `DesktopSession`。
+201. 项目未登记拉起器时，材料端点 200 体无 `launcher` 键。
+202. 读拉起器登记失败时，材料端点仍返回 200 且无 `launcher` 键。
+203. 「让拉起器代开」仅在 `view === 'unbound'` 且 `material.launcher` 非空时渲染。
+204. 材料端点 409 时不渲染「让拉起器代开」。
+205. 已绑定态不渲染「让拉起器代开」。
+206. 空座三按钮渲染顺序为「▶ 叫机器人」「用 Claude Code 坐下」「让拉起器代开」。
+207. 点击「让拉起器代开」恰发出一次 `POST /api/cards/{id}/coordinator/desktop-launch`。
+208. 上条成功 → 面板显示 `DESKTOP_LAUNCHER_SENT`。
+209. 上条失败 → 面板 `role="alert"` 段逐字显示服务端 `error` 文本。
+210. 请求进行中与断连时「让拉起器代开」为禁用态。
+
 ---
 
 ## 5. 依赖方向、组装点与预算
@@ -687,20 +780,21 @@ func ClaudeModStatus(mod fs.FS, home string) Site    // 逐文件哈希比对 + 
 
 ## 7. 裁决与退回 spec 候选
 
-### 7.1 协调者已拍板（r1 修复轮，2026-10-16）
+### 7.1 已拍板
 
-- **P1 = A**：信箱文件 `<CLI 会话 id>.<19 位零填充 UnixNano>.md` 同目录平铺；mod 按 `<id>.*.md` 取信、按文件名升序逐封提交（§3.6，条 67–68、115–120）。spec `b434.md`「唤醒信箱 wire」同步勘误为「文件名以 CLI 会话 id 为键（前缀）」，头部修订轨迹记 r2.1。
-- **P2 = A**：有桌面端记录的 bind 祖先与 coordinate 祖先同等接手子卡唤醒（spec「不再跳过」覆盖 `wakeconsumer.go:511-516` 两处；§3.8，条 85–88）。
-- **P3 = A**：新增 `POST /api/desktop/deliver` 一跳转交，鉴权沿 `/api` token 中间件（§3.9，条 153–158）。
+- **P1 = A**（协调者，r1）：信箱文件 `<CLI 会话 id>.<19 位零填充 UnixNano>.md` 同目录平铺；mod 按 `<id>.*.md` 取信、按文件名升序逐封提交（§3.6，条 67–68、115–120）。spec `b434.md`「唤醒信箱 wire」同步勘误为「文件名以 CLI 会话 id 为键（前缀）」，头部修订轨迹记 r2.1。
+- **P2 = A**（协调者，r1）：有桌面端记录的 bind 祖先与 coordinate 祖先同等接手子卡唤醒（spec「不再跳过」覆盖 `wakeconsumer.go:511-516` 两处；§3.8，条 85–88）。
+- **P3 = A**（协调者，r1）：新增 `POST /api/desktop/deliver` 一跳转交，鉴权沿 `/api` token 中间件（§3.9，条 153–158）。
+- **P4 = 推荐**（用户 2026-10-16，r4）：空座第三个按钮「让拉起器代开」，仅在拉起器已登记时显示（§3.12，条 194–209）。
+- **P5 = B**（用户 2026-10-16，r4）：needs_human 叫醒桌面端协调者，排除系统组件与席位自打的标（§3.8.1，条 177–193，拍板 D6）。
 
-### 7.2 待用户裁决（契约不自选）
+### 7.2 待用户裁决
 
-- **P4 拉起器代开的入口文案与位置**：spec 用户故事 5 写「叫协调者」，实现决定未给。推荐：空座时第三个按钮「让拉起器代开」，仅在拉起器已登记时显示。阻塞 S3 的控制台部分。
-- **P5 needs_human 是否叫醒桌面端协调者**（随 R1）：A（推荐，与 B394/契约 §3.5.1 一致）不叫醒，桌面端席位与 coordinate 席位同一事件集；B 叫醒，但须排除协调者自己打的标（防回声）。
+无。
 
 ### 7.3 退回 spec 候选
 
-- **R1（开）**：spec 用户故事 4「卡上来了工单或 `needs_human`，我被叫醒」与现行唤醒判据冲突——`automationWakeEvent`（`wakeconsumer.go:216`）对 `needs_human` 恒不唤醒（B394 回声防护、契约 §3.5.1），而 spec「唤醒信箱 wire」又说来信与 `card wait` 投影同源（`card wait` 把 needs_human 当可动作）。本契约按现行判据写（§3.8 末行），处置见 P5。
+- **R1（已关，r4）**：用户 2026-10-16 裁决 B，R1 关闭。spec 故事 4 与方案第 2 点原文即「needs_human 唤醒」，不改；spec 头部修订轨迹记 r2.2。
 - **R2（已关，r1）**：「文件名 = CLI 会话 id」与缝 4/缝 6 不可兼得——随 P1=A 与 spec r2.1 勘误关闭。
 
 ---
@@ -717,6 +811,8 @@ func ClaudeModStatus(mod fs.FS, home string) Site    // 逐文件哈希比对 + 
 
 **D5 桌面端唤醒失败按「信是否已落盘」不对称处置：未落盘不标 seen（认领留在飞重试），已落盘标 seen**——难逆转：动消费循环的终局/排队分类，牵连 B389 认领水位与 B390 准入排队两套既有语义；无上下文会惊讶：同一个 `wakeDesktopSeat` 的两类失败一个标 seen、一个不标，且与 coordinate 席位「非准入错误一律终局」不同，后人极易「统一成标 seen」；真取舍：被否方案是一律标 seen + 靠账本重投——否掉理由：消费循环对已标 seen 事件没有重投机制（`wakeconsumer.go:837-853`），会违反 spec「信不丢」；反向被否方案是一律不标 seen——opener 失败时信已在盒，重试会产第二封同批信。r2 补全跨机一侧：被转交端「信已落盘、opener 失败」以 HTTP 200 + `letter_unopened=true` 回告（而非 502），否则发起端会把它误判为「信未落盘」而每轮重试、对端每轮多写一封同批信；needs_human 只由发起端按独立失败段计数落一条（不经 `recordAdmissionStall`），被转交端从不落——否掉的「两端各自打标」会让同一失败段在 `MarkNeedsHuman` 不幂等（`events.go:450-460`）下重复落标。
 
+**D6 needs_human 唤醒桌面端席位例外于 B394，排除系统组件与席位自打的标（用户裁决 P5=B）**——难逆转：改的是唤醒事件集，牵动 `automationWakeEvents` 映射层、`card needs` 的落账 actor 语义与来信模板三处，且 actor 改动会写进历史账本、回头无法区分；无上下文会惊讶：B394 明文「等人不唤醒协调者」，后人看到桌面端席位被 needs_human 叫醒会当成回归而「修掉」，或反过来把例外推广到 coordinate 席位；真取舍：被否方案 A 是桌面端席位与 coordinate 同一事件集、needs_human 不叫醒——否掉理由（用户裁决）：桌面端协调者是有完整能力、可以和人对话的会话，「卡上需要人」正是它该醒来接手分诊或转告人的时刻（spec 故事 4），而 B394 的回声风险只来自无头回合自己打标再被自己叫醒，用「排除系统组件 + 排除席位自打」两条精确规则即可切断，不必整类禁掉。coordinate 席位不随之放开：它是一次性无头回合，被等人标叫醒后多半只能再打一次标。
+
 审过不立：简报/来信模板文本（产品文案，有条 6–12、71–79 断言会红）；mod 轮询节拍（spec 已定，条 125–126 锁）；`--machine` 缺省 hostname（CLI 可见缺省值，已作为条 46 冻结、有断言，不需拍板记录）；r0 的「桌面端路由只套 `withLedger`」（r1 删除该拍板：条 13 的断言会因反写变红，不满足「反过来写无测试变红」的立记理由，也不难逆转）。
 
 ---
@@ -732,6 +828,7 @@ func ClaudeModStatus(mod fs.FS, home string) Site    // 逐文件哈希比对 + 
 - `internal/ledger/seat_desktop.go`：`SeatDesktop`、`DesktopLauncher` + 六个 Store 方法空壳（`SetSeatDesktop`、`SeatDesktopOf`、`RegisterDesktopLauncher`、`DesktopLauncherOf`、`UnregisterDesktopLauncher`、`ListDesktopLaunchers`，均返回 `ErrDesktopNotImplemented`）。
 - `internal/agentd/desktopwake.go`：§3.5/§3.6/§3.7/§3.9 的函数空壳（含 r1 新增 `handleDesktopDeliver`（未注册）、`desktopUndeliveredError`/`desktopUndelivered`、`withForwardedWake`/`isForwardedWake`；`desktopLetter` 改为 `Server` 方法并返回 error；r2 新增 `desktopUnopenedError`/`desktopUnopened`）、两个错误哨兵、两个 reason 字面量、`desktopOpener` 类型。
 - `desktop/internal/shell/external_deeplink.go` + `external_deeplink_test.go`：前缀常量、处理器与校验器空壳、前缀字面量测试。
+- r4：`internal/agentd/desktopwake.go` 增 `desktopNeedsHumanSystemActors`/`desktopNeedsHumanSystemActorPrefix`/`isSystemNeedsHumanActor`（空壳）/`desktopNeedsHumanWakes`（空壳）；`internal/agentd/desktopwake_b434_test.go`（新，actor 表金样本）；`internal/proto/desktop_coordinator.go` `DesktopLaunchMaterial.Launcher`；`web/src/api/scheduling.ts` `launcher?`；`web/src/app/cards/desktopSeatCopy.ts` + `desktopSeatCopy.test.ts`（新，文案金样本）。
 - `web/src/app/lib/desktopShell.ts`（+前缀、`requestOpenDeepLink` 空壳）、`desktopShell.test.ts`（+前缀用例）、`web/src/app/lib/claudeDeepLink.ts`（新）、`web/src/app/lib/claudeDeepLink.test.ts`（r1 新增：条 24/25 字面量用例）、`web/src/api/scheduling.ts`（+两 DTO、两 API 镜像）。
 
 未落（刻意）：DDL、路由注册、CLI flag 与子命令、消费循环分支改接、`plugins/claude-desktop-wake/` 与其 `go:embed`、`internal/skill/claudemod.go`——在无法编译验证的条件下加 embed 目录或注册路由会把编译错误/行为改变带进冻结提交。全部进 §10。
@@ -775,9 +872,13 @@ r0–r2 三轮本机无 Go/Node 工具链（台账原文：`command not found: g
 8. **外部事实：mod 拿 HOME 的方式**——**plan 前必须钉**（本节点负责）：原型硬编码 HOME。查 mod API 是否有 homedir；若无，冻结安装期占位符替换（建议 `__HANDOFF_DESKTOP_WAKE_DIR__` → 绝对目录，`ClaudeModStatus` 比对替换后内容）。阻塞条 127–128、134–135。
 9. **S1 实现**：§4.1–§4.4 全部条目（材料端点、简报、编码、薄壳通道与 main.go 接线、`card bind` flag、`card seat desktop set`、`seat_desktops` DDL 与生命周期联动、`CoordinatorPanel` 入口）。
 10. **S2 实现**：§4.5–§4.8（信箱写入与来信渲染、continue、三处分流改接 + `handleCoordWake` 转交标记 + 消费循环不收尾分支、opener 装配、mod 正式版、安装）。
-11. **S3 实现**：§4.9（拉起器表与 CLI、代开端点、`/api/desktop/deliver`、`handoff status` 段、skill 文本：「占座」补「用 Claude Code 坐下」与拉起器登记，「主 agent 回路」补拉起器职责与 CLAUDE.md 常设授权一行）。控制台入口阻塞于 P4。
-12. **R1/P5 处置**：用户裁决后在本契约补签（若 P5=B，§3.8 末行与 §4.6 增条目）。
+11. **S3 实现**：§4.9（拉起器表与 CLI、代开端点、`/api/desktop/deliver`、`handoff status` 段、skill 文本：「占座」补「用 Claude Code 坐下」与拉起器登记，「主 agent 回路」补拉起器职责与 CLAUDE.md 常设授权一行）。控制台入口按 P4=推荐（§3.12）。
+12. ~~**R1/P5 处置**~~ **已清（r4）**：用户裁决 P5=B，补签 §3.8.1、§4.11、D6。
 13. **Wave 0 未验一条**：launchd 托管 agentd 内 `open claude://…` 能否到达 GUI 会话（spec 实现决定末条）——S2 开工前真机验。
+14. **P5=B 实现（r4 新增，归 S2）**：`automationWakeEvents` 增 needs_human 分流、`desktopNeedsHumanWakes`/`isSystemNeedsHumanActor` 实现、来信 needs_human 段渲染，对账条 177–193（条 180/181 已由 T0 锁）。
+15. **`card needs` actor 改席位身份优先（r4 新增，归 S2；CLI 行为改动）**：`cmd/card_records.go:84` 改为 `currentSeatIdentity("", "")` 成功即用、失败回落 `ledgerActor()` 且不报错，对账条 189–190。
+16. **P4 实现（r4 新增，归 S3）**：材料端点填 `launcher`、`CoordinatorPanel` 第三按钮，对账条 200–210（条 194–199 已由 T0 锁）。
+17. **待协调者认定（r4 查证中发现，不在本轮裁决范围）**：拉起器来信里的 `Folder` 取自**发起请求的 agentd** 的项目位置（§3.5），而拉起器可在异机（P3=A）；两台机器的项目路径不同时，拉起器会被指到错误目录。候选：由拉起器所在机器的 agentd 在 `/api/desktop/deliver` 收件时按项目名重解析 `Folder` 并重渲染简报（需给 `DesktopDeliverReq` 增 `Card`/`Project` 字段），或在材料里注明「仅本机拉起器」。本轮不改。
 
 ---
 
@@ -808,3 +909,5 @@ r0–r2 三轮本机无 Go/Node 工具链（台账原文：`command not found: g
 > **修订记录（r2 修复轮，2026-10-16）**：第二轮审阅 B2 跨机一侧三处收口——B4 被转交端「信已落盘、opener 失败」回 200 + `CoordinatorWakeResp.LetterUnopened=true`（proto 增 omitempty 键 + 金样本），发起端据此标 seen，原移交「opener 失败的错误返回形态」收回冻结（`desktopUnopenedError`，条 109–111、165–170）；B5 被转交端一律不落 needs_human、一跳封顶拒转只回 502 带原因，needs_human 统一由认领本批的发起端写（条 99、171–172）；B6 桌面端失败段用独立进程内计数表、不经 `recordAdmissionStall`，不产生「准入」理由的等人标，agentd 重启清零可能多落一条且写明可接受（§3.7，条 103、173–174）。小错：`desktopOpener` 行号 :53 → :54。条 99–111 改写，追加条 165–176。
 >
 > **修订记录（r3 补跑，2026-10-16）**：用户裁决本机安装官方 Go/Node 后补齐编译与测试证据（§9.2），§10.1/§10.2 清账、§10.3 部分清账（validate/check/resolve 已跑，视图 diff 仍欠）；lint 清零改动：`claudeDeepLink.ts`、`desktopShell.ts` 空壳形参去下划线改 `void` 引用；§12 第 3 项 ✅、第 4 项仅余 fixture。审阅轮 3 非阻塞建议 1（未投递/未打开互斥断言）、2（「未打开」走独立分支不经 `clearWakeStall`）交 plan 吸收。
+>
+> **修订记录（r4 补签轮，2026-10-16）**：用户裁决 P5=B、P4=推荐。P5：§3.8.1 新增 needs_human 唤醒桌面端席位（分流层 = `automationWakeEvents` 先于纯函数分流；排除系统组件 actor 表 `agentd/keystone/coordinator` + `node:` 前缀与席位自打；复用 `WakeTaskTerminal` 以过 `keystone.Decide`；查证 needs_human 无 `by_system` 字段、`card needs` 现 actor 为 `cli:<USER>@<host>`，补签其改为席位身份优先），§3.6 来信增 needs_human 段，条 177–193，拍板 D6。P4：§3.12 拉起器代开入口（文案常量 `desktopSeatCopy.ts`、显示条件、调用、禁用与失败提示），`DesktopLaunchMaterial` 增 `launcher` omitempty，条 194–210。§7 已无待裁决项，R1 关闭；spec 头部记 r2.2。新增欠账 14–17（17 为查证中发现的拉起器异机 `Folder` 缺口，待协调者认定）。

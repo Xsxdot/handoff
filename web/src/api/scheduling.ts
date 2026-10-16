@@ -268,6 +268,8 @@ export interface DesktopLaunchMaterial {
   card: string
   folder: string
   brief: string
+  /** 已登记拉起器的桌面端会话 id；缺键 = 未登记（不显示「让拉起器代开」）。 */
+  launcher?: string
 }
 
 /** B434 拉起器代开回执（POST /api/cards/{id}/coordinator/desktop-launch）；与 proto.DesktopLauncherOpenResp 对应。 */

@@ -177,6 +177,34 @@ func (s *Server) wakeDesktopSeat(ctx context.Context, card, seat string, desk le
 	return keystone.RoundResult{}, proto.ErrDesktopNotImplemented // TODO(B434)
 }
 
+// desktopNeedsHumanSystemActors 是「系统组件自打」的 needs_human actor 精确值表
+// （B434 P5=B）：这些标不叫醒桌面端协调者。取值来自现有 MarkNeedsHuman 生产者
+// （wakeconsumer.go:84/:483 "agentd"、keystone.go:178 "keystone"、
+// scheddrain.go:337 "coordinator"），本卡 §3.7 失败段与无拉起器标同为 "agentd"。
+var desktopNeedsHumanSystemActors = []string{"agentd", "keystone", "coordinator"}
+
+// desktopNeedsHumanSystemActorPrefix 是工作流节点自打标的 actor 前缀
+// （ledgerstep runner.go:264 / node.go:78 "node:<节点名>"），同属系统组件。
+const desktopNeedsHumanSystemActorPrefix = "node:"
+
+// isSystemNeedsHumanActor 报告 actor 是否为系统组件（精确命中
+// desktopNeedsHumanSystemActors 或以 desktopNeedsHumanSystemActorPrefix 开头）。
+func isSystemNeedsHumanActor(actor string) bool {
+	_ = actor
+	return false // TODO(B434)
+}
+
+// desktopNeedsHumanWakes 是 needs_human 对桌面端席位的唤醒映射（P5=B），由
+// automationWakeEvents 在调用纯函数 automationWakeEvent 之前对 EvNeedsHuman 分流：
+// 目标 = resolveWakeCard(ev.CardID)；目标须是有桌面端记录的 bind 席位，否则返回空
+// （coordinate 席位与无记录 bind 维持 B394 现行判据）；actor 为系统组件或等于目标
+// 席位身份 → 返回空；命中 → 一条 keystone.WakeTaskTerminal（Card=ev.CardID，
+// Summary="needs_human: <reason>"）。
+func (s *Server) desktopNeedsHumanWakes(ev proto.LedgerEvent) ([]keystone.WakeEvent, error) {
+	_ = ev
+	return nil, proto.ErrDesktopNotImplemented // TODO(B434)
+}
+
 // openViaDesktopLauncher 是拉起器代开：读项目拉起器 → 投递装着拉起材料
 // （via=launcher）的来信。无登记 → MarkNeedsHuman(desktopNoLauncherReason) +
 // errNoDesktopLauncher。

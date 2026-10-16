@@ -53,6 +53,9 @@ type DesktopLaunchMaterial struct {
 	Card   string `json:"card"`   // 卡号
 	Folder string `json:"folder"` // 项目在本 agentd 登记的绝对根目录
 	Brief  string `json:"brief"`  // 人尺度简报正文，以 DesktopWakeMarker 开头
+	// Launcher 是卡所属项目已登记拉起器的桌面端会话 id（B434 P4）；空串 = 未登记，
+	// 控制台据此决定是否显示「让拉起器代开」。omitempty：未登记时不出键。
+	Launcher string `json:"launcher,omitempty"`
 }
 
 // DesktopLauncherOpenResp 是 POST /api/cards/{id}/coordinator/desktop-launch
