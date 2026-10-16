@@ -76,10 +76,15 @@ export const register: Register = (on) => {
   })
 }
 
-/** submitPrefill：输入框以 [handoff] 开头 → 清空并按原文提交一次（条 121–124）。 */
+/**
+ * submitPrefill：输入框以 [handoff] 开头 → 清空并按原文提交一次（条 121–124）。
+ *
+ * 严格前缀，不先去前导空白：契约原文是「以 [handoff] 开头」，深链预填由 handoff 自己拼出，
+ * 前面不会有空白；放宽只会多吃掉人手打的草稿。
+ */
 async function submitPrefill($: EngineInterface): Promise<void> {
   const draft = await $.prompt.read()
-  if (!draft.text.trimStart().startsWith(WAKE_MARKER)) return
+  if (!draft.text.startsWith(WAKE_MARKER)) return
   await $.prompt.fill({ text: '', mode: 'replace' })
   await $.prompt.submit({ text: draft.text, asUser: true })
   $.ui.log(`${TAG}: 已提交预填简报（${draft.text.length} 字符）`, { to: 'debug' })
@@ -106,6 +111,8 @@ async function drainBox($: EngineInterface, box: string, sessionId: string): Pro
     if (rm.exitCode !== 0) {
       throw new Error(`删除来信失败（exit ${rm.exitCode}）：${path} ${rm.stderr}`)
     }
+    // 契约 r9 澄清：空信删不提交。agentd 写的信必以 [handoff] 打头，空信只可能是异常残留，
+    // 提交一轮空白只会打断会话
     if (text.trim() === '') {
       $.ui.log(`${TAG}: 跳过空信 ${name}`, { to: 'debug' })
       continue
