@@ -18,16 +18,19 @@ package agentd
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/Xsxdot/handoff/internal/collab/room"
 	"github.com/Xsxdot/handoff/internal/keystone"
 	"github.com/Xsxdot/handoff/internal/ledger"
 	"github.com/Xsxdot/handoff/internal/proto"
@@ -195,16 +198,20 @@ func (s *Server) handleDesktopLaunchMaterial(w http.ResponseWriter, r *http.Requ
 // 围栏与作者名册（P9=丁，条 263–275）。
 //
 // 参数：card 被唤醒席位所在卡（resolveWakeCard 的目标，可能是事件卡的祖先）；seat 席位
-// 身份（G2 读未读数用）；evs 本批唤醒摘要（不读 Summary——它被截到 400 字）；raws 本批
-// 账本原始事件（按 seq 升序，内容的唯一来源）。
-// 返回：来信全文；raws 为空或含尚未支持的事件类型 → 错误（宁可不发信，不发残信）。
-// 现状（B434.4）：只实现「其它事件」段（decision_*、task 终态等 → kind=event，载荷原文）。
-// 会话消息（命中/引用/未读）、task_mirrored 工单、needs_human 三种段与尾行「会话消息：
-// handoff session read <会话 id>」分句由 B434 G2 补全（契约条 74–80、191）。
+// 身份（读未读数用，与 session wait 的 member 同值）；evs 本批唤醒摘要（不读 Summary——
+// 它被截到 400 字）；raws 本批账本原始事件（按 seq 升序，内容的唯一来源）。
+// 返回：来信全文；raws 为空、读引用/未读投影失败、工单信封解不开 → 错误（宁可不发信，
+// 不发残信，条 80）。
+// 段落（契约 §3.6 表）：room_message → 会话消息段（命中条 + 可解析的引用条 + 未读数）；
+// task_mirrored 的 permission_request/question → 工单段；needs_human → 需要人段；其余
+// （decision_*、task 终态等）→ 「<事件类型>」段。事件卡 ≠ 来信卡（子卡冒泡，条 87）时
+// 段标题追加「（卡 <事件卡号>）」（契约 r10 第 9 条）；尾行「；会话消息：…」只在本批含
+// 会话消息时出现（r10 第 8 条）。
 func (s *Server) desktopLetter(card, seat string, evs []keystone.WakeEvent, raws []proto.LedgerEvent) (string, error) {
 	if len(raws) == 0 {
 		return "", fmt.Errorf("卡 %s 本批唤醒没有账本原始事件，无从组装来信", card)
 	}
+	a := &desktopLetterAssembler{s: s, card: card, seat: seat}
 	sections := make([]desktopLetterSection, 0, len(raws))
 	minSeq, maxSeq := raws[0].Seq, raws[0].Seq
 	for _, ev := range raws {
@@ -214,25 +221,182 @@ func (s *Server) desktopLetter(card, seat string, evs []keystone.WakeEvent, raws
 		if ev.Seq > maxSeq {
 			maxSeq = ev.Seq
 		}
-		switch ev.Type {
-		case ledger.EvRoomMessage, ledger.EvTaskMirrored, ledger.EvNeedsHuman:
-			s.log.Warn("来信暂不支持该事件类型，本批不写信", "card", card, "seq", ev.Seq, "type", ev.Type)
-			return "", fmt.Errorf("卡 %s 来信暂不支持事件类型 %s（seq %d）", card, ev.Type, ev.Seq)
-		default:
-			sections = append(sections, desktopLetterSection{
-				Heading: fmt.Sprintf("## %s seq %d", ev.Type, ev.Seq),
-				Parts: []desktopLetterPart{{Quote: &desktopQuote{
-					Author: ev.Actor, Seq: ev.Seq, Kind: desktopQuoteKindEvent, Body: string(ev.Payload),
-				}}},
-			})
+		sec, err := a.section(ev)
+		if err != nil {
+			s.log.Warn("来信组装失败，本批不写信", "card", card, "seq", ev.Seq, "type", ev.Type, "cause", err)
+			return "", err
 		}
+		sections = append(sections, sec)
 	}
 	head := fmt.Sprintf("%s 卡 %s 有 %d 件新事（账本 seq %d–%d）", proto.DesktopWakeMarker, card, len(raws), minSeq, maxSeq)
-	tail := fmt.Sprintf("按分诊表处置；读全文：handoff card show %s。处置完不必挂订阅，有事会再叫醒你。", card)
-	letter := renderDesktopLetter(head, sections, tail)
+	letter := renderDesktopLetter(head, sections, desktopLetterTail(card, a.rooms))
 	s.log.Debug("桌面端来信已组装", "card", card, "seat", seat,
-		"event_count", len(raws), "wake_count", len(evs), "bytes", len(letter))
+		"event_count", len(raws), "wake_count", len(evs), "sessions", len(a.rooms), "bytes", len(letter))
 	return letter, nil
+}
+
+// desktopLetterSessionReadCmd 是来信尾行「会话消息」分句的命令前缀（契约 §3.6 模板、
+// r10 第 8 条，r12 第 1 条改字）：CLI 没有 `handoff session read` 子命令，读会话消息的
+// 既有命令是 `handoff room read <room>`（cmd/room.go），会话 id 可直接作 room。改字只动
+// 这一处常量与 TestB434DesktopLetterTailSessionClause、V 金样本的 tail 字串。
+const desktopLetterSessionReadCmd = "handoff room read "
+
+// desktopLetterTail 渲染来信尾行（契约 §3.6，r10 第 8 条）：rooms 为空时省去整段
+// 「；会话消息：…」分句；多个会话按首次出现顺序、每个会话一条完整命令，以「、」连接。
+func desktopLetterTail(card string, rooms []string) string {
+	tail := "按分诊表处置；读全文：handoff card show " + card
+	if len(rooms) > 0 {
+		cmds := make([]string, len(rooms))
+		for i, room := range rooms {
+			cmds[i] = desktopLetterSessionReadCmd + room
+		}
+		tail += "；会话消息：" + strings.Join(cmds, desktopAuthorRosterSep)
+	}
+	return tail + "。处置完不必挂订阅，有事会再叫醒你。"
+}
+
+// desktopLetterAssembler 组装一封来信的各段，持有本信级状态：未读投影一封信只读一次
+// （ListSessions 扫全量会话与卡，逐条读会把一批 N 条会话消息放大成 N 次全量扫描）；
+// rooms 记本信出现过的会话 id（首次出现顺序，尾行用）。
+type desktopLetterAssembler struct {
+	s      *Server
+	card   string
+	seat   string
+	unread map[string]int // nil = 尚未读未读投影
+	rooms  []string
+}
+
+// section 按事件类型分派到四种段（契约 §3.6 表）。
+func (a *desktopLetterAssembler) section(ev proto.LedgerEvent) (desktopLetterSection, error) {
+	switch ev.Type {
+	case ledger.EvRoomMessage:
+		return a.roomMessage(ev)
+	case ledger.EvTaskMirrored:
+		return a.taskMirrored(ev)
+	case ledger.EvNeedsHuman:
+		return a.needsHuman(ev), nil
+	default:
+		return a.other(ev), nil
+	}
+}
+
+// heading 给段标题骨架追加冒泡卡号：事件卡非空且不是来信卡时加「（卡 <事件卡号>）」
+// （契约 r10 第 9 条）；段标题从不含 actor（条 275）。
+func (a *desktopLetterAssembler) heading(base string, ev proto.LedgerEvent) string {
+	if ev.CardID != "" && ev.CardID != a.card {
+		return base + "（卡 " + ev.CardID + "）"
+	}
+	return base
+}
+
+// roomMessage 渲染会话消息段（条 74–78）：命中条正文全文进 room_message 围栏；
+// ReplyTo 可解析时追加「引用 seq <n>：」骨架 + 引用条围栏；末行未读数骨架。数据来源与
+// cmd/session.go#buildSessionWake 同源（MessageReference、ListSessions(seat).Unread）。
+func (a *desktopLetterAssembler) roomMessage(ev proto.LedgerEvent) (desktopLetterSection, error) {
+	var msg proto.RoomMessage
+	if err := room.UnmarshalMessage(ev.Payload, &msg); err != nil {
+		return desktopLetterSection{}, fmt.Errorf("卡 %s 来信解码会话消息 seq %d: %w", a.card, ev.Seq, err)
+	}
+	if a.s.rooms == nil {
+		return desktopLetterSection{}, fmt.Errorf("卡 %s 来信读会话消息 seq %d：collab 服务未装配，读不到引用与未读", a.card, ev.Seq)
+	}
+	parts := []desktopLetterPart{{Quote: &desktopQuote{
+		Author: ev.Actor, Seq: ev.Seq, Kind: desktopQuoteKindRoomMessage, Body: msg.Body,
+	}}}
+	ref, err := a.s.rooms.MessageReference(msg)
+	if err != nil {
+		return desktopLetterSection{}, fmt.Errorf("卡 %s 来信读会话消息 seq %d 的引用条: %w", a.card, ev.Seq, err)
+	}
+	if ref != nil {
+		parts = append(parts,
+			desktopLetterPart{Skeleton: fmt.Sprintf("引用 seq %d：", ref.Seq)},
+			desktopLetterPart{Quote: &desktopQuote{
+				Author: ref.Actor, Seq: ref.Seq, Kind: desktopQuoteKindRoomMessage, Body: ref.Body,
+			}})
+	}
+	unread, err := a.unreadOf(msg.Room)
+	if err != nil {
+		return desktopLetterSection{}, fmt.Errorf("卡 %s 来信读会话 %s 未读投影: %w", a.card, msg.Room, err)
+	}
+	parts = append(parts, desktopLetterPart{Skeleton: fmt.Sprintf("会话 %s 里你还有 %d 条未读（含本条）。", msg.Room, unread)})
+	if !slices.Contains(a.rooms, msg.Room) {
+		a.rooms = append(a.rooms, msg.Room)
+	}
+	return desktopLetterSection{
+		Heading: a.heading(fmt.Sprintf("## 会话消息 seq %d（会话 %s）", ev.Seq, msg.Room), ev),
+		Parts:   parts,
+	}, nil
+}
+
+// unreadOf 返回席位在会话 room 的未读数（含命中条）：首次调用读一次 ListSessions(seat)
+// 并缓存；会话不在投影里按 0 计（与 buildSessionWake 同款）。
+func (a *desktopLetterAssembler) unreadOf(room string) (int, error) {
+	if a.unread == nil {
+		summaries, err := a.s.rooms.ListSessions(a.seat)
+		if err != nil {
+			return 0, err
+		}
+		a.unread = make(map[string]int, len(summaries))
+		for _, summary := range summaries {
+			a.unread[summary.ID] = summary.Unread
+		}
+	}
+	return a.unread[room], nil
+}
+
+// taskMirrored 渲染工单段（条 79）：permission_request/question 的信封内层载荷原文全文
+// 进 ticket 围栏，段标题带 task_type；其它 task_type（task 终态）按「其它事件」段处理。
+func (a *desktopLetterAssembler) taskMirrored(ev proto.LedgerEvent) (desktopLetterSection, error) {
+	taskType, payload, err := mirroredTaskTypeAndPayload(ev)
+	if err != nil {
+		return desktopLetterSection{}, fmt.Errorf("卡 %s 来信解工单信封 seq %d: %w", a.card, ev.Seq, err)
+	}
+	if proto.EventType(taskType) != proto.EventTypePermissionRequest && proto.EventType(taskType) != proto.EventTypeQuestion {
+		return a.other(ev), nil
+	}
+	return desktopLetterSection{
+		Heading: a.heading(fmt.Sprintf("## 工单 seq %d（%s）", ev.Seq, taskType), ev),
+		Parts: []desktopLetterPart{{Quote: &desktopQuote{
+			Author: ev.Actor, Seq: ev.Seq, Kind: desktopQuoteKindTicket, Body: string(payload),
+		}}},
+	}, nil
+}
+
+// needsHuman 渲染需要人段（条 191、269）：reason 全文进 needs_human 围栏，author 为
+// 打标者 actor。载荷解不出 reason 时退回载荷原文并 Warn（一条坏载荷不毒死唤醒链）。
+func (a *desktopLetterAssembler) needsHuman(ev proto.LedgerEvent) desktopLetterSection {
+	reason, ok := desktopNeedsHumanReason(ev)
+	if !ok {
+		a.s.log.Warn("needs_human 载荷无 reason，来信按载荷原文渲染", "card", a.card, "seq", ev.Seq)
+	}
+	return desktopLetterSection{
+		Heading: a.heading(fmt.Sprintf("## 需要人 seq %d", ev.Seq), ev),
+		Parts: []desktopLetterPart{{Quote: &desktopQuote{
+			Author: ev.Actor, Seq: ev.Seq, Kind: desktopQuoteKindNeedsHuman, Body: reason,
+		}}},
+	}
+}
+
+// other 渲染其它事件段（decision_*、task 终态等，条 268）：载荷原文进 event 围栏。
+func (a *desktopLetterAssembler) other(ev proto.LedgerEvent) desktopLetterSection {
+	return desktopLetterSection{
+		Heading: a.heading(fmt.Sprintf("## %s seq %d", ev.Type, ev.Seq), ev),
+		Parts: []desktopLetterPart{{Quote: &desktopQuote{
+			Author: ev.Actor, Seq: ev.Seq, Kind: desktopQuoteKindEvent, Body: string(ev.Payload),
+		}}},
+	}
+}
+
+// desktopNeedsHumanReason 解出 needs_human 载荷 {"reason": …} 的原因文本；载荷不是该
+// 形状时返回载荷原文与 false（调用方 Warn）。唤醒映射与来信渲染共用这一处解码。
+func desktopNeedsHumanReason(ev proto.LedgerEvent) (string, bool) {
+	var p struct {
+		Reason *string `json:"reason"`
+	}
+	if err := json.Unmarshal(ev.Payload, &p); err != nil || p.Reason == nil {
+		return string(ev.Payload), false
+	}
+	return *p.Reason, true
 }
 
 // writeDesktopLetter 把 letter 原子写进 home 下的信箱（契约 §3.6，P1=A）。
