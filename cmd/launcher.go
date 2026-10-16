@@ -78,6 +78,7 @@ var launcherRegisterCmd = &cobra.Command{
 		}
 		cli, cliSession, err := proto.ParseSeatIdentity(identity)
 		if err != nil {
+			slog.Default().Warn("CLI 登记拉起器解析会话身份失败", "project", launcherRegProject, "cause", err)
 			return fmt.Errorf("解析当前会话身份: %w", err)
 		}
 		if cli != desktopSeatCLI {
@@ -86,6 +87,7 @@ var launcherRegisterCmd = &cobra.Command{
 		}
 		machine, hint, err := resolveDesktopMachine(launcherRegMachine, cmd.Flags().Changed("machine"))
 		if err != nil {
+			slog.Default().Warn("CLI 登记拉起器取机器名失败", "project", launcherRegProject, "cause", err)
 			return err
 		}
 		if hint != "" {
@@ -106,9 +108,11 @@ var launcherRegisterCmd = &cobra.Command{
 		}
 		l, ok, err := st.DesktopLauncherOf(launcherRegProject)
 		if err != nil {
+			slog.Default().Warn("CLI 登记拉起器回读失败", "project", launcherRegProject, "cause", err)
 			return fmt.Errorf("回读项目 %s 的拉起器登记: %w", launcherRegProject, err)
 		}
 		if !ok {
+			slog.Default().Warn("CLI 登记拉起器后回读不到登记", "project", launcherRegProject)
 			return fmt.Errorf("登记项目 %s 的拉起器后回读不到登记", launcherRegProject)
 		}
 		slog.Default().Info("CLI 登记拉起器完成", "project", l.Project, "desktop_session", l.DesktopSession, "machine", l.Machine)
@@ -133,6 +137,7 @@ var launcherShowCmd = &cobra.Command{
 		if launcherShowProject != "" {
 			l, ok, err := st.DesktopLauncherOf(launcherShowProject)
 			if err != nil {
+				slog.Default().Warn("CLI 查看拉起器读登记失败", "project", launcherShowProject, "cause", err)
 				return fmt.Errorf("读项目 %s 的拉起器登记: %w", launcherShowProject, err)
 			}
 			if !ok {
@@ -145,6 +150,7 @@ var launcherShowCmd = &cobra.Command{
 		}
 		ls, err := st.ListDesktopLaunchers()
 		if err != nil {
+			slog.Default().Warn("CLI 列拉起器登记失败", "cause", err)
 			return fmt.Errorf("列拉起器登记: %w", err)
 		}
 		rows := make([]launcherWire, 0, len(ls))

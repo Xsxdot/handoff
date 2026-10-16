@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strconv"
 	"strings"
 	"unicode"
 
@@ -122,12 +123,24 @@ func resolveDesktopMachine(flagValue string, changed bool) (string, string, erro
 }
 
 // seatDesktopSetRemedy 拼 card bind 第二步失败时给人的补救命令。
+//
+// 参数：desk 是已校验、补过缺省值的记录；machineChanged 表示原命令显式给了 --machine。
 // 为什么原样带 --via：补写若降成缺省 manual，seat_desktop_set 事件就丢了「这场会话是
 // 页面 / 拉起器开出来的」来源信息（故事 9；契约 r10 第 5 条）；manual 即缺省，省略。
-func seatDesktopSetRemedy(id string, desk ledger.SeatDesktop) string {
+// 为什么只在显式时带 --machine：缺省值本就是 hostname，补写时同样取到；显式值（如
+// 异机 target 名、表示本机的空串）不带回，补写会落成 hostname（review m2）。值为空或
+// 含空白 / 引号时加引号，保证可原样粘贴进 shell。
+func seatDesktopSetRemedy(id string, desk ledger.SeatDesktop, machineChanged bool) string {
 	cmd := fmt.Sprintf("handoff card seat desktop set %s --desktop-session %s", id, desk.Session)
 	if desk.Via != proto.SeatDesktopViaManual {
 		cmd += " --via " + desk.Via
+	}
+	if machineChanged {
+		machine := desk.Machine
+		if machine == "" || strings.ContainsAny(machine, `"'`) || strings.IndexFunc(machine, unicode.IsSpace) >= 0 {
+			machine = strconv.Quote(machine)
+		}
+		cmd += " --machine " + machine
 	}
 	return cmd
 }

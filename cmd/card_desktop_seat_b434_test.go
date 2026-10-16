@@ -275,7 +275,8 @@ func TestB434CardBindDesktopRejectsBadSessionID(t *testing.T) {
 }
 
 // 拍板 D2 + 缺陷族·静默失败：第二步 SetSeatDesktop 失败（sqlite 触发器真实注入）→
-// 非零退出、stdout 不报成功、错误含补救命令（原样带 --via，契约 r10 第 5 条：不降成 manual，
+// 非零退出、stdout 不报成功、错误含补救命令（原样带 --via，契约 r10 第 5 条：不降成 manual；
+// 显式 --machine 原样带回、含空白加引号，review m2），
 // 保故事 9 的来源信息）；席位保持已坐下；去掉注入后按补救命令补写成功。
 func TestB434CardBindDesktopSecondStepFailureKeepsSeat(t *testing.T) {
 	clearSeatSourceEnv(t)
@@ -291,12 +292,12 @@ func TestB434CardBindDesktopSecondStepFailureKeepsSeat(t *testing.T) {
 		BEGIN SELECT RAISE(ABORT, '注入：桌面端记录写入失败'); END`); err != nil {
 		t.Fatalf("建注入触发器: %v", err)
 	}
-	out, errOut, err := runLedgerCLI(t, dir, "card", "bind", id, "--desktop-session", "local_half-1", "--via", "page")
+	out, errOut, err := runLedgerCLI(t, dir, "card", "bind", id, "--desktop-session", "local_half-1", "--via", "page", "--machine", "mac 01")
 	if err == nil || ExitCode(err) == 0 {
 		t.Fatalf("第二步失败必须非零退出: err=%v", err)
 	}
 	msg := err.Error() + errOut
-	for _, want := range []string{"已坐下", "handoff card seat desktop set " + id + " --desktop-session local_half-1 --via page"} {
+	for _, want := range []string{"已坐下", "handoff card seat desktop set " + id + " --desktop-session local_half-1 --via page --machine \"mac 01\""} {
 		if !strings.Contains(msg, want) {
 			t.Fatalf("错误应含 %q，得 %q", want, msg)
 		}
@@ -311,12 +312,12 @@ func TestB434CardBindDesktopSecondStepFailureKeepsSeat(t *testing.T) {
 	if _, err := db.Exec(`DROP TRIGGER b434_seat_desktop_fail`); err != nil {
 		t.Fatalf("撤注入触发器: %v", err)
 	}
-	out, errOut, err = runLedgerCLI(t, dir, "card", "seat", "desktop", "set", id, "--desktop-session", "local_half-1", "--via", "page")
+	out, errOut, err = runLedgerCLI(t, dir, "card", "seat", "desktop", "set", id, "--desktop-session", "local_half-1", "--via", "page", "--machine", "mac 01")
 	if err != nil || out != "{\"ok\":true}\n" {
 		t.Fatalf("按补救命令补写应成功: out=%q err=%v stderr=%s", out, err, errOut)
 	}
 	_, desk, has := b434SeatState(t, dir, id)
-	if !has || desk.Session != "local_half-1" || desk.Via != proto.SeatDesktopViaPage {
+	if !has || desk.Session != "local_half-1" || desk.Via != proto.SeatDesktopViaPage || desk.Machine != "mac 01" {
 		t.Fatalf("补写后记录 = %+v has=%v", desk, has)
 	}
 }
@@ -457,5 +458,30 @@ func TestB434CardSeatDesktopSetRejects(t *testing.T) {
 				t.Fatal("被拒时不得写桌面端记录")
 			}
 		})
+	}
+}
+
+// review m2 反面：未显式给 --machine / --via 时补救命令不带这两个 flag（缺省值即 hostname / manual，
+// 原样回放即等价），避免把 hostname 写死进补救命令。
+func TestB434CardBindDesktopRemedyOmitsDefaults(t *testing.T) {
+	clearSeatSourceEnv(t)
+	t.Setenv("CLAUDE_CODE_SESSION_ID", "claude-half-2")
+	dir := t.TempDir()
+	id := mustAddCard(t, dir, "半态缺省卡")
+	db, err := sql.Open("sqlite", filepath.Join(dir, "ledger.db")+"?_pragma=busy_timeout(5000)")
+	if err != nil {
+		t.Fatalf("打开 raw 账本: %v", err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`CREATE TRIGGER b434_seat_desktop_fail BEFORE INSERT ON seat_desktops
+		BEGIN SELECT RAISE(ABORT, '注入：桌面端记录写入失败'); END`); err != nil {
+		t.Fatalf("建注入触发器: %v", err)
+	}
+	_, _, err = runLedgerCLI(t, dir, "card", "bind", id, "--desktop-session", "local_half-2")
+	if err == nil {
+		t.Fatal("第二步失败必须报错")
+	}
+	if want := "handoff card seat desktop set " + id + " --desktop-session local_half-2 补"; !strings.Contains(err.Error(), want) {
+		t.Fatalf("缺省时补救命令应恰为 %q（不带 --machine/--via），得 %q", want, err.Error())
 	}
 }
