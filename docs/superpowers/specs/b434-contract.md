@@ -1107,4 +1107,15 @@ r0–r2 三轮本机无 Go/Node 工具链（台账原文：`command not found: g
 > 1. **r10 第 4 条**：「从 `*client.ServerError` 取」改为「从 client 的非 2xx 状态错误（未导出 `httpStatusError`）取」——不新开导出类型（架构律：能用低档不用高档）。
 > 2. **r10 第 6 条 status 段**：「`--target` 为空」实指**拉起器登记的 machine 值**；本机判定为空、`local`、`本机` 或等于 `os.Hostname()`；**与 targets 配置同名的 machine 仍经该目标客户端探活**（§3.10 正文「可达 = 本机或目标客户端探活成功」不变）；既非本机别名又不在 targets 里的才显示「不可探（非本机）」。三个别名探本机时附一条告警（无害加严，认可）。
 > 3. **r10 第 5 条「与 §3.4 r9 拉起器写闸同一规则」**：r9 写闸实际未拒 `.` 开头；按「规则归数据所有者」，§3.4 `RegisterDesktopLauncher` 校验补「`CLISession` 不以 `.` 开头」（信箱文件名以 `.` 开头会被 mod 与 `writeDesktopLetter` 同时拒绝），由协调者在卡分支随 C 合并补落（L 卡已完成，记父卡 integrate 接缝修复）；CLI 侧 `card bind` 的 `checkMailboxKey` 保留为提早友好报错，`launcher register` 不另加 CLI 检查。
-
+>
+> **修订记录（r12 第三波跨卡审计回写，2026-10-16）**：以下由独立跨卡审计提出、协调者逐条拍板；签名新增两处（第 5 条），其余为条目澄清、编号不变。
+> 1. **§3.6 尾行 / r10 第 8 条**：`handoff session read <会话 id>` 不存在（`session` 子命令只有 archive/create/detail/join/leave/list/send/wait），改为 **`handoff room read <会话 id>`**（`cmd/room.go`，会话 id 可作 room 调用）；V 的金样本 tail 字串随 G2 T1 同步改。
+> 2. **§3.6 wire 表与条 69**：发布一步由 `rename` 改为 **`os.Link` 发布（不覆盖）再删临时名**；撞名时 UnixNano 段 +1 顺延，最多 64 次后报未投递。条 67/68 的文件名正则与「读者永远读不到半封信」不变。
+> 3. **§3.7 opener 与 §5 装配位置**：darwin 用 `exec.CommandContext` 带 15s 时限、只放行 `claude://code/continue?` 前缀；其它平台返回 `errDesktopDeepLinkUnsupported`。**生产代码不得调 `testing.Testing()`**：`NewServer` 不装配 opener（保持 V 的 nil 语义），agentd 包导出 `func PlatformDesktopOpener(goos string) desktopOpener`（返回类型可为 `func(string) error`）与 `func (s *Server) SetDesktopOpener(open func(string) error)`，装配在 `cmd/agentd.go` 组装点一行 `srv.SetDesktopOpener(agentd.PlatformDesktopOpener(runtime.GOOS))`，以源码守卫锁装配点（G2 获授权改 `cmd/agentd.go` 这一行）。
+> 4. **§3.7 / §11.3 失败段形状**：未落盘退避 2s·2^(n-1)、封顶 60s，批次不标 seen；条 105「下一轮」= 退避窗过后的首轮；异机转交单次时限 30s（`desktopTransferTimeout`，G3 的 `forwardLauncherLetter` 复用）；段内重试复用一个 round ID；`letter_unopened` 回传不落 `wake_round` fail 行；失败段表 `Server.desktopWakeStall map[string]desktopWakeStallEntry{Failures int; RetryAt time.Time; Round string}` 并入 `b434StallSnapshot`；席位换绑/`seat_desktop_set` 事件流经消费循环时清掉该卡失败段（关闭「换绑期间旧段残留」缺口）。
+> 5. **§3.9 / §3.10 client 新增**：`func (c *Client) DesktopDeliver(ctx context.Context, req proto.DesktopDeliverReq) (*proto.DesktopDeliverResp, error)`（POST `/api/desktop/deliver` 出站拨号）与 `func StatusCode(err error) (int, bool)`（与 `ServerErrorText` 同源于未导出 `httpStatusError`，两个正交投影，不新开类型）。
+> 6. **§3.9 POST 代开失败口径**：信已落盘、continue 未发出 → **502 + needs_human**，error 文案附「信已在拉起器信箱，勿重复代开」；读拉起器登记失败或打标失败 → 500 且不打标（显式 `writeErr(500)`，不经 `ledgerErr`）；收件机 CLI 会话 id 不安全 → **400**（`writeDesktopLetter` 对不安全信箱键返回哨兵错误 `errDesktopMailboxKeyUnsafe`，收件机据此映射，G2 落哨兵、G3 消费）；重复代开不去重（控制台按钮请求中禁用 + 文案）。
+> 7. **§3.6 拉起器来信**：简报正文整体放进一个围栏块（`kind=brief`，作者 `agentd`），模板外壳不变——卡标题等第三方文本不得以 asUser 身份裸露进入无人值守执行面（P9 精神覆盖拉起器来信）。
+> 8. **§3.2**：`DesktopLauncherOpenResp.Machine` 回登记原值，不归一为空串；只有空串定义为「本机」。
+> 9. **条 249/250 命名测试**：`TestB434LauncherDeliverRemote503`/`…Remote404` 须为顶层函数（可作薄包装调用同一表驱动 runner），保证 `-run` 可单独命中。
+> 10. **信箱 HOME 规则唯一定义**：G2 抽出 `func (s *Server) desktopMailboxHome() (string, error)`（`desktopHome` 为空 → `os.UserHomeDir()`）列入 Produces；`wakeDesktopSeat` 与 G3 收件机均消费它。

@@ -215,3 +215,9 @@
 
 - **C（B434.2）**：实现 10 提交（cd84bd25…f57c303a），review 轮 1 pass；m2（补救命令带显式 `--machine`，三条变异红 + 新增 `TestB434CardBindDesktopRemedyOmitsDefaults`）、m3（status.go 文件头）、m4（launcher.go 六条错误路径补 Warn）、m8（台账原始行）修复 aa539d0d。合并 424de56b（--no-ff，无冲突）；`go vet ./...` 0、`go build ./...` 0；cmd ok 54.751s、client ok 10.326s、skill ok 1.444s、ledger ok 5.920s。
 - 第二波三卡全部已完成；卡分支 HEAD 424de56b。
+
+### 第三波 plan（G2/G3，2026-10-16，本地 subagent opus 出稿 ×2 并行，独立跨卡审计 ×1）
+
+- 产出：`docs/superpowers/plans/b434.{5,6}-plan.md` 与各自 `-plan-ledger.md`（出稿者在各自 worktree 只写不提交，协调者搬到卡分支统一提交）。审计复跑：G2 scratch 回归集 96 PASS；G3 overlay 18 PASS（源码守卫在 overlay 下读真文件属预期）；**G2+G3 合并实测**（80eeba66 + G2 终态 + G3 编辑块）：`go build ./...`/vet 通过，agentd 整包 64s ok、client ok、cmd `-run TestB434` ok、`-race` ok；冲突面只有一处 import 锚。
+- 三样：冻结物矛盾两处（`session read` 不存在 → `room read`；`rename` → `os.Link` 发布）进 r12；跨卡签名 G3 Consumes ↔ G2 Produces 四项一致，HOME 规则重复由 G2 收口；spec 故事 1–9 全部指到卡/task，剩余端到端项归 I 卡。
+- 协调者拍板：契约 r12 共 10 条（含否决生产代码 `testing.Testing()` 闸、改为 `cmd/agentd.go` 装配 + 源码守卫；拉起器简报进围栏；命名测试须顶层函数；502+needs_human 口径；哨兵 400）；拆解稿 r5 调整 G2/G3 文件集；两份 plan §14 回写；G2 顺手修换绑清失败段。
