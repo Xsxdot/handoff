@@ -13,6 +13,7 @@ package ledger
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -331,6 +332,23 @@ func TestB434SetSeatDesktopRejectsWithoutSideEffects(t *testing.T) {
 			}
 		}
 		assertUntouched(t, card)
+	})
+
+	t.Run("存量态 bind 来源而席位为空", func(t *testing.T) {
+		// 生产写面造不出 driver_source=bind 且 driver_session='' 的卡（BindSeat 拒空身份），
+		// 但旧库存量数据可能有；此时 expect="" 与卡上空串字节相等，纯 CAS 会漏放——
+		// 必须由「席位为空」这道来源闸拦下。
+		c, err := s.CreateCard(NewCard{Title: "存量空身份", Project: "p", Workflow: "bug", Actor: "t"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.db.Exec(s.q(`UPDATE cards SET driver_source = 'bind', driver_session = '' WHERE id = ?`), c.ID); err != nil {
+			t.Fatalf("造存量态: %v", err)
+		}
+		if err := s.SetSeatDesktop(c.ID, "", desk); !errors.Is(err, ErrBadState) {
+			t.Fatalf("bind 来源空身份 expect=\"\" 应 ErrBadState，得 %v", err)
+		}
+		assertUntouched(t, c.ID)
 	})
 
 	t.Run("卡不存在", func(t *testing.T) {
@@ -658,7 +676,7 @@ func TestB434RegisterDesktopLauncherRejectsInvalid(t *testing.T) {
 		mutate func(l *DesktopLauncher)
 	}{
 		{"项目名为空", func(l *DesktopLauncher) { l.Project = "" }},
-		{"项目名带首尾空白", func(l *DesktopLauncher) { l.Project = " proj-x" }},
+		{"项目名带首尾空白", func(l *DesktopLauncher) { l.Project = " " + l.Project }},
 		{"桌面端会话 id 只有前缀", func(l *DesktopLauncher) { l.DesktopSession = "local_" }},
 		{"桌面端会话 id 无前缀", func(l *DesktopLauncher) { l.DesktopSession = "31eda11a" }},
 		{"CLI 会话 id 为空", func(l *DesktopLauncher) { l.CLISession = "" }},
@@ -668,16 +686,21 @@ func TestB434RegisterDesktopLauncherRejectsInvalid(t *testing.T) {
 		{"CLI 会话 id 含空白", func(l *DesktopLauncher) { l.CLISession = "a b" }},
 		{"actor 为空", func(l *DesktopLauncher) { l.Actor = " " }},
 	}
-	for _, tc := range cases {
+	for i, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			// 每个子例独立项目名：共用项目键时，前一子例被误放写进的行会让后面子例的
+			// 「行数 = 0」断言连带变红，变异读数失真（review m1）。
 			l := valid
+			l.Project = fmt.Sprintf("proj-x-%02d", i)
 			tc.mutate(&l)
 			err := s.RegisterDesktopLauncher(l)
 			if !errors.Is(err, ErrBadState) || errors.Is(err, proto.ErrDesktopNotImplemented) {
 				t.Fatalf("应 ErrBadState（且非空壳错误），得 %v", err)
 			}
-			if n := b434LauncherRows(t, s, l.Project); n != 0 {
-				t.Fatalf("拒绝后 %q 行数 = %d，期望 0", l.Project, n)
+			for _, p := range []string{l.Project, strings.TrimSpace(l.Project)} {
+				if n := b434LauncherRows(t, s, p); n != 0 {
+					t.Fatalf("拒绝后 %q 行数 = %d，期望 0", p, n)
+				}
 			}
 		})
 	}

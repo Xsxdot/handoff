@@ -77,7 +77,9 @@ func (s *Store) SetSeatDesktop(id, expect string, desk SeatDesktop) error {
 	err := s.mutate(func(tx *sql.Tx, sink *eventSink) error {
 		card, err := getCardTx(s, tx, id)
 		if err != nil {
-			return fmt.Errorf("写桌面端记录读卡 %s: %w", id, err)
+			err = fmt.Errorf("写桌面端记录读卡 %s: %w", id, err)
+			log().Warn("写桌面端席位记录失败：读卡", "card", id, "cause", err)
+			return err
 		}
 		// 先判来源再判 CAS：空座的 driver_session 是空串，expect="" 会让纯 CAS 漏放。
 		if card.DriverSource != string(proto.SeatSourceBind) || card.DriverSession == "" {
@@ -97,7 +99,9 @@ func (s *Store) SetSeatDesktop(id, expect string, desk SeatDesktop) error {
 					desktop_session = excluded.desktop_session, machine = excluded.machine,
 					via = excluded.via, bound_at = excluded.bound_at`),
 			id, card.DriverSession, desk.Session, desk.Machine, desk.Via, s.tval(s.timeNow())); err != nil {
-			return fmt.Errorf("写桌面端记录 %s: %w", id, err)
+			err = fmt.Errorf("写桌面端记录 %s: %w", id, err)
+			log().Warn("写桌面端席位记录失败：写行", "card", id, "cause", err)
+			return err
 		}
 		if _, err := s.appendEvent(tx, sink, id, EvSeatDesktopSet, card.DriverSession, map[string]string{
 			"identity":        card.DriverSession,
@@ -105,12 +109,16 @@ func (s *Store) SetSeatDesktop(id, expect string, desk SeatDesktop) error {
 			"machine":         desk.Machine,
 			"via":             desk.Via,
 		}); err != nil {
-			return fmt.Errorf("桌面端记录落事件 %s: %w", id, err)
+			err = fmt.Errorf("桌面端记录落事件 %s: %w", id, err)
+			log().Warn("写桌面端席位记录失败：落事件", "card", id, "cause", err)
+			return err
 		}
 		return nil
 	})
 	if err != nil {
-		log().Warn("写桌面端席位记录失败", "card", id, "cause", err)
+		// 事务内每条错误分支（写闸拒绝、读卡、写行、落事件）已各打一条带原因的 Warn；
+		// 这里只补 Debug，避免同一失败两条 Warn。
+		log().Debug("写桌面端席位记录失败", "card", id, "cause", err)
 		return err
 	}
 	log().Info("写桌面端席位记录完成", "card", id, "desktop_session", desk.Session, "machine", desk.Machine, "via", desk.Via)
@@ -269,12 +277,14 @@ func (s *Store) ListDesktopLaunchers() ([]DesktopLauncher, error) {
 		var l DesktopLauncher
 		var registeredAt any
 		if err := rows.Scan(&l.Project, &l.DesktopSession, &l.CLISession, &l.Machine, &l.Actor, &registeredAt); err != nil {
+			log().Warn("扫拉起器登记行失败", "scanned", len(out), "cause", err)
 			return nil, fmt.Errorf("扫拉起器登记: %w", err)
 		}
 		l.RegisteredAt = toTime(registeredAt)
 		out = append(out, l)
 	}
 	if err := rows.Err(); err != nil {
+		log().Warn("遍历拉起器登记失败", "scanned", len(out), "cause", err)
 		return nil, fmt.Errorf("列拉起器登记: %w", err)
 	}
 	slices.SortFunc(out, func(a, b DesktopLauncher) int { return strings.Compare(a.Project, b.Project) })
