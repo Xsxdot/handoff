@@ -18,6 +18,7 @@ package agentd
 import (
 	"context"
 	"errors"
+	"net/http"
 	"time"
 
 	"github.com/Xsxdot/handoff/internal/keystone"
@@ -65,14 +66,19 @@ func desktopBrief(in desktopBriefInput) string {
 	return "" // TODO(B434)
 }
 
-// desktopLetter 把一批唤醒事件投影成一封人可读的来信（以 DesktopWakeMarker 开头）。
-func desktopLetter(card string, evs []keystone.WakeEvent, raws []proto.LedgerEvent) string {
-	_, _, _ = card, evs, raws
-	return "" // TODO(B434)
+// desktopLetter 把一批唤醒事件投影成一封人可读的来信（以 DesktopWakeMarker 开头），
+// 内容与 session wait / card wait 同源（契约 §3.6）：会话消息给命中条全文、
+// 引用条（s.rooms.MessageReference）与该席位在该会话的未读数
+// （s.rooms.ListSessions(seat) 的 Unread）；工单给 task_mirrored 载荷原文。
+// 读引用/未读失败上抛（宁可不发信，不发残信）。
+func (s *Server) desktopLetter(card, seat string, evs []keystone.WakeEvent, raws []proto.LedgerEvent) (string, error) {
+	_, _, _, _ = card, seat, evs, raws
+	return "", proto.ErrDesktopNotImplemented // TODO(B434)
 }
 
 // writeDesktopLetter 把 letter 原子写进 home 下的信箱（同目录临时文件 + rename），
-// 返回最终路径。文件命名见契约 §3.6（待裁决 P1）。
+// 返回最终路径。文件名 <cliSession>.<19 位零填充 UnixNano>.md，临时文件
+// .<同名>.tmp（契约 §3.6，P1=A 已拍板）。
 func writeDesktopLetter(home, cliSession, letter string, now time.Time) (string, error) {
 	_, _, _, _ = home, cliSession, letter, now
 	return "", proto.ErrDesktopNotImplemented // TODO(B434)
@@ -85,18 +91,63 @@ func claudeContinueURL(desktopSession string) (string, error) {
 	return "", proto.ErrDesktopNotImplemented // TODO(B434)
 }
 
-// deliverDesktopLetter 在本机投递一封信并发 continue（写信 + opener）。拉起器在
-// 异机时的投递通道待裁决（契约 P3：推荐经 clientForTarget(machine) 的
-// POST /api/desktop/deliver 一跳转交）；席位唤醒的异机路径不走本函数。
+// deliverDesktopLetter 投递一封信并发 continue。machine 为本机 → 写信 + opener；
+// 否则（拉起器在异机，P3=A）经 clientForTarget(machine).MarkForwarded() 的
+// POST /api/desktop/deliver 一跳转交。席位唤醒的异机路径不走本函数（走 B389
+// transferCoordinatorWake，拍板 D3）。
 func (s *Server) deliverDesktopLetter(ctx context.Context, machine string, req proto.DesktopDeliverReq) (proto.DesktopDeliverResp, error) {
 	_, _, _ = ctx, machine, req
 	return proto.DesktopDeliverResp{}, proto.ErrDesktopNotImplemented // TODO(B434)
 }
 
+// handleDesktopDeliver 是 POST /api/desktop/deliver（P3=A）：只在本机写信 + 发
+// continue，从不再转发（一跳封顶）；鉴权沿 /api 既有 token 中间件。未注册
+// （TODO(B434)）。
+func (s *Server) handleDesktopDeliver(w http.ResponseWriter, r *http.Request) {
+	_ = r
+	writeErr(w, http.StatusNotImplemented, proto.ErrDesktopNotImplemented) // TODO(B434)
+}
+
+// desktopUndeliveredError 标记「信未落盘的桌面端唤醒失败」（本机写信/渲染失败、
+// 异机转交失败）：消费循环按准入满员同款处置——不 completeWakeBatch、不标 seen、认领留在飞挡水位，下一轮
+// 重读重试；每个失败段只在首次落一条 needs_human（契约 §3.7、条 100–108）。
+type desktopUndeliveredError struct {
+	machine string
+	err     error
+}
+
+func (e *desktopUndeliveredError) Error() string {
+	return "桌面端唤醒未投递（" + e.machine + "）: " + e.err.Error()
+}
+
+func (e *desktopUndeliveredError) Unwrap() error { return e.err }
+
+// desktopUndelivered 报告 err 是否为「信未落盘」的桌面端唤醒失败（消费循环分支用）。
+func desktopUndelivered(err error) bool {
+	var stall *desktopUndeliveredError
+	return errors.As(err, &stall)
+}
+
+// forwardedWakeKey 是 ctx 上「本次唤醒来自他机转交」的标记键。
+type forwardedWakeKey struct{}
+
+// withForwardedWake 由 handleCoordWake 包在 r.Context() 上：被转交端对桌面端
+// 席位不再二次转交（一跳封顶）。
+func withForwardedWake(ctx context.Context) context.Context {
+	return context.WithValue(ctx, forwardedWakeKey{}, true)
+}
+
+// isForwardedWake 报告 ctx 是否带转交标记。
+func isForwardedWake(ctx context.Context) bool {
+	v, _ := ctx.Value(forwardedWakeKey{}).(bool)
+	return v
+}
+
 // wakeDesktopSeat 是 wakeCoordinatorRoundID 对「有桌面端记录的 bind 席位」的
-// 分支：desk.Machine 为本机 → 渲染来信 → deliverDesktopLetter；异机 →
-// transferCoordinatorWake(desk.Machine)。投递失败 → needs_human（前缀
-// desktopWakeFailReasonPrefix），信若已落盘则留在信箱。
+// 分支：desk.Machine 为本机 → 渲染来信 → 写信 + opener；异机且未被转交过 →
+// transferCoordinatorWake(desk.Machine)；写信/渲染/转交失败包成 desktopUndeliveredError；
+// 异机且 isForwardedWake(ctx) → 不再转交，needs_human。本机投递失败 →
+// needs_human（前缀 desktopWakeFailReasonPrefix），信若已落盘则留在信箱。
 func (s *Server) wakeDesktopSeat(ctx context.Context, card, seat string, desk ledger.SeatDesktop,
 	evs []keystone.WakeEvent, raws []proto.LedgerEvent, roundID string) (keystone.RoundResult, error) {
 	_, _, _, _, _, _, _ = ctx, card, seat, desk, evs, raws, roundID

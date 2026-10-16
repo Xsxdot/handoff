@@ -2,7 +2,7 @@
 //
 // 职责：逐字锁定跨进程/跨语言共用的字面量。对侧执法点：
 //   - DesktopWakeMarker / DesktopWakeDirRel：plugins/claude-desktop-wake 的 mod
-//     源码（实现节点落盘后由其 `claude plugin test` 用例逐字回放，契约 §4 D-23）；
+//     源码（实现节点落盘后由其 `claude plugin test` 用例逐字回放，契约 §4 条 127）；
 //   - ClaudeNewQMaxChars / ClaudeNewSessionURLPrefix：web/src/app/lib/claudeDeepLink.ts；
 //   - SeatDesktopVia*：简报模板写进 `card bind --via` 的取值与事件载荷。
 //
