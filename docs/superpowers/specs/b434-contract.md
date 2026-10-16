@@ -2,7 +2,7 @@
 
 **上游状态：已批准**（源 spec：`docs/superpowers/specs/b434.md`，头部状态行「**状态**：**已批准**（r2；用户 2026-10-16：「批准 B434 spec r2。回写批准到 spec 头部，把卡移到 contract 列。」）」——本轮已对工作树复核一致，无需回写）
 **级别：L3 ｜ 选档复核：重档确认**（依据见 §8）
-**冻结状态：r1 修复轮（2026-10-16，审阅 fail 后）：本提交随 Ticket 0 骨架、字面量金样本、spec r2.1 勘误与台账冻结；`codegraph/target.json` 不变（无新方向，§5）；分支视图 diff 与直通竖切因本机无 Go/Node 工具链未落，列欠账（§9）**
+**冻结状态：r2 修复轮（2026-10-16，第二轮审阅后，跨机失败路径收口）；r1 修复轮（审阅 fail 后）：本提交随 Ticket 0 骨架、字面量金样本、spec r2.1 勘误与台账冻结；`codegraph/target.json` 不变（无新方向，§5）；分支视图 diff 与直通竖切因本机无 Go/Node 工具链未落，列欠账（§9）**
 **有效基线：** `main` @ `e020380a`（worktree `handoff-B434`，分支 `cards/B434-charter-1`）
 **架构形态：** 按子系统分域的平铺领域包，无横向 controller/service/dao 分层（沿用 `codegraph/best.json`；本卡不新增领域）
 **交棒：** breakdown。**P1–P3 已由协调者拍板（§7.1）；仍带两项待用户裁决（P4 阻塞 S3 控制台入口、P5 随退回 spec 候选 R1），breakdown 可先拆 S1/S2，S3 控制台部分与 needs_human 唤醒条目待裁决。**
@@ -301,35 +301,53 @@ func (s *Server) desktopLetter(card, seat string, evs []keystone.WakeEvent, raws
 ### 3.7 continue 深链、投递与失败路径（`internal/agentd/desktopwake.go`）
 
 ```go
-type desktopOpener func(url string) error                                                       // :53
+type desktopOpener func(url string) error                                                       // :54
 func claudeContinueURL(desktopSession string) (string, error)                                   // :89
 //   = proto.ClaudeContinueURLPrefix + url.QueryEscape(desktopSession)；先 ValidateDesktopSessionID
 func (s *Server) deliverDesktopLetter(ctx context.Context, machine string, req proto.DesktopDeliverReq) (proto.DesktopDeliverResp, error)  // :98
 func (s *Server) handleDesktopDeliver(w http.ResponseWriter, r *http.Request)                   // :106
-type desktopUndeliveredError struct{ machine string; err error }                              // :114
-func desktopUndelivered(err error) bool                                                     // :126
-func withForwardedWake(ctx context.Context) context.Context                                     // :136
-func isForwardedWake(ctx context.Context) bool                                                  // :141
+type desktopUndeliveredError struct{ machine string; err error }   // :115  信未落盘
+func desktopUndelivered(err error) bool                             // :127
+type desktopUnopenedError struct{ letterPath string; err error }    // :136  信已落盘、opener 失败
+func desktopUnopened(err error) bool                                // :148
+func withForwardedWake(ctx context.Context) context.Context         // :158
+func isForwardedWake(ctx context.Context) bool                      // :163
 func (s *Server) wakeDesktopSeat(ctx context.Context, card, seat string, desk ledger.SeatDesktop,
-    evs []keystone.WakeEvent, raws []proto.LedgerEvent, roundID string) (keystone.RoundResult, error)   // :151
+    evs []keystone.WakeEvent, raws []proto.LedgerEvent, roundID string) (keystone.RoundResult, error)   // :174
 const desktopWakeFailReasonPrefix = "桌面端协调者唤醒失败："                                      // :40
+```
+
+转交回包增一键（`internal/proto/ledger.go#CoordinatorWakeResp`，r2 Ticket 0 已落，金样本 `desktop_coordinator_test.go#TestB434CoordinatorWakeRespLetterUnopenedWire`）：
+
+```go
+type CoordinatorWakeResp struct {
+    CoordinatorLaunchResp
+    HandledBy      string `json:"handled_by,omitempty"`
+    LetterUnopened bool   `json:"letter_unopened,omitempty"` // B434：被转交端信已落盘、opener 失败
+}
 ```
 
 - 本机判据：`scheduling.IsLocalMachine(desk.Machine) || s.IsSelfTarget(desk.Machine)`（与 `scheddrain.go:474` 同式）。
 - **本机**：`desktopLetter` → `writeDesktopLetter` → `claudeContinueURL` → opener。
-- **异机、本次不是转交来的**：`transferCoordinatorWake(ctx, card, seat, desk.Machine, raws, s.wakeClaimHolder(), roundID)`（沿 B389 转交端点，拍板 D3）；对端 `handleCoordWake` 以 `withForwardedWake(r.Context())` 调 `wakeCoordinatorRoundRaw`，在其本机走同一分支。
-- **异机、本次已是转交来的**（`isForwardedWake(ctx)`）：不再二次转交（一跳封顶）；`MarkNeedsHuman(card, desktopWakeFailReasonPrefix+"席位机器 <machine> 对被转交端也非本机", "agentd")` 并返回错误（对端回 502，发起端按下条处置）。
+- **异机、本次不是转交来的**：`transferCoordinatorWake(ctx, card, seat, desk.Machine, raws, s.wakeClaimHolder(), roundID)`（沿 B389 转交端点，拍板 D3）；对端 `handleCoordWake` 以 `withForwardedWake(r.Context())` 调 `wakeCoordinatorRoundRaw`，在其本机走同一分支。`transferCoordinatorWake` 收到 2xx 且 `LetterUnopened=true` 时返回 `*desktopUnopenedError`（该键只会在桌面端席位上为 true）；其余失败照旧返回错误，由 `wakeDesktopSeat` 包成 `*desktopUndeliveredError`。
+- **异机、本次已是转交来的**（`isForwardedWake(ctx)`）：不再二次转交（一跳封顶），返回 `*desktopUndeliveredError`（原因「席位机器 <machine> 对被转交端也非本机」）；被转交端**不**落 needs_human。
 - opener 生产实现：darwin `exec.Command("open", url)`；其它平台返回错误「本平台不支持 Claude 桌面端深链」。opener 注入点为 `Server` 字段（实现节点定名），测试注入 spy。
 
-**失败处置（spec `b434.md:66`「发不出 → needs_human，信留在信箱，不丢」）——按「信是否已落盘」二分：**
+**单一原则：`wakeDesktopSeat` 从不自己落 needs_human，只返回类型化错误；needs_human 只由认领本批的发起端消费循环写。** 被转交端（`handleCoordWake`）按错误类型回包，不写任何等人标：
 
-| 失败点 | 信 | needs_human | 本批事件 |
-| --- | --- | --- | --- |
-| 本机 opener 失败 | 已落盘，留在信箱 | 落一条（前缀） | 标 seen、`completeWakeBatch`（信已保住事件，重投会产第二封同批信） |
-| 本机写信失败 / `desktopLetter` 失败 | 未落盘 | 失败段首次落一条（前缀） | **不**标 seen、**不** `completeWakeBatch`，认领留在飞挡水位，下轮重试 |
-| 异机转交失败（取客户端失败、对端不可达、对端非 2xx） | 未落盘（信在桌面端所在机渲染，对端没写出） | 失败段首次落一条（前缀） | 同上：不标 seen、不 complete |
+| `wakeDesktopSeat` 返回 | 被转交端 `handleCoordWake` 回包 | 发起端消费循环处置 |
+| --- | --- | --- |
+| `nil`（信落盘 + opener 成功） | 200，`Woke=true` | 照常 complete + 标 seen；清零桌面端失败段 |
+| `*desktopUnopenedError`（信已落盘，opener 失败） | **200**，`Woke=false`，`letter_unopened=true` | complete + 标 seen（信已保住事件，重试会产第二封同批信）；按桌面端失败段落 needs_human |
+| `*desktopUndeliveredError`（信未落盘：写信/渲染失败、一跳封顶拒转） | 502 `{"error": <原因>}`（`coordapi.go:209-212` 既有形态） | **不**标 seen、**不** complete，认领留在飞挡水位，下轮重试；按桌面端失败段落 needs_human |
+| 发起端自己的转交失败（取客户端失败、对端不可达、对端非 2xx） | — | 同上一行 |
 
-「保住事件」的方法取**不标 seen**、不取「标 seen 靠账本重投」，理由：消费循环对已标 seen 的事件没有任何重投机制（`wakeconsumer.go:837-853` 非准入错误终局处置即标 seen + 推水位），标了就永久丢唤醒；而「认领留在飞、不标 seen」是 B390 P2 准入满员已在用的同款可恢复排队态（`wakeconsumer.go:823-835` + `#recordAdmissionStall`），重试载体（B389 认领挡水位）与去重（`automationSeen`）都现成。实现：`wakeDesktopSeat` 把这两类失败包成 `desktopUndeliveredError`；消费循环在 `admissionStalled(wakeErr)` 旁并列 `desktopUndelivered(wakeErr)`，走同一不收尾分支；needs_human 按「失败段首次」去重（与 `recordAdmissionStall` 同形的按卡计数，成功一次即清零）。代价同准入排队：失败段内自动化游标终局前缀水位停在该批最小 seq（他卡事件照常处理，靠 `automationSeen` 去重）。
+**「保住事件」取不标 seen**、不取「标 seen 靠账本重投」，理由：消费循环对已标 seen 的事件没有任何重投机制（`wakeconsumer.go:837-853` 非准入错误终局处置即标 seen + 推水位），标了就永久丢唤醒；「认领留在飞、不标 seen」是 B390 P2 准入满员已在用的可恢复排队态，重试载体（B389 认领挡水位）与去重（`automationSeen`）都现成。代价：失败段内自动化游标终局前缀水位停在该批最小 seq（他卡事件照常处理，靠 `automationSeen` 去重）。
+
+**桌面端失败段计数（独立，不经准入停摆）**：
+- 消费循环对 `desktopUndelivered(err)` 走「不收尾」分支，但**不**调 `recordAdmissionStall`——该函数（`wakeconsumer.go:69-90`）累计到 `automationStallEscalateAfter`（`:52`，=3）时会落一条 reason 为「自动化唤醒持续准入失败…协调者小队名额被占满」的 needs_human（`:82-84`），理由错且会成为第二条。现行 `:823-835` 分支内的 `recordAdmissionStall(card)` 调用只留给 `admissionStalled`。
+- 桌面端用独立的进程内按卡计数表（实现节点定名，建议 `Server.desktopWakeStall map[string]int`，受 `automationMu` 保护）：`desktopUndelivered` 或 `desktopUnopened` 时计数 +1，**计数从 0 变 1 的那一次**落 `MarkNeedsHuman(card, desktopWakeFailReasonPrefix+<原因>, "agentd")`；`wakeDesktopSeat` 返回 nil 时清零。段 = 两次成功之间的连续失败。
+- `MarkNeedsHuman` 本身不幂等（`internal/ledger/events.go:450-460` 每调一次落一条），去重只靠这张表。表在进程内：**agentd 重启清零，重启后同一失败段可能再多落一条 needs_human**——可接受（重启本身罕见，多一条等人标不丢信息），写明不修。
 
 ### 3.8 唤醒路径改接（存量缝；P2=A 协调者已拍板）
 
@@ -339,7 +357,9 @@ const desktopWakeFailReasonPrefix = "桌面端协调者唤醒失败："         
 | `wakeconsumer.go#resolveWakeCard` 祖先（`:514-515`） | bind 祖先跳过、继续上走 | 有桌面端记录的 bind 祖先与 coordinate 祖先同等接手（返回该祖先）；无记录的 bind 祖先仍跳过 |
 | `scheddrain.go#wakeCoordinatorRoundID`（`:451-454`） | bind → `keystone.Forget` + 跳过 | bind 且 `SeatDesktopOf` 命中 → `return s.wakeDesktopSeat(…)`；bind 无记录 → 原样跳过；coordinate → 原路径 |
 | `coordapi.go#handleCoordWake`（`:172`） | `wakeCoordinatorRoundRaw(r.Context(), …)` | 改传 `withForwardedWake(r.Context())`（一跳封顶标记） |
-| `wakeconsumer.go#consumeAutomationEventsOnce`（`:823`） | `admissionStalled` → 不收尾 | `admissionStalled(err) || desktopUndelivered(err)` → 不收尾 |
+| `wakeconsumer.go#consumeAutomationEventsOnce`（`:823`） | `admissionStalled` → `recordAdmissionStall` + 不收尾 | `admissionStalled` 分支不变；新增并列分支 `desktopUndelivered(err)` → 桌面端失败段计数 + 不收尾（**不**调 `recordAdmissionStall`）；`desktopUnopened(err)` → 桌面端失败段计数 + 终局收尾（complete + 标 seen）；成功 → 清零桌面端失败段 |
+| `scheddrain.go#transferCoordinatorWake`（`:361`） | 回包映射 `Woke/SessionID/Rebuilt/Escalated/Output` | 增：`resp.LetterUnopened` → 返回 `*desktopUnopenedError` |
+| `coordapi.go#handleCoordWake` 回包（`:209-212`） | 任何错误 → 502 | `desktopUnopened(err)` → 200 + `LetterUnopened=true`、`Woke=false`；其余错误维持 502 |
 | `keystone.go#Service.Wake`（`:123`） | bind → no-op | **不变** |
 | 唤醒事件集 | `automationWakeEvents` | **不变**（needs_human 是否叫醒见 R1/P5） |
 
@@ -431,7 +451,7 @@ func ClaudeModStatus(mod fs.FS, home string) Site    // 逐文件哈希比对 + 
 
 ## 4. 原子冻结清单
 
-每条一支可独立判 pass/fail 的接缝断言。「T0」= Ticket 0 已写对应测试，**但本轮未跑**（本机无工具链，§9.2）；其余为实现节点对账条目。r1 修复轮拆开了复合条目并补齐来信内容与异机失败路径，编号整体重排（r0 编号作废）。
+每条一支可独立判 pass/fail 的接缝断言。「T0」= Ticket 0 已写对应测试，**但本轮未跑**（本机无工具链，§9.2）；其余为实现节点对账条目。r1 修复轮拆开了复合条目并补齐来信内容与异机失败路径，编号整体重排（r0 编号作废）。r2 修复轮改写条 99–111，并在 §4.6 内追加条 165–176（编号接续全清单末尾，不再重排已对账编号）。
 
 ### 4.1 拉起材料（S1）
 
@@ -548,19 +568,31 @@ func ClaudeModStatus(mod fs.FS, home string) Site    // 逐文件哈希比对 + 
 96. `handleCoordWake` 以带转交标记的 ctx 调 `wakeCoordinatorRoundRaw`。
 97. 被转交端对 `Machine` 为其本机的桌面端席位写信并调 opener。
 98. 被转交端对 `Machine` 对其也非本机的桌面端席位不再出站转交（零 `CoordinatorWake` 请求，一跳封顶）。
-99. 上条情形落 needs_human，reason 以「桌面端协调者唤醒失败：」开头。
-100. 异机转交失败（取客户端失败、对端不可达、对端非 2xx）→ 卡被 `MarkNeedsHuman`，reason 以「桌面端协调者唤醒失败：」开头。
-101. 异机转交失败的该批 seq 不标 seen。
-102. 异机转交失败的该批不 `completeWakeBatch`（认领留在飞，自动化游标不越过该批）。
-103. 同一失败段内的后续重试不再追加 needs_human（每段恰一条）。
-104. 转交成功一次即清零失败段；其后再失败重新落一条 needs_human。
+99. 上条情形被转交端回 502（`error` 含原因），且被转交端不落 needs_human。
+100. 发起端异机转交失败（取客户端失败、对端不可达、对端非 2xx）计入桌面端失败段；段内首次时发起端落 needs_human，reason 以「桌面端协调者唤醒失败：」开头。
+101. 发起端异机转交失败的该批 seq 不标 seen。
+102. 发起端异机转交失败的该批不 `completeWakeBatch`（认领留在飞，自动化游标不越过该批）。
+103. 同一桌面端失败段内（不论失败类型、不论重试多少轮），同一 agentd 进程对该卡恰落一条 needs_human。
+104. `wakeDesktopSeat` 成功一次即清零失败段；其后再失败重新落一条 needs_human。
 105. 对端恢复后，失败段内保住的事件在下一轮被转交，并出现在对端写出的信里。
-106. 本机写信失败（含 `desktopLetter` 失败）→ needs_human，前缀同上。
+106. 本机写信失败（含 `desktopLetter` 失败）计入桌面端失败段；段内首次落 needs_human，前缀同上。
 107. 本机写信失败 → opener 零调用。
 108. 本机写信失败的该批不标 seen、不 `completeWakeBatch`（同 101/102 处置）。
-109. 本机 opener 失败 → needs_human，前缀同上。
+109. 本机 opener 失败计入桌面端失败段；段内首次落 needs_human，前缀同上。
 110. 本机 opener 失败 → 已写的信文件仍在信箱。
-111. 本机 opener 失败的该批 seq 标 seen，下一轮不重投（不产生第二封同批信）。
+111. 本机 opener 失败的该批 seq 标 seen 且 `completeWakeBatch`，下一轮不重投（不产生第二封同批信）。
+165. 被转交端信已落盘而 opener 失败时，`handleCoordWake` 回 HTTP 200。
+166. 上条回包 `letter_unopened` 为 true。
+167. 上条回包 `woke` 为 false。
+168. 上条情形被转交端不落 needs_human。
+169. 发起端收到 2xx 且 `letter_unopened=true` → 该批标 seen 且 `completeWakeBatch`（不重试，不产生第二封同批信）。
+170. 上条情形计入发起端桌面端失败段（段内首次落 needs_human，前缀同上）。
+171. 被转交端在任何桌面端失败下都不调 `MarkNeedsHuman`（needs_human 只由认领本批的发起端写）。
+172. `wakeDesktopSeat` 自身零 `MarkNeedsHuman` 调用（只返回类型化错误）。
+173. 桌面端失败（`desktopUndelivered`/`desktopUnopened`）不调 `recordAdmissionStall`，不改 `automationStall` 计数。
+174. 桌面端失败无论重试多少轮，都不产生 reason 含「准入」的 needs_human。
+175. `CoordinatorWakeResp.LetterUnopened=false` 时 JSON 无 `letter_unopened` 键（既有转交 wire 不变；T0：`TestB434CoordinatorWakeRespLetterUnopenedWire`，本轮未跑）。
+176. `CoordinatorWakeResp.LetterUnopened=true` 时 JSON 含 `"letter_unopened":true`（T0：同上，本轮未跑）。
 
 ### 4.7 mod（S2，`claude plugin test`）
 
@@ -646,6 +678,7 @@ func ClaudeModStatus(mod fs.FS, home string) Site    // 逐文件哈希比对 + 
 | `.handoff/desktop-wake` | `internal/proto/desktop_coordinator.go:20` | mod 源码 / 安装期替换（实现节点） | 同上 |
 | `14336` | `internal/proto/desktop_coordinator.go:36` | `web/src/app/lib/claudeDeepLink.ts:13` | Go 金样本（T0，条 26）+ TS 字面量用例（T0：`claudeDeepLink.test.ts`，条 24）；均本轮未跑 |
 | `claude://code/new?` | `internal/proto/desktop_coordinator.go:30` | `web/src/app/lib/claudeDeepLink.ts:16` | Go 金样本（T0，条 27）+ TS 字面量用例（T0，条 25）；均本轮未跑 |
+| `letter_unopened` 键 | `internal/proto/ledger.go#CoordinatorWakeResp` | 发起端 `transferCoordinatorWake` 回包映射（实现节点） | Go 金样本 `TestB434CoordinatorWakeRespLetterUnopenedWire`（T0，本轮未跑；条 175/176） |
 | DTO 形状 | `internal/proto/desktop_coordinator.go:52/:60` | `web/src/api/scheduling.ts:267/:274` | `internal/proto/contract_fixture_test.go` 加四条样本（含两个 Deliver DTO）+ `web/src/api/contract.test.ts` 读 fixture（实现节点；需 `go test -update` 生成，本轮无工具链） |
 
 无哈希、密钥派生、加密编码命中。
@@ -682,7 +715,7 @@ func ClaudeModStatus(mod fs.FS, home string) Site    // 逐文件哈希比对 + 
 
 **D4 拉起器登记存账本，不存 agentd 本机 store**——难逆转：数据落点 + 两方言 DDL；无上下文会惊讶：项目位置在 agentd 本机 store，拉起器却在账本；真取舍：被否方案是挂在 `ProjectLocation` 旁的本机表——否掉理由：拉起请求可能由任一 agentd（手机连的那台）发起，它必须知道拉起器在哪台机器；本机 store 他机读不到。
 
-**D5 桌面端唤醒失败按「信是否已落盘」不对称处置：未落盘不标 seen（认领留在飞重试），已落盘标 seen**——难逆转：动消费循环的终局/排队分类，牵连 B389 认领水位与 B390 准入排队两套既有语义；无上下文会惊讶：同一个 `wakeDesktopSeat` 的两类失败一个标 seen、一个不标，且与 coordinate 席位「非准入错误一律终局」不同，后人极易「统一成标 seen」；真取舍：被否方案是一律标 seen + 靠账本重投——否掉理由：消费循环对已标 seen 事件没有重投机制（`wakeconsumer.go:837-853`），会违反 spec「信不丢」；反向被否方案是一律不标 seen——opener 失败时信已在盒，重试会产第二封同批信。
+**D5 桌面端唤醒失败按「信是否已落盘」不对称处置：未落盘不标 seen（认领留在飞重试），已落盘标 seen**——难逆转：动消费循环的终局/排队分类，牵连 B389 认领水位与 B390 准入排队两套既有语义；无上下文会惊讶：同一个 `wakeDesktopSeat` 的两类失败一个标 seen、一个不标，且与 coordinate 席位「非准入错误一律终局」不同，后人极易「统一成标 seen」；真取舍：被否方案是一律标 seen + 靠账本重投——否掉理由：消费循环对已标 seen 事件没有重投机制（`wakeconsumer.go:837-853`），会违反 spec「信不丢」；反向被否方案是一律不标 seen——opener 失败时信已在盒，重试会产第二封同批信。r2 补全跨机一侧：被转交端「信已落盘、opener 失败」以 HTTP 200 + `letter_unopened=true` 回告（而非 502），否则发起端会把它误判为「信未落盘」而每轮重试、对端每轮多写一封同批信；needs_human 只由发起端按独立失败段计数落一条（不经 `recordAdmissionStall`），被转交端从不落——否掉的「两端各自打标」会让同一失败段在 `MarkNeedsHuman` 不幂等（`events.go:450-460`）下重复落标。
 
 审过不立：简报/来信模板文本（产品文案，有条 6–12、71–79 断言会红）；mod 轮询节拍（spec 已定，条 125–126 锁）；`--machine` 缺省 hostname（CLI 可见缺省值，已作为条 46 冻结、有断言，不需拍板记录）；r0 的「桌面端路由只套 `withLedger`」（r1 删除该拍板：条 13 的断言会因反写变红，不满足「反过来写无测试变红」的立记理由，也不难逆转）。
 
@@ -693,10 +726,11 @@ func ClaudeModStatus(mod fs.FS, home string) Site    // 逐文件哈希比对 + 
 ### 9.1 Ticket 0 已落（零行为）
 
 - `internal/proto/desktop_coordinator.go`：§3.1 字面量 + §3.2 DTO + `ValidateDesktopSessionID` 空壳 + `ErrDesktopNotImplemented`。（基线已有的 `internal/proto/desktop.go` 是薄壳状态 DTO，未改动。）
-- `internal/proto/desktop_coordinator_test.go`：`TestB434DesktopWireLiterals`（字面量金样本）。
+- `internal/proto/desktop_coordinator_test.go`：`TestB434DesktopWireLiterals`（字面量金样本）、`TestB434CoordinatorWakeRespLetterUnopenedWire`（r2：`letter_unopened` omitempty 金样本）。
+- `internal/proto/ledger.go`：`CoordinatorWakeResp` 增 `LetterUnopened bool json:"letter_unopened,omitempty"`（r2；omitempty，既有 wire 与 `TestCoordinatorWakeWire` 不受影响）。
 - `internal/ledger/types.go`：`EvSeatDesktopSet`。
 - `internal/ledger/seat_desktop.go`：`SeatDesktop`、`DesktopLauncher` + 六个 Store 方法空壳（`SetSeatDesktop`、`SeatDesktopOf`、`RegisterDesktopLauncher`、`DesktopLauncherOf`、`UnregisterDesktopLauncher`、`ListDesktopLaunchers`，均返回 `ErrDesktopNotImplemented`）。
-- `internal/agentd/desktopwake.go`：§3.5/§3.6/§3.7/§3.9 的函数空壳（含 r1 新增 `handleDesktopDeliver`（未注册）、`desktopUndeliveredError`/`desktopUndelivered`、`withForwardedWake`/`isForwardedWake`；`desktopLetter` 改为 `Server` 方法并返回 error）、两个错误哨兵、两个 reason 字面量、`desktopOpener` 类型。
+- `internal/agentd/desktopwake.go`：§3.5/§3.6/§3.7/§3.9 的函数空壳（含 r1 新增 `handleDesktopDeliver`（未注册）、`desktopUndeliveredError`/`desktopUndelivered`、`withForwardedWake`/`isForwardedWake`；`desktopLetter` 改为 `Server` 方法并返回 error；r2 新增 `desktopUnopenedError`/`desktopUnopened`）、两个错误哨兵、两个 reason 字面量、`desktopOpener` 类型。
 - `desktop/internal/shell/external_deeplink.go` + `external_deeplink_test.go`：前缀常量、处理器与校验器空壳、前缀字面量测试。
 - `web/src/app/lib/desktopShell.ts`（+前缀、`requestOpenDeepLink` 空壳）、`desktopShell.test.ts`（+前缀用例）、`web/src/app/lib/claudeDeepLink.ts`（新）、`web/src/app/lib/claudeDeepLink.test.ts`（r1 新增：条 24/25 字面量用例）、`web/src/api/scheduling.ts`（+两 DTO、两 API 镜像）。
 
@@ -730,7 +764,7 @@ Ticket 0 为纯空壳，已逐文件人工核对导入均被使用、标识符�
 ## 10. 本节点欠账（逐条，协调者显式认账）
 
 1. **Ticket 0 编译证据**：在有工具链的机器上跑 `go build ./...`、`go vet ./...`、`(cd desktop && go build ./... && go vet ./...)`、`cd web && npm ci && npm run typecheck && npm run lint`，贴退出码；红即回本节点修骨架。
-2. **金样本本轮未跑**：`TestB434DesktopWireLiterals`、`TestExternalDeepLinkMessagePrefixLiteral`、`desktopShell.test.ts` 新用例、`claudeDeepLink.test.ts`。
+2. **金样本本轮未跑**：`TestB434DesktopWireLiterals`、`TestB434CoordinatorWakeRespLetterUnopenedWire`、`TestExternalDeepLinkMessagePrefixLiteral`、`desktopShell.test.ts` 新用例、`claudeDeepLink.test.ts`。
 3. **图**：工具链到位后 `go build -o <tmp>/codegraph ./cmd/codegraph`（charter/graph），按 `docs/codegraph-scan-recipe.md` 产出 `codegraph/diffs/cards-B434-charter-1.json`（含 §9.1 全部新符号），跑 `codegraph validate --view cards-B434-charter-1` 与 `check`，并 `codegraph resolve --doc docs/superpowers/specs/b434-contract.md`。
 4. **直通竖切**：§9.3 整条。
 5. **DTO fixture**：`contract_fixture_test.go` 加 `DesktopLaunchMaterial`、`DesktopLauncherOpenResp`、`DesktopDeliverReq`、`DesktopDeliverResp` 样本并 `-update` 生成 `web/src/api/testdata/*.json`；`contract.test.ts` 加读取用例。
@@ -751,10 +785,9 @@ Ticket 0 为纯空壳，已逐文件人工核对导入均被使用、标识符�
 
 1. `ListProjectLocations` 在 gateway 生产文件里必须经 `s.mgr`（`b23328_source_guard_test.go` 执法面含 `coordapi.go`；若新路由 handler 写进 `coordapi.go` 即被它覆盖）。建议直接复用 `resolveCoordWorkdir` 的解析逻辑并把它改成返回 `(string, error)`，避免两份解析。
 2. `--machine` 缺省 `os.Hostname()`（条 46）对本机判定成立（`IsLocalMachine`），但异机转交走 `clientForTarget(machine)` 要求它是对端 agentd 配置里的 target 名；hostname 与 target 名不一致时转交失败（会落 needs_human，条 100）。plan 决定：`card bind` 时若 hostname 不是任何已知 target 名则提示 `--machine`，或在 status 段显示告警。
-3. opener 失败（条 109–111）的错误返回形态（返回 error 走「非准入错误终局处置」vs 返回零值 + 已标 needs_human）由 plan 定，只须满足条目。
-4. 未落盘失败段（条 101–105）的重试节拍沿用消费循环 2s；对端长时间不可达时是否加退避由 plan 定（不得改为标 seen）。
-5. 队列合成唤醒（`len(raws)==0`）对桌面端异机席位与 coordinate 一样不可转交——沿用 `scheddrain.go` 既有显式失败分支。
-6. `handleCoordStatus` 是否加桌面端字段（为 OOS 的「回到那场会话」按钮铺路）——不在本卡冻结面，S1 顺手做则补 DTO 与 fixture。
+3. 未落盘失败段（条 101–105）的重试节拍沿用消费循环 2s；对端长时间不可达时是否加退避由 plan 定（不得改为标 seen）。
+4. 队列合成唤醒（`len(raws)==0`）对桌面端异机席位与 coordinate 一样不可转交——沿用 `scheddrain.go` 既有显式失败分支。
+5. `handleCoordStatus` 是否加桌面端字段（为 OOS 的「回到那场会话」按钮铺路）——不在本卡冻结面，S1 顺手做则补 DTO 与 fixture。
 
 ---
 
@@ -763,9 +796,11 @@ Ticket 0 为纯空壳，已逐文件人工核对导入均被使用、标识符�
 1. 契约增量文档：本文件；每个签名带现状出处（§1.1）或「新增 + Ticket 0 行号」（§3）。✅
 2. 目标图：`target.json` 不改（无新方向，§5）——随本提交冻结；分支视图 diff **缺**（无工具链），欠账 §10.3。⚠️
 3. Ticket 0 本轮编译通过：**缺**——本机无 Go/Node，命令未能执行（§9.2），欠账 §10.1。❌
-4. 可执行冻结：字面量金样本已写（Go 两支、TS 两支：`desktopShell.test.ts` 新用例、`claudeDeepLink.test.ts`）但**本轮未跑**，欠账 §10.2；DTO fixture 欠账 §10.5。无哈希/密钥派生命中。⚠️
+4. 可执行冻结：金样本已写（Go 三支：两支字面量 + `letter_unopened` wire；TS 两支：`desktopShell.test.ts` 新用例、`claudeDeepLink.test.ts`）但**本轮未跑**，欠账 §10.2；DTO fixture 欠账 §10.5。无哈希/密钥派生命中。⚠️
 5. 三重闸门：§8 命中五条（D1–D5），另记审过不立四条（含 r1 删除的旧 D5）。✅
 
 **缺项没有静默出口**：第 2、3、4 项的缺口已逐条写进 §10，交棒声明须由协调者显式认账后方可进 breakdown。
 
 > **修订记录（r1 修复轮，2026-10-16）**：独立审阅 fail 三阻塞项处置——B1 来信补齐命中条全文/引用条/未读数/工单原文（§3.6，条 74–80）；B2 补异机转交失败 needs_human 与「不标 seen」保事件、被转交端一跳封顶（§3.7–§3.8，条 95–108，拍板 D5）；B3 删除旧 D5（与条 13 矛盾）。协调者拍板 P1/P2/P3=A 落入正文，R2 关闭，spec r2.1 勘误。非阻塞七条：外部事实三条移入欠账 §10.6–§10.8；计数纠错（六个 Store 方法、测试注释引用条号）；复合条目拆开、编号重排（r0 104 条 → r1 164 条）；`claudeDeepLink.test.ts` 落字面量用例；§10.1 加 `npm run lint`；§3.10 写明 rebind 与桌面端记录；§4 头部如实改为「测试已写、本轮未跑」。
+>
+> **修订记录（r2 修复轮，2026-10-16）**：第二轮审阅 B2 跨机一侧三处收口——B4 被转交端「信已落盘、opener 失败」回 200 + `CoordinatorWakeResp.LetterUnopened=true`（proto 增 omitempty 键 + 金样本），发起端据此标 seen，原移交「opener 失败的错误返回形态」收回冻结（`desktopUnopenedError`，条 109–111、165–170）；B5 被转交端一律不落 needs_human、一跳封顶拒转只回 502 带原因，needs_human 统一由认领本批的发起端写（条 99、171–172）；B6 桌面端失败段用独立进程内计数表、不经 `recordAdmissionStall`，不产生「准入」理由的等人标，agentd 重启清零可能多落一条且写明可接受（§3.7，条 103、173–174）。小错：`desktopOpener` 行号 :53 → :54。条 99–111 改写，追加条 165–176。

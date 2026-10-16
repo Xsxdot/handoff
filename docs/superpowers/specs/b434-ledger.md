@@ -64,3 +64,13 @@
 - 非阻塞：外部事实三条移入欠账 §10.6–§10.8 并标「plan 前必须钉」；seat_desktop.go 计为六个 Store 方法；测试注释条号改为新编号（`desktop_coordinator_test.go:5` → 条 127，`external_deeplink_test.go:4` → 条 30–41，`desktopwake.go:113` → 条 100–108）；复合条目拆开、冻结清单重排 104 → 164 条；`--machine` 缺省 hostname 统一为冻结条 46（从「审过不立」移除）；新增 `web/src/app/lib/claudeDeepLink.test.ts`（条 24/25）；§10.1 加 `npm run lint`；§3.10 写明 `card rebind --self` 删 `seat_desktops` 行、换绑后再跑 `card seat desktop set`（不给 rebind 加 flag，理由见正文）；§4 头部改为「测试已写、本轮未跑」。
 - 工具链仍缺：本轮同样未能跑 go build/vet/test、tsc、lint、vitest、codegraph（同 contract 节点读数）。
 - 修复轮提交（历史读数，随后 amend 一次收进同批提交，hash 会变）：`git commit -q -F <scratchpad>/r1/msg.txt && git log --oneline -2` → `d7ceb2b7 docs(b434): contract r1 — 补来信内容、异机失败路径、拍板修正` / `0ed980d6 …`；`git show --stat HEAD` → `7 files changed, 401 insertions(+), 207 deletions(-)`。未 push。
+
+## contract 修复轮 2（2026-10-16，第二轮审阅：只剩 B2 跨机一侧；基于 `a586b3c7`）
+
+- 核对读数：`internal/agentd/coordapi.go:209-212` `handleCoordWake` 对 `wakeCoordinatorRoundRaw` 任何错误回 502；`internal/agentd/wakeconsumer.go:69-90` `recordAdmissionStall`（按卡 `automationStall` 计数，`attempts == automationStallEscalateAfter`（`:52`，=3）时落 reason「自动化唤醒持续准入失败…协调者小队名额被占满」的 needs_human）、`:823-835` 准入不收尾分支内调 `recordAdmissionStall(card)`（`:828`）；`internal/ledger/events.go:450-460` `MarkNeedsHuman` 每调一次落一条（不幂等）；`internal/proto/ledger.go#CoordinatorWakeResp`（嵌 `CoordinatorLaunchResp` + `HandledBy omitempty`），既有 `ledger_wire_test.go#TestCoordinatorWakeWire` 只断言 woke/session_id/handled_by 三键在场。
+- B4 处置：`CoordinatorWakeResp` 增 `LetterUnopened bool json:"letter_unopened,omitempty"`；被转交端「信已落盘、opener 失败」回 200 + `letter_unopened=true` + `woke=false`；发起端 `transferCoordinatorWake` 据此返回 `*desktopUnopenedError` → 标 seen + complete。原移交「opener 失败错误返回形态」收回冻结。骨架新增 `desktopUnopenedError`/`desktopUnopened`；金样本 `TestB434CoordinatorWakeRespLetterUnopenedWire`（未跑）。
+- B5 处置：`wakeDesktopSeat` 自身零 `MarkNeedsHuman`，只返回类型化错误；被转交端一跳封顶拒转 → `*desktopUndeliveredError` → 502 带原因、不打标；needs_human 只由认领本批的发起端消费循环写。条 99 改写，增条 171–172。
+- B6 处置：桌面端失败（undelivered/unopened）用独立进程内按卡计数表（建议 `Server.desktopWakeStall`），计数 0→1 时落一条 needs_human、成功清零；不调 `recordAdmissionStall`、不改 `automationStall`；写明 agentd 重启清零后同段可能多落一条、可接受。增条 173–174。
+- 小错：`desktopOpener` 行号 :53 → :54。条 99–111 改写，追加条 165–176（不重排已对账编号）；§11 删去已冻结的 opener 返回形态条并重编号。
+- 工具链仍缺：go build/vet/test、tsc、lint、vitest、codegraph 本轮均未执行。
+- 修复轮 2 提交（历史读数，随后 amend 一次，hash 会变）：`git commit -q -F <scratchpad>/r1/msg2.txt && git log --oneline -1` → `4887e073 docs(b434): contract r2 — 跨机失败路径收口`；`5 files changed, 138 insertions(+), 42 deletions(-)`。未 push。

@@ -9,7 +9,11 @@
 // 改任一字面量 = 契约变更，须重走 contract 节点。
 package proto
 
-import "testing"
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+)
 
 func TestB434DesktopWireLiterals(t *testing.T) {
 	cases := []struct{ name, got, want string }{
@@ -29,5 +33,24 @@ func TestB434DesktopWireLiterals(t *testing.T) {
 	}
 	if ClaudeNewQMaxChars != 14336 {
 		t.Errorf("ClaudeNewQMaxChars = %d，契约冻结值 14336", ClaudeNewQMaxChars)
+	}
+}
+
+// TestB434CoordinatorWakeRespLetterUnopenedWire 锁契约条 175/176：letter_unopened
+// 只在 true 时出现在 wire 上，既有转交回包形状不变。
+func TestB434CoordinatorWakeRespLetterUnopenedWire(t *testing.T) {
+	plain, err := json.Marshal(CoordinatorWakeResp{HandledBy: "mac-02"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(plain), "letter_unopened") {
+		t.Fatalf("LetterUnopened=false 不应出键: %s", plain)
+	}
+	unopened, err := json.Marshal(CoordinatorWakeResp{HandledBy: "mac-02", LetterUnopened: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(unopened), `"letter_unopened":true`) {
+		t.Fatalf("LetterUnopened=true 必须出键: %s", unopened)
 	}
 }

@@ -139,9 +139,15 @@ type CoordinatorWakeReq struct {
 }
 
 // CoordinatorWakeResp 复用拉起响应形状并回报实际执行机器名（不造第二套）。
+//
+// LetterUnopened（B434）：被转交端对桌面端 bind 席位已把来信落盘、但 continue
+// 深链没发出去（opener 失败）时为 true，此时 HTTP 仍是 200、Woke=false。发起端
+// 据此把本批标 seen（信已保住事件，不得重试产第二封同批信）并按失败段落
+// needs_human。omitempty：非桌面端唤醒的既有 wire 不出现该键。
 type CoordinatorWakeResp struct {
 	CoordinatorLaunchResp
-	HandledBy string `json:"handled_by,omitempty"`
+	HandledBy      string `json:"handled_by,omitempty"`
+	LetterUnopened bool   `json:"letter_unopened,omitempty"`
 }
 
 // CardView 是列表卡片及查询期派生标记的 wire DTO。

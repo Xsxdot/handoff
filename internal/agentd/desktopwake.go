@@ -110,7 +110,8 @@ func (s *Server) handleDesktopDeliver(w http.ResponseWriter, r *http.Request) {
 
 // desktopUndeliveredError 标记「信未落盘的桌面端唤醒失败」（本机写信/渲染失败、
 // 异机转交失败）：消费循环按准入满员同款处置——不 completeWakeBatch、不标 seen、认领留在飞挡水位，下一轮
-// 重读重试；每个失败段只在首次落一条 needs_human（契约 §3.7、条 100–108）。
+// 重读重试；needs_human 只由认领本批的发起端消费循环按「桌面端失败段」首次落
+// 一条（独立计数表，不经 recordAdmissionStall），被转交端从不落（契约 §3.7）。
 type desktopUndeliveredError struct {
 	machine string
 	err     error
@@ -126,6 +127,27 @@ func (e *desktopUndeliveredError) Unwrap() error { return e.err }
 func desktopUndelivered(err error) bool {
 	var stall *desktopUndeliveredError
 	return errors.As(err, &stall)
+}
+
+// desktopUnopenedError 标记「信已落盘、continue 深链没发出去」（opener 失败，
+// 本机或被转交端）：消费循环按终局处置（completeWakeBatch + 标 seen，不重试），
+// 并按桌面端失败段落 needs_human；handleCoordWake 遇到它回 200 +
+// CoordinatorWakeResp.LetterUnopened=true（契约 §3.7、条 109–111、165–170）。
+type desktopUnopenedError struct {
+	letterPath string
+	err        error
+}
+
+func (e *desktopUnopenedError) Error() string {
+	return "桌面端来信已落盘但 continue 未发出（" + e.letterPath + "）: " + e.err.Error()
+}
+
+func (e *desktopUnopenedError) Unwrap() error { return e.err }
+
+// desktopUnopened 报告 err 是否为「信已落盘、opener 失败」。
+func desktopUnopened(err error) bool {
+	var unopened *desktopUnopenedError
+	return errors.As(err, &unopened)
 }
 
 // forwardedWakeKey 是 ctx 上「本次唤醒来自他机转交」的标记键。
@@ -145,9 +167,10 @@ func isForwardedWake(ctx context.Context) bool {
 
 // wakeDesktopSeat 是 wakeCoordinatorRoundID 对「有桌面端记录的 bind 席位」的
 // 分支：desk.Machine 为本机 → 渲染来信 → 写信 + opener；异机且未被转交过 →
-// transferCoordinatorWake(desk.Machine)；写信/渲染/转交失败包成 desktopUndeliveredError；
-// 异机且 isForwardedWake(ctx) → 不再转交，needs_human。本机投递失败 →
-// needs_human（前缀 desktopWakeFailReasonPrefix），信若已落盘则留在信箱。
+// transferCoordinatorWake(desk.Machine)。本函数**从不**自己落 needs_human，只返回
+// 类型化错误交给调用方：写信/渲染失败、转交非 2xx、异机且 isForwardedWake(ctx)
+// （一跳封顶，不再转交）→ desktopUndeliveredError；opener 失败（本机）或转交回包
+// LetterUnopened=true → desktopUnopenedError。
 func (s *Server) wakeDesktopSeat(ctx context.Context, card, seat string, desk ledger.SeatDesktop,
 	evs []keystone.WakeEvent, raws []proto.LedgerEvent, roundID string) (keystone.RoundResult, error) {
 	_, _, _, _, _, _, _ = ctx, card, seat, desk, evs, raws, roundID
