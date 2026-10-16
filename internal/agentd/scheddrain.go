@@ -377,6 +377,16 @@ func (s *Server) transferCoordinatorWake(ctx context.Context, card, seat, machin
 		s.writeWakeRoundFail(card, roundID, wakeFailClassOther, fmt.Sprintf("转交唤醒到 %s 失败: %v", machine, err))
 		return keystone.RoundResult{}, fmt.Errorf("转交唤醒到 %s: %w", machine, err)
 	}
+	if resp.LetterUnopened {
+		// B434（契约 §3.7）：被转交端信已落盘、continue 未发出（只会在桌面端席位上为真）。
+		// 不落 wake_round fail（信已送到，失败只在深链一步）；交发起端消费循环按「已落盘」终局。
+		s.log.Error("转交唤醒：对端来信已落盘但 continue 未发出", "card", card, "machine", machine,
+			"handled_by", resp.HandledBy, "round_id", roundID)
+		return keystone.RoundResult{}, &desktopUnopenedError{
+			letterPath: machine + " 的信箱",
+			err:        fmt.Errorf("对端 %s 回报 letter_unopened（handled_by=%s）", machine, resp.HandledBy),
+		}
+	}
 	s.log.Info("协调者唤醒已转交", "card", card, "machine", machine,
 		"handled_by", resp.HandledBy, "event_count", len(raws))
 	return keystone.RoundResult{

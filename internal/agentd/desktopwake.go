@@ -631,11 +631,11 @@ func isForwardedWake(ctx context.Context) bool {
 // （一跳封顶，不再转交）→ desktopUndeliveredError；opener 失败（本机）或转交回包
 // LetterUnopened=true → desktopUnopenedError。
 //
-// 现状（B434.4）：本机分支已实现，成功返回 RoundResult{Woke: true, SessionID: desk.Session}
-// （handleCoordWake 据 Woke 回 200）；信箱根取 s.desktopHome，空则 os.UserHomeDir()
-// （信箱属写信进程用户，契约 r10 第 11 条）；
-// opener 取 s.desktopOpen，nil 视为不能发深链。异机分支暂返回 desktopUndeliveredError，
-// 由 B434 G2 换成 transferCoordinatorWake + 一跳封顶。零 keystone 调用、零账本写。
+// 本机分支成功返回 RoundResult{Woke: true, SessionID: desk.Session}（handleCoordWake 据 Woke
+// 回 200）；信箱根取 desktopMailboxHome()（信箱属写信进程用户，契约 r10 第 11 条、r12 第 10
+// 条）；opener 取 s.desktopOpen（NewServer 按平台装配，nil 视为不能发深链）。异机分支见
+// wakeRemoteDesktopSeat。零 keystone 调用；本函数自身零账本写（转交失败的 wake_round fail 行
+// 由 transferCoordinatorWake 落，B389 既有）。
 func (s *Server) wakeDesktopSeat(ctx context.Context, card, seat string, desk ledger.SeatDesktop,
 	evs []keystone.WakeEvent, raws []proto.LedgerEvent, roundID string) (keystone.RoundResult, error) {
 	var zero keystone.RoundResult
@@ -651,8 +651,7 @@ func (s *Server) wakeDesktopSeat(ctx context.Context, card, seat string, desk le
 		return zero, &desktopUndeliveredError{machine: machine, err: fmt.Errorf("%s: %w", stage, cause)}
 	}
 	if !scheduling.IsLocalMachine(desk.Machine) && !s.IsSelfTarget(desk.Machine) {
-		// 跨机转交（transferCoordinatorWake、isForwardedWake 一跳封顶，用到 ctx）归 B434 G2。
-		return undelivered("跨机转交", fmt.Errorf("桌面端席位在异机 %s，跨机转交尚未接通", desk.Machine))
+		return s.wakeRemoteDesktopSeat(ctx, card, seat, desk, raws, roundID, undelivered)
 	}
 	_, cliSession, err := proto.ParseSeatIdentity(seat)
 	if err != nil {
@@ -662,11 +661,9 @@ func (s *Server) wakeDesktopSeat(ctx context.Context, card, seat string, desk le
 	if err != nil {
 		return undelivered("组装来信", err)
 	}
-	home := s.desktopHome
-	if home == "" {
-		if home, err = os.UserHomeDir(); err != nil {
-			return undelivered("取 HOME", err)
-		}
+	home, err := s.desktopMailboxHome()
+	if err != nil {
+		return undelivered("取 HOME", err)
 	}
 	letterPath, err := writeDesktopLetter(home, cliSession, letter, s.desktopClock())
 	if err != nil {
@@ -692,6 +689,56 @@ func (s *Server) wakeDesktopSeat(ctx context.Context, card, seat string, desk le
 	s.log.Info("桌面端席位唤醒完成", "card", card, "desktop_session", desk.Session,
 		"letter", letterPath, "round_id", roundID)
 	return keystone.RoundResult{Woke: true, SessionID: desk.Session}, nil
+}
+
+// desktopTransferTimeout 是桌面端席位跨机转交的单次时限。被转交端只写一封信 + 发一次
+// 深链（毫秒到秒级），不像 coordinate 转交要跑整个协调者回合；给上限是为了对端挂住时
+// 不把单协程的消费循环（与其后的清队）拖住。包级 var 而非 const：测试缩短它验证超时出口。
+var desktopTransferTimeout = 30 * time.Second
+
+// wakeRemoteDesktopSeat 是 wakeDesktopSeat 的异机分支（契约 §3.7，拍板 D3）：
+//   - 本次已是转交来的（isForwardedWake）→ 一跳封顶，不再出站，返回未投递
+//     （「席位机器 <machine> 对被转交端也非本机」，条 98/99）；
+//   - 否则经 B389 transferCoordinatorWake 交给 desk.Machine 的 agentd（带 desktopTransferTimeout）：
+//     对端回 letter_unopened → transferCoordinatorWake 已映射成 *desktopUnopenedError，原样返回；
+//     其余失败（取客户端、不可达、非 2xx、超时）→ 未投递；成功 → 透传对端回合结果。
+//
+// undelivered 是 wakeDesktopSeat 的未投递出口（统一日志与错误包装）。本函数不落 needs_human。
+func (s *Server) wakeRemoteDesktopSeat(ctx context.Context, card, seat string, desk ledger.SeatDesktop,
+	raws []proto.LedgerEvent, roundID string,
+	undelivered func(stage string, cause error) (keystone.RoundResult, error)) (keystone.RoundResult, error) {
+	if isForwardedWake(ctx) {
+		return undelivered("一跳封顶", fmt.Errorf("席位机器 %s 对被转交端也非本机", desk.Machine))
+	}
+	tctx, cancel := context.WithTimeout(ctx, desktopTransferTimeout)
+	defer cancel()
+	s.log.Info("桌面端席位在异机，转交唤醒", "card", card, "machine", desk.Machine,
+		"desktop_session", desk.Session, "event_count", len(raws), "round_id", roundID)
+	res, err := s.transferCoordinatorWake(tctx, card, seat, desk.Machine, raws, s.wakeClaimHolder(), roundID)
+	if desktopUnopened(err) {
+		return keystone.RoundResult{}, err
+	}
+	if err != nil {
+		return undelivered("跨机转交", err)
+	}
+	s.log.Info("桌面端席位唤醒已转交", "card", card, "machine", desk.Machine,
+		"woke", res.Woke, "round_id", roundID)
+	return res, nil
+}
+
+// desktopMailboxHome 是信箱根目录规则的唯一定义（契约 r10 第 11 条、r12 第 10 条）：
+// Server.desktopHome 非空（装配期注入，测试指向临时目录）原样返回，否则取写信进程用户的
+// os.UserHomeDir()。席位唤醒本机分支（wakeDesktopSeat）与 G3 拉起器收件机都只经它取信箱根，
+// 不各自拼 HOME。返回：UserHomeDir 失败的原错误（调用方按「未投递」处置）。
+func (s *Server) desktopMailboxHome() (string, error) {
+	if s.desktopHome != "" {
+		return s.desktopHome, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("取信箱所在 HOME: %w", err)
+	}
+	return home, nil
 }
 
 // renderLauncherLetter 渲染拉起器来信（r5，唯一渲染点，只在拉起器所在机器调用）：
