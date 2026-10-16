@@ -34,3 +34,231 @@
 - 2026-10-16 16:27–16:28 mod「信箱唤醒」探针（`~/.claude/dev-mods/…/handoff-autosend`，`claude plugin validate` 通过；经 `~/.claude/settings.json` env `CLAUDE_CODE_PLUGIN_DIRS` 挂给桌面端新会话，原文件备份 `settings.json.bak-b434`）：定时任务 `b434-probe-wake` 经 `run_scheduled_task` 立即开出会话 `local_bbc4b5ae…`（CLI id `f67b34c3…`，pid 88429，首轮打印自己的 CLAUDE_CODE_SESSION_ID）；16:28:27 外部写入 `~/.handoff/desktop-wake/f67b34c3-….md`；≤3 秒内文件被取走，会话以该正文开新回合并回复「ok，信箱来信已收到，时间 2026-10-16 16:28:30 KST」（`list_events` 显示 2 turns）。即：**会话进程活着时，handoff 写文件即可让桌面端会话自己提交一轮，无需人、无需 socket 审批。**
 - 2026-10-16 16:43–16:45 回收后唤醒端到端：main.log `16:43:33 [WarmLifecycle:session] Idle timeout reached, disconnecting local_bbc4b5ae… / Pausing session … (idle_timeout)`，进程名册里探针三消失。16:44:54 外部写第二封信 `~/.handoff/desktop-wake/f67b34c3-….md`；16:44:55 `open "claude://code/continue?session=local_bbc4b5ae…"` → `warmed successfully in 45ms`、`Mapping … to CLI session f67b34c3…`（新 pid 89628）；16:45:06 `Stop hook Query completed`，信箱目录已空。结论：**被回收的桌面端会话可由外部进程用 continue 深链拉起，mod 在 session.start 后取信并自动提交回合，全程无人、无弹框。** 人唯一的动作是当初开这场会话并发第一条消息。
 - 2026-10-16 用户批准 r2（原话「批准 B434 spec r2。回写批准到 spec 头部，把卡移到 contract 列。」）；头部状态行已回写；`handoff card move B434 contract`。
+
+## contract 节点（2026-10-16，worktree `handoff-B434` 分支 `cards/B434-charter-1` @ `e020380a`）
+
+- 读入：`charter/skills/contract/SKILL.md` 全文；`b434.md`（头部状态行「**已批准**（r2；用户 2026-10-16 …）」已回写，与本节点一致，无需二次回写）；本台账；`b358-contract.md`（格式样板）；`docs/codegraph-scan-recipe.md`。
+- 工具链读数：`go build -o <scratchpad>/codegraph ./cmd/codegraph`（在 `charter/graph`）→ `(eval):1: command not found: go`，退出 127。`zsh -lc 'which go node npx'` → `go not found / node not found / npx not found`；`find / -type f -name go -perm +111` 与 `find / -type d -name 'go1.*'` 均零命中；`~/go`、`~/Library/Caches/go-build` 不存在；`web/node_modules` 不存在。结论：**本机无 Go 与 Node 工具链**，`go build/vet/test`、`tsc`、`codegraph` 本轮一律跑不了。安装工具链属下载动作，须用户在场许可，本节点不擅自下载。
+- 锚点复核（本 worktree，`e020380a`）：`internal/executor/capability.go#BaselineReport` :185-204（opencode `reportAll(…, true, nil)`，其余 false）；`internal/agentd/server.go#coordinatorRunner.Launch` :1456，`Require(name, executor.CapCoordination)` :1459/:1497；`internal/agentd/coordapi.go#registerCoordRoutes` :43-50（六路由，均 `withLedger(withCoordinator(...))`）、`#handleCoordLaunch` :101、`#handleCoordWake` :172、`#resolveCoordWorkdir` :316（`mgr.ListProjectLocations` + `workspace.ResolveProject("", card.Project, …)` → `loc.Path`）、`#handleCoordStatus` :348；`internal/keystone/keystone.go#Service.Wake` :106（bind → `Forget` 返回零值 :123-126）、`#Service.briefing` :334（原文含「**你是一次性回合**」）；`internal/hostapi/driver.go#buildArgv` :240；`internal/proto/seat.go#EncodeSeatIdentity` :41、`#ParseSeatIdentity` :53；`cmd/card_seat.go#currentSeatIdentity` :23（flag → HANDOFF_SESSION_CLI/ID → GROK_SESSION_ID/CLAUDE_CODE_SESSION_ID）；`cmd/card_driver.go#cardBindCmd` :20（`BindSeat(id, identity, SeatSourceBind, ledger.SeatBearing{})` :38，flag `--cli/--session` :164-165）；`cmd/card_wait.go#cardWaitEventActionable` :233（needs_human/needs_cleared/decision_* 恒 true；room_message 判 `kind==user && !by_system`）；`cmd/session.go#sessionWaitMatch` :501；`internal/config/listenclass.go#IsSelfTarget` :80；`internal/agentd/server.go#Server.IsSelfTarget` :519、`#clientForTarget` :546；`internal/scheduling/scheduling.go#IsLocalMachine` :182（空串/local/本机/hostname）。
+- 新发现锚点（spec 未列）：bind 跳过在唤醒路径上有**第二处**——`internal/agentd/scheddrain.go#Server.wakeCoordinatorRoundID` :436，:451-454 `if current.DriverSource == bind { keystone.Forget; log "bind 席位跳过协调者唤醒"; return zero, nil }`；跨机转交 `#transferCoordinatorWake` :361（`clientForTarget(machine)` + `MarkForwarded().CoordinatorWake`），转交判据 :474 `!IsLocalMachine(bearing.Machine) && !s.IsSelfTarget(bearing.Machine)`。消费循环 `consumeAutomationEventsOnce` :636 在调 `wakeCoordinatorRoundRaw` 之前先调 `s.keystone.Decide(evs[0])`（attach 暂缓判定，:803）。
+- 席位承载读数：`internal/ledger/binding.go#SeatBearing` :196（注释「它只随 coordinate 席位存在——人尺度坐下（bind）没有载体归属」），`#validateSeatBearing` :211（bind 带任何承载字段即 `ErrBadState`），`#writeSeatBearing` 对零值 bearing 删除行，`#clearSeatTx` :277 同事务删承载行；`SeatBearingOf` 生产消费者仅 `scheddrain.go:460`（读到即按 coordinate 处理）。结论：桌面端身份不能塞进 `seat_bearings` 而不改 B389 规则 4，契约另立记录（见拍板 D1）。
+- 唤醒事件集读数：`internal/agentd/wakeconsumer.go#automationWakeEvent` :216 对 `EvNeedsHuman`/`EvSeatBearingMissing`/`EvNeedsCleared` 恒不唤醒（契约 §3.5.1、B394 回声防护）；`card wait` 却把 needs_human 当可动作。spec 用户故事 4「卡上来了…`needs_human`，我被叫醒」与现行唤醒判据冲突 → 记入契约「退回 spec 候选」。
+- 插件交付读数：`main.go:24` `//go:embed plugins/opencode-monitor/handoff-monitor.ts` → `cmd.SetPluginContent`；`cmd/skill.go:95` `skill.InstallPlugin(pluginContent, home)`、:67 `PluginStatus`；`internal/skill/plugin.go#PluginRelFile` :16 = `.config/opencode/plugins/handoff-monitor.ts`（单文件内嵌）。Claude Code mod 是目录（`.claude-plugin/plugin.json` + `hooks/hooks.json` + `hooks/register.ts`，原型只读核对），单文件内嵌机制需扩成多文件。
+- 原型 mod 只读核对：`register.ts` 硬编码 `HOME='/Users/df-zidong'`、信件路径 `${BOX}/${sessionId}.md`（`$.session.id()` = CLI 会话 id）、取信顺序「read → `rm -f` → submit」、`[handoff]` 预填自动提交。`~/.claude/settings.json` env 现值 `CLAUDE_CODE_PLUGIN_DIRS=<原型目录>`（只读）。CLI 2.1.295 二进制 `strings` 命中「a plugin folder here is an absolute local path or starts with ~」，**多目录分隔符未查到**（plan 前需钉）。
+- 薄壳读数：`desktop/main.go:139` RawMessageHandler 依次试 `HandleExternalClipboardMessage`、`HandleExternalBrowserMessage`，都不认则 Debug 日志忽略；`desktop/internal/shell/external_browser.go:21` 前缀常量，`desktop/internal/shell/external_browser_test.go:22` 与 `web/src/app/lib/desktopShell.test.ts:71` 两侧各锁一次字面量（既有执法形态）。opener 生产实现 `app.Browser.OpenURL`——对非 http scheme 的行为未核（Wails 源码不在本机，无 Go 模块缓存）。
+- 图读数：`codegraph/target.json` 顶层键 `meta/assembly/contracts`，51 条方向；`d_gateway→d_ledger` entries 含 `ledger.Store`，`d_cli→d_ledger` entries 含 `ledger.Store`——本卡新增 Store 方法走既有 entries，不新增方向。既有视图 diff 命名：`codegraph/diffs/cards-B383-charter.json`（扁平）与 `codegraph/diffs/cards/B233.28-charter.json`（B425 所述嵌套残骸）。
+- Ticket 0 落盘（空壳，零行为）：`internal/proto/desktop.go`（字面量 + 三个 DTO + `ValidateDesktopSessionID` 空壳）、`internal/proto/desktop_test.go`（字面量金样本）、`internal/ledger/types.go`（+`EvSeatDesktopSet`）、`internal/ledger/seat_desktop.go`（`SeatDesktop`/`DesktopLauncher` + 7 个 Store 方法空壳）、`internal/agentd/desktopwake.go`（材料/简报/来信/信箱/continue/投递/席位分支/拉起器代开 8 个签名空壳 + 2 个错误哨兵 + 2 个 reason 字面量）、`desktop/internal/shell/external_deeplink.go`（前缀常量 + 处理器与校验器空壳）+ `external_deeplink_test.go`（前缀字面量测试）、`web/src/app/lib/desktopShell.ts`（+`OPEN_DEEPLINK_MESSAGE_PREFIX`、`requestOpenDeepLink` 空壳）+ `desktopShell.test.ts`（前缀字面量用例）、`web/src/app/lib/claudeDeepLink.ts`（常量 + 结果联合类型 + 编码空壳）、`web/src/api/scheduling.ts`（两个 DTO 接口 + 两个 API 镜像）。未落：DDL、HTTP 路由注册、CLI flag/子命令、mod 正式版目录与 go:embed（缺工具链时加 embed 目录或路由有编译/行为风险，全部列入欠账）。
+- 判断（拍板/待裁决前置读数）：spec「文件名 = CLI 会话 id」与测试缝 6「两封信 → 两轮不合并」、缝 4「同席位并发写不丢信」不能同时成立（单文件名下第二封必覆盖或合并）→ 退回 spec 候选 R2 / 待裁决 P1。
+- 更正（同轮）：上条所记 `internal/proto/desktop.go` 在基线**已存在**（薄壳状态 DTO：`DesktopState`/`LatestResp`/`DownloadState`/`MachineUpgradeResp`），本节点第一次写入误覆盖了它——`git status` 显示 ` M internal/proto/desktop.go` 时发现。处置：`git checkout -- internal/proto/desktop.go` 还原（`git diff --stat HEAD -- internal/proto/desktop.go` 空），B434 内容移到新文件 `internal/proto/desktop_coordinator.go`，金样本移到 `internal/proto/desktop_coordinator_test.go`；契约与 `claudeDeepLink.ts` 注释里的路径同步改名。复核：14 个新导出名在 `internal/proto` 内各恰一处定义；ledger/agentd/desktop 新增名无冲突（grep 读数）。
+- 契约出稿：`docs/superpowers/specs/b434-contract.md`（§1 查证 30 行锚点、§3 十三节签名、§4 冻结 104 条、§7 待裁决 P1–P5 与退回 spec 候选 R1/R2、§8 拍板 D1–D5、§10 欠账 10 条、§11 移交 8 条）。
+- 冻结提交（历史读数，随后 amend 一次收进同批提交，hash 会变）：`git commit -q -F <scratchpad>/b434_commit_msg.txt && git log --oneline -1` → `afe4a314 docs(b434): contract — 桌面端协调者签名、信箱 wire 与 Ticket 0 空壳冻结`；`git show --stat HEAD` → `13 files changed, 1130 insertions(+)`。未 push。
+
+## contract 修复轮 1（2026-10-16，独立审阅 fail 后；基于 `0ed980d6`）
+
+- 输入：协调者转达审阅裁决 fail（B1 来信内容缺三项、B2 异机失败路径漏、B3 旧 D5 与条 12 矛盾）+ 协调者拍板 P1/P2/P3=A（P4、P5/R1 仍待用户）+ 七条非阻塞。
+- 核对读数：`cmd/session.go#buildSessionWake` :534（Hit 全文 + `svc.MessageReference(msg)` + `svc.ListSessions(member)` 的 Unread）；`internal/collab/sessions.go` `ListSessions` :33、`MessageReference` :295；`internal/agentd/server.go:195` `rooms *collab.Service`；`internal/agentd/wakeconsumer.go:823` `if admissionStalled(wakeErr)` 不收尾分支、`:837-853` 非准入错误终局（completeWakeBatch + 标 seen）；`internal/agentd/forward.go:35` `forwardedHeader = "X-Handoff-Forwarded"`、`:43` `isForwarded`；`internal/agentd/server.go:976` `Server.auth`（/api token 中间件，401）；`internal/agentd/wakeconsumer.go:511-516` bind 事件卡/祖先两处跳过。
+- B1 处置：契约 §3.6 来信按 raws 渲染「命中条全文 + 引用条（MessageReference）+ 未读数（ListSessions(seat)）/ 工单载荷原文」；`desktopLetter` 改为 `(s *Server) desktopLetter(card, seat, evs, raws) (string, error)`；冻结条 74–80。
+- B2 处置：§3.7 失败处置表按「信是否已落盘」二分——未落盘（本机写信/渲染失败、异机转交失败）不标 seen、不 completeWakeBatch、失败段首次 needs_human；已落盘（本机 opener 失败）标 seen。选「不标 seen」不选「靠账本重投」，理由：标 seen 后消费循环无重投机制。骨架新增 `desktopUndeliveredError`/`desktopUndelivered`、`withForwardedWake`/`isForwardedWake`（被转交端一跳封顶）、`handleDesktopDeliver`（未注册）；冻结条 95–111；拍板新 D5。
+- B3 处置：删除旧 D5（withLedger 不套 withCoordinator），在「审过不立」说明理由；条 13 保留。
+- 拍板落正文：P1=A（§3.6、条 67–68/115–120）、P2=A（§3.8、条 85–88）、P3=A（§3.9、条 153–158）；R2 关闭。spec `b434.md`「唤醒信箱 wire」改「文件名以 CLI 会话 id 为键（前缀）」，头部修订轨迹追加 r2.1 勘误句（协调者授权）。
+- 非阻塞：外部事实三条移入欠账 §10.6–§10.8 并标「plan 前必须钉」；seat_desktop.go 计为六个 Store 方法；测试注释条号改为新编号（`desktop_coordinator_test.go:5` → 条 127，`external_deeplink_test.go:4` → 条 30–41，`desktopwake.go:113` → 条 100–108）；复合条目拆开、冻结清单重排 104 → 164 条；`--machine` 缺省 hostname 统一为冻结条 46（从「审过不立」移除）；新增 `web/src/app/lib/claudeDeepLink.test.ts`（条 24/25）；§10.1 加 `npm run lint`；§3.10 写明 `card rebind --self` 删 `seat_desktops` 行、换绑后再跑 `card seat desktop set`（不给 rebind 加 flag，理由见正文）；§4 头部改为「测试已写、本轮未跑」。
+- 工具链仍缺：本轮同样未能跑 go build/vet/test、tsc、lint、vitest、codegraph（同 contract 节点读数）。
+- 修复轮提交（历史读数，随后 amend 一次收进同批提交，hash 会变）：`git commit -q -F <scratchpad>/r1/msg.txt && git log --oneline -2` → `d7ceb2b7 docs(b434): contract r1 — 补来信内容、异机失败路径、拍板修正` / `0ed980d6 …`；`git show --stat HEAD` → `7 files changed, 401 insertions(+), 207 deletions(-)`。未 push。
+
+## contract 修复轮 2（2026-10-16，第二轮审阅：只剩 B2 跨机一侧；基于 `a586b3c7`）
+
+- 核对读数：`internal/agentd/coordapi.go:209-212` `handleCoordWake` 对 `wakeCoordinatorRoundRaw` 任何错误回 502；`internal/agentd/wakeconsumer.go:69-90` `recordAdmissionStall`（按卡 `automationStall` 计数，`attempts == automationStallEscalateAfter`（`:52`，=3）时落 reason「自动化唤醒持续准入失败…协调者小队名额被占满」的 needs_human）、`:823-835` 准入不收尾分支内调 `recordAdmissionStall(card)`（`:828`）；`internal/ledger/events.go:450-460` `MarkNeedsHuman` 每调一次落一条（不幂等）；`internal/proto/ledger.go#CoordinatorWakeResp`（嵌 `CoordinatorLaunchResp` + `HandledBy omitempty`），既有 `ledger_wire_test.go#TestCoordinatorWakeWire` 只断言 woke/session_id/handled_by 三键在场。
+- B4 处置：`CoordinatorWakeResp` 增 `LetterUnopened bool json:"letter_unopened,omitempty"`；被转交端「信已落盘、opener 失败」回 200 + `letter_unopened=true` + `woke=false`；发起端 `transferCoordinatorWake` 据此返回 `*desktopUnopenedError` → 标 seen + complete。原移交「opener 失败错误返回形态」收回冻结。骨架新增 `desktopUnopenedError`/`desktopUnopened`；金样本 `TestB434CoordinatorWakeRespLetterUnopenedWire`（未跑）。
+- B5 处置：`wakeDesktopSeat` 自身零 `MarkNeedsHuman`，只返回类型化错误；被转交端一跳封顶拒转 → `*desktopUndeliveredError` → 502 带原因、不打标；needs_human 只由认领本批的发起端消费循环写。条 99 改写，增条 171–172。
+- B6 处置：桌面端失败（undelivered/unopened）用独立进程内按卡计数表（建议 `Server.desktopWakeStall`），计数 0→1 时落一条 needs_human、成功清零；不调 `recordAdmissionStall`、不改 `automationStall`；写明 agentd 重启清零后同段可能多落一条、可接受。增条 173–174。
+- 小错：`desktopOpener` 行号 :53 → :54。条 99–111 改写，追加条 165–176（不重排已对账编号）；§11 删去已冻结的 opener 返回形态条并重编号。
+- 工具链仍缺：go build/vet/test、tsc、lint、vitest、codegraph 本轮均未执行。
+- 修复轮 2 提交（历史读数，随后 amend 一次，hash 会变）：`git commit -q -F <scratchpad>/r1/msg2.txt && git log --oneline -1` → `4887e073 docs(b434): contract r2 — 跨机失败路径收口`；`5 files changed, 138 insertions(+), 42 deletions(-)`。未 push。
+
+- 审阅轮 3（a806a608）：裁决 pass-with-debts，无阻塞项；顺手修两处行号引用（§3.9 `:160`→`:183`，§3.11「见移交 4」→「见欠账 §10.7」）。非阻塞建议 1（未投递/未打开互斥断言）、2（「未打开」走独立分支不经 clearWakeStall）交 plan 吸收。
+
+### contract r3 补跑（2026-10-16，本机装工具链后）
+
+- 用户裁决原文：「同意在本机安装 Go 与 Node 工具链（从官方源下载），然后在 worktree 里跑 go build/vet/test 与 web typecheck/lint，拿到编译证据后把 B434 移到 breakdown。」
+- 安装：`go1.26.1.darwin-arm64.tar.gz`（sha256 `353df43a…541f` 与 go.dev `?mode=json&include=all` 发布值一致，64654450 B）；`node-v24.22.0-darwin-arm64.tar.gz`（`SHASUMS256.txt` 核对 OK）。落 `~/.local/sdk/{go,node}`，`~/.zshrc` 追加 PATH 一行。`go version go1.26.1 darwin/arm64`、`node v24.22.0`、`npm 11.19.1`。
+- 主模块（worktree `cards/B434-charter-1`）：`go build ./...` exit=0；`go vet ./...` exit=0；`go test ./... -count=1` → 64 包 ok、`cmd` FAIL（`TestSessionSendActorResolution`：`--cli/--session 与当前环境会话不一致`，因本会话 `CLAUDE_CODE_SESSION_ID` 已设；baseline main 同样 FAIL；`env -u CLAUDE_CODE_SESSION_ID … go test ./cmd/` → ok 53.271s）。
+- 金样本：`go test ./internal/proto/ -run 'TestB434|TestCoordinatorWakeWire' -v` → 三支 PASS ok 0.383s；`internal/ledger`、`internal/agentd` 过滤跑 ok。
+- desktop 子模块：`go build ./internal/...` exit=0、`go vet ./internal/...` exit=0；`go test ./internal/shell/ -run TestExternalDeepLink` PASS ok 0.460s；`go build ./...` → `main.go:42:12: pattern all:frontend/dist: no matching files found`，baseline main 同样（需先建 desktop 前端），非本卡。
+- web：`npm ci` ok；`npm run typecheck` exit=0；`npm run lint` 全仓 5 error / 38 warning，其中 3 error 在 B434 文件（`claudeDeepLink.ts:28` `_folder/_brief`、`desktopShell.ts:159` `_url` 未用）→ 改为 `void` 引用后 B434 五文件 `eslint` exit=0；其余 2 error 既有（`MobileWorkspace.tsx:156`、`TerminalTab.test.tsx:37`）。`npx vitest run` 两个 B434 文件 12 passed；全量 145 files / 1880 tests passed（20.75s）。
+- 图：`go run github.com/Xsxdot/charter/graph/cmd/codegraph --repo . validate` 0 issue（views: cards-B383-charter）；`check` crossDomainEdges 1261、misplacedSkipped 0、exit 0；`resolve --doc b434-contract.md` → ok 8 / moved 27 / file_missing 9 / vanished 4（`facade.go#Manager.ListProjectLocations` 等，`codegraph sym` 报「不在图中」，源码 :73 实在 → 图未覆盖），命令非零退出。分支视图 diff 未产出，欠账 §10.3 保留，图对账列核对。
+
+### contract r4 补签（2026-10-16，用户裁决 P5=B、P4=推荐；基于 `9744704a`）
+
+- 用户原话（协调者转达）：「P5 选 B：needs_human 叫醒桌面端协调者，但排除 agentd 和协调者自己打的标；契约补签这条。P4 按推荐。」
+- 查证读数：needs_human 落账 `internal/ledger/events.go:458` `appendEvent(…, EvNeedsHuman, actor, {"reason": reason})`；事件 actor 字段 `internal/ledger/types.go:177` `Event.Actor`、wire `internal/proto/ledger.go:124` `LedgerEvent.Actor`（json `actor`）；**needs_human 无 `by_system`**（`by_system` 只在 `internal/proto/rooms.go:47` `RoomMessage.BySystem`）。全部 `MarkNeedsHuman` 生产者 actor：`"agentd"`（`wakeconsumer.go:84`/`:483`）、`"keystone"`（`keystone.go:178`）、`"coordinator"`（`scheddrain.go:337`）、`"node:<节点>"`（`ledgerstep/runner.go:264`、`node.go:78`）、CLI `ledgerActor()` = `cli:<USER>@<hostname>`（`cmd/card_records.go:84`、`cmd/ledgercli.go:44-51`）——CLI 打标 actor 不是席位身份，「席位自打」排除须补签 `card needs` actor 改席位身份优先。`automationWakeEvent` 对 needs_human 恒不唤醒 `wakeconsumer.go:261-264`；`automationWakeEvents` :300 是消费循环 :699 与 `handleCoordWake` `coordapi.go:196` 的唯一映射入口；`keystone.Decide` `keystone.go:87-96` 对清单外 kind 返回 Wake:false（消费循环 :803 据此整轮暂缓返回），`WakeTaskTerminal` 注释 :25 含 needs_human。
+- 分流层选择：`automationWakeEvents` 内对 `EvNeedsHuman` 先于纯函数分流到 `desktopNeedsHumanWakes`（纯函数不改，B394 不变式留在原处；两调用方一致；needs_human 不在映射层产出就进不了 pending）。
+- Ticket 0（r4）：`internal/agentd/desktopwake.go` 增系统 actor 表/前缀/两个空壳；新 `internal/agentd/desktopwake_b434_test.go`；`internal/proto/desktop_coordinator.go` `DesktopLaunchMaterial.Launcher string json:"launcher,omitempty"`；`web/src/api/scheduling.ts` `launcher?: string`；新 `web/src/app/cards/desktopSeatCopy.ts` + `desktopSeatCopy.test.ts`。
+- 命令与退出码（`export PATH="$HOME/.local/sdk/go/bin:$HOME/.local/sdk/node/bin:$PATH"`）：`go build ./...` exit=0；`go vet ./...` exit=0；`go test -count=1 ./internal/agentd/ ./internal/proto/ ./internal/ledger/` exit=0（agentd 全包 ok 79.8s 首跑）；`go test ./internal/agentd/ -run TestB434 -v` → `--- PASS: TestB434NeedsHumanSystemActorTable`；`go test ./internal/proto/ -run 'TestB434|TestCoordinatorWakeWire' -v` → 三支 PASS；`cd web && npm run typecheck` exit=0；`npx eslint src/app/cards/desktopSeatCopy.ts src/app/cards/desktopSeatCopy.test.ts src/api/scheduling.ts` exit=0；`npx vitest run src/app/cards/desktopSeatCopy.test.ts src/app/lib/claudeDeepLink.test.ts src/app/lib/desktopShell.test.ts` exit=0（3 文件 14 用例 passed）。
+- 契约：§3.2/§3.5/§3.6/§3.8/§3.8.1/§3.10/§3.12 补签；冻结条 177–210；拍板 D6；§7 无待裁决，R1 关；欠账 12 清、增 14–17。spec 头部修订轨迹追加 r2.2。
+- 查证中发现（未改，待协调者认定，欠账 17）：拉起器来信 `Folder` 取自发起 agentd 的项目位置，拉起器在异机（P3=A）时路径可能不对。
+- r4 提交（历史读数，随后 amend 一次，hash 会变）：`git commit -q -F <scratchpad>/r1/msg4.txt && git log --oneline -1` → `35af1038 docs(b434): contract r4 — 补签 P5=B 与 P4`。未 push。
+
+### contract r5（2026-10-16，协调者拍板欠账 17 = 候选一；基于 `939d0fb4`）
+
+- 拍板原文（协调者）：「选候选一。理由：与 D3『信在桌面端所在机渲染与落盘』同一原则——拉起材料必须在拉起器所在机器解析，发起端只搬运『哪张卡』。」
+- DTO 选择：`DesktopDeliverReq` 携带 `card`（不选项目名）——简报还需卡标题/有效基线/所在会话，收件机须经共享账本按卡读；既有协调者 DTO 以卡为键。`letter` 字段删除（发起端不再搬运正文）。
+- Ticket 0：`internal/proto/desktop_coordinator.go:73` `DesktopDeliverReq{CLISession, DesktopSession, Card}`；`internal/agentd/desktopwake.go:185` `renderLauncherLetter` 空壳，`deliverDesktopLetter`/`handleDesktopDeliver` 注释改写；`internal/proto/desktop_coordinator_test.go` 增 `TestB434DesktopDeliverReqWireKeys`。契约内 desktopwake.go 行号按符号重算（14 处）。
+- 命令与退出码（`export PATH="$HOME/.local/sdk/go/bin:$HOME/.local/sdk/node/bin:$PATH"`）：`go build ./...` exit=0；`go vet ./...` exit=0；`go test -count=1 ./internal/agentd/ ./internal/proto/ ./internal/ledger/` exit=0；`go test ./internal/proto/ -run 'TestB434|TestCoordinatorWakeWire' -v` → 四支 PASS（含新 `TestB434DesktopDeliverReqWireKeys`）；`go test ./internal/agentd/ -run TestB434 -v` → PASS；`cd web && npm run typecheck` exit=0；`npx eslint` B434 五文件 exit=0；`npx vitest run` 三文件 exit=0。
+- 契约：§3.2 DTO、§3.6 渲染点注、§3.9 deliver 行与发起端 409 透传、新 §3.9.1；条 150/158 注明；追加 §4.13 条 211–222；欠账 17 清；§12 修订记录 r5。
+- r5 提交（历史读数，随后 amend 一次，hash 会变）：`git commit -q -F <scratchpad>/r1/msg5.txt` → `21a7f405 docs(b434): contract r5 — 拉起器代开材料在拉起器所在机解析`。未 push。
+
+## breakdown 节点（2026-10-16，worktree `handoff-B434` 分支 `cards/B434-charter-1` @ `580b20c1`；出稿者 = 协调者派出的 subagent，产出全部为提案）
+
+- 读入：`charter/skills/breakdown/SKILL.md`、`defect-families/SKILL.md`、`architecture-law/SKILL.md` 全文；`b434.md`（头部「**状态**：**已批准**（r2 …）」+ r2.1/r2.2 在位）；`b434-contract.md` 全文（r5，§4 条 1–222、§8 D1–D6、§9.3、§10、§11）；本台账；样板 `b417-breakdown.md`；`codegraph/best.json` `domains`（顶层 15 个：d_orchestration/d_gateway/d_workspace/d_execution/d_sessions/d_transport/d_protocol/d_ledger/d_collab/d_cli/d_web/d_policy/d_maintenance/d_scheduling/d_keystone；`type` 字段 logic/boundary 实读）。`k_skill_*` 归 `d_maintenance`；`CoordinatorPanel` 节点 `n_web_app_cards_CoordinatorPanel` 在图。
+- 上游状态位：spec 头部已批准在位；**contract 头部「冻结状态」行只写到 r4，缺 r5，且仍写「因本机无 Go/Node 工具链未落」（r3 起已有工具链）**——状态行失真，列入稿 §2.1 待协调者回写。
+- 工具：`go build -o <scratchpad>/codegraph github.com/Xsxdot/charter/graph/cmd/codegraph`（zsh 不对 `$CG` 做词分割，第一次用变量拼命令得到 `no such file or directory`，改用绝对路径变量后正常）。`codegraph check` exit=0，fails 0 / warns 28，crossDomainEdges 1261；`validate` exit=0（views: cards-B383-charter）。
+- 锚形态读数：图内方法 `Server.X` 多数 `vanished`（如 `scheddrain.go#Server.wakeCoordinatorRoundID`、`desktopwake.go#Server.wakeDesktopSeat`、`seat_desktop.go#Store.SetSeatDesktop`），裸名 `file#X` 为 `moved`（源码文本再锚定成功）；`coordapi.go#Server.registerCoordRoutes`、`keystone.go#Service.Decide`、`store.go#ddlStatements`、`room/delivery.go#ResolveDelivery`、`card_seat.go#currentSeatIdentity` 为 `ok`。本稿一律用裸名锚。
+- 规模读数（非测试源文件，`find -maxdepth 1`）：`internal/agentd` 64 文件 / 19,037 行 / 无子包；`cmd` 59 文件 / 11,645 行 / 无子包，`card*` 前缀 12 个；`internal/ledger` 33 文件；`internal/agentd` 前缀族 preview 9、sched 4、desktop 2（desktopstate/desktopwake）、coord 2。架构法第三条信号 1（cmd `card*` ≥5）、信号 2（agentd、cmd ≥40 无子包）命中，信号 3（>2 万行）未命中。
+- 行为可 grep 事实：`scheddrain.go#wakeCoordinatorRoundID` 的 bind 早退（:451）在 `resolveCoordinatorSquad`/`AdmitSeatCarrier`（准入）之前 → 桌面端分支插在 bind 处即不占协调者小队名额。`wakeconsumer.go#roomMessageWakeEvents` 按会话内卡的 `DriverSession` 建 bySeat，不区分 bind/coordinate；`room/delivery.go#ResolveDelivery` 不排除作者自身（reply_to 自己 / @ 自己的卡会叫醒自己），现状如此。`CardDrawer.tsx#eventSummary` 对未知事件类型兜底 `JSON.stringify(payload)`，无白名单；会话 timeline（`collab/sessions.go` switch + `ledger/store.go` 两处 `type IN (…)` 索引）只收 6 种结构事件，`seat_desktop_set` 不在其中。`cmd/card_wait.go#cardWaitEventActionable` 对未列类型返回 false。`pushfanout.go#OnLedgerEvent` 经 `classifyLedgerEvent` 推送 needs_human。
+- 契约内部不一致读数：§3.9 `/api/desktop/deliver` 行写「不需要账本」，但 r5 起收件机经 `renderLauncherLetter` → `desktopLaunchMaterial` 读 `GetCard`/`EffectiveBaseBranch`/`SessionOfCard`/`DesktopLauncherOf`（账本）；`withLedger`（`ledgerapi.go:73`）对 nil 账本回 503；卡号不存在的回包码契约未写。
+- 契约 §3.12 P4 显示条件「`material.launcher` 非空才渲染『让拉起器代开』」→ 无拉起器时 UI 无任何入口调用 `POST …/desktop-launch`，该端点冻结的「409 + MarkNeedsHuman 无拉起器」路径无 UI 触发者；spec 故事 6「卡上亮起『需要你：无拉起器』」无归属触发者。
+- 外部事实读数（欠账 §10.6–§10.8，供协调者认定后销账）：
+  - §10.7 Wails：`desktop/go.mod` `github.com/wailsapp/wails/v3 v3.0.0-beta.8`；`$GOMODCACHE/…/wails/v3@v3.0.0-beta.8/pkg/application/browser_manager.go:20` `OpenURL` → `internal/browser.OpenURL` → `browser_darwin.go` `exec.Command("open", target)` + `cmd.Start()` + `go cmd.Wait()`，**无 scheme 过滤**，且**不回报 `open` 的退出码**（只回报进程启动失败）。
+  - §10.6 PLUGIN_DIRS：bundled `plugin-authoring/reference.md:72`（2.1.295）原文要点：「one or more absolute paths (`~` allowed) separated by the platform's path-list separator … taken from the process environment or the `env` block of `~/.claude/settings.json` (never a project's settings)」→ darwin 分隔符 `:`。
+  - §10.8 mod 取 HOME：`claude-code.d.ts`（2.1.295）`:3588` `env.get(name)`，示例 `:3596` `const home = await $.env.get("HOME")`；名字须字面量，`claude plugin validate` 会列出。原型 `handoff-autosend/hooks/register.ts:8` 硬编码 `const HOME = '/Users/df-zidong'`。
+- Wave 0 未验项旁证：`launchctl list` → `78927 0 dev.gosuper.handoff.agentd`；`~/Library/LaunchAgents/dev.gosuper.handoff.agentd.plist` 在位；`ps` → pid 78927 user `df-zidong` `handoff agentd --config ~/.handoff/config.yaml`。即 agentd 是用户域 LaunchAgent（非系统 daemon），`open` 到达 GUI 会话的概率高，但**仍未验证，需真机**。
+- 补充 API 读数：`claude-code.d.ts`（2.1.295）`:8960-8979` —— `$.prompt.submit` 不带 `asUser` 时模型读作「The <name> plugin sent a message: …」，带 `asUser:true` 时按人本人原话读（hook 侧 origin 仍为 plugin）。原型 `register.ts:24/:32` 两处均 `asUser: true`（spec 探针即此形态验通）。→ 稿 P9。
+- `codegraph resolve --doc docs/superpowers/specs/b434-breakdown.md` 首跑：exit=1（「文档锚点检查失败: ledgerapi.go#withLedger (file_missing)」），49 锚 = file_missing 11 / moved 34 / ok 4；file_missing 全是短路径锚（`ledgerapi.go#…`、`scheddrain.go#…`、`CardDrawer.tsx#…`、`room/delivery.go#…`、`pushfanout.go#…`）、§8 故意举例的带接收者写法、以及尚不存在的 `desktopwake_slice_test.go#…`。修法：短路径补全为仓根相对路径；举例改为不带 `#` 的叙述；未来文件不写锚。复跑：exit=0，42 锚 = moved 37 / ok 5 / vanished 0 / file_missing 0。
+- 判断（稿内均为提案，待协调者拍板）：切法倾向「按子系统、子系统内按故事」（L/C/G1/V/G2/G3/W/D/M + I），因按故事切会让 `desktopwake.go`/`coordapi.go`/`seat_desktop.go`/`CoordinatorPanel.tsx` 多写者，且 S3 实际依赖 S1（`renderLauncherLetter` 复用 S1 材料函数）。退回 contract：R-B0 头部冻结状态行缺 r5；R-B1 故事 6 触发者缺失（P4 显示条件所致，需用户）；R-B2 坐下按钮 UI 无原子条；R-B3 `/api/desktop/deliver` 守卫「不需要账本」与 r5 矛盾。真机清单 15 条。风险最高两族：静默失败（`open` 退出码与已归档会话）、门禁绕过（来信 `asUser:true` 把群成员原文抬成人本人口吻）。
+- breakdown 提交（历史读数，随后 amend 一次收进同批提交，hash 会变）：`git commit -q -F - && git log --oneline -1` → `6b7f6496 docs(b434): breakdown 稿（待拍板）`；`git show --stat HEAD` → `2 files changed, 544 insertions(+)`。未 push。trailer 用 `Claude Opus 5.5`（会话归属提示要求，与派单里写的 `Claude Fable 5.1` 不同，已在回报中说明）。
+
+### Wave 0 末条真机验（2026-10-16 18:43，breakdown 拍板前，协调者本机）
+
+- 问题：launchd 托管的 agentd 进程里 `open claude://…` 能否到达 GUI 会话（spec 实现决定末条；本机 agentd 实为 LaunchAgent `dev.gosuper.handoff.agentd`，gui 域）。
+- 做法：临时 LaunchAgent `dev.gosuper.b434.probe`（同 gui 域、RunAtLoad）跑脚本：原子写 `~/.handoff/desktop-wake/f67b34c3-….md` → `/usr/bin/open "claude://code/continue?session=local_bbc4b5ae-…"`；`launchctl bootstrap gui/501 …` 18:43:31。
+- 读数：probe.log `18:43:32 letter written; ppid=1 uid=501 PATH=/usr/bin:/bin:/usr/sbin:/sbin`、`open exit=0`；main.log `18:43:32 Session local_bbc4b5ae… warmed successfully in 70ms`、`18:43:33 startShellPty`、`18:43:36 Mapping … to CLI session f67b34c3…`；会话 jsonl `18:43:36 user [handoff] B434 launchd 探针…`（mod 取信提交），信箱目录随即为空。
+- 结论：**launchd 托管进程（ppid=1、最小 PATH）发 `open` 深链能到达 GUI 会话并拉起被回收会话，mod 正常取信**。欠账 §10.13 / 真机清单第 1 条销账。探针 LaunchAgent 已 `bootout` 并删除 plist。
+
+## breakdown 修复轮 1（2026-10-16，基于 `4e67f33c`；独立审阅 fail 一处阻塞 + 协调者拍板 8 岔口）
+
+- 输入：协调者转达审阅裁决（阻塞 B1：G1 无缺陷族审查）与补项 1–8，及拍板 P1–P6、P8、P10 = 甲，P7/P9 待用户（协调者倾向 P7=d、P9=丁）。工作树原有未提交的「Wave 0 末条真机验」小节（协调者写）保留不动，随本提交入库。
+- 核对读数：`internal/agentd/server.go:800` `Handler()`、`:908` `s.registerCoordRoutes(api)`（G3 注册 deliver 的落点）；`internal/agentd/wakeconsumer.go:275` `decodeRoomMessageForWake` 只过滤 `by_system`（含 null）与 `RoomMsgPointer`，不看作者——与 `room/delivery.go#ResolveDelivery` 不排除作者合起来即「自己 @ 自己 / 回复自己会唤醒自己」，为可 grep 代码事实，改作 G2 机内测试（锁现状）。
+- 改动：B1 补 §5.9 G1 逐族（生命周期/静默失败/跨平台/假红假绿/门禁 + 序列化边界指 V 的 DTO fixture + 承重安全属性指条 14 反面断言），G1 验收栏同步；§2.4 增第 9 条（G1∥V 同写 `desktopwake.go`，G1 先合、V rebase）、第 10 条（V/G2/G3 写 `server.go` 的字段/函数分工），三卡禁改清单同步；L 契约引用补条 139–143（Store 一侧）；§6 重排为「已验 1 + 三批 19」（launchd 标已验并销 §10.13、G2 前置清掉；故事 4 分诊处置补 #13；自唤醒拆为 G2 机内测试 + 真机 #18 循环观察）；G2 的 `.tmp` 清理与 `Run()` 标「plan 定，不作硬判据」，注明 `open` 退出码对 LaunchServices 很可能恒为 0、unopened 能否触发以真机 #9 为准；P7 增方案 d、P9 增方案丁并更正 `cli:sycm@…` 他人身份与「bypass 模式」两处无读数推断；§0 增裁决列、稿末拍板记录区回填；头部状态行改「部分已拍板（2026-10-16）：P1–P6、P8、P10 已裁；P7、P9 待用户」；正文旧的真机条号引用全部改到新编号。
+- 自检：`codegraph resolve --doc docs/superpowers/specs/b434-breakdown.md` → exit=0，44 锚 = moved 39 / ok 5 / vanished 0 / file_missing 0。
+- r1 提交（历史读数，随后 amend 一次，hash 会变）：`git commit -q -F -` → `a78d12db docs(b434): breakdown r1 — 补 G1 缺陷族、回写拍板`；`2 files changed, 134 insertions(+), 80 deletions(-)`。未 push。
+
+### contract r6（2026-10-16，breakdown 回写；基于 `77757994`）
+
+- 输入：协调者转达 breakdown 退回项 R-B0/R-B2/R-B3、P8=甲、外部事实三条销账、Wave 0 末条已验；P7/P9 待用户、本轮不动正文。动手前 `git log --oneline -3` → `77757994`/`4e67f33c`/`580b20c1`，工作树干净。
+- 实读：`internal/agentd/ledgerapi.go:73` `withLedger`（`s.ledger == nil` → 503 `{"error":"账本库未配置（config.ledger.dsn 或单机回退）"}`）；`:85` `ledgerErr`（`ErrNotFound` → 404，`error` = `err.Error()`）；`internal/ledger/cards.go:410` `GetCard`，`:413` 包装 `fmt.Errorf("卡 %s: %w", id, ErrNotFound)`（404 文本含卡号）；`internal/ledger/ledger.go:22` `ErrNotFound`。外部事实读数沿用本台账「breakdown 节点」小节（`reference.md:72`、`browser_manager.go:20` → `browser_darwin.go`、`claude-code.d.ts:3588-3596`），本轮未重读源。
+- 契约改动：头部冻结状态行、§4 前言（R-B0）；§3.9 deliver 行改 `withLedger` + 503/404、发起端遇 503/404 按投递失败（R-B3），条 150/158 修正，新增 §4.15 条 243–251；§4.14 坐下按钮条 223–242（R-B2/P8=甲，附 vitest 用例名）；§1.2 四行、§3.11、§3.13、§6 第 3 行、条 31–32/127–128/134–135 按外部事实改写；§10.6/7/8 已钉、§10.13 已验；§7.1 记 P8=甲；§7.2 列回 P7（b/d）、P9（丙/丁）；§12 修订记录 r6（含 §2.4 边界澄清一行）。
+- 代码改动：仅 `internal/agentd/desktopwake.go#handleDesktopDeliver` 注释（写明须套 `withLedger`、404），零行为。
+- 命令与退出码（`export PATH="$HOME/.local/sdk/go/bin:$HOME/.local/sdk/node/bin:$PATH"`）：`go build ./...` exit=0；`go vet ./...` exit=0；`go test -count=1 ./internal/agentd/ ./internal/proto/ ./internal/ledger/` exit=0（三包 ok）；`go test -count=1 ./internal/proto/ ./internal/agentd/ -run TestB434` exit=0；`cd web && npm run typecheck` exit=0；`npx eslint` B434 四文件 + `CoordinatorPanel.tsx` exit=0；`npx vitest run` 三文件 14 用例 exit=0。
+- r6 提交（历史读数，随后 amend 一次，hash 会变）：`git commit -q -F <scratchpad>/r6/msg.txt` → `75d50021`；`3 files changed, 88 insertions(+), 29 deletions(-)`。未 push，未跑 `handoff card`。trailer 用 `Claude Opus 5.5`（会话归属提示要求，与 breakdown 节点同款，派单写的是「照旧」即 Fable 5.1）。
+
+### contract r7（2026-10-16，用户裁决 P7=d、P9=丁；基于 `35334dbb`）
+
+- 用户原话（协调者转达）：「P7 选 d：不动 P4 显示条件，给主 agent 加一条 CLI 调代开端点，无拉起器时 409 + needs_human。P9 选丁：保留 asUser:true，第三方原文进带作者身份和 seq 的围栏块，信首列作者，skill/CLAUDE.md 加授权规则。」协调者拍板形态：`handoff card coordinate <id> --desktop`；围栏开栏行 `` ```handoff-quote author=<actor> seq=<seq> kind=<…> ``；授权规则文案逐字给定。动手前 `git log --oneline -2` → `35334dbb`/`77757994`。
+- 实读：`cmd/card.go:456` `cardCoordinateCmd`（只调 `CoordinatorLaunch`，无 flag）；`cmd/card_driver_test.go:242` 既有断言 `card coordinate` 不注册 `--cli/--session`（协调者说的「不接受 --cli/--session」现状已成立）；`internal/client/squads.go:80` `CoordinatorLaunch`、`internal/client/coordinator.go` `CoordinatorRebind`/`CoordinatorWake`；`internal/client/client.go:437` `httpError` 把非 2xx 体原样（≤4096 字节）放进 `httpStatusError.body`；`internal/agentd/scheddrain.go:253-257` 有人判定 `DriverSession != "" || DriverSource != ""` → `ErrCASConflict` 包装 409，文本「当前席位状态不适合此操作」**不**指向 rebind（既有 `card coordinate` 现状，本卡不改）；`main.go:19` `//go:embed skills/handoff/SKILL.md`（skill 文本交付方式）；`skills/handoff/SKILL.md:371`「主 agent 回路」、`:406`「占座」；`internal/proto/ledger.go:120` `LedgerEvent.Actor`。
+- 契约裁量（超出协调者拍板字面、在回报中点明）：①其它事件载荷归第四种 `kind=event`；②作者名册放第 2 行（第 1 行仍为 `[handoff]` 标记，守条 71 与 mod 判定）；③段标题去掉 actor；④转义选「≥3 连续反引号逐个加反斜杠」，作者值清洗空白与反引号为 `_`；⑤代开端点空座 409 文本指向 `card rebind … --self 或 --launch`，判定先于拉起器查找；⑥CLI 非 2xx 时 stderr 打印解出的 `error` 字段，解不出打原始体。
+- Ticket 0 改动：`internal/agentd/desktopwake.go` 增围栏常量与纯渲染空壳（`:240-304`）、`desktopLetter` 注释；`internal/agentd/desktopwake_b434_test.go` 增 `TestB434DesktopQuoteFenceLiterals`（PASS）与 `TestB434DesktopQuoteEscape`/`TestB434DesktopLetterAuthorRoster`/`TestB434DesktopLetterNoBareQuote`（空壳期经 `skipUntilDesktopQuoteImplemented` SKIP）；`internal/agentd/testdata/b434_desktop_letter.golden`（新）；`internal/skill/desktop_rule.go`（`:11` `DesktopLetterAuthorizationRule`）+ `desktop_rule_test.go`（PASS）。
+- 金样本自洽核对：把 `desktopwake.go` 备份到 `<scratchpad>/r7/desktopwake.go.bak`，临时写入一次性参考实现（四个渲染函数），`go test ./internal/agentd/ -run TestB434Desktop -v` → 四支 PASS；随即 `cp` 还原空壳，`git diff` 确认只剩空壳与注释改动。参考实现不入库。
+- 行号：`desktopwake.go` 按符号重算 21 处（r6 注释扩 2 行使 `:108` 之后各符号 +2、r7 注释再 +2 波及 `:74` 之后；r6 回报时漏算，本轮一并修正）。
+- 契约改动：头部状态行；§3.6 来信模板与围栏规则；§3.9 代开端点 404 + 空座 409；§3.10 `card coordinate --desktop`；条 74–79、191 改写；§4.16 条 252–262、§4.17 条 263–280；§6 两行；§7.1 P7/P9，§7.2 清空；§8 D7；§9.1 r7 行；§10 欠账 18；§12 r7 修订记录。
+- 命令与退出码（`export PATH="$HOME/.local/sdk/go/bin:$HOME/.local/sdk/node/bin:$PATH"`）：`go build ./...` exit=0；`go vet ./...` exit=0；`go test -count=1 ./internal/agentd/ ./internal/proto/ ./internal/ledger/ ./internal/skill/` exit=0（四包 ok）；`-run TestB434`：6 PASS / 3 SKIP（SKIP 即上述三支渲染金样本）；`gofmt -l` 四个 Go 文件无输出；`cd web && npm run typecheck` exit=0；`npx eslint` B434 四文件 + `CoordinatorPanel.tsx` exit=0；`npx vitest run` 三文件 14 用例 exit=0（web 本轮未改）。
+- 脚本插曲：本机 `python3` 为 3.9.6，含超长中文行的编辑脚本从文件运行时报 `SyntaxError: Non-UTF-8 code starting with '\xe6'`（文件本身 UTF-8 合法，属分词器长行缓冲问题）；脚本首行加 `# -*- coding: utf-8 -*-` 后正常。
+- r7 提交（历史读数，随后 amend 一次，hash 会变）：`git commit -q -F <scratchpad>/r7/msg.txt` → `1bd0de74`；`7 files changed, 433 insertions(+), 52 deletions(-)`。未 push，未跑 `handoff card`；trailer `Claude Opus 5.5`（如实写本会话模型）。
+
+## breakdown r2（2026-10-16，基于 `30979524` 契约 r7；回写 P7/P9 用户裁决）
+
+- 前置核对：`git merge-base --is-ancestor 30979524 HEAD` → on-top（HEAD 即 `30979524 docs(b434): contract r7 — 补签 P7=d 主 agent 代开 CLI 与 P9=丁 来信围栏`）；工作树干净。契约头部冻结状态行已为「冻结到 r7」。读契约 §4.14（条 223–242，r6 坐下按钮）、§4.15（243–251，r6 deliver 守卫）、§4.16（252–262，r7 P7=d）、§4.17（263–280，r7 P9=丁）、欠账 18。
+- 归属分歧（如实记）：协调者转达要求把 §4.17 条 263–280 记到 G2 卡①；契约欠账 18 原文把「`desktopLetter` 组装 sections 与 `renderDesktopLetter` 等实现」（条 74–79、263–275、280）归 **V**、条 279 归 **M**、条 261 归 **G3**、条 252–260/262/277–278 归 **C**。稿按契约写：V 实现围栏渲染并激活金样本；G2①列条 263–280 为「扩展来信时保持全绿」，④加 golden 文件（只读）；M①加条 279（mod 行为无改动，只断言 `asUser: true`）。待协调者确认。
+- 改动：头部状态行改「**已拍板（2026-10-16）**」；§0 P7/P9 裁决列与稿末拍板记录区回填（P7=d：不动 P4，故事 5 本就落在主 agent 回路；P9=丁：保留已验通路，围栏 + 名册 + 授权规则把第三方原文降为带来源的数据）；§2.2 增 §4.14–§4.17 归属行；§2.3 记 R-B0–R-B3 已由 r6/r7 关闭；C①④（`cmd/card_driver.go` 的 `--desktop`、`internal/skill/desktop_rule.go`、client `DesktopLauncherOpen`）与验收；V①；G2①④；G3①（243–251、261）；W①（223–242，去「条 203/204 待定」）；M①（279，注明 P9 丁对 mod 无改动）；§4 故事 6 行改为主 agent `card coordinate <卡> --desktop` 触发、归 C + G3；§5.3 门禁 (c) 与 §6 #14 去「待用户」；§6 第三批增 #20（围栏来信是否被当数据，观察项，归 I），待验总数 19 → 20；§9 C/V/G2/G3/W/M 行附件更新。
+- 自检：`codegraph resolve --doc docs/superpowers/specs/b434-breakdown.md` → exit=0，44 锚 = moved 39 / ok 5 / vanished 0 / file_missing 0。
+- r2 提交（历史读数，随后 amend 一次，hash 会变）：`git commit -q -F -` → `f2b90893 docs(b434): breakdown r2 — 回写 P7/P9 裁决，已拍板`；2 files changed, 50 insertions(+), 30 deletions(-)。未 push。
+
+### 扇出（2026-10-16 19:10–19:20，协调者）
+
+- 拆解稿 r2（291fd573）头部「已拍板（2026-10-16）」；契约 r7（30979524）。
+- `handoff card split B434 "<标题>"` × 9 → B434.1（L 账本层）、B434.2（C 命令面）、B434.3（G1 拉起材料端点）、B434.4（V 直通竖切 + DTO fixture，协调者本机）、B434.5（G2 唤醒信箱与分流）、B434.6（G3 拉起器代开与 deliver）、B434.7（W 控制台）、B434.8（D 薄壳）、B434.9（M mod，本机）。每张 `card update --attach spec:/contract:/breakdown:` 三件、`card note` 来源、`card move <id> plan`（status 均返回 plan；JSON 读数在协调者会话 fanout.out）。每张卡 split+attach+move 约 60s（CLI 每次调用约 8–10s 开远端账本，B411 慢读遗留）。
+- 父卡 `card move B434 integrate`。I 不 split，在父卡执行。
+- V 与 G2 的围栏渲染归属按契约欠账 18 定（V 实现渲染，G2 只读 golden）；拆解稿台账已记分歧与结论。
+
+### 第一波 plan（L/D/M/W，2026-10-16，本地 subagent opus 出稿 ×4 并行，独立跨卡审计 ×1）
+
+- 产出：`docs/superpowers/plans/b434.{1,8,9,7}-plan.md` 与各自 `-plan-ledger.md`（出稿者只写不提交，协调者统一提交）。
+- 跨卡审计裁决：四卡均 pass-with-notes，无阻塞。三样：冻结物逐条无矛盾（M 的 embed 写法字面矛盾 → 契约 r8 修订行）；跨卡签名逐字一致（L 六方法 ↔ 契约 §3.3/§3.4；D 拒绝面不误拒 W 产出 URL；M ↔ §3.13；W DTO mock ↔ §3.2）；spec 故事 1–9 全部指到具体卡/task。
+- 协调者拍板：出稿者自报裁决点全部按审计意见直接拍（L 8 条、D 6 条、M 6 条、W 5 条）；D Task 2 内部锁豁免认可；M 探针遗留清理待用户；PG 往返归 I 卡；G2/C/V 前置约束写进拆解稿 §3.10。
+- 文字小误顺手修：L §5 条 66 归属、D 变异计数、M T2 步骤 1 原文照列、W T0 预期与命令对齐；四份状态行改「已审」。
+- 本机环境读数（出稿者台账）：`claude plugin test` 可用，M 的 7 用例在真实 harness 通过；W 在 web 副本干跑 129 用例全绿；L 用 `go test -overlay` 逐段红绿；D 用 overlay 绕 `main.go` embed 做 vet/build。
+
+### 第二波 plan（C/G1/V，2026-10-16，本地 subagent opus 出稿 ×3 并行，独立跨卡审计 ×1）
+
+- 产出：`docs/superpowers/plans/b434.{2,3,4}-plan.md` 与各自 `-plan-ledger.md`（出稿者只写不提交，协调者统一提交）。审计基线复核：HEAD `5a7dad19` 下 `go build ./...` 通过，`TestB434|TestB23328…|TestCoordStatus|TestAutomationWakeDoesNotWakeBindParent`、`internal/skill`、`internal/proto`、cmd 子集 ok，`contract.test.ts` 47 passed。
+- 跨卡审计裁决：三卡均 pass-with-notes；一条承重契约缺口由协调者在代码里复核属实（`scheddrain.go:201` 传 nil raws，`:155-160` 出错即回填并停清队）→ 契约 r10 第 10 条，V 加守卫与测试。三样：冻结物逐条无签名矛盾（G1 `(card, via string)`、V 四签名、C `DesktopLauncherOpen` 均逐字）；跨卡签名 C↔L 六方法逐字、C↔G3 按 §3.9、C↔M 无撞文件、G1∥V 函数体无交集（冲突面只在 import 块）、V↔W 锚点行仍在、V↔G2 缺口三处（opener 失败注入、HOME 注入、firstWakeErr 写法）→ r10 第 11 条 + 拆解稿 r4；spec 故事 1–9 全部指到卡/task。
+- 协调者拍板：审计 13 条契约修订全部采纳（r10）；非阻塞 6 条全部采纳并写进各 plan §14（C：信箱键校验、补救命令带 `--via`、status 本机判定、SKILL.md 一句澄清；G1：源码守卫加 `desktopOpen`；V：内部锁理由删「运行期 seq」、注入点、命名测试归 G2）。
+- 合并顺序：C 独立；G1 先于 V，V 在 G1 之后 rebase。
+
+### 探针遗留清理（2026-10-16，协调者本机，M 真机安装前置）
+
+- 删除定时任务 `b434-probe-visible`（已禁用一次性）与 `b434-probe-wake`（手动），各自 SKILL.md 留在 `~/.claude/scheduled-tasks/` 下；探针会话保留不删。
+- `~/.claude/settings.json` 移除原型 `env.CLAUDE_CODE_PLUGIN_DIRS`（值为 dev-mods 原型路径），`env` 段随之为空删除；备份 `~/.claude/settings.json.bak-b434` 保留。删除原型 mod 目录 `~/.claude/dev-mods/<本会话>/handoff-autosend/`。
+- 现状：`~/.claude/plugins/` 下无 handoff mod，`handoff skill install` 将从干净状态落 mod（契约 §3.13 条 131 键序断言可在真机核）。
+
+### 第二波 implement/review/合并（G1、V，2026-10-16，本地 subagent opus 实现 ×2 + 独立审阅 ×2）
+
+- **G1（B434.3）**：实现 6 提交（e0166388…0fc4033f），review 轮 1 pass；m1（folder 与登记字面值直接断言，T1-c 变异由「等价」改判为非等价并转红）、m2（mgr 未装配 → 500 子例；协调者确认该支错误文本「项目位置服务未装配（SetManager 未执行）」保留，r10 第 3 条括号文本指 I/O 失败支）、m3（一次 GET 只在边界层记一条日志，新增 `TestB434MaterialOneLogLinePerGet`；条 202 拉起器读失败的 Warn 按契约保留，协调者拍板）修复 4572ae61+31399ea8。合并 16c48d75（--no-ff）；agentd ok 78.659s、proto ok。审阅 n1–n4 记知悉；新符号 `resolveLocalProjectRoot`/`errProjectLocationsUnavailable`/`handleDesktopLaunchMaterial` 入图归 I 卡。
+- **V（B434.4）**：实现 4 提交（65da8464…83936213），review 轮 1 pass；I-1（drain 级子例「队列出队不阻断清队」直调 `drainIgnitionRequest` + `runStepFn` spy；删守卫变异红）、m1（`SeatDesktopOf` 读失败且 raws 为空时 Warn 降级为 bind 跳过，不阻断清队；有事件仍上抛）、m2（祖先 bind 卡读记录失败 Warn 后继续上走）、m4（M1–M11 原始读数补进台账 I6）、m6 修复 65fce863+99c7756e；m3（写信时钟缝）、m5（作者清洗字符集）归 G2。合并 e00cddb1（--no-ff；仅 `desktopwake.go` import 块冲突，取两侧）；agentd ok 63.474s、proto ok、vitest contract.test.ts 51 passed、typecheck ok。审阅者亲自复现 M3/M8 变异红绿与台账一致。
+- 合并顺序按审计：G1 先、V 后；G1∥V 函数体无交集的预判成立。
+
+### C review 回写与 L 接缝修复（2026-10-16，协调者本机）
+
+- C（B434.2）review 轮 1 pass；契约 r11 三处措辞更正（`*client.ServerError` 笔误、status 段 machine 值与 targets 探活、r10 第 5 条「同一规则」与 r9 写闸不符）。
+- L 接缝修复：`internal/ledger/seat_desktop.go#validateDesktopLauncher` 补「CLI 会话 id 不以 `.` 开头」拒绝（点开头信箱文件名会被 mod 与 `writeDesktopLetter` 同时跳过）。先红：`TestB434RegisterDesktopLauncherRejectsInvalid` 新子例「CLI 会话 id 以点开头」→ `--- FAIL … FAIL ledger 1.325s`；加闸后 `go test ./internal/ledger/ -count=1` → `ok 5.988s`；gofmt 空、vet 0。
+
+### 第二波 C 合并（2026-10-16）
+
+- **C（B434.2）**：实现 10 提交（cd84bd25…f57c303a），review 轮 1 pass；m2（补救命令带显式 `--machine`，三条变异红 + 新增 `TestB434CardBindDesktopRemedyOmitsDefaults`）、m3（status.go 文件头）、m4（launcher.go 六条错误路径补 Warn）、m8（台账原始行）修复 aa539d0d。合并 424de56b（--no-ff，无冲突）；`go vet ./...` 0、`go build ./...` 0；cmd ok 54.751s、client ok 10.326s、skill ok 1.444s、ledger ok 5.920s。
+- 第二波三卡全部已完成；卡分支 HEAD 424de56b。
+
+### 第三波 plan（G2/G3，2026-10-16，本地 subagent opus 出稿 ×2 并行，独立跨卡审计 ×1）
+
+- 产出：`docs/superpowers/plans/b434.{5,6}-plan.md` 与各自 `-plan-ledger.md`（出稿者在各自 worktree 只写不提交，协调者搬到卡分支统一提交）。审计复跑：G2 scratch 回归集 96 PASS；G3 overlay 18 PASS（源码守卫在 overlay 下读真文件属预期）；**G2+G3 合并实测**（80eeba66 + G2 终态 + G3 编辑块）：`go build ./...`/vet 通过，agentd 整包 64s ok、client ok、cmd `-run TestB434` ok、`-race` ok；冲突面只有一处 import 锚。
+- 三样：冻结物矛盾两处（`session read` 不存在 → `room read`；`rename` → `os.Link` 发布）进 r12；跨卡签名 G3 Consumes ↔ G2 Produces 四项一致，HOME 规则重复由 G2 收口；spec 故事 1–9 全部指到卡/task，剩余端到端项归 I 卡。
+- 协调者拍板：契约 r12 共 10 条（含否决生产代码 `testing.Testing()` 闸、改为 `cmd/agentd.go` 装配 + 源码守卫；拉起器简报进围栏；命名测试须顶层函数；502+needs_human 口径；哨兵 400）；拆解稿 r5 调整 G2/G3 文件集；两份 plan §14 回写；G2 顺手修换绑清失败段。
+
+### 第三波 G2 implement/review/合并（2026-10-16）
+
+- **G2（B434.5）**：实现 7 提交（1af6214e…e54a1400，16 文件 +2703/−75），22 条 plan 变异 + §14 项全部红。review 轮 1 **fail**：I-1 规则 4 冒泡场景无测试锁、I-2 退避形状与 `letter_unopened` 不落 fail 行无测试锁（三发变异存活）；m1–m6。修复 917eaabb（I-1/I-2a/I-2b/m1/m3/m5 补测试、m2 注释、m4 takeover 清段改为「载荷 `to` == 卡当前 `DriverSession` 才清」+ 子例「运行锁过期抢占不清段」）；增量复审 **pass**（三发存活变异转红，另两发亦红；m1 子例靠日志 reason 断言记为 minor 欠账，可改 `inSegment` 断言；m6 不改）。合并 02eed4c6（--no-ff，无冲突）；agentd ok 65.582s、cmd ok 54.108s、proto ok。
+- **事故记录**：实现者变异 N4（关 darwin 前缀闸）在 §14④ 去掉 testing 闸后真调了 `open`（`https://example.com/x` 与 `claude://code/new?folder=/tmp`）；协调者核 `list_sessions` 未见 `/tmp` 会话，副作用仅浏览器页；后续凡变异 opener 先换替身，已写进 G3 与审阅者 brief。
+- 审阅者转 I 卡：未投递时游标停批导致的疑似队头饿死（`EventsFromAsc` 500 窗口），B389 起既有，I 卡评估。
+
+### 父卡 integrate 回归（非 G3 部分，2026-10-16，卡分支 ccb9be19）
+
+- web：`npx vitest run` → Test Files 146 passed、Tests 1947 passed；`npm run typecheck` 0；`npm run lint` → 2 errors / 38 warnings，两处 error 在 `src/app/tree/MobileWorkspace.tsx:156` 与 `src/app/workbench/TerminalTab.test.tsx:37`，`git diff main..HEAD` 对这两个文件为空 → **main 既有，非本卡引入**。
+- desktop：`go vet ./internal/...` 0；`go test ./internal/...` → embedbin ok 0.974s、shell ok 0.818s（`go build ./...` 仍因 `main.go:42` embed `all:frontend/dist` 预存失败，overlay 已在 D 卡核过）。
+- mod：PATH 上的 `~/.local/bin/claude` 2.1.220 无 `plugin test` 子命令；用桌面端内嵌 CLI（`…/claude-code/2.1.295/…/claude.app/Contents/MacOS/claude`）：`plugin validate --strict` → Validation passed（exit 0）；`plugin test` → 12 pass / 0 fail。
+- Go 全量 `go test ./...` 与 codegraph 视图 diff 留到 G3 合入后。
+
+### 第三波 G3 implement/review/合并与全量回归（2026-10-16）
+
+- **G3（B434.6）**：实现 6 提交（4ac36f56…b6d1908e，8 文件 +1979/−29），plan 18 发 + §14 新增 M19–M31 全部红。review 轮 1 pass（审阅者复现 M27/M22/M5 红绿一致，亲自构造 needs_human 回声场景通过）；minor 1（异机结果未知口径）、minor 2（reason 经 `ServerErrorText` 去外壳）、minor 3–5 修复 419d4284（M32/M33/M34 红）。合并 62ce8eb6（--no-ff，无冲突）。
+- 契约 r13（brief 围栏 seq=0、拉起器首条消息口径、结果未知文案）+ `skills/handoff/SKILL.md` 拉起器一句补充（df355058；`internal/skill`/`cmd` B434 用例仍绿）。
+- **全量回归（62ce8eb6）**：`gofmt -l` 空；`go vet ./...` 0；`go build ./...` 0；`env -u CLAUDE_CODE_SESSION_ID go test ./... -count=1` → **65 ok / 0 FAIL**（原始输出 scratchpad `gotest_full.txt`）。
+
+### 图对账（2026-10-16，本地 subagent opus，提交 365f0c55，只动 `codegraph/diffs/cards-B434-charter-1.json`）
+
+- 视图：+233 节点（173 func / 52 model / 8 entry；约 175 为 B434 新改符号，58 为本分支触及文件里此前未入图的 B389 符号，26 为 TS 节点）、+10 容器、1 节点修改（`m_agentd_Server` 新字段）、+329 边、−2 边（`resolveCoordWorkdir` 的两条调用迁入 `resolveLocalProjectRoot`）、2 条 proto↔TS 孪生投影。边全部来自 go/types 类型检查，无裸名撞库。
+- `codegraph validate` → exit 0（issues null）；`validate --stale` → 1416 失鲜节点（main 既有 1322，本分支行号漂移 +94，均非视图节点）；`resolve --doc b434-contract.md --view …` → ok 19 / moved 28 / file_missing 10（契约以裸文件名写锚，非图缺口）/ vanished 0。抽查 `SetSeatDesktop`/`wakeDesktopSeat`/`buildClaudeNewSessionURL` 均命中。
+- **`check --view` 3 处跨域超预算（真实代码边，未改 target.json，留用户裁决）**：`d_ledger→d_protocol` 5>2（`SetSeatDesktop`/`validateDesktopLauncher` → `proto.ValidateDesktopSessionID`/`EncodeSeatIdentity`）；`d_cli→d_maintenance` 27>25（`skill` 命令 → `ClaudeModStatus`/`InstallClaudeMod`）；`d_gateway→d_collab` 1>0（`desktopLetterAssembler` 与 B389 旧码 `roomMessageWakeEvents` → `collab`）。另：9 个新 agentd 容器与 `k_ledger_SeatBearing` 在 best.json 无落位。
+- 留给人：`desktop/` 独立模块与 mod TS 未入图；接口分派调用（`s.mgr.ListProjectLocations`、`SchedulingClient.*`）未记边；SeatDesktop/DesktopLauncher/SeatBearing 实体无 creator/writer（upsert 是否算 creator待定）；基线里 `consumeAutomationEventsOnce` 四条过期调用边（B389 前遗留）待 absorb 时清理；仓内另有错位视图 `codegraph/diffs/cards/B233.28-charter.json`（非本卡）。
+
+### 真机批次（2026-10-16，协调者本机；隔离 agentd：卡分支二进制 `scratchpad/rm/handoff`，`127.0.0.1:7778`，SQLite 账本于独立 datadir，无 targets；CLI 以 `--config/--agentd` 指向；桌面端席位用保留的探针会话 `local_b904fc6c…`（CLI 会话 `6ab073f5…`））
+
+- **M 真机安装**：`handoff skill install`（卡分支二进制）→ `~/.handoff/claude-mods/handoff-desktop-wake` 三件落盘，`skill status` → 一致；`~/.claude/settings.json` 前后 diff 仅末尾追加 `env.CLAUDE_CODE_PLUGIN_DIRS`，顶层键序不变、其余值逐字节相等（条 131）。
+- **G1 R1/R3/R4/R5（故事 1/7/8）**：`GET /api/cards/B434900/coordinator/desktop-launch` → 200 `{card,folder,brief}`，`folder` = `handoff project ls` 路径，brief 以 `[handoff] ` 开头、含 `--via page`、372 字符 ≪ 14336；无本机位置项目卡 N1 → 409 文本逐字「项目在本机没有登记位置：nowhere-proj（handoff project add 登记后可用）」；不存在卡 → 404 含卡号；无凭据 → 401。登记拉起器后 `launcher` 键出现、注销后消失（见故事 5 段）。
+- **故事 1 深链**：按 `buildClaudeNewSessionURL` 同款编码 `open "claude://code/new?folder=…&q=…"`（1758 字符）→ 桌面端 main.log 同秒 `LocalSessions.prewarmLocal`，窗口布局多出一个 page 面板；**会话 id 在人按下发送后才铸造**（log 形态「Starting local session」仅在发送时出现），故无人值守下故事 1 止于「composer 打开、简报预填」；草稿内容本机无法在无屏幕访问下核验——**留用户验收一眼**。
+- **故事 2/9**：`card bind B434900 --cli claude --session 6ab073f5… --desktop-session local_b904fc6c… --via page`（需 `env -u CLAUDE_CODE_SESSION_ID`，否则与本会话环境身份冲突被拒——即「只能在当前会话里出示当前会话」的执法）→ `{"ok":true}`；真实 `local_` id 过 `ValidateDesktopSessionID`；timeline `driver_seat_bound` + `seat_desktop_set{desktop_session,identity,machine,via:page}`。
+- **故事 3（@ 叫醒，端到端）**：`session send session:1 "@B434900 …" --cli claude --session 6ab073f5…`（席位是房间书写者）→ 23:42:58 信箱目录以 0700 新建、信 `6ab073f5….1792161778617599000.md`（0600，660B，19 位 ns）落盘 → 同秒桌面端 `Warming session local_b904fc6c…`（45ms）→ 23:43:04 信被 mod 取走（目录空）→ 23:43:03 CLI 会话映射 → 23:43:14 `Stop hook Query completed`。来信全文（探针会话 transcript）：开栏行、名册「本信含以下身份的原文：cli:claude#…」、`handoff-quote author=… seq=10 kind=room_message` 围栏、「会话 session:1 里你还有 1 条未读（含本条）」、尾行「读全文：handoff card show B434900；会话消息：handoff room read session:1」。**模型行为**：回复「已收到。复述本消息首行：> @B434900 …」并明言未执行任何 handoff 命令，零工具调用——围栏内第三方原文被当作数据（条 263–280 的真机表现）。
+- **故事 4（needs_human，P5=B）**：4a 席位自打标（`card needs … --cli claude --session 6ab073f5…`）→ 40s 内信箱 0 封（规则 4）；4b 人侧 actor `cli:df-zidong@…` 打标 → 23:45:54 信落盘（468B）→ 23:45:58 映射 → 23:45:59 取走 → 23:46:02 回合完成；来信为「## 需要人 seq 13」围栏段，尾行无会话分句（r10 第 8 条）；回复「已收到 4b」，零工具调用。
+- **故事 6（无拉起器）**：`card coordinate B434901 --desktop` → stderr 末行逐字 `Error: 无拉起器，请在桌面端开一场并登记`、退出 1；卡事件 `needs_human actor=agentd reason=无拉起器…`；agentd 日志「项目未登记拉起器，已落 needs_human」。
+- 隔离 agentd 日志只记 WARN 以上（datadir/agentd.log），Info 级唤醒行未见；判据以信箱、桌面端 main.log 与 transcript 为准。
+
+- **故事 5（拉起器代开）**：`launcher register --project handoff --desktop-session local_b904fc6c…`（身份须由 `CLAUDE_CODE_SESSION_ID` 环境出示，命令不接受 `--cli/--session`）→ 登记 JSON 含 `cli_session`/`machine`/`actor`；`GET desktop-launch` 出现 `launcher` 键（R5），`handoff status` 拉起器段「handoff  local_b904fc6c…  DF-ZIDONGdeMac-mini.local  可达」；`card coordinate B434901 --desktop` → 200 `{launcher,machine,handled_by}`；23:49:20 拉起器来信落盘（943B，r12/r13 形态：外壳 + `handoff-quote author=agentd seq=0 kind=brief` 围栏内简报，`--via launcher`），23:49:23 会话映射、23:49:24 信被取走、23:50:00 回合完成；注销后 `launcher` 键消失。**真机发现（R1 未完成）**：拉起器会话按来信调用桌面端 `start_session` 新建协调者会话，被桌面端拒绝：「Starting sessions requires a user at the keyboard; this session runs unattended (scheduled or remotely dispatched)」——该探针会话由定时任务创建，桌面端将其归为无人值守；**由人开过的普通会话作拉起器是否同样被拒，需用户用自己开的一场会话验收**（skill 文本本就要求拉起器是人开的会话）。观察 #20：该会话在项目 CLAUDE.md 无常设授权的情况下仍按来信行动（尝试建会话、未执行 handoff 命令、卡未改动）。
+- **未做 / 留用户验收**：故事 1 composer 草稿一眼；跨机转交与异机拉起器（需第二台 agentd，批次 3 #17/R3）；PG 方言往返（`LEDGER_TEST_PG_DSN` 直连写库，本机只有生产账本，未跑）；launchd 托管 agentd 下的生产 opener（本次 opener 由隔离 agentd 进程调用 `open`，非 launchd gui 域；HOME 一致性 #11 未验）；`open` 对已归档/不存在会话 id 的退出码（#9）。
+- 清理：拉起器已注销；隔离 agentd 已停（datadir 与日志留在 scratchpad 作证据）；mod 安装保留（M 交付物）；`~/.claude/settings.json.bak-b434` 与 `settings.before-install.json` 保留。

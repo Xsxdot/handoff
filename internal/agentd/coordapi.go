@@ -47,6 +47,12 @@ func (s *Server) registerCoordRoutes(api *http.ServeMux) {
 	api.HandleFunc("POST /api/cards/{id}/coordinator/forget", s.withLedger(s.withCoordinator(s.handleCoordForget)))
 	api.HandleFunc("POST /api/cards/{id}/coordinator/wake", s.withLedger(s.withCoordinator(s.handleCoordWake)))
 	api.HandleFunc("POST /api/cards/{id}/attach", s.withLedger(s.withCoordinator(s.handleCoordAttach)))
+	// B434 G1：拉起材料只读端点只套 withLedger、不套 withCoordinator（契约 §3.9、条 13）——
+	// 没装自动化层的 agentd 也要能给「用 Claude Code 坐下」出材料。
+	api.HandleFunc("GET /api/cards/{id}/coordinator/desktop-launch", s.withLedger(s.handleDesktopLaunchMaterial))
+	// B434 G3：拉起器代开（契约 §3.9 POST 行）同样只套 withLedger——代开不经协调者小队
+	// 识别与准入（条 254），没装自动化层的 agentd 也要能请拉起器代开。
+	api.HandleFunc("POST /api/cards/{id}/coordinator/desktop-launch", s.withLedger(s.handleDesktopLauncherOpen))
 }
 
 // withCoordinator 守卫自动化层装配：keystone 或 scheduling 未装配时 503。
@@ -206,7 +212,16 @@ func (s *Server) handleCoordWake(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.log.Info("转交唤醒本端执行", "card", id, "holder", req.Holder, "event_count", len(evs))
-	result, err := s.wakeCoordinatorRoundRaw(r.Context(), id, evs, req.Events)
+	// B434：带转交标记执行——被转交端对桌面端席位不再二次转交（一跳封顶，契约 §3.7）。
+	result, err := s.wakeCoordinatorRoundRaw(withForwardedWake(r.Context()), id, evs, req.Events)
+	if desktopUnopened(err) {
+		// 信已落盘、continue 未发出：回 200 + letter_unopened，发起端据此标 seen、不重试
+		// （回 502 会被当成「未落盘」每轮重投，多写同批信，拍板 D5）。被转交端不落 needs_human。
+		s.log.Warn("转交唤醒：来信已落盘但 continue 未发出，回 letter_unopened", "card", id,
+			"holder", req.Holder, "cause", err)
+		writeJSON(w, http.StatusOK, proto.CoordinatorWakeResp{HandledBy: s.localMachineName(), LetterUnopened: true})
+		return
+	}
 	if err != nil {
 		s.log.Error("转交唤醒执行失败", "card", id, "holder", req.Holder, "cause", err)
 		writeErr(w, http.StatusBadGateway, fmt.Errorf("转交唤醒失败: %w", err))
@@ -312,7 +327,8 @@ func (s *Server) handleCoordForget(w http.ResponseWriter, r *http.Request) {
 
 // resolveCoordWorkdir 尽力解析卡所属项目在本机的位置根作为会话工作目录
 // （SessionSpec.Workdir=项目位置根）。解析不到不阻断拉起（置空由承载层缺省），
-// 只留日志——plan §D5.2 的 best-effort 定案。
+// 只留日志——plan §D5.2 的 best-effort 定案。解析本身委托 resolveLocalProjectRoot
+// （与拉起材料共用唯一解析点，B434 契约 §11.1）。
 func (s *Server) resolveCoordWorkdir(cardID string) string {
 	if s.mgr == nil {
 		// best-effort 解析：缺 manager 只留空，由承载层缺省决定工作目录
@@ -322,17 +338,50 @@ func (s *Server) resolveCoordWorkdir(cardID string) string {
 	if err != nil {
 		return ""
 	}
-	entries, err := s.mgr.ListProjectLocations()
-	if err != nil {
+	root, err := s.resolveLocalProjectRoot(card)
+	switch {
+	case errors.Is(err, errNoLocalProject):
+		s.log.Warn("协调者工作目录解析失败：项目未登记", "card", cardID, "project", card.Project, "cause", err)
+		return ""
+	case err != nil:
 		s.log.Warn("协调者工作目录解析失败：列项目位置出错", "card", cardID, "cause", err)
 		return ""
 	}
+	return root
+}
+
+// errProjectLocationsUnavailable 表示本 agentd 未注入任务编排 client（SetManager
+// 未执行），无从读项目位置。与 errNoLocalProject 分开：它是装配缺口而不是「项目
+// 没登记」，不能叫人去跑 handoff project add。
+var errProjectLocationsUnavailable = errors.New("项目位置服务未装配（SetManager 未执行）")
+
+// resolveLocalProjectRoot 解析卡所属项目在本 agentd 登记的绝对根目录。它是拉起
+// 材料（desktopLaunchMaterial）与协调者工作目录（resolveCoordWorkdir）的唯一解析点
+// （B434 契约 §3.5、§11.1）：两处各写一份就会各自漂移，而测试只拿其中一处比对时仍全绿。
+//
+// 参数：card 已读出的卡（只用 ID 与 Project）。
+// 返回：命中 → loc.Path；项目未登记或卡无项目 → 包 errNoLocalProject，文本逐字为
+// 「项目在本机没有登记位置：<project>（handoff project add 登记后可用）」（前端原样显示）；
+// 列项目位置失败 → 原样包装、不包 errNoLocalProject（那是 I/O 故障，叫人去登记是误导，
+// 契约 r10 第 3 条窄读）；mgr 未注入 → errProjectLocationsUnavailable。
+// 注意：ListProjectLocations 必须经 s.mgr（b23328 源码守卫的执法面含本文件）；
+// 不判路径是否真实存在（与 workspace.ResolveProject 同口径）。本函数不打日志：
+// 两个调用方各自在边界记一条（resolveCoordWorkdir 保持 B434 前的 Warn 口径，
+// 材料端点由 handleDesktopLaunchMaterial 记），这里再记就是同一失败两行。
+func (s *Server) resolveLocalProjectRoot(card ledger.Card) (string, error) {
+	if s.mgr == nil {
+		return "", errProjectLocationsUnavailable
+	}
+	entries, err := s.mgr.ListProjectLocations()
+	if err != nil {
+		return "", fmt.Errorf("列项目位置: %w", err)
+	}
 	loc, err := workspace.ResolveProject("", card.Project, entries)
 	if err != nil {
-		s.log.Warn("协调者工作目录解析失败：项目未登记", "card", cardID, "project", card.Project, "cause", err)
-		return ""
+		// 对外文本按契约 §3.5 冻结，不带 ResolveProject 的原始原因。
+		return "", fmt.Errorf("%w：%s（handoff project add 登记后可用）", errNoLocalProject, card.Project)
 	}
-	return loc.Path
+	return loc.Path, nil
 }
 
 // coordinatorAttachInfo 将 keystone 定位器的结果投影到 agentd wire DTO。

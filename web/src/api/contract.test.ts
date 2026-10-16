@@ -131,6 +131,11 @@ import homeWakeReqFixture from './testdata/HomeWakeReq.json'
 import homeWakeRespFixture from './testdata/HomeWakeResp.json'
 import carrierDetectRespFixture from './testdata/CarrierDetectResp.json'
 import carrierRunCommandRespFixture from './testdata/CarrierRunCommandResp.json'
+import desktopLaunchMaterialFixture from './testdata/DesktopLaunchMaterial.json'
+import desktopLaunchMaterialNoLauncherFixture from './testdata/DesktopLaunchMaterialNoLauncher.json'
+import desktopLauncherOpenRespFixture from './testdata/DesktopLauncherOpenResp.json'
+import desktopDeliverReqFixture from './testdata/DesktopDeliverReq.json'
+import desktopDeliverRespFixture from './testdata/DesktopDeliverResp.json'
 import {
   type CarrierDetectResp,
   type CarrierRunCommandResp,
@@ -138,6 +143,8 @@ import {
   type CoordinatorLaunchResp,
   type CoordinatorStatus,
   type CoordinatorAttachReleaseResp,
+  type DesktopLaunchMaterial,
+  type DesktopLauncherOpenResp,
   type HomeProbeReq,
   type HomeProbeResp,
   type HomeWakeReq,
@@ -694,5 +701,39 @@ describe('远端预览会话契约', () => {
     expect(event.session.id).toBe('pvw-01')
     expect(opened.opened).toBe(true)
     expect(closed.ok).toBe(true)
+  })
+})
+
+// B434 桌面端协调者 DTO（契约 §6 DTO 行）：Go 侧 TestContractFixtures 生成、逐字节钉住；
+// 这里以 TS 类型承接（编译期）并断言键序、缺键与零值在场（运行期）。
+// DesktopDeliverReq/Resp 是 agentd↔agentd wire，web 无消费方、无 TS 镜像，只钉键与零值。
+describe('B434 桌面端协调者 DTO 契约', () => {
+  it('DesktopLaunchMaterial：已登记拉起器时 launcher 在场', () => {
+    const m: DesktopLaunchMaterial = desktopLaunchMaterialFixture
+    expect(Object.keys(m)).toEqual(['card', 'folder', 'brief', 'launcher'])
+    expect(m.card).toBe('B434')
+    expect(m.folder).toBe('/Users/dev/workspace/handoff')
+    expect(m.brief.startsWith('[handoff] ')).toBe(true)
+    expect(m.launcher).toBe('local_6f1c-launcher')
+  })
+  it('DesktopLaunchMaterial：未登记拉起器时 launcher 是缺键而不是空串', () => {
+    const m: DesktopLaunchMaterial = desktopLaunchMaterialNoLauncherFixture
+    expect(Object.keys(m)).toEqual(['card', 'folder', 'brief'])
+    expect(Object.prototype.hasOwnProperty.call(m, 'launcher')).toBe(false)
+    expect(m.launcher).toBeUndefined()
+  })
+  it('DesktopLauncherOpenResp：machine 空串（本机）是在场的零值', () => {
+    const r: DesktopLauncherOpenResp = desktopLauncherOpenRespFixture
+    expect(Object.keys(r)).toEqual(['launcher', 'machine', 'handled_by'])
+    expect(Object.prototype.hasOwnProperty.call(r, 'machine')).toBe(true)
+    expect(r.machine).toBe('')
+    expect(r.handled_by).toBe('mac-01')
+  })
+  it('DesktopDeliverReq / DesktopDeliverResp：键序与零值在场', () => {
+    expect(Object.keys(desktopDeliverReqFixture)).toEqual(['cli_session', 'desktop_session', 'card'])
+    expect(desktopDeliverReqFixture.card).toBe('B434')
+    expect(Object.keys(desktopDeliverRespFixture)).toEqual(['handled_by', 'written', 'opened'])
+    expect(desktopDeliverRespFixture.written).toBe(true)
+    expect(desktopDeliverRespFixture.opened).toBe(false)
   })
 })

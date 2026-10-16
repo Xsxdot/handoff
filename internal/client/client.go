@@ -97,6 +97,50 @@ func (e *httpStatusError) Error() string {
 	return fmt.Sprintf("%s: 状态码 %d: %s", e.op, e.code, e.body)
 }
 
+// ServerErrorText 取出 agentd 非 2xx 响应里给人看的错误原文。
+//
+// 参数：err 任意错误（通常来自 Client 方法）。
+// 返回：ok=false 表示 err 链上没有 agentd 的 HTTP 状态错误（连接失败、解码失败等），
+// 调用方按原错误处理；ok=true 时 msg 依次取：响应体是 JSON 对象且 `error` 为非空字符串
+// → 该字符串；否则 → 去首尾空白后的原始响应体；原始体也为空 → 「agentd 返回状态码 N」。
+// 注意：响应体已被 httpError 截在 4096 字节内；本函数只投影文本，不改错误本身。
+// 为什么需要它：CLI 要把服务端的可行动文案（如「无拉起器，请在桌面端开一场并登记」）
+// 原样交给人，不带 {"error":…} JSON 外壳（契约条 258–259）；httpStatusError 不导出，
+// cmd 层拿不到 body。
+func ServerErrorText(err error) (string, bool) {
+	var he *httpStatusError
+	if !errors.As(err, &he) {
+		return "", false
+	}
+	var body struct {
+		Error *string `json:"error"`
+	}
+	if json.Unmarshal([]byte(he.body), &body) == nil && body.Error != nil && strings.TrimSpace(*body.Error) != "" {
+		return *body.Error, true
+	}
+	if he.body != "" {
+		return he.body, true
+	}
+	return fmt.Sprintf("agentd 返回状态码 %d", he.code), true
+}
+
+// StatusCode 取出 agentd 非 2xx 响应的 HTTP 状态码。
+//
+// 参数：err 任意错误（通常来自 Client 方法）。
+// 返回：ok=false 表示 err 链上没有 agentd 的 HTTP 状态错误（连接失败、解码失败、
+// ctx 取消等）；ok=true 时 code 为对端回的状态码。
+// 为什么需要它：agentd→agentd 的调用方要按对端状态码分流处置（B434 拉起器投递：
+// 收件机 409「项目在本机没有登记位置」逐字透传、不打等人标；其余非 2xx 按投递失败
+// 处置，契约 §3.9），而 httpStatusError 不导出；与 ServerErrorText 并列，只投影、不改错误
+// （契约 r12 第 5 条：两个正交投影，不新开导出类型）。
+func StatusCode(err error) (int, bool) {
+	var he *httpStatusError
+	if !errors.As(err, &he) {
+		return 0, false
+	}
+	return he.code, true
+}
+
 // isPermanent 判定错误是否属于「重试无意义」的永久性失败。
 //
 // 判定来源：

@@ -1,0 +1,6 @@
+{
+  "name": "handoff-desktop-wake",
+  "version": "1.0.0",
+  "description": "handoff 唤醒信箱：会话内每 5 秒取走 ~/.handoff/desktop-wake 里本会话的来信并提交为一轮；输入框预填以 [handoff] 开头时替人发送",
+  "author": { "name": "handoff" }
+}

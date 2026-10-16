@@ -1,13 +1,23 @@
-// CoordinatorPanel.test.tsx —— 锁定协调者三态、服务端命令确认和交回接缝。
+// CoordinatorPanel.test.tsx —— 锁定协调者三态、服务端命令确认和交回接缝，以及 B434 桌面端坐席入口
+// （「坐下」按钮契约条 223–242、拉起器按钮契约条 203–210）。
 // 边界：每次生命周期动作都从公开按钮进入；终端真正打开由 Workbench/Shell 接缝负责。
-import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+// B434：拉起材料、编码、薄壳判定与桥、剪贴板一律 vi.mock 注入 spy（契约 §4.14 断言方式）；
+// 编码函数自身的行为由 claudeDeepLink.test.ts 锁，这里只锁面板怎么用它。
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type { MockInstance } from 'vitest'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { attachCoordinator, getCoordinatorStatus, launchCoordinator, releaseCoordinator } from '../../api/scheduling'
-import type { CoordinatorStatus } from '../../api/scheduling'
+import { ApiError } from '../../api/client'
+import { attachCoordinator, getCoordinatorStatus, getDesktopLaunchMaterial, launchCoordinator, openViaDesktopLauncher, releaseCoordinator } from '../../api/scheduling'
+import type { CoordinatorStatus, DesktopLaunchMaterial } from '../../api/scheduling'
 import { usePoll } from '../data/usePoll'
+import { buildClaudeNewSessionURL } from '../lib/claudeDeepLink'
+import { copyToClipboard } from '../lib/clipboard'
+import { isDesktopShell, requestOpenDeepLink } from '../lib/desktopShell'
 import { useWorkbench, type BaseDir } from '../workbench/useWorkbench'
 import { CoordinatorPanel } from './CoordinatorPanel'
+import panelSource from './CoordinatorPanel.tsx?raw'
+import { DESKTOP_COPY_BRIEF_BUTTON, DESKTOP_COPY_BRIEF_HINT, DESKTOP_LAUNCHER_BUTTON, DESKTOP_LAUNCHER_SENT, DESKTOP_SEAT_BUTTON, DESKTOP_TRUST_HINT } from './desktopSeatCopy'
 
 const termInstance = {
   cols: 100,
@@ -29,7 +39,9 @@ vi.mock('@xterm/xterm', () => ({ Terminal: vi.fn(function () { return termInstan
 vi.mock('@xterm/xterm/css/xterm.css', () => ({}))
 vi.mock('@xterm/addon-fit', () => ({ FitAddon: vi.fn(function () { return { fit: vi.fn() } }) }))
 vi.mock('@xterm/addon-webgl', () => ({ WebglAddon: vi.fn(function () { return { onContextLoss: vi.fn(), dispose: vi.fn() } }) }))
-vi.mock('../../api/client', () => ({
+// why 展开 importOriginal：B434 用例要用真 ApiError 构造 409（与 request 抛出的同型）。
+vi.mock('../../api/client', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../api/client')>()),
   createPtySession: (...args: unknown[]) => createPtySession(...args),
   deletePtySession: vi.fn(),
 }))
@@ -39,10 +51,22 @@ vi.mock('../../api/scheduling', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../api/scheduling')>()),
   attachCoordinator: vi.fn(),
   getCoordinatorStatus: vi.fn(),
+  getDesktopLaunchMaterial: vi.fn(),
   launchCoordinator: vi.fn(),
+  openViaDesktopLauncher: vi.fn(),
   rebindCoordinatorLaunch: vi.fn(),
   releaseCoordinator: vi.fn(),
 }))
+vi.mock('../lib/claudeDeepLink', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../lib/claudeDeepLink')>()),
+  buildClaudeNewSessionURL: vi.fn(),
+}))
+vi.mock('../lib/desktopShell', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../lib/desktopShell')>()),
+  isDesktopShell: vi.fn(),
+  requestOpenDeepLink: vi.fn(),
+}))
+vi.mock('../lib/clipboard', () => ({ copyToClipboard: vi.fn() }))
 
 vi.mock('../data/usePoll', () => ({ usePoll: vi.fn() }))
 
@@ -52,12 +76,41 @@ const info = { machine: '', dir: '/repo/handoff', command: 'opencode --session s
 const coordinatorBase: BaseDir = {
   key: '/repo/handoff', kind: 'workspace', path: '/repo/handoff', label: 'handoff', projectName: 'handoff', machine: '',
 }
+// NO_LOCAL_PROJECT 是 G1 材料端点 409 的 error 原文形状（契约 §3.5：errNoLocalProject 包装文本）。
+const NO_LOCAL_PROJECT = '项目在本机没有登记位置：handoff（handoff project add 登记后可用）'
+// material 是 G1 材料端点 200 体（契约 §3.2 DesktopLaunchMaterial；launcher 缺键 = 未登记拉起器）。
+const material: DesktopLaunchMaterial = {
+  card: 'B1',
+  folder: '/repo/handoff',
+  brief: '[handoff] 你是卡 B1 的协调者，坐在这场 Claude 桌面端会话里。\n\n- 卡号：B1',
+}
+const ENCODED = 'claude://code/new?folder=%2Frepo%2Fhandoff&q=%5Bhandoff%5D'
 
 function pollState(data: CoordinatorStatus | null, over: Partial<{ disconnected: boolean; sessionExpired: boolean; errorText: string }> = {}) {
   return { data, disconnected: false, sessionExpired: false, errorText: '', refresh, ...over }
 }
 
+const seatButton = () => screen.getByRole('button', { name: DESKTOP_SEAT_BUTTON })
+
+// renderReady 渲染空座面板并等材料落定：按钮由禁用（读取中）变可用才算就绪，
+// 避免把读取中的禁用误当成断言结果（缺陷族·假绿）。
+async function renderReady(cardId = 'B1') {
+  const view = render(<CoordinatorPanel cardId={cardId} onOpenTerminal={vi.fn()} />)
+  await waitFor(() => expect(seatButton()).toBeEnabled())
+  return view
+}
+
+// renderUnavailable 渲染材料 409 的空座面板，并以 title 出现为落定信号（读取中同样禁用，不能只等禁用）。
+async function renderUnavailable(reason = NO_LOCAL_PROJECT) {
+  vi.mocked(getDesktopLaunchMaterial).mockRejectedValue(new ApiError(409, reason, { error: reason }))
+  const view = render(<CoordinatorPanel cardId="B1" onOpenTerminal={vi.fn()} />)
+  await waitFor(() => expect(seatButton()).toHaveAttribute('title', reason))
+  return view
+}
+
 describe('协调者面板', () => {
+  let anchorClick: MockInstance<() => void>
+
   beforeEach(() => {
     vi.clearAllMocks()
     vi.mocked(usePoll).mockReturnValue(pollState(unbound) as never)
@@ -65,6 +118,14 @@ describe('协调者面板', () => {
     vi.mocked(launchCoordinator).mockResolvedValue({ woke: true, rebuilt: false, escalated: false, output: '协调者已拉起' })
     vi.mocked(attachCoordinator).mockResolvedValue(info)
     vi.mocked(releaseCoordinator).mockResolvedValue({ ok: true })
+    vi.mocked(getDesktopLaunchMaterial).mockResolvedValue(material)
+    vi.mocked(openViaDesktopLauncher).mockResolvedValue({ launcher: 'local_launcher-1', machine: '', handled_by: 'mac-1' })
+    vi.mocked(buildClaudeNewSessionURL).mockReturnValue({ ok: true, url: ENCODED })
+    vi.mocked(isDesktopShell).mockReturnValue(false)
+    vi.mocked(requestOpenDeepLink).mockReturnValue(true)
+    vi.mocked(copyToClipboard).mockResolvedValue(true)
+    // why：jsdom 不实现 claude:// 导航（打印 Not implemented）；拦下 click 既消噪，又能断言「原生导航已触发」
+    anchorClick = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
     createPtySession.mockResolvedValue({ id: 'pty-coordinator' })
     connectPty.mockReturnValue({ close: vi.fn(), send: vi.fn(), resize: vi.fn() })
     globalThis.ResizeObserver = class {
@@ -74,7 +135,13 @@ describe('协调者面板', () => {
     } as unknown as typeof ResizeObserver
   })
 
+  afterEach(() => {
+    anchorClick.mockRestore()
+  })
+
   it('maps unbound, bound, and attach-active status to the three prototype states', async () => {
+    // why 挂起材料：本用例按调用次序给 usePoll 喂两态，材料落定引起的额外渲染会吃掉第二个 Once 值
+    vi.mocked(getDesktopLaunchMaterial).mockReturnValue(new Promise(() => {}))
     vi.mocked(usePoll)
       .mockReturnValueOnce(pollState(unbound) as never)
       .mockReturnValueOnce(pollState({ bound: true, attach_active: false, attach: info }) as never)
@@ -148,5 +215,379 @@ describe('协调者面板', () => {
     expect(await screen.findByText('交回无头失败：服务端未确认释放')).toBeVisible()
     expect(screen.getByText('人工接管中')).toBeVisible()
     expect(refresh).not.toHaveBeenCalled()
+  })
+
+  // ---- B434 「用 Claude Code 坐下」（契约 §4.14 条 223–242） ----
+
+  it('空座渲染用 Claude Code 坐下', async () => {
+    await renderReady()
+    expect(seatButton()).toBeVisible()
+    expect(getDesktopLaunchMaterial).toHaveBeenCalledTimes(1)
+    expect(getDesktopLaunchMaterial).toHaveBeenCalledWith('B1')
+  })
+
+  it('已绑定不渲染坐下按钮', async () => {
+    vi.mocked(usePoll).mockReturnValue(pollState({ bound: true, attach_active: false, attach: null }) as never)
+    render(<CoordinatorPanel cardId="B1" onOpenTerminal={vi.fn()} />)
+    expect(await screen.findByText('已绑定')).toBeVisible()
+    expect(screen.queryByRole('button', { name: DESKTOP_SEAT_BUTTON })).not.toBeInTheDocument()
+    expect(getDesktopLaunchMaterial).not.toHaveBeenCalled()
+  })
+
+  it('材料 409 坐下按钮禁用', async () => {
+    await renderUnavailable()
+    expect(seatButton()).toBeDisabled()
+  })
+
+  it('材料 409 按钮 title 逐字取服务端 error', async () => {
+    await renderUnavailable()
+    expect(seatButton().getAttribute('title')).toBe(NO_LOCAL_PROJECT)
+  })
+
+  it('材料 409 说明文字逐字取服务端 error', async () => {
+    await renderUnavailable()
+    expect(screen.getByText(NO_LOCAL_PROJECT)).toBeVisible()
+  })
+
+  it('材料 409 点击不编码', async () => {
+    await renderUnavailable()
+    await userEvent.setup().click(seatButton())
+    expect(buildClaudeNewSessionURL).not.toHaveBeenCalled()
+    expect(requestOpenDeepLink).not.toHaveBeenCalled()
+  })
+
+  it('点击以材料 folder 与 brief 编码', async () => {
+    await renderReady()
+    await userEvent.setup().click(seatButton())
+    expect(buildClaudeNewSessionURL).toHaveBeenCalledTimes(1)
+    expect(buildClaudeNewSessionURL).toHaveBeenCalledWith(material.folder, material.brief)
+  })
+
+  it('薄壳内经 requestOpenDeepLink 打开', async () => {
+    vi.mocked(isDesktopShell).mockReturnValue(true)
+    await renderReady()
+    await userEvent.setup().click(seatButton())
+    expect(requestOpenDeepLink).toHaveBeenCalledTimes(1)
+    expect(requestOpenDeepLink).toHaveBeenCalledWith(ENCODED)
+    expect(anchorClick).not.toHaveBeenCalled()
+  })
+
+  it('薄壳桥可用不展开复制简报', async () => {
+    vi.mocked(isDesktopShell).mockReturnValue(true)
+    await renderReady()
+    await userEvent.setup().click(seatButton())
+    expect(screen.queryByRole('button', { name: DESKTOP_COPY_BRIEF_BUTTON })).not.toBeInTheDocument()
+    expect(screen.queryByText(DESKTOP_COPY_BRIEF_HINT)).not.toBeInTheDocument()
+  })
+
+  it('浏览器内以 a href 打开', async () => {
+    const { container } = await renderReady()
+    await userEvent.setup().click(seatButton())
+    const anchors = container.querySelectorAll('a[href^="claude:"]')
+    expect(anchors).toHaveLength(1)
+    expect(anchors[0].getAttribute('href')).toBe(ENCODED)
+    expect(anchorClick).toHaveBeenCalledTimes(1)
+  })
+
+  it('浏览器内不调桥', async () => {
+    await renderReady()
+    await userEvent.setup().click(seatButton())
+    expect(requestOpenDeepLink).not.toHaveBeenCalled()
+  })
+
+  // 编码拒绝三支在薄壳形态下跑：浏览器形态复制兜底常驻（见下方「浏览器内材料就绪即常驻复制简报」），
+  // 在那里断言「展开」会先绿后绿，证明不了是拒绝触发的展开（缺陷族·假绿）。
+  it('编码拒绝展开复制简报', async () => {
+    vi.mocked(isDesktopShell).mockReturnValue(true)
+    for (const reason of ['folder_not_absolute', 'brief_empty', 'brief_too_long', 'not_implemented'] as const) {
+      vi.mocked(buildClaudeNewSessionURL).mockReturnValue({ ok: false, reason })
+      const view = await renderReady()
+      expect(screen.queryByRole('button', { name: DESKTOP_COPY_BRIEF_BUTTON }), reason).not.toBeInTheDocument()
+      await userEvent.setup().click(seatButton())
+      expect(screen.getByRole('button', { name: DESKTOP_COPY_BRIEF_BUTTON }), reason).toBeVisible()
+      view.unmount()
+    }
+  })
+
+  it('编码拒绝显示粘贴提示', async () => {
+    vi.mocked(isDesktopShell).mockReturnValue(true)
+    vi.mocked(buildClaudeNewSessionURL).mockReturnValue({ ok: false, reason: 'brief_too_long' })
+    await renderReady()
+    await userEvent.setup().click(seatButton())
+    expect(screen.getByText(DESKTOP_COPY_BRIEF_HINT)).toBeVisible()
+  })
+
+  it('编码拒绝不尝试打开', async () => {
+    vi.mocked(buildClaudeNewSessionURL).mockReturnValue({ ok: false, reason: 'brief_too_long' })
+    vi.mocked(isDesktopShell).mockReturnValue(true)
+    const shell = await renderReady()
+    await userEvent.setup().click(seatButton())
+    expect(requestOpenDeepLink).not.toHaveBeenCalled()
+    expect(shell.container.querySelector('a[href^="claude:"]')).toBeNull()
+    shell.unmount()
+
+    vi.mocked(isDesktopShell).mockReturnValue(false)
+    const browser = await renderReady()
+    await userEvent.setup().click(seatButton())
+    expect(browser.container.querySelector('a[href^="claude:"]')).toBeNull()
+    expect(anchorClick).not.toHaveBeenCalled()
+  })
+
+  it('无桥展开复制简报', async () => {
+    vi.mocked(isDesktopShell).mockReturnValue(true)
+    vi.mocked(requestOpenDeepLink).mockReturnValue(false)
+    await renderReady()
+    expect(screen.queryByRole('button', { name: DESKTOP_COPY_BRIEF_BUTTON })).not.toBeInTheDocument()
+    await userEvent.setup().click(seatButton())
+    expect(screen.getByRole('button', { name: DESKTOP_COPY_BRIEF_BUTTON })).toBeVisible()
+    expect(screen.getByText(DESKTOP_COPY_BRIEF_HINT)).toBeVisible()
+  })
+
+  it('复制简报逐字复制材料简报', async () => {
+    vi.mocked(isDesktopShell).mockReturnValue(true)
+    vi.mocked(requestOpenDeepLink).mockReturnValue(false)
+    await renderReady()
+    const user = userEvent.setup()
+    await user.click(seatButton())
+    await user.click(screen.getByRole('button', { name: DESKTOP_COPY_BRIEF_BUTTON }))
+    expect(copyToClipboard).toHaveBeenCalledTimes(1)
+    expect(copyToClipboard).toHaveBeenCalledWith(material.brief)
+  })
+
+  it('打开后提示信任文件夹', async () => {
+    vi.mocked(isDesktopShell).mockReturnValue(true)
+    await renderReady()
+    expect(screen.queryByText(DESKTOP_TRUST_HINT)).not.toBeInTheDocument()
+    await userEvent.setup().click(seatButton())
+    expect(screen.getByText(DESKTOP_TRUST_HINT)).toBeVisible()
+  })
+
+  it('浏览器形态打开后同样提示信任文件夹', async () => {
+    await renderReady()
+    expect(screen.queryByText(DESKTOP_TRUST_HINT)).not.toBeInTheDocument()
+    await userEvent.setup().click(seatButton())
+    expect(screen.getByText(DESKTOP_TRUST_HINT)).toBeVisible()
+  })
+
+  it('信任提示不叠加不持久化', async () => {
+    const setItem = vi.spyOn(Storage.prototype, 'setItem')
+    try {
+      vi.mocked(isDesktopShell).mockReturnValue(true)
+      await renderReady()
+      const user = userEvent.setup()
+      await user.click(seatButton())
+      await user.click(seatButton())
+      await user.click(seatButton())
+      expect(requestOpenDeepLink).toHaveBeenCalledTimes(3)
+      expect(screen.getAllByText(DESKTOP_TRUST_HINT)).toHaveLength(1)
+      expect(setItem).not.toHaveBeenCalled()
+    } finally {
+      setItem.mockRestore()
+    }
+  })
+
+  it('未打开不提示信任', async () => {
+    vi.mocked(isDesktopShell).mockReturnValue(true)
+    vi.mocked(buildClaudeNewSessionURL).mockReturnValue({ ok: false, reason: 'brief_too_long' })
+    const rejected = await renderReady()
+    await userEvent.setup().click(seatButton())
+    expect(screen.queryByText(DESKTOP_TRUST_HINT)).not.toBeInTheDocument()
+    rejected.unmount()
+
+    vi.mocked(buildClaudeNewSessionURL).mockReturnValue({ ok: true, url: ENCODED })
+    vi.mocked(requestOpenDeepLink).mockReturnValue(false)
+    await renderReady()
+    await userEvent.setup().click(seatButton())
+    expect(screen.queryByText(DESKTOP_TRUST_HINT)).not.toBeInTheDocument()
+  })
+
+  // 换卡守卫：B1 的材料请求晚于 B2 落定时不得覆盖 B2 的材料（effect 清理里的 cancelled），
+  // 且换卡时上一张卡的坐下结果（信任提示、<a>）不得残留到新卡（effect 里重置 openState）。
+  it('换卡后旧卡迟到的材料不串入、坐下结果不跨卡残留', async () => {
+    vi.mocked(isDesktopShell).mockReturnValue(true)
+    const materialB2: DesktopLaunchMaterial = { card: 'B2', folder: '/repo/other', brief: '[handoff] 你是卡 B2 的协调者' }
+    let resolveB1: (m: DesktopLaunchMaterial) => void = () => {}
+    let b1Calls = 0
+    vi.mocked(getDesktopLaunchMaterial).mockImplementation((cardId: string) => {
+      if (cardId === 'B2') return Promise.resolve(materialB2)
+      b1Calls++
+      // 首次 B1 请求挂起到 B2 落定之后再放行；回到 B1 的第二次请求永远挂起，只看重置是否发生
+      return b1Calls === 1 ? new Promise((resolve) => { resolveB1 = resolve }) : new Promise(() => {})
+    })
+    const { rerender } = render(<CoordinatorPanel cardId="B1" onOpenTerminal={vi.fn()} />)
+    rerender(<CoordinatorPanel cardId="B2" onOpenTerminal={vi.fn()} />)
+    await waitFor(() => expect(seatButton()).toBeEnabled())
+    await act(async () => { resolveB1(material) })
+    const user = userEvent.setup()
+    await user.click(seatButton())
+    expect(buildClaudeNewSessionURL).toHaveBeenLastCalledWith(materialB2.folder, materialB2.brief)
+    expect(screen.getByText(DESKTOP_TRUST_HINT)).toBeVisible()
+
+    rerender(<CoordinatorPanel cardId="B1" onOpenTerminal={vi.fn()} />)
+    expect(screen.queryByText(DESKTOP_TRUST_HINT)).not.toBeInTheDocument()
+  })
+
+  // 断连恢复重读：材料因 agentd 断连读失败后，断连恢复（disconnected true→false）时重读一次；
+  // 材料已就绪时断连再恢复不重读，正常轮询（disconnected 不变）也不重读。
+  it('断连恢复后重读材料，正常态不重读', async () => {
+    const offline = '无法连接 agentd（反代失败？）：fetch failed'
+    const panel = <CoordinatorPanel cardId="B1" onOpenTerminal={vi.fn()} />
+    vi.mocked(usePoll).mockReturnValue(pollState(unbound, { disconnected: true }) as never)
+    vi.mocked(getDesktopLaunchMaterial).mockRejectedValue(new ApiError(0, offline, null))
+    const view = render(panel)
+    const { rerender } = view
+    await waitFor(() => expect(seatButton()).toHaveAttribute('title', offline))
+    expect(getDesktopLaunchMaterial).toHaveBeenCalledTimes(1)
+
+    vi.mocked(getDesktopLaunchMaterial).mockResolvedValue(material)
+    vi.mocked(usePoll).mockReturnValue(pollState(unbound) as never)
+    rerender(<CoordinatorPanel cardId="B1" onOpenTerminal={vi.fn()} />)
+    await waitFor(() => expect(seatButton()).toBeEnabled())
+    expect(getDesktopLaunchMaterial).toHaveBeenCalledTimes(2)
+
+    rerender(<CoordinatorPanel cardId="B1" onOpenTerminal={vi.fn()} />)
+    vi.mocked(usePoll).mockReturnValue(pollState(unbound, { disconnected: true }) as never)
+    rerender(<CoordinatorPanel cardId="B1" onOpenTerminal={vi.fn()} />)
+    vi.mocked(usePoll).mockReturnValue(pollState(unbound) as never)
+    rerender(<CoordinatorPanel cardId="B1" onOpenTerminal={vi.fn()} />)
+    await waitFor(() => expect(seatButton()).toBeEnabled())
+    expect(getDesktopLaunchMaterial).toHaveBeenCalledTimes(2)
+    view.unmount()
+
+    // 一直在线时材料 409：不是断连恢复，不得重读（否则 409 → 重读 → 409 会自激成请求风暴）
+    vi.mocked(getDesktopLaunchMaterial).mockClear()
+    await renderUnavailable()
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)) })
+    expect(getDesktopLaunchMaterial).toHaveBeenCalledTimes(1)
+  })
+
+  it('坐下文案只取常量', () => {
+    for (const copy of [DESKTOP_SEAT_BUTTON, DESKTOP_COPY_BRIEF_BUTTON, DESKTOP_COPY_BRIEF_HINT, DESKTOP_TRUST_HINT]) {
+      expect(panelSource, copy).not.toContain(copy)
+    }
+    expect(panelSource).toContain("from './desktopSeatCopy'")
+  })
+
+  // ---- B434 plan 定（breakdown §5.6 静默失败/跨平台）：不在契约条目内，附加断言 ----
+
+  it('浏览器内材料就绪即常驻复制简报', async () => {
+    await renderReady()
+    expect(screen.getByRole('button', { name: DESKTOP_COPY_BRIEF_BUTTON })).toBeVisible()
+    expect(screen.getByText(DESKTOP_COPY_BRIEF_HINT)).toBeVisible()
+    await userEvent.setup().click(seatButton())
+    expect(screen.getByRole('button', { name: DESKTOP_COPY_BRIEF_BUTTON })).toBeVisible()
+  })
+
+  it('编码抛错时退到复制简报而不是静默无反应', async () => {
+    vi.mocked(isDesktopShell).mockReturnValue(true)
+    vi.mocked(buildClaudeNewSessionURL).mockImplementation(() => { throw new URIError('URI malformed') })
+    await renderReady()
+    await userEvent.setup().click(seatButton())
+    expect(screen.getByRole('button', { name: DESKTOP_COPY_BRIEF_BUTTON })).toBeVisible()
+    expect(requestOpenDeepLink).not.toHaveBeenCalled()
+    expect(screen.queryByText(DESKTOP_TRUST_HINT)).not.toBeInTheDocument()
+  })
+
+  it('复制失败时在 alert 段说明', async () => {
+    vi.mocked(copyToClipboard).mockResolvedValue(false)
+    await renderReady()
+    await userEvent.setup().click(screen.getByRole('button', { name: DESKTOP_COPY_BRIEF_BUTTON }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('剪贴板')
+  })
+
+  // ---- B434 「让拉起器代开」（契约 §4.12 条 203–210；P7=d 显示条件不变） ----
+
+  // withLauncher 是项目已登记拉起器时的材料（契约条 200：launcher = 拉起器 DesktopSession）。
+  const withLauncher: DesktopLaunchMaterial = { ...material, launcher: 'local_launcher-1' }
+  const launcherButton = () => screen.queryByRole('button', { name: DESKTOP_LAUNCHER_BUTTON })
+
+  it('条203 材料带 launcher 时空座渲染让拉起器代开', async () => {
+    vi.mocked(getDesktopLaunchMaterial).mockResolvedValue(withLauncher)
+    await renderReady()
+    expect(launcherButton()).toBeVisible()
+  })
+
+  it.each([
+    ['缺键', material],
+    ['空串', { ...material, launcher: '' }],
+  ])('条203 材料 launcher %s 时不渲染让拉起器代开', async (_label, m) => {
+    vi.mocked(getDesktopLaunchMaterial).mockResolvedValue(m)
+    await renderReady()
+    expect(launcherButton()).not.toBeInTheDocument()
+  })
+
+  it('条204 材料 409 时不渲染让拉起器代开', async () => {
+    await renderUnavailable()
+    expect(launcherButton()).not.toBeInTheDocument()
+  })
+
+  it('条204 材料读取失败（非 409）时不渲染让拉起器代开', async () => {
+    await renderUnavailable('无法连接 agentd（反代失败？）：fetch failed')
+    expect(launcherButton()).not.toBeInTheDocument()
+  })
+
+  it('条205 已绑定态不渲染让拉起器代开', async () => {
+    vi.mocked(getDesktopLaunchMaterial).mockResolvedValue(withLauncher)
+    vi.mocked(usePoll).mockReturnValue(pollState({ bound: true, attach_active: false, attach: null }) as never)
+    render(<CoordinatorPanel cardId="B1" onOpenTerminal={vi.fn()} />)
+    expect(await screen.findByText('已绑定')).toBeVisible()
+    expect(launcherButton()).not.toBeInTheDocument()
+  })
+
+  it('条206 空座三按钮顺序为叫机器人、坐下、让拉起器代开', async () => {
+    vi.mocked(getDesktopLaunchMaterial).mockResolvedValue(withLauncher)
+    await renderReady()
+    await screen.findByRole('button', { name: DESKTOP_LAUNCHER_BUTTON })
+    const names = screen.getAllByRole('button').map((b) => b.textContent ?? '')
+    const order = ['▶ 叫机器人', DESKTOP_SEAT_BUTTON, DESKTOP_LAUNCHER_BUTTON].map((n) => names.indexOf(n))
+    expect(order.every((i) => i >= 0)).toBe(true)
+    expect(order).toEqual([...order].sort((a, b) => a - b))
+  })
+
+  it('条207 点击让拉起器代开恰发一次代开请求', async () => {
+    vi.mocked(getDesktopLaunchMaterial).mockResolvedValue(withLauncher)
+    await renderReady()
+    await userEvent.setup().click(await screen.findByRole('button', { name: DESKTOP_LAUNCHER_BUTTON }))
+    expect(openViaDesktopLauncher).toHaveBeenCalledTimes(1)
+    expect(openViaDesktopLauncher).toHaveBeenCalledWith('B1')
+  })
+
+  it('条208 代开成功显示已请拉起器代开', async () => {
+    vi.mocked(getDesktopLaunchMaterial).mockResolvedValue(withLauncher)
+    await renderReady()
+    await userEvent.setup().click(await screen.findByRole('button', { name: DESKTOP_LAUNCHER_BUTTON }))
+    expect(await screen.findByText(DESKTOP_LAUNCHER_SENT)).toBeVisible()
+    expect(refresh).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    [409, '无拉起器，请在桌面端开一场并登记'],
+    [409, '卡 B1 已有人坐，换人用 handoff card rebind B1 --self 或 --launch'],
+    [502, '桌面端协调者唤醒失败：拉起器所在机不可达'],
+  ])('条209 代开失败 %i 逐字进 alert 段', async (status, text) => {
+    vi.mocked(getDesktopLaunchMaterial).mockResolvedValue(withLauncher)
+    vi.mocked(openViaDesktopLauncher).mockRejectedValue(new ApiError(status, text, { error: text }))
+    await renderReady()
+    await userEvent.setup().click(await screen.findByRole('button', { name: DESKTOP_LAUNCHER_BUTTON }))
+    expect((await screen.findByRole('alert')).textContent).toBe(text)
+    expect(screen.queryByText(DESKTOP_LAUNCHER_SENT)).not.toBeInTheDocument()
+  })
+
+  it('条210 代开请求进行中让拉起器代开禁用', async () => {
+    vi.mocked(getDesktopLaunchMaterial).mockResolvedValue(withLauncher)
+    vi.mocked(openViaDesktopLauncher).mockReturnValue(new Promise(() => {}))
+    await renderReady()
+    const button = await screen.findByRole('button', { name: DESKTOP_LAUNCHER_BUTTON })
+    expect(button).toBeEnabled()
+    await userEvent.setup().click(button)
+    expect(button).toBeDisabled()
+  })
+
+  it('条210 断连时让拉起器代开禁用', async () => {
+    vi.mocked(getDesktopLaunchMaterial).mockResolvedValue(withLauncher)
+    vi.mocked(usePoll).mockReturnValue(pollState(unbound, { disconnected: true }) as never)
+    render(<CoordinatorPanel cardId="B1" onOpenTerminal={vi.fn()} />)
+    const button = await screen.findByRole('button', { name: DESKTOP_LAUNCHER_BUTTON })
+    expect(button).toBeDisabled()
   })
 })
