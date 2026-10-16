@@ -135,7 +135,8 @@ func main() {
 			ApplicationShouldTerminateAfterLastWindowClosed: false,
 		},
 		// 外链控制台没有 Wails 前端 runtime 的公开 binding；这里只接收
-		// desktopShell.ts 的固定 raw 协议，URL 的同源/http(s) 校验在 shell 包完成。
+		// desktopShell.ts 的固定 raw 协议（剪贴板、系统浏览器、深链三条通道），
+		// 校验全在 shell 包完成：系统浏览器 URL 为同源 http(s)，深链为 claude:// 白名单。
 		RawMessageHandler: func(window application.Window, message string, originInfo *application.OriginInfo) {
 			sourceFrameURL := ""
 			if originInfo != nil {
@@ -161,9 +162,16 @@ func main() {
 			) {
 				return
 			}
-			if !shell.HandleExternalBrowserMessage(
+			if shell.HandleExternalBrowserMessage(
 				logger, message, sourceFrameURL,
 				issueExternalBrowserURL, app.Browser.OpenURL,
+			) {
+				return
+			}
+			// B434：深链白名单（claude://code/{new,continue}）在 shell 包完成；opener 与
+			// 系统浏览器同为 app.Browser.OpenURL（darwin 上是 `open <url>`，不回报退出码）。
+			if !shell.HandleExternalDeepLinkMessage(
+				logger, message, sourceFrameURL, app.Browser.OpenURL,
 			) {
 				logger.Debug("忽略未识别的原始宿主消息", "message_bytes", len(message))
 			}
