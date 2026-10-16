@@ -684,6 +684,7 @@ func TestB434RegisterDesktopLauncherRejectsInvalid(t *testing.T) {
 		{"CLI 会话 id 含反斜杠", func(l *DesktopLauncher) { l.CLISession = `a\b` }},
 		{"CLI 会话 id 含#", func(l *DesktopLauncher) { l.CLISession = "a#b" }},
 		{"CLI 会话 id 含空白", func(l *DesktopLauncher) { l.CLISession = "a b" }},
+		{"CLI 会话 id 以点开头", func(l *DesktopLauncher) { l.CLISession = ".hidden" }},
 		{"actor 为空", func(l *DesktopLauncher) { l.Actor = " " }},
 	}
 	for i, tc := range cases {

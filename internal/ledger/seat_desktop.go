@@ -166,7 +166,7 @@ type DesktopLauncher struct {
 
 // validateDesktopLauncher 执法登记形态：项目名非空且无首尾空白；桌面端会话 id 过
 // proto.ValidateDesktopSessionID；CLI 会话 id 必须能编进 cli:claude#<id> 席位语法，
-// 且不含路径分隔符（它是信箱文件名 ~/.handoff/desktop-wake/<CLI id>.<ns>.md 的一段）；
+// 且不含路径分隔符、不以点开头（它是信箱文件名 ~/.handoff/desktop-wake/<CLI id>.<ns>.md 的一段）；
 // actor 非空。全部失败包 ErrBadState。
 func validateDesktopLauncher(l DesktopLauncher) error {
 	if l.Project == "" || strings.TrimSpace(l.Project) != l.Project {
@@ -180,6 +180,11 @@ func validateDesktopLauncher(l DesktopLauncher) error {
 	}
 	if strings.ContainsAny(l.CLISession, `/\`) {
 		return fmt.Errorf("拉起器 CLI 会话 id 含路径分隔符 %q: %w", l.CLISession, ErrBadState)
+	}
+	if strings.HasPrefix(l.CLISession, ".") {
+		// 以点开头的信箱文件名会被 mod 与 writeDesktopLetter 同时跳过（点开头 = 写信中的
+		// 临时文件），这样的拉起器永远收不到信；账本是该规则唯一执法点（契约 r11 第 3 条）。
+		return fmt.Errorf("拉起器 CLI 会话 id 不得以点开头 %q: %w", l.CLISession, ErrBadState)
 	}
 	if strings.TrimSpace(l.Actor) == "" {
 		return fmt.Errorf("拉起器登记缺 actor: %w", ErrBadState)

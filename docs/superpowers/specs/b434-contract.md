@@ -1102,3 +1102,9 @@ r0–r2 三轮本机无 Go/Node 工具链（台账原文：`command not found: g
 > 11. **§3.7 注入点定名**：opener 字段 `Server.desktopOpen desktopOpener`；信箱根目录字段 `Server.desktopHome string`（空 → `os.UserHomeDir()`），两者只在装配期写、运行期只读；测试替身 `desktopOpenerSpy` 带 `err error` 字段供 G2 注入失败 opener。V 落，G2 复用不另造夹具。
 > 12. **§4.17 / 欠账 18**：条 266、268、275 的命名测试 `TestB434DesktopLetterRosterMatchesQuotes`、`TestB434DesktopLetterKindByEventType`、`TestB434DesktopLetterHeadingsHaveNoActor` 明确归 G2；V 只锁 event 段与转义/名册/开栏行的竖切面。
 > 13. **§11 区头吸收标注**：§11.1 采纳（`resolveLocalProjectRoot` 唯一解析点，`resolveCoordWorkdir` 签名不改、改为委托）；§11.2 由 C 吸收；§11.5（`handleCoordStatus` 桌面端字段）不做。另：G1 的 `TestB434MaterialSourceGuard` 顺带禁止 GET 材料端点触碰 `desktopOpen`（GET 绝不发深链）。
+>
+> **修订记录（r11 B434.2 review 回写，2026-10-16）**：三处措辞更正，不改签名、不改编号。
+> 1. **r10 第 4 条**：「从 `*client.ServerError` 取」改为「从 client 的非 2xx 状态错误（未导出 `httpStatusError`）取」——不新开导出类型（架构律：能用低档不用高档）。
+> 2. **r10 第 6 条 status 段**：「`--target` 为空」实指**拉起器登记的 machine 值**；本机判定为空、`local`、`本机` 或等于 `os.Hostname()`；**与 targets 配置同名的 machine 仍经该目标客户端探活**（§3.10 正文「可达 = 本机或目标客户端探活成功」不变）；既非本机别名又不在 targets 里的才显示「不可探（非本机）」。三个别名探本机时附一条告警（无害加严，认可）。
+> 3. **r10 第 5 条「与 §3.4 r9 拉起器写闸同一规则」**：r9 写闸实际未拒 `.` 开头；按「规则归数据所有者」，§3.4 `RegisterDesktopLauncher` 校验补「`CLISession` 不以 `.` 开头」（信箱文件名以 `.` 开头会被 mod 与 `writeDesktopLetter` 同时拒绝），由协调者在卡分支随 C 合并补落（L 卡已完成，记父卡 integrate 接缝修复）；CLI 侧 `card bind` 的 `checkMailboxKey` 保留为提早友好报错，`launcher register` 不另加 CLI 检查。
+

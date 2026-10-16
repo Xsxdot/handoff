@@ -205,3 +205,8 @@
 - **G1（B434.3）**：实现 6 提交（e0166388…0fc4033f），review 轮 1 pass；m1（folder 与登记字面值直接断言，T1-c 变异由「等价」改判为非等价并转红）、m2（mgr 未装配 → 500 子例；协调者确认该支错误文本「项目位置服务未装配（SetManager 未执行）」保留，r10 第 3 条括号文本指 I/O 失败支）、m3（一次 GET 只在边界层记一条日志，新增 `TestB434MaterialOneLogLinePerGet`；条 202 拉起器读失败的 Warn 按契约保留，协调者拍板）修复 4572ae61+31399ea8。合并 16c48d75（--no-ff）；agentd ok 78.659s、proto ok。审阅 n1–n4 记知悉；新符号 `resolveLocalProjectRoot`/`errProjectLocationsUnavailable`/`handleDesktopLaunchMaterial` 入图归 I 卡。
 - **V（B434.4）**：实现 4 提交（65da8464…83936213），review 轮 1 pass；I-1（drain 级子例「队列出队不阻断清队」直调 `drainIgnitionRequest` + `runStepFn` spy；删守卫变异红）、m1（`SeatDesktopOf` 读失败且 raws 为空时 Warn 降级为 bind 跳过，不阻断清队；有事件仍上抛）、m2（祖先 bind 卡读记录失败 Warn 后继续上走）、m4（M1–M11 原始读数补进台账 I6）、m6 修复 65fce863+99c7756e；m3（写信时钟缝）、m5（作者清洗字符集）归 G2。合并 e00cddb1（--no-ff；仅 `desktopwake.go` import 块冲突，取两侧）；agentd ok 63.474s、proto ok、vitest contract.test.ts 51 passed、typecheck ok。审阅者亲自复现 M3/M8 变异红绿与台账一致。
 - 合并顺序按审计：G1 先、V 后；G1∥V 函数体无交集的预判成立。
+
+### C review 回写与 L 接缝修复（2026-10-16，协调者本机）
+
+- C（B434.2）review 轮 1 pass；契约 r11 三处措辞更正（`*client.ServerError` 笔误、status 段 machine 值与 targets 探活、r10 第 5 条「同一规则」与 r9 写闸不符）。
+- L 接缝修复：`internal/ledger/seat_desktop.go#validateDesktopLauncher` 补「CLI 会话 id 不以 `.` 开头」拒绝（点开头信箱文件名会被 mod 与 `writeDesktopLetter` 同时跳过）。先红：`TestB434RegisterDesktopLauncherRejectsInvalid` 新子例「CLI 会话 id 以点开头」→ `--- FAIL … FAIL ledger 1.325s`；加闸后 `go test ./internal/ledger/ -count=1` → `ok 5.988s`；gofmt 空、vet 0。
