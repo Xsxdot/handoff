@@ -184,6 +184,7 @@ var agentdCmd = &cobra.Command{
 
 		srv := agentd.NewServer(cfg, st, logger)
 		srv.SetConfigPath(p)
+		srv.SetDesktopOpener(agentd.PlatformDesktopOpener(runtime.GOOS))
 		previewHub := workspace.NewPreviewHub(logger)
 		// B233.19：owner truth 在 internal/workspace；静态 HTTP 服务（gateway 面）
 		// 与本机 store 行适配器由本组装点注入。

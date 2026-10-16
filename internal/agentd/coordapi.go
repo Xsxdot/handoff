@@ -209,7 +209,16 @@ func (s *Server) handleCoordWake(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.log.Info("转交唤醒本端执行", "card", id, "holder", req.Holder, "event_count", len(evs))
-	result, err := s.wakeCoordinatorRoundRaw(r.Context(), id, evs, req.Events)
+	// B434：带转交标记执行——被转交端对桌面端席位不再二次转交（一跳封顶，契约 §3.7）。
+	result, err := s.wakeCoordinatorRoundRaw(withForwardedWake(r.Context()), id, evs, req.Events)
+	if desktopUnopened(err) {
+		// 信已落盘、continue 未发出：回 200 + letter_unopened，发起端据此标 seen、不重试
+		// （回 502 会被当成「未落盘」每轮重投，多写同批信，拍板 D5）。被转交端不落 needs_human。
+		s.log.Warn("转交唤醒：来信已落盘但 continue 未发出，回 letter_unopened", "card", id,
+			"holder", req.Holder, "cause", err)
+		writeJSON(w, http.StatusOK, proto.CoordinatorWakeResp{HandledBy: s.localMachineName(), LetterUnopened: true})
+		return
+	}
 	if err != nil {
 		s.log.Error("转交唤醒执行失败", "card", id, "holder", req.Holder, "cause", err)
 		writeErr(w, http.StatusBadGateway, fmt.Errorf("转交唤醒失败: %w", err))

@@ -10,24 +10,30 @@
 //   - 拉起器代开：给项目拉起器写一封装着拉起材料的信并 continue 唤醒它。
 //
 // 边界：写信箱与发深链是 gateway 对本机的出站 I/O（d_gateway），不进 d_execution，
-// 不经 keystone（keystone.Wake / LaunchForCard 对桌面端席位零调用）。本机唤醒主缝
-// （wakeDesktopSeat 本机分支、desktopLetter 其它事件段、writeDesktopLetter、
-// claudeContinueURL、围栏渲染层）由 B434.4 落码；其余函数仍是空壳，行为在
-// G1/G2/G3 落码（TODO(B434)）。契约见 docs/superpowers/specs/b434-contract.md §3.5–§3.8。
+// 不经 keystone（keystone.Wake / LaunchForCard 对桌面端席位零调用）。本机唤醒主缝与
+// 围栏渲染层由 B434.4 落码；拉起材料由 G1 落码；来信全段、信箱补强、needs_human 唤醒、
+// 失败段、跨机转交与生产 opener 由 G2（B434.5）落码；拉起器投递与代开仍是空壳，归 G3
+// （TODO(B434)）。契约见 docs/superpowers/specs/b434-contract.md §3.5–§3.8。
 package agentd
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/Xsxdot/handoff/internal/collab/room"
 	"github.com/Xsxdot/handoff/internal/keystone"
 	"github.com/Xsxdot/handoff/internal/ledger"
 	"github.com/Xsxdot/handoff/internal/proto"
@@ -195,16 +201,20 @@ func (s *Server) handleDesktopLaunchMaterial(w http.ResponseWriter, r *http.Requ
 // 围栏与作者名册（P9=丁，条 263–275）。
 //
 // 参数：card 被唤醒席位所在卡（resolveWakeCard 的目标，可能是事件卡的祖先）；seat 席位
-// 身份（G2 读未读数用）；evs 本批唤醒摘要（不读 Summary——它被截到 400 字）；raws 本批
-// 账本原始事件（按 seq 升序，内容的唯一来源）。
-// 返回：来信全文；raws 为空或含尚未支持的事件类型 → 错误（宁可不发信，不发残信）。
-// 现状（B434.4）：只实现「其它事件」段（decision_*、task 终态等 → kind=event，载荷原文）。
-// 会话消息（命中/引用/未读）、task_mirrored 工单、needs_human 三种段与尾行「会话消息：
-// handoff session read <会话 id>」分句由 B434 G2 补全（契约条 74–80、191）。
+// 身份（读未读数用，与 session wait 的 member 同值）；evs 本批唤醒摘要（不读 Summary——
+// 它被截到 400 字）；raws 本批账本原始事件（按 seq 升序，内容的唯一来源）。
+// 返回：来信全文；raws 为空、读引用/未读投影失败、工单信封解不开 → 错误（宁可不发信，
+// 不发残信，条 80）。
+// 段落（契约 §3.6 表）：room_message → 会话消息段（命中条 + 可解析的引用条 + 未读数）；
+// task_mirrored 的 permission_request/question → 工单段；needs_human → 需要人段；其余
+// （decision_*、task 终态等）→ 「<事件类型>」段。事件卡 ≠ 来信卡（子卡冒泡，条 87）时
+// 段标题追加「（卡 <事件卡号>）」（契约 r10 第 9 条）；尾行「；会话消息：…」只在本批含
+// 会话消息时出现（r10 第 8 条）。
 func (s *Server) desktopLetter(card, seat string, evs []keystone.WakeEvent, raws []proto.LedgerEvent) (string, error) {
 	if len(raws) == 0 {
 		return "", fmt.Errorf("卡 %s 本批唤醒没有账本原始事件，无从组装来信", card)
 	}
+	a := &desktopLetterAssembler{s: s, card: card, seat: seat}
 	sections := make([]desktopLetterSection, 0, len(raws))
 	minSeq, maxSeq := raws[0].Seq, raws[0].Seq
 	for _, ev := range raws {
@@ -214,26 +224,197 @@ func (s *Server) desktopLetter(card, seat string, evs []keystone.WakeEvent, raws
 		if ev.Seq > maxSeq {
 			maxSeq = ev.Seq
 		}
-		switch ev.Type {
-		case ledger.EvRoomMessage, ledger.EvTaskMirrored, ledger.EvNeedsHuman:
-			s.log.Warn("来信暂不支持该事件类型，本批不写信", "card", card, "seq", ev.Seq, "type", ev.Type)
-			return "", fmt.Errorf("卡 %s 来信暂不支持事件类型 %s（seq %d）", card, ev.Type, ev.Seq)
-		default:
-			sections = append(sections, desktopLetterSection{
-				Heading: fmt.Sprintf("## %s seq %d", ev.Type, ev.Seq),
-				Parts: []desktopLetterPart{{Quote: &desktopQuote{
-					Author: ev.Actor, Seq: ev.Seq, Kind: desktopQuoteKindEvent, Body: string(ev.Payload),
-				}}},
-			})
+		sec, err := a.section(ev)
+		if err != nil {
+			s.log.Warn("来信组装失败，本批不写信", "card", card, "seq", ev.Seq, "type", ev.Type, "cause", err)
+			return "", err
 		}
+		sections = append(sections, sec)
 	}
 	head := fmt.Sprintf("%s 卡 %s 有 %d 件新事（账本 seq %d–%d）", proto.DesktopWakeMarker, card, len(raws), minSeq, maxSeq)
-	tail := fmt.Sprintf("按分诊表处置；读全文：handoff card show %s。处置完不必挂订阅，有事会再叫醒你。", card)
-	letter := renderDesktopLetter(head, sections, tail)
+	letter := renderDesktopLetter(head, sections, desktopLetterTail(card, a.rooms))
 	s.log.Debug("桌面端来信已组装", "card", card, "seat", seat,
-		"event_count", len(raws), "wake_count", len(evs), "bytes", len(letter))
+		"event_count", len(raws), "wake_count", len(evs), "sessions", len(a.rooms), "bytes", len(letter))
 	return letter, nil
 }
+
+// desktopLetterSessionReadCmd 是来信尾行「会话消息」分句的命令前缀（契约 §3.6 模板、
+// r10 第 8 条，r12 第 1 条改字）：CLI 没有 `handoff session read` 子命令，读会话消息的
+// 既有命令是 `handoff room read <room>`（cmd/room.go），会话 id 可直接作 room。改字只动
+// 这一处常量与 TestB434DesktopLetterTailSessionClause、V 金样本的 tail 字串。
+const desktopLetterSessionReadCmd = "handoff room read "
+
+// desktopLetterSessionCmdSep 连接尾行里多个会话的读消息命令（契约 r10 第 8 条「以『、』连接」）。
+// 与作者名册分隔符 desktopAuthorRosterSep 同值但是两条独立规则，各自一处定义，改一个不牵动另一个。
+const desktopLetterSessionCmdSep = "、"
+
+// desktopLetterTail 渲染来信尾行（契约 §3.6，r10 第 8 条）：rooms 为空时省去整段
+// 「；会话消息：…」分句；多个会话按首次出现顺序、每个会话一条完整命令，以「、」连接。
+func desktopLetterTail(card string, rooms []string) string {
+	tail := "按分诊表处置；读全文：handoff card show " + card
+	if len(rooms) > 0 {
+		cmds := make([]string, len(rooms))
+		for i, room := range rooms {
+			cmds[i] = desktopLetterSessionReadCmd + room
+		}
+		tail += "；会话消息：" + strings.Join(cmds, desktopLetterSessionCmdSep)
+	}
+	return tail + "。处置完不必挂订阅，有事会再叫醒你。"
+}
+
+// desktopLetterAssembler 组装一封来信的各段，持有本信级状态：未读投影一封信只读一次
+// （ListSessions 扫全量会话与卡，逐条读会把一批 N 条会话消息放大成 N 次全量扫描）；
+// rooms 记本信出现过的会话 id（首次出现顺序，尾行用）。
+type desktopLetterAssembler struct {
+	s      *Server
+	card   string
+	seat   string
+	unread map[string]int // nil = 尚未读未读投影
+	rooms  []string
+}
+
+// section 按事件类型分派到四种段（契约 §3.6 表）。
+func (a *desktopLetterAssembler) section(ev proto.LedgerEvent) (desktopLetterSection, error) {
+	switch ev.Type {
+	case ledger.EvRoomMessage:
+		return a.roomMessage(ev)
+	case ledger.EvTaskMirrored:
+		return a.taskMirrored(ev)
+	case ledger.EvNeedsHuman:
+		return a.needsHuman(ev), nil
+	default:
+		return a.other(ev), nil
+	}
+}
+
+// heading 给段标题骨架追加冒泡卡号：事件卡非空且不是来信卡时加「（卡 <事件卡号>）」
+// （契约 r10 第 9 条）；段标题从不含 actor（条 275）。
+func (a *desktopLetterAssembler) heading(base string, ev proto.LedgerEvent) string {
+	if ev.CardID != "" && ev.CardID != a.card {
+		return base + "（卡 " + ev.CardID + "）"
+	}
+	return base
+}
+
+// roomMessage 渲染会话消息段（条 74–78）：命中条正文全文进 room_message 围栏；
+// ReplyTo 可解析时追加「引用 seq <n>：」骨架 + 引用条围栏；末行未读数骨架。数据来源与
+// cmd/session.go#buildSessionWake 同源（MessageReference、ListSessions(seat).Unread）。
+func (a *desktopLetterAssembler) roomMessage(ev proto.LedgerEvent) (desktopLetterSection, error) {
+	var msg proto.RoomMessage
+	if err := room.UnmarshalMessage(ev.Payload, &msg); err != nil {
+		return desktopLetterSection{}, fmt.Errorf("卡 %s 来信解码会话消息 seq %d: %w", a.card, ev.Seq, err)
+	}
+	if a.s.rooms == nil {
+		return desktopLetterSection{}, fmt.Errorf("卡 %s 来信读会话消息 seq %d：collab 服务未装配，读不到引用与未读", a.card, ev.Seq)
+	}
+	parts := []desktopLetterPart{{Quote: &desktopQuote{
+		Author: ev.Actor, Seq: ev.Seq, Kind: desktopQuoteKindRoomMessage, Body: msg.Body,
+	}}}
+	ref, err := a.s.rooms.MessageReference(msg)
+	if err != nil {
+		return desktopLetterSection{}, fmt.Errorf("卡 %s 来信读会话消息 seq %d 的引用条: %w", a.card, ev.Seq, err)
+	}
+	if ref != nil {
+		parts = append(parts,
+			desktopLetterPart{Skeleton: fmt.Sprintf("引用 seq %d：", ref.Seq)},
+			desktopLetterPart{Quote: &desktopQuote{
+				Author: ref.Actor, Seq: ref.Seq, Kind: desktopQuoteKindRoomMessage, Body: ref.Body,
+			}})
+	}
+	unread, err := a.unreadOf(msg.Room)
+	if err != nil {
+		return desktopLetterSection{}, fmt.Errorf("卡 %s 来信读会话 %s 未读投影: %w", a.card, msg.Room, err)
+	}
+	parts = append(parts, desktopLetterPart{Skeleton: fmt.Sprintf("会话 %s 里你还有 %d 条未读（含本条）。", msg.Room, unread)})
+	if !slices.Contains(a.rooms, msg.Room) {
+		a.rooms = append(a.rooms, msg.Room)
+	}
+	return desktopLetterSection{
+		Heading: a.heading(fmt.Sprintf("## 会话消息 seq %d（会话 %s）", ev.Seq, msg.Room), ev),
+		Parts:   parts,
+	}, nil
+}
+
+// unreadOf 返回席位在会话 room 的未读数（含命中条）：首次调用读一次 ListSessions(seat)
+// 并缓存；会话不在投影里按 0 计（与 buildSessionWake 同款）。
+func (a *desktopLetterAssembler) unreadOf(room string) (int, error) {
+	if a.unread == nil {
+		summaries, err := a.s.rooms.ListSessions(a.seat)
+		if err != nil {
+			return 0, err
+		}
+		a.unread = make(map[string]int, len(summaries))
+		for _, summary := range summaries {
+			a.unread[summary.ID] = summary.Unread
+		}
+	}
+	return a.unread[room], nil
+}
+
+// taskMirrored 渲染工单段（条 79）：permission_request/question 的信封内层载荷原文全文
+// 进 ticket 围栏，段标题带 task_type；其它 task_type（task 终态）按「其它事件」段处理。
+func (a *desktopLetterAssembler) taskMirrored(ev proto.LedgerEvent) (desktopLetterSection, error) {
+	taskType, payload, err := mirroredTaskTypeAndPayload(ev)
+	if err != nil {
+		return desktopLetterSection{}, fmt.Errorf("卡 %s 来信解工单信封 seq %d: %w", a.card, ev.Seq, err)
+	}
+	if proto.EventType(taskType) != proto.EventTypePermissionRequest && proto.EventType(taskType) != proto.EventTypeQuestion {
+		return a.other(ev), nil
+	}
+	return desktopLetterSection{
+		Heading: a.heading(fmt.Sprintf("## 工单 seq %d（%s）", ev.Seq, taskType), ev),
+		Parts: []desktopLetterPart{{Quote: &desktopQuote{
+			Author: ev.Actor, Seq: ev.Seq, Kind: desktopQuoteKindTicket, Body: string(payload),
+		}}},
+	}, nil
+}
+
+// needsHuman 渲染需要人段（条 191、269）：reason 全文进 needs_human 围栏，author 为
+// 打标者 actor。载荷解不出 reason 时退回载荷原文并 Warn（一条坏载荷不毒死唤醒链）。
+func (a *desktopLetterAssembler) needsHuman(ev proto.LedgerEvent) desktopLetterSection {
+	reason, ok := desktopNeedsHumanReason(ev)
+	if !ok {
+		a.s.log.Warn("needs_human 载荷无 reason，来信按载荷原文渲染", "card", a.card, "seq", ev.Seq)
+	}
+	return desktopLetterSection{
+		Heading: a.heading(fmt.Sprintf("## 需要人 seq %d", ev.Seq), ev),
+		Parts: []desktopLetterPart{{Quote: &desktopQuote{
+			Author: ev.Actor, Seq: ev.Seq, Kind: desktopQuoteKindNeedsHuman, Body: reason,
+		}}},
+	}
+}
+
+// other 渲染其它事件段（decision_*、task 终态等，条 268）：载荷原文进 event 围栏。
+func (a *desktopLetterAssembler) other(ev proto.LedgerEvent) desktopLetterSection {
+	return desktopLetterSection{
+		Heading: a.heading(fmt.Sprintf("## %s seq %d", ev.Type, ev.Seq), ev),
+		Parts: []desktopLetterPart{{Quote: &desktopQuote{
+			Author: ev.Actor, Seq: ev.Seq, Kind: desktopQuoteKindEvent, Body: string(ev.Payload),
+		}}},
+	}
+}
+
+// desktopNeedsHumanReason 解出 needs_human 载荷 {"reason": …} 的原因文本；载荷不是该
+// 形状时返回载荷原文与 false（调用方 Warn）。唤醒映射与来信渲染共用这一处解码。
+func desktopNeedsHumanReason(ev proto.LedgerEvent) (string, bool) {
+	var p struct {
+		Reason *string `json:"reason"`
+	}
+	if err := json.Unmarshal(ev.Payload, &p); err != nil || p.Reason == nil {
+		return string(ev.Payload), false
+	}
+	return *p.Reason, true
+}
+
+// errDesktopMailboxKeyUnsafe 是 writeDesktopLetter 拒绝不安全信箱键（CLI 会话 id 为空、
+// 含路径分隔符、以 '.' 开头）时包装的哨兵（契约 r12 第 6 条）：G3 收件机据此把请求映射
+// 为 400，席位唤醒侧仍按「未投递」处置（拒绝逻辑本身是 V 落的，这里只加可判别的身份）。
+var errDesktopMailboxKeyUnsafe = errors.New("信箱键不安全")
+
+// desktopLetterNameRetries 是同一 CLI 会话、同一纳秒（或并发写者撞名）时文件名序号
+// 顺延的上限：每撞一次 UnixNano 段 +1。64 远大于同纳秒能出现的写者数，超过即报错
+// （按「未投递」处置）而不是覆盖。
+const desktopLetterNameRetries = 64
 
 // writeDesktopLetter 把 letter 原子写进 home 下的信箱（契约 §3.6，P1=A）。
 //
@@ -241,18 +422,22 @@ func (s *Server) desktopLetter(card, seat string, evs []keystone.WakeEvent, raws
 // letter 来信全文；now 取 UnixNano 作文件名序号。
 // 返回：最终路径 $home/.handoff/desktop-wake/<cliSession>.<19 位零填充 UnixNano>.md。
 // 过程：目录不存在以 0o700 创建（条 70）；同目录写 .<最终名>.tmp（O_EXCL、0o600）→
-// Sync → rename 成最终名，并发读者只见完整信（条 69；mod 跳过点开头文件）。
+// Sync → os.Link 成最终名 → 删临时名。并发读者只见完整信（条 69；mod 跳过点开头文件）。
+// 为什么用 Link 不用 Rename：rename 会静默覆盖同名信——同会话同纳秒两次写信（测试固定
+// 时钟、或转交收件与本机消费循环并发）第二封会吞掉第一封（条 68，台账 L4 实测）；Link
+// 遇已存在的最终名返回 EEXIST，据此把序号 +1 重试，从不覆盖。
 // 注意：cliSession 为空、含 '/' 或 '\'、以 '.' 开头一律拒绝且不碰文件系统——席位
 // session_id 段允许这些字符（proto.validateSeatPart），不拦会把信写出信箱目录或写成
-// mod 不读的隐藏文件。失败时清理临时文件。同纳秒碰撞与并发写的补强归 B434 G2（条 68）。
+// mod 不读的隐藏文件；拒绝错误包 errDesktopMailboxKeyUnsafe（契约 r12 第 6 条，G3 收件机
+// 映射 400）。HOME 为空不属信箱键问题，不包该哨兵。失败时清理本次临时文件。
 func writeDesktopLetter(home, cliSession, letter string, now time.Time) (string, error) {
 	switch {
 	case cliSession == "":
-		return "", errors.New("信箱键（CLI 会话 id）为空")
+		return "", fmt.Errorf("%w：CLI 会话 id 为空", errDesktopMailboxKeyUnsafe)
 	case strings.ContainsAny(cliSession, `/\`):
-		return "", fmt.Errorf("信箱键 %q 含路径分隔符，拒绝写信", cliSession)
+		return "", fmt.Errorf("%w：%q 含路径分隔符，拒绝写信", errDesktopMailboxKeyUnsafe, cliSession)
 	case strings.HasPrefix(cliSession, "."):
-		return "", fmt.Errorf("信箱键 %q 以点开头（会被当成临时/隐藏文件），拒绝写信", cliSession)
+		return "", fmt.Errorf("%w：%q 以点开头（会被当成临时/隐藏文件），拒绝写信", errDesktopMailboxKeyUnsafe, cliSession)
 	case strings.TrimSpace(home) == "":
 		return "", errors.New("信箱所在 HOME 为空")
 	}
@@ -260,32 +445,101 @@ func writeDesktopLetter(home, cliSession, letter string, now time.Time) (string,
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", fmt.Errorf("建信箱目录 %s: %w", dir, err)
 	}
-	name := fmt.Sprintf("%s.%019d.md", cliSession, now.UnixNano())
-	final := filepath.Join(dir, name)
-	tmp := filepath.Join(dir, "."+name+".tmp")
+	base := now.UnixNano()
+	for i := int64(0); i < desktopLetterNameRetries; i++ {
+		name := fmt.Sprintf("%s.%019d.md", cliSession, base+i)
+		final := filepath.Join(dir, name)
+		taken, err := writeDesktopLetterOnce(filepath.Join(dir, "."+name+".tmp"), final, letter)
+		if err != nil {
+			return "", err
+		}
+		if !taken {
+			return final, nil
+		}
+	}
+	return "", fmt.Errorf("信箱 %s 里 %s 起连续 %d 个序号都已占用，拒绝覆盖", dir, cliSession, desktopLetterNameRetries)
+}
+
+// writeDesktopLetterOnce 以 tmp → final 的固定名写一次信：tmp 或 final 已存在 →
+// taken=true（调用方换下一个序号，不覆盖）；其余失败返回错误并删除本次 tmp。
+// Link 成功后删 tmp 失败不报错：信已按最终名落盘（mod 只读最终名），残留的点开头
+// tmp 由 sweepDesktopLetterTmp 按年龄清理。
+func writeDesktopLetterOnce(tmp, final, letter string) (taken bool, err error) {
 	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if errors.Is(err, fs.ErrExist) {
+		return true, nil
+	}
 	if err != nil {
-		return "", fmt.Errorf("建信箱临时文件 %s: %w", tmp, err)
+		return false, fmt.Errorf("建信箱临时文件 %s: %w", tmp, err)
 	}
 	if _, err := f.WriteString(letter); err != nil {
 		_ = f.Close()
 		_ = os.Remove(tmp)
-		return "", fmt.Errorf("写信箱临时文件 %s: %w", tmp, err)
+		return false, fmt.Errorf("写信箱临时文件 %s: %w", tmp, err)
 	}
 	if err := f.Sync(); err != nil {
 		_ = f.Close()
 		_ = os.Remove(tmp)
-		return "", fmt.Errorf("落盘信箱临时文件 %s: %w", tmp, err)
+		return false, fmt.Errorf("落盘信箱临时文件 %s: %w", tmp, err)
 	}
 	if err := f.Close(); err != nil {
 		_ = os.Remove(tmp)
-		return "", fmt.Errorf("关闭信箱临时文件 %s: %w", tmp, err)
+		return false, fmt.Errorf("关闭信箱临时文件 %s: %w", tmp, err)
 	}
-	if err := os.Rename(tmp, final); err != nil {
+	if err := os.Link(tmp, final); err != nil {
 		_ = os.Remove(tmp)
-		return "", fmt.Errorf("信件改名 %s → %s: %w", tmp, final, err)
+		if errors.Is(err, fs.ErrExist) {
+			return true, nil
+		}
+		return false, fmt.Errorf("信件落名 %s → %s: %w", tmp, final, err)
 	}
-	return final, nil
+	_ = os.Remove(tmp)
+	return false, nil
+}
+
+// desktopLetterTmpMaxAge 是信箱临时文件的残留判定年龄：正常写信从建 tmp 到删 tmp 在
+// 毫秒级，超过一小时仍在的只可能是写信中途进程崩溃的遗留（V review 遗留项）。
+const desktopLetterTmpMaxAge = time.Hour
+
+// sweepDesktopLetterTmp 删除 home 信箱里本 CLI 会话、修改时间早于 desktopLetterTmpMaxAge
+// 的临时文件（.<cliSession>.<19 位>.md.tmp）。只在本会话一封信成功落盘后调用（此时
+// cliSession 已过 writeDesktopLetter 的安全校验）；用真实墙钟比 mtime（不用 desktopClock
+// 测试缝——缝被固定到未来时会误删并发写者的新 tmp）。尽力而为：失败只 Warn，不影响投递。
+func (s *Server) sweepDesktopLetterTmp(home, cliSession string) {
+	dir := filepath.Join(home, proto.DesktopWakeDirRel)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		s.log.Warn("清理信箱临时文件：读目录失败", "dir", dir, "cause", err)
+		return
+	}
+	pattern := regexp.MustCompile(`^\.` + regexp.QuoteMeta(cliSession) + `\.[0-9]{19}\.md\.tmp$`)
+	removed := 0
+	for _, e := range entries {
+		if e.IsDir() || !pattern.MatchString(e.Name()) {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil || time.Since(info.ModTime()) < desktopLetterTmpMaxAge {
+			continue
+		}
+		if err := os.Remove(filepath.Join(dir, e.Name())); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			s.log.Warn("清理信箱临时文件失败", "file", e.Name(), "cause", err)
+			continue
+		}
+		removed++
+	}
+	if removed > 0 {
+		s.log.Info("已清理信箱残留临时文件", "dir", dir, "cli_session", cliSession, "removed", removed)
+	}
+}
+
+// desktopClock 是桌面端时钟缝（V review m3）：生产 desktopNow 为 nil 取 time.Now；测试固定
+// 它来复现同纳秒写信、推进失败段退避窗。与薄壳状态 TTL（desktopstate.go）共用同一缝。
+func (s *Server) desktopClock() time.Time {
+	if s.desktopNow != nil {
+		return s.desktopNow()
+	}
+	return time.Now()
 }
 
 // claudeContinueURL 构造 claude://code/continue?session=<url 编码的桌面端会话 id>（条 83）。
@@ -295,6 +549,51 @@ func claudeContinueURL(desktopSession string) (string, error) {
 		return "", fmt.Errorf("continue 深链的桌面端会话 id 非法: %w", err)
 	}
 	return proto.ClaudeContinueURLPrefix + url.QueryEscape(desktopSession), nil
+}
+
+// errDesktopDeepLinkUnsupported 是非 darwin 平台生产 opener 的固定错误（契约 §3.7）：
+// 席位唤醒照常写信，continue 一步按「信已落盘、continue 未发出」走失败段。
+var errDesktopDeepLinkUnsupported = errors.New("本平台不支持 Claude 桌面端深链")
+
+// desktopOpenTimeout 是 darwin `open` 子进程的上限：open 只把 URL 交给 LaunchServices
+// 即返回（毫秒级），挂住多半是 GUI 会话异常（屏幕锁定、登出）；给上限免得拖住单协程消费循环。
+const desktopOpenTimeout = 15 * time.Second
+
+// PlatformDesktopOpener 按 GOOS 给出生产 opener（契约 §3.7、r12 第 3 条）：darwin →
+// openDesktopDeepLinkDarwin；其余平台 → 恒返回 errDesktopDeepLinkUnsupported。
+// 参数 goos 而非读 runtime.GOOS：测试在任何平台都能锁住两条分支。
+// 注意：NewServer 不调用它——装配只在 cmd/agentd.go 组装点经 SetDesktopOpener 完成，测试进程
+// 经 NewServer 得到的 Server 保持 nil opener，永远不会在开发机上真的拉起桌面端。
+func PlatformDesktopOpener(goos string) func(string) error {
+	if goos != "darwin" {
+		return func(string) error { return errDesktopDeepLinkUnsupported }
+	}
+	return openDesktopDeepLinkDarwin
+}
+
+// SetDesktopOpener 装配 continue 深链 opener（契约 r12 第 3 条，与既有 srv.SetX 同形）：只在
+// 组装期调用一次，运行期只读不加锁。open 为 nil 等价于未装配（wakeDesktopSeat 按「信已落盘、
+// continue 未发出」处置）。
+func (s *Server) SetDesktopOpener(open func(string) error) {
+	s.desktopOpen = open
+	s.log.Info("桌面端 continue 深链 opener 已装配", "installed", open != nil)
+}
+
+// openDesktopDeepLinkDarwin 以 `open <link>` 把 continue 深链交给 Claude 桌面端。
+//   - 只放行 proto.ClaudeContinueURLPrefix 开头的链接（opener 不做通用 URL 打开器）；
+//   - 子进程带 desktopOpenTimeout 上限；失败把合并输出带进错误，交 wakeDesktopSeat 的
+//     「未打开」出口记 Error。
+func openDesktopDeepLinkDarwin(link string) error {
+	if !strings.HasPrefix(link, proto.ClaudeContinueURLPrefix) {
+		return fmt.Errorf("拒绝打开非 continue 深链: %q", link)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), desktopOpenTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "open", link).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("open %s: %w（输出：%s）", link, err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 // deliverDesktopLetter 是拉起器投递（r5）。machine 为本机 → renderLauncherLetter
@@ -382,11 +681,12 @@ func isForwardedWake(ctx context.Context) bool {
 // （一跳封顶，不再转交）→ desktopUndeliveredError；opener 失败（本机）或转交回包
 // LetterUnopened=true → desktopUnopenedError。
 //
-// 现状（B434.4）：本机分支已实现，成功返回 RoundResult{Woke: true, SessionID: desk.Session}
-// （handleCoordWake 据 Woke 回 200）；信箱根取 s.desktopHome，空则 os.UserHomeDir()
-// （信箱属写信进程用户，契约 r10 第 11 条）；
-// opener 取 s.desktopOpen，nil 视为不能发深链。异机分支暂返回 desktopUndeliveredError，
-// 由 B434 G2 换成 transferCoordinatorWake + 一跳封顶。零 keystone 调用、零账本写。
+// 本机分支成功返回 RoundResult{Woke: true, SessionID: desk.Session}（handleCoordWake 据 Woke
+// 回 200）；信箱根取 desktopMailboxHome()（信箱属写信进程用户，契约 r10 第 11 条、r12 第 10
+// 条）；opener 取 s.desktopOpen（cmd 组装点经 SetDesktopOpener 装配；NewServer 不装配，nil 视为不能
+// 发深链）。异机分支见
+// wakeRemoteDesktopSeat。零 keystone 调用；本函数自身零账本写（转交失败的 wake_round fail 行
+// 由 transferCoordinatorWake 落，B389 既有）。
 func (s *Server) wakeDesktopSeat(ctx context.Context, card, seat string, desk ledger.SeatDesktop,
 	evs []keystone.WakeEvent, raws []proto.LedgerEvent, roundID string) (keystone.RoundResult, error) {
 	var zero keystone.RoundResult
@@ -402,8 +702,7 @@ func (s *Server) wakeDesktopSeat(ctx context.Context, card, seat string, desk le
 		return zero, &desktopUndeliveredError{machine: machine, err: fmt.Errorf("%s: %w", stage, cause)}
 	}
 	if !scheduling.IsLocalMachine(desk.Machine) && !s.IsSelfTarget(desk.Machine) {
-		// 跨机转交（transferCoordinatorWake、isForwardedWake 一跳封顶，用到 ctx）归 B434 G2。
-		return undelivered("跨机转交", fmt.Errorf("桌面端席位在异机 %s，跨机转交尚未接通", desk.Machine))
+		return s.wakeRemoteDesktopSeat(ctx, card, seat, desk, raws, roundID, undelivered)
 	}
 	_, cliSession, err := proto.ParseSeatIdentity(seat)
 	if err != nil {
@@ -413,16 +712,15 @@ func (s *Server) wakeDesktopSeat(ctx context.Context, card, seat string, desk le
 	if err != nil {
 		return undelivered("组装来信", err)
 	}
-	home := s.desktopHome
-	if home == "" {
-		if home, err = os.UserHomeDir(); err != nil {
-			return undelivered("取 HOME", err)
-		}
+	home, err := s.desktopMailboxHome()
+	if err != nil {
+		return undelivered("取 HOME", err)
 	}
-	letterPath, err := writeDesktopLetter(home, cliSession, letter, time.Now())
+	letterPath, err := writeDesktopLetter(home, cliSession, letter, s.desktopClock())
 	if err != nil {
 		return undelivered("写信箱", err)
 	}
+	s.sweepDesktopLetterTmp(home, cliSession)
 	s.log.Info("桌面端来信已落盘", "card", card, "letter", letterPath, "bytes", len(letter), "round_id", roundID)
 	unopened := func(stage string, cause error) (keystone.RoundResult, error) {
 		s.log.Error("桌面端来信已落盘但 continue 未发出", "card", card, "letter", letterPath,
@@ -442,6 +740,56 @@ func (s *Server) wakeDesktopSeat(ctx context.Context, card, seat string, desk le
 	s.log.Info("桌面端席位唤醒完成", "card", card, "desktop_session", desk.Session,
 		"letter", letterPath, "round_id", roundID)
 	return keystone.RoundResult{Woke: true, SessionID: desk.Session}, nil
+}
+
+// desktopTransferTimeout 是桌面端席位跨机转交的单次时限。被转交端只写一封信 + 发一次
+// 深链（毫秒到秒级），不像 coordinate 转交要跑整个协调者回合；给上限是为了对端挂住时
+// 不把单协程的消费循环（与其后的清队）拖住。包级 var 而非 const：测试缩短它验证超时出口。
+var desktopTransferTimeout = 30 * time.Second
+
+// wakeRemoteDesktopSeat 是 wakeDesktopSeat 的异机分支（契约 §3.7，拍板 D3）：
+//   - 本次已是转交来的（isForwardedWake）→ 一跳封顶，不再出站，返回未投递
+//     （「席位机器 <machine> 对被转交端也非本机」，条 98/99）；
+//   - 否则经 B389 transferCoordinatorWake 交给 desk.Machine 的 agentd（带 desktopTransferTimeout）：
+//     对端回 letter_unopened → transferCoordinatorWake 已映射成 *desktopUnopenedError，原样返回；
+//     其余失败（取客户端、不可达、非 2xx、超时）→ 未投递；成功 → 透传对端回合结果。
+//
+// undelivered 是 wakeDesktopSeat 的未投递出口（统一日志与错误包装）。本函数不落 needs_human。
+func (s *Server) wakeRemoteDesktopSeat(ctx context.Context, card, seat string, desk ledger.SeatDesktop,
+	raws []proto.LedgerEvent, roundID string,
+	undelivered func(stage string, cause error) (keystone.RoundResult, error)) (keystone.RoundResult, error) {
+	if isForwardedWake(ctx) {
+		return undelivered("一跳封顶", fmt.Errorf("席位机器 %s 对被转交端也非本机", desk.Machine))
+	}
+	tctx, cancel := context.WithTimeout(ctx, desktopTransferTimeout)
+	defer cancel()
+	s.log.Info("桌面端席位在异机，转交唤醒", "card", card, "machine", desk.Machine,
+		"desktop_session", desk.Session, "event_count", len(raws), "round_id", roundID)
+	res, err := s.transferCoordinatorWake(tctx, card, seat, desk.Machine, raws, s.wakeClaimHolder(), roundID)
+	if desktopUnopened(err) {
+		return keystone.RoundResult{}, err
+	}
+	if err != nil {
+		return undelivered("跨机转交", err)
+	}
+	s.log.Info("桌面端席位唤醒已转交", "card", card, "machine", desk.Machine,
+		"woke", res.Woke, "round_id", roundID)
+	return res, nil
+}
+
+// desktopMailboxHome 是信箱根目录规则的唯一定义（契约 r10 第 11 条、r12 第 10 条）：
+// Server.desktopHome 非空（装配期注入，测试指向临时目录）原样返回，否则取写信进程用户的
+// os.UserHomeDir()。席位唤醒本机分支（wakeDesktopSeat）与 G3 拉起器收件机都只经它取信箱根，
+// 不各自拼 HOME。返回：UserHomeDir 失败的原错误（调用方按「未投递」处置）。
+func (s *Server) desktopMailboxHome() (string, error) {
+	if s.desktopHome != "" {
+		return s.desktopHome, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("取信箱所在 HOME: %w", err)
+	}
+	return home, nil
 }
 
 // renderLauncherLetter 渲染拉起器来信（r5，唯一渲染点，只在拉起器所在机器调用）：
@@ -464,20 +812,186 @@ const desktopNeedsHumanSystemActorPrefix = "node:"
 
 // isSystemNeedsHumanActor 报告 actor 是否为系统组件（精确命中
 // desktopNeedsHumanSystemActors 或以 desktopNeedsHumanSystemActorPrefix 开头）。
+// 用精确值表而不是「不含 ':'」之类的形状判据：人与会话身份也可能是裸词（如 actor
+// "test"），形状判据会把人打的标误当系统标吞掉（契约 §3.8.1 规则 3）。
 func isSystemNeedsHumanActor(actor string) bool {
-	_ = actor
-	return false // TODO(B434)
+	return slices.Contains(desktopNeedsHumanSystemActors, actor) ||
+		strings.HasPrefix(actor, desktopNeedsHumanSystemActorPrefix)
 }
 
-// desktopNeedsHumanWakes 是 needs_human 对桌面端席位的唤醒映射（P5=B），由
-// automationWakeEvents 在调用纯函数 automationWakeEvent 之前对 EvNeedsHuman 分流：
-// 目标 = resolveWakeCard(ev.CardID)；目标须是有桌面端记录的 bind 席位，否则返回空
-// （coordinate 席位与无记录 bind 维持 B394 现行判据）；actor 为系统组件或等于目标
-// 席位身份 → 返回空；命中 → 一条 keystone.WakeTaskTerminal（Card=ev.CardID，
-// Summary="needs_human: <reason>"）。
+// desktopNeedsHumanWakes 是 needs_human 对桌面端席位的唤醒映射（P5=B，契约 §3.8.1），由
+// automationWakeEvents 在调用纯函数 automationWakeEvent 之前对 EvNeedsHuman 分流。判定按
+// 契约规则顺序：1 目标 = resolveWakeCard(ev.CardID)，空 → 不唤醒；2 目标须是 bind 席位且
+// SeatDesktopOf 命中，否则不唤醒（coordinate 与无记录 bind 维持 B394）；3 actor 是系统组件
+// → 不唤醒（本卡失败段与无拉起器标的 actor 都是 agentd，切断回声环，条 187）；4 actor 等于
+// 目标席位身份（协调者自打）→ 不唤醒；5 命中 → 一条 WakeTaskTerminal（Card=ev.CardID，
+// Summary="needs_human: <reason>"）——复用 WakeTaskTerminal 是为过 keystone.Decide 的种类清单。
+// 返回：读目标卡或桌面端记录失败 → 错误（消费循环本轮中止、下轮重读，同会话寻址读失败）；
+// 不唤醒的每条判定留 Debug（判定理由可查）。
 func (s *Server) desktopNeedsHumanWakes(ev proto.LedgerEvent) ([]keystone.WakeEvent, error) {
-	_ = ev
-	return nil, proto.ErrDesktopNotImplemented // TODO(B434)
+	target := s.resolveWakeCard(ev.CardID)
+	if target == "" {
+		s.log.Debug("needs_human 不唤醒：无可叫醒的席位卡", "seq", ev.Seq, "card", ev.CardID)
+		return nil, nil
+	}
+	card, err := s.ledger.GetCard(target)
+	if err != nil {
+		return nil, fmt.Errorf("needs_human seq %d 唤醒判定读席位卡 %s: %w", ev.Seq, target, err)
+	}
+	if card.DriverSource != string(proto.SeatSourceBind) {
+		s.log.Debug("needs_human 不唤醒：目标是 coordinate 席位（B394）", "seq", ev.Seq, "card", ev.CardID, "target", target)
+		return nil, nil
+	}
+	_, hasDesktop, err := s.ledger.SeatDesktopOf(target)
+	if err != nil {
+		return nil, fmt.Errorf("needs_human seq %d 唤醒判定读桌面端记录 %s: %w", ev.Seq, target, err)
+	}
+	if !hasDesktop {
+		s.log.Debug("needs_human 不唤醒：目标 bind 席位无桌面端记录", "seq", ev.Seq, "card", ev.CardID, "target", target)
+		return nil, nil
+	}
+	if isSystemNeedsHumanActor(ev.Actor) {
+		s.log.Debug("needs_human 不唤醒：系统组件自打", "seq", ev.Seq, "card", ev.CardID, "actor", ev.Actor)
+		return nil, nil
+	}
+	if ev.Actor == card.DriverSession {
+		s.log.Debug("needs_human 不唤醒：席位自打", "seq", ev.Seq, "card", ev.CardID, "actor", ev.Actor)
+		return nil, nil
+	}
+	reason, ok := desktopNeedsHumanReason(ev)
+	if !ok {
+		s.log.Warn("needs_human 载荷无 reason，摘要按载荷原文", "seq", ev.Seq, "card", ev.CardID)
+	}
+	s.log.Info("needs_human 唤醒桌面端席位", "seq", ev.Seq, "card", ev.CardID, "target", target, "actor", ev.Actor)
+	return []keystone.WakeEvent{{Kind: keystone.WakeTaskTerminal, Card: ev.CardID, Summary: "needs_human: " + reason}}, nil
+}
+
+// driverTakeoverChangedSeat 报告一条 driver_takeover 是否真的换了卡上席位（review m4）：
+// 换绑（RebindSeat）载荷 to = 新席位身份；运行锁过期抢占（AcquireRunLock）复用同一事件类型，
+// 载荷 to 却是运行锁持有者，席位并没变——清失败段只该发生在前者。判据：载荷 to 等于卡上当前
+// DriverSession。之后若又换绑，后一条 takeover 自会命中，故读「当前」而非「事件当时」不漏清。
+// 载荷解不开或读卡失败 → Warn 并按「换了」处理：多清一次段的代价是同段可能多落一条
+// needs_human，少清的代价是新席位继承旧退避窗，前者是安全方向。
+func (s *Server) driverTakeoverChangedSeat(ev proto.LedgerEvent) bool {
+	var p struct {
+		To string `json:"to"`
+	}
+	if err := json.Unmarshal(ev.Payload, &p); err != nil {
+		s.log.Warn("driver_takeover 载荷解码失败，按席位已变清失败段", "seq", ev.Seq, "card", ev.CardID, "cause", err)
+		return true
+	}
+	card, err := s.ledger.GetCard(ev.CardID)
+	if err != nil {
+		s.log.Warn("driver_takeover 读卡失败，按席位已变清失败段", "seq", ev.Seq, "card", ev.CardID, "cause", err)
+		return true
+	}
+	if p.To != card.DriverSession {
+		s.log.Debug("driver_takeover 未换席位（运行锁抢占），不清失败段", "seq", ev.Seq, "card", ev.CardID, "to", p.To)
+		return false
+	}
+	return true
+}
+
+// desktopWakeStallEntry 是一张卡当前「桌面端失败段」的进程内状态（段 = 两次成功之间的
+// 连续失败）。受 Server.automationMu 保护；agentd 重启清零（契约 §3.7：重启后同段可能
+// 再多落一条 needs_human，可接受）。
+type desktopWakeStallEntry struct {
+	Failures int       // 本段连续失败次数；0→1 的那一次落 needs_human
+	RetryAt  time.Time // 「信未落盘」后下一次重试的最早时刻（desktopClock 读数）；零值 = 不限
+	Round    string    // 本段 wake_round 轮次标识：段内重试复用，转交失败行一段一行（B393 一轮一组）
+}
+
+// desktopWakeRetryBase / desktopWakeRetryMax 是「信未落盘」重试退避（契约 §11.3 交 plan 定）：
+// 第 n 次连续失败后至少等 base·2^(n-1)，封顶 max。为什么要退避：转交对端不可达时每次
+// 尝试要吃满拨号超时（client.dialTimeout=10s），消费循环是单协程，2s 节拍下会把所有卡的
+// 唤醒拖慢；退避期间认领留在飞（消费循环每轮重新认领即续租），事件不标 seen、不丢。
+const (
+	desktopWakeRetryBase = 2 * time.Second
+	desktopWakeRetryMax  = time.Minute
+)
+
+// desktopWakeRetryDelay 返回第 failures 次连续「未落盘」失败后的退避时长。
+func desktopWakeRetryDelay(failures int) time.Duration {
+	d := desktopWakeRetryBase
+	for i := 1; i < failures && d < desktopWakeRetryMax; i++ {
+		d *= 2
+	}
+	return min(d, desktopWakeRetryMax)
+}
+
+// desktopWakeRound 返回卡当前失败段的 wake_round 轮次标识；不在失败段返回 ""。
+func (s *Server) desktopWakeRound(card string) string {
+	s.automationMu.Lock()
+	defer s.automationMu.Unlock()
+	return s.desktopWakeStall[card].Round
+}
+
+// desktopWakeRetryPending 报告卡是否处在「信未落盘」退避窗内，并返回窗口截止时刻。
+func (s *Server) desktopWakeRetryPending(card string) (time.Time, bool) {
+	now := s.desktopClock()
+	s.automationMu.Lock()
+	defer s.automationMu.Unlock()
+	until := s.desktopWakeStall[card].RetryAt
+	return until, !until.IsZero() && now.Before(until)
+}
+
+// recordDesktopWakeFailure 把一次桌面端唤醒失败（desktopUndelivered 或 desktopUnopened）
+// 计入卡的失败段：Failures+1；首次记下本段轮次 roundID；未落盘失败设退避窗。计数从 0
+// 变 1 的那一次落 MarkNeedsHuman(card, desktopWakeFailReasonPrefix+<原因>, "agentd")——
+// needs_human 只由认领本批的发起端在这里写（契约 §3.7 单一原则），不经 recordAdmissionStall、
+// 不动 automationStall（条 173/174）。落标失败：Error + 计数退回 0，让下一次失败重试落标
+// （不让一次账本抖动把整段变成无人可见）。
+func (s *Server) recordDesktopWakeFailure(card, roundID string, cause error) {
+	undelivered := desktopUndelivered(cause)
+	retryAt := time.Time{}
+	s.automationMu.Lock()
+	if s.desktopWakeStall == nil {
+		s.desktopWakeStall = make(map[string]desktopWakeStallEntry)
+	}
+	e := s.desktopWakeStall[card]
+	e.Failures++
+	if e.Round == "" {
+		e.Round = roundID
+	}
+	e.RetryAt = time.Time{}
+	if undelivered {
+		retryAt = s.desktopClock().Add(desktopWakeRetryDelay(e.Failures))
+		e.RetryAt = retryAt
+	}
+	s.desktopWakeStall[card] = e
+	s.automationMu.Unlock()
+
+	s.log.Warn("桌面端唤醒失败，计入失败段", "card", card, "failures", e.Failures,
+		"undelivered", undelivered, "retry_at", retryAt, "round_id", e.Round, "cause", cause)
+	if e.Failures != 1 {
+		return
+	}
+	reason := desktopWakeFailReasonPrefix + cause.Error()
+	if err := s.ledger.MarkNeedsHuman(card, reason, "agentd"); err != nil {
+		s.log.Error("桌面端失败段落 needs_human 失败，下一次失败重试落标", "card", card, "cause", err)
+		s.automationMu.Lock()
+		if cur := s.desktopWakeStall[card]; cur.Failures == 1 {
+			cur.Failures = 0
+			s.desktopWakeStall[card] = cur
+		}
+		s.automationMu.Unlock()
+		return
+	}
+	s.log.Error("桌面端失败段已落 needs_human", "card", card, "round_id", e.Round)
+}
+
+// clearDesktopWakeStall 结束该卡的桌面端失败段：一次唤醒成功后（契约 §3.7：段 = 两次成功
+// 之间），或席位换绑 / 桌面端记录重写事件流经消费循环时（契约 r12 第 4 条末句：旧段的退避窗、
+// 已落标计数与段轮次不得被新席位继承）。reason 只进日志，区分两种结束。对不在失败段的卡
+// 是空操作。
+func (s *Server) clearDesktopWakeStall(card, reason string) {
+	s.automationMu.Lock()
+	e, ok := s.desktopWakeStall[card]
+	delete(s.desktopWakeStall, card)
+	s.automationMu.Unlock()
+	if ok {
+		s.log.Info("桌面端失败段结束", "card", card, "reason", reason, "failures", e.Failures, "round_id", e.Round)
+	}
 }
 
 // openViaDesktopLauncher 是拉起器代开：读项目拉起器 → 投递装着拉起材料

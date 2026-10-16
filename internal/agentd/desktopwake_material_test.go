@@ -16,12 +16,14 @@ import (
 	"go/parser"
 	"go/token"
 	"log/slog"
+	"maps"
 	"net/http"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Xsxdot/handoff/internal/ledger"
 	"github.com/Xsxdot/handoff/internal/orchestration"
@@ -464,14 +466,20 @@ func TestB434MaterialLauncherField(t *testing.T) {
 
 // ---------- T5：GET 不写状态（条 14，承重属性的反面断言） ----------
 
-// b434StallSnapshot 复制进程内失败计数表（G1 时点仅 automationStall；G2 加
-// desktopWakeStall 后须在此并入，见 plan §11）。
+// b434StallSnapshot 复制进程内失败计数表：准入停摆 automationStall 与 B434 G2 的桌面端
+// 失败段 desktopWakeStall（拆解稿 r4 ①）。键带表名前缀，同一张卡在两表各占一键；
+// 桌面端条目展开为失败次数、退避截止（UnixNano）与段轮次是否为空三个读数。
 func b434StallSnapshot(env *ledgerEnv) map[string]int {
 	env.srv.automationMu.Lock()
 	defer env.srv.automationMu.Unlock()
-	out := make(map[string]int, len(env.srv.automationStall))
+	out := make(map[string]int, len(env.srv.automationStall)+3*len(env.srv.desktopWakeStall))
 	for k, v := range env.srv.automationStall {
-		out[k] = v
+		out["automationStall/"+k] = v
+	}
+	for k, e := range env.srv.desktopWakeStall {
+		out["desktopWakeStall/"+k+"/failures"] = e.Failures
+		out["desktopWakeStall/"+k+"/retry_at"] = int(e.RetryAt.UnixNano())
+		out["desktopWakeStall/"+k+"/has_round"] = len(e.Round)
 	}
 	return out
 }
@@ -486,6 +494,7 @@ func TestB434MaterialGetWritesNothing(t *testing.T) {
 	ghost := b434BareCard(t, env, "ghost")
 	env.srv.automationMu.Lock()
 	env.srv.automationStall[okCard] = 2
+	env.srv.desktopWakeStall[okCard] = desktopWakeStallEntry{Failures: 2, RetryAt: time.Unix(0, 42), Round: "r-1"}
 	env.srv.automationMu.Unlock()
 
 	beforeLedger := b434LedgerSnapshot(t, env)
@@ -501,8 +510,7 @@ func TestB434MaterialGetWritesNothing(t *testing.T) {
 	if after := b434LedgerSnapshot(t, env); after != beforeLedger {
 		t.Fatalf("条 14：GET 改了账本：\n前 %s\n后 %s", beforeLedger, after)
 	}
-	afterStall := b434StallSnapshot(env)
-	if len(afterStall) != len(beforeStall) || afterStall[okCard] != beforeStall[okCard] {
+	if afterStall := b434StallSnapshot(env); !maps.Equal(afterStall, beforeStall) {
 		t.Fatalf("条 14：GET 改了进程内失败计数：前 %v 后 %v", beforeStall, afterStall)
 	}
 }

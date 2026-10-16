@@ -49,7 +49,7 @@ func b434SampleLetter() (head string, sections []desktopLetterSection, tail stri
 			{Quote: &desktopQuote{Author: "cli:claude#aaa", Seq: 12, Kind: desktopQuoteKindTicket, Body: `{"cmd":"ls"}`}},
 		}},
 	}
-	tail = "按分诊表处置；读全文：handoff card show B999；会话消息：handoff session read S1。处置完不必挂订阅，有事会再叫醒你。"
+	tail = "按分诊表处置；读全文：handoff card show B999；会话消息：handoff room read S1。处置完不必挂订阅，有事会再叫醒你。"
 	return head, sections, tail
 }
 
