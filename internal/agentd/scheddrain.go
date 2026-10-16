@@ -455,7 +455,13 @@ func (s *Server) wakeCoordinatorRoundID(ctx context.Context, card string,
 		// 早退处 = 先于 SeatBearingOf / resolveCoordinatorSquad / AdmitSeatCarrier，桌面端
 		// 不占协调者小队名额（拆解稿 §2.4 第 4 条），也不经 keystone（不调 Forget/Wake）。
 		desk, hasDesktop, derr := s.ledger.SeatDesktopOf(card)
-		if derr != nil {
+		switch {
+		case derr != nil && len(raws) == 0:
+			// 队列出队对桌面端席位本就不写信（下方守卫），读不到记录也不影响结局：降级为
+			// 原 bind 跳过，startCardStep 与执行者清队不被一次读失败阻断（契约 r10 第 10 条）。
+			s.log.Warn("读桌面端席位记录失败，队列出队按 bind 跳过", "card", card, "round_id", roundID, "cause", derr)
+			hasDesktop = false
+		case derr != nil:
 			s.log.Error("读桌面端席位记录失败，本轮不唤醒", "card", card, "round_id", roundID, "cause", derr)
 			return zero, fmt.Errorf("读取桌面端席位记录: %w", derr)
 		}

@@ -1,20 +1,24 @@
 // desktopwake_slice_test.go —— B434 直通竖切（契约 §9.3 / 欠账 §10.4，重档法定步骤）。
 //
 // 职责：从声明缝 Server.consumeAutomationEventsOnce 进（spec 测试缝 5 的调用方），用
-// 真 SQLite 账本 + 真 keystone（假 runner）+ t.TempDir() 作 HOME + opener spy，一路穿过
-// resolveWakeCard → wakeCoordinatorRoundID（bind 早退处的桌面端分支）→ wakeDesktopSeat
-// （缝 4，本机分支）→ desktopLetter → renderDesktopLetter → writeDesktopLetter →
-// claudeContinueURL → opener，证明桌面端唤醒主缝接得上。
+// 真 SQLite 账本 + 真 keystone（假 runner）+ 注入的信箱根目录（Server.desktopHome =
+// t.TempDir()）+ opener spy，一路穿过 resolveWakeCard → wakeCoordinatorRoundID（bind
+// 早退处的桌面端分支）→ wakeDesktopSeat（缝 4，本机分支）→ desktopLetter →
+// renderDesktopLetter → writeDesktopLetter → claudeContinueURL → opener，证明桌面端
+// 唤醒主缝接得上。
 //
-// 边界：只锁快乐路径（条 67、70–73、83、85、89–92）、无记录反面、祖先冒泡（条 87）与
-// 信箱键安全（不出信箱目录）与队列出队不写信（契约 r10 第 10 条）。失败段计数、跨机转交、needs_human 唤醒、会话消息/工单/
-// needs_human 三种来信段归 B434 G2，不在本文件。不直调 wakeDesktopSeat——否则测不到
-// resolveWakeCard 那一段（拆解稿 §5.5 假绿条）。本文件的帮手供 G2 同包复用。
+// 边界：只锁快乐路径（条 67、70–73、83、85、89–92）、无记录反面、祖先冒泡（条 87）、
+// 信箱键安全（不出信箱目录）、队列出队不写信且不阻断清队（契约 r10 第 10 条），以及
+// 读桌面端记录失败的两处降级（队列出队按 bind 跳过；祖先读失败继续上走）。失败段
+// 计数、跨机转交、needs_human 唤醒、会话消息/工单/needs_human 三种来信段归 B434 G2，
+// 不在本文件。主路径不直调 wakeDesktopSeat——否则测不到 resolveWakeCard 那一段
+// （拆解稿 §5.5 假绿条）。本文件的帮手供 G2 同包复用。
 package agentd
 
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -26,10 +30,13 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/Xsxdot/handoff/internal/keystone"
 	"github.com/Xsxdot/handoff/internal/ledger"
+	"github.com/Xsxdot/handoff/internal/ledgerstep"
 	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/scheduling"
 )
 
 // desktopOpenerSpy 记录交给 opener 的每条深链（Server.desktopOpen 的测试替身）。
@@ -141,6 +148,24 @@ func automationSeenHas(env *ledgerEnv, seq int64) bool {
 	defer env.srv.automationMu.Unlock()
 	_, ok := env.srv.automationSeen[seq]
 	return ok
+}
+
+// breakSeatDesktopReads 绕过 Store 直接删掉 seat_desktops 表，让此后每次
+// SeatDesktopOf 都报读失败，而 GetCard 等其它读照常（最薄的读失败注入：账本层
+// 没有可替换接口，这里沿用 coordapi_test 直开同一 SQLite 文件的既有手法）。
+func breakSeatDesktopReads(t *testing.T, env *ledgerEnv) {
+	t.Helper()
+	raw, err := sql.Open("sqlite", env.ledgerPath+"?_pragma=busy_timeout(5000)")
+	if err != nil {
+		t.Fatalf("直开账本: %v", err)
+	}
+	defer raw.Close()
+	if _, err := raw.Exec(`DROP TABLE seat_desktops`); err != nil {
+		t.Fatalf("删 seat_desktops 表: %v", err)
+	}
+	if _, _, err := env.ledger.SeatDesktopOf("probe"); err == nil {
+		t.Fatal("删表后 SeatDesktopOf 应报读失败，读失败注入没生效")
+	}
 }
 
 func TestB434DesktopWakeVerticalSlice(t *testing.T) {
@@ -325,6 +350,112 @@ func TestB434DesktopWakeVerticalSlice(t *testing.T) {
 		}
 		if !strings.Contains(logs.String(), "桌面端席位队列出队不写信，直接进节点再入口") {
 			t.Fatalf("应留「桌面端席位队列出队不写信，直接进节点再入口」日志，实得：\n%s", logs.String())
+		}
+	})
+
+	t.Run("队列出队不阻断清队", func(t *testing.T) {
+		// 契约 r10 第 10 条的调用方面：drainIgnitionRequest（scheddrain 清队对 ignition 队列的
+		// 唯一出队处理）对有桌面端记录的 bind 卡必须放行并进 startCardStep；返回错误会让
+		// 清队循环回填该请求并停清队，堵死整条队列。按 b393_wakeround_reqround_test 的
+		// 既有模式给 runStepFn 装 spy。
+		env, runner, spy, home := newDesktopSliceEnv(t)
+		// bug 流的「进行中」是可派发节点（feature-impl 模板），startCardStep 能一路装配到
+		// runStepFn；attachment-gates 流无派发节点，会在取模板处失败而测不到再入口。
+		cardID := seedCard(t, env, "桌面端 bind 卡队列出队").ID
+		bindDesktopSeat(t, env, cardID, "slice-cli-drain", "local_slice-drain")
+		var (
+			stepMu    sync.Mutex
+			stepCalls []string
+		)
+		stepDone := make(chan struct{}, 4)
+		env.srv.runStepFn = func(_ context.Context, _ *ledgerstep.StepRunner, id, node string) {
+			stepMu.Lock()
+			stepCalls = append(stepCalls, id+"/"+node)
+			stepMu.Unlock()
+			stepDone <- struct{}{}
+		}
+		req := scheduling.IgnitionRequest{Card: cardID, Node: ledger.StatusDoing, Actor: "test", Ready: true}
+
+		if err := env.srv.drainIgnitionRequest(context.Background(), req); err != nil {
+			t.Fatalf("桌面端 bind 卡队列出队应放行进节点再入口，实得 err=%v（undelivered=%v）",
+				err, desktopUndelivered(err))
+		}
+		select {
+		case <-stepDone:
+		case <-time.After(2 * time.Second):
+			t.Fatal("队列出队放行后 runStepFn（startCardStep 的执行者回合）2s 内未被调用")
+		}
+		waitFor(t, func() bool { return !env.srv.cardStepInFlight(cardID) })
+		stepMu.Lock()
+		calls := append([]string(nil), stepCalls...)
+		stepMu.Unlock()
+		if len(calls) != 1 || calls[0] != cardID+"/"+ledger.StatusDoing {
+			t.Fatalf("runStepFn 应恰被调一次（%s/%s），实得 %v", cardID, ledger.StatusDoing, calls)
+		}
+		queued, err := mustScheduling(t, env.srv).QueueSnapshot()
+		if err != nil {
+			t.Fatalf("读队列快照: %v", err)
+		}
+		if len(queued) != 0 {
+			t.Fatalf("放行后队列不得有回填，实得 %+v", queued)
+		}
+		if files := mdFilesUnder(t, home); len(files) != 0 {
+			t.Fatalf("队列出队不得写信：%v", files)
+		}
+		if got := spy.calls(); len(got) != 0 {
+			t.Fatalf("队列出队不得调 opener：%v", got)
+		}
+		if launches, resumes, _ := runner.snapshot(); launches != 0 || len(resumes) != 0 {
+			t.Fatalf("桌面端席位不得经 keystone：launch=%d resumes=%v", launches, resumes)
+		}
+	})
+
+	t.Run("读桌面端记录失败_队列出队按bind跳过_有事件仍报错", func(t *testing.T) {
+		env, _, spy, home := newDesktopSliceEnv(t)
+		var logs bytes.Buffer
+		env.srv.log = slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+		cardID := createCoordCard(t, env)
+		bindDesktopSeat(t, env, cardID, "slice-cli-readfail", "local_slice-readfail")
+		breakSeatDesktopReads(t, env)
+
+		res, err := env.srv.wakeCoordinatorRoundID(context.Background(), cardID,
+			[]keystone.WakeEvent{{Kind: keystone.WakeQueueRelease, Card: cardID}}, nil, "")
+		if err != nil || res != (keystone.RoundResult{}) {
+			t.Fatalf("队列出队读桌面端记录失败应降级为 bind 跳过 (zero, nil)，实得 res=%+v err=%v", res, err)
+		}
+		if !strings.Contains(logs.String(), "读桌面端席位记录失败，队列出队按 bind 跳过") ||
+			!strings.Contains(logs.String(), "bind 席位跳过协调者唤醒") {
+			t.Fatalf("应留降级 Warn 与 bind 跳过 Info，实得：\n%s", logs.String())
+		}
+
+		raws := []proto.LedgerEvent{{Seq: 1, CardID: cardID, Type: ledger.EvDecisionOpened, Actor: "cli:sycm@host"}}
+		if _, err := env.srv.wakeCoordinatorRoundID(context.Background(), cardID,
+			[]keystone.WakeEvent{{Kind: keystone.WakeTaskTerminal, Card: cardID}}, raws, ""); err == nil ||
+			!strings.Contains(err.Error(), "读取桌面端席位记录") {
+			t.Fatalf("有事件时读桌面端记录失败应上抛错误（本轮不唤醒），实得 %v", err)
+		}
+		if files := mdFilesUnder(t, home); len(files) != 0 {
+			t.Fatalf("读记录失败不得写信：%v", files)
+		}
+		if got := spy.calls(); len(got) != 0 {
+			t.Fatalf("读记录失败不得调 opener：%v", got)
+		}
+	})
+
+	t.Run("读桌面端记录失败_祖先bind继续上走_起始bind返回空", func(t *testing.T) {
+		env, _, _, _ := newDesktopSliceEnv(t)
+		rootID := createCoordCard(t, env)
+		prebindConsumerSession(t, env, rootID)
+		midID := splitCoordChild(t, env, rootID)
+		bindDesktopSeat(t, env, midID, "slice-cli-mid", "")
+		leafID := splitCoordChild(t, env, midID)
+		breakSeatDesktopReads(t, env)
+
+		if got := env.srv.resolveWakeCard(leafID); got != rootID {
+			t.Fatalf("祖先 bind 卡读桌面端记录失败应继续上走到 coordinate 祖先 %s，实得 %q", rootID, got)
+		}
+		if got := env.srv.resolveWakeCard(midID); got != "" {
+			t.Fatalf("起始卡自身读桌面端记录失败应返回空，实得 %q", got)
 		}
 	})
 
