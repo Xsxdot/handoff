@@ -34,6 +34,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Xsxdot/handoff/internal/client"
 	"github.com/Xsxdot/handoff/internal/collab/room"
 	"github.com/Xsxdot/handoff/internal/keystone"
 	"github.com/Xsxdot/handoff/internal/ledger"
@@ -618,8 +619,51 @@ func (s *Server) deliverDesktopLetter(ctx context.Context, machine string, req p
 	if scheduling.IsLocalMachine(machine) || s.IsSelfTarget(machine) {
 		return s.deliverLauncherLetterLocal(req)
 	}
-	return proto.DesktopDeliverResp{}, fmt.Errorf("拉起器在异机 %s：异机投递尚未接通（B434.6 T5 接通）", machine)
+	return s.forwardLauncherLetter(ctx, machine, req)
 }
+
+// forwardLauncherLetter 是 deliverDesktopLetter 的异机分支：经 clientForTarget(machine)
+// .MarkForwarded() 发一次 POST /api/desktop/deliver（带 X-Handoff-Forwarded，条 153），只搬运
+// req；单次时限 desktopTransferTimeout（与席位唤醒转交同一上限，契约 r12 第 4 条——对端挂住时
+// 不把代开请求无限拖住）。收件机 409（项目在它那里没有登记位置）→ desktopRemoteNoLocalProjectError
+// （文本逐字取收件机 error，可 errors.Is(errNoLocalProject)）；其余失败（取客户端、不可达、超时、
+// 非 2xx 含 400/503/404/500）原样包装上抛，由调用方按投递失败处置。
+func (s *Server) forwardLauncherLetter(ctx context.Context, machine string, req proto.DesktopDeliverReq) (proto.DesktopDeliverResp, error) {
+	var zero proto.DesktopDeliverResp
+	c, err := s.clientForTarget(machine)
+	if err != nil {
+		s.log.Error("拉起器投递取目标客户端失败", "card", req.Card, "machine", machine, "cause", err)
+		return zero, fmt.Errorf("取拉起器机器 %s 的客户端: %w", machine, err)
+	}
+	tctx, cancel := context.WithTimeout(ctx, desktopTransferTimeout)
+	defer cancel()
+	s.log.Info("拉起器投递转交到拉起器所在机器", "card", req.Card, "machine", machine)
+	resp, err := c.MarkForwarded().DesktopDeliver(tctx, req)
+	if err != nil {
+		if code, ok := client.StatusCode(err); ok && code == http.StatusConflict {
+			text, _ := client.ServerErrorText(err)
+			s.log.Warn("拉起器所在机器上项目无登记位置", "card", req.Card, "machine", machine, "cause", text)
+			return zero, &desktopRemoteNoLocalProjectError{machine: machine, text: text}
+		}
+		s.log.Error("拉起器投递到目标机失败", "card", req.Card, "machine", machine, "cause", err)
+		return zero, fmt.Errorf("投递到拉起器机器 %s: %w", machine, err)
+	}
+	s.log.Info("拉起器投递已由收件机受理", "card", req.Card, "machine", machine,
+		"handled_by", resp.HandledBy, "written", resp.Written, "opened", resp.Opened)
+	return *resp, nil
+}
+
+// desktopRemoteNoLocalProjectError 是收件机回 409「项目在本机没有登记位置」的透传：
+// Error() 逐字等于收件机 error 原文（条 220），Unwrap 到 errNoLocalProject，使发起端与
+// 本机无位置走同一条 409 映射、同样不落 needs_human（条 221）。
+type desktopRemoteNoLocalProjectError struct {
+	machine string
+	text    string
+}
+
+func (e *desktopRemoteNoLocalProjectError) Error() string { return e.text }
+
+func (e *desktopRemoteNoLocalProjectError) Unwrap() error { return errNoLocalProject }
 
 // deliverLauncherLetterLocal 是 deliverDesktopLetter 的本机分支：渲染 → 构造 continue 深链
 // → 写信 → opener。深链先于写信构造：会话 id 非法时一封信都不落（不留发不出去的信）。

@@ -300,6 +300,9 @@ func newB434Pair(t *testing.T, shared bool) *b434Pair {
 	deadURL := dead.URL
 	dead.Close()
 	hang := testhttp.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 先读完请求体：net/http 只在体读完后才后台探测断连，否则发起端超时断开时
+		// r.Context() 不会取消，关服务要白等 b434HangDelay。
+		_, _ = io.Copy(io.Discard, r.Body)
 		select {
 		case <-r.Context().Done():
 		case <-time.After(b434HangDelay):
