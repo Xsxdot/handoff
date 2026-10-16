@@ -254,3 +254,95 @@ func TestB434SeatDesktopsDDLBothDialects(t *testing.T) {
 			"bound_at " + b434TimeType(pg) + " NOT NULL"})
 	}
 }
+
+// TestB434SetSeatDesktopRejectsWithoutSideEffects 锁条 51–54 与写闸：空座、coordinate
+// 席位、CAS 不符、非法 id、词表外 via、卡不存在——各自报错，且行数与事件数都不变。
+func TestB434SetSeatDesktopRejectsWithoutSideEffects(t *testing.T) {
+	s := seedStore(t)
+	desk := SeatDesktop{Session: b434DesktopSession, Machine: "mbp-01", Via: proto.SeatDesktopViaPage}
+	assertUntouched := func(t *testing.T, card string) {
+		t.Helper()
+		if n := b434SeatDesktopRows(t, s, card); n != 0 {
+			t.Fatalf("拒绝后 seat_desktops 行数 = %d，期望 0", n)
+		}
+		if n := len(b434EventsOfType(t, s, card, EvSeatDesktopSet)); n != 0 {
+			t.Fatalf("拒绝后 seat_desktop_set 事件数 = %d，期望 0", n)
+		}
+	}
+
+	t.Run("条52 空座", func(t *testing.T) {
+		c, err := s.CreateCard(NewCard{Title: "空座", Project: "p", Workflow: "bug", Actor: "t"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		// expect="" 与空座的 driver_session 字节相等：只靠 CAS 的实现会在这里漏放。
+		for _, expect := range []string{"", "cli:claude#nobody"} {
+			if err := s.SetSeatDesktop(c.ID, expect, desk); !errors.Is(err, ErrBadState) {
+				t.Fatalf("空座 expect=%q 应 ErrBadState，得 %v", expect, err)
+			}
+		}
+		assertUntouched(t, c.ID)
+	})
+
+	t.Run("条51 coordinate 席位", func(t *testing.T) {
+		c, err := s.CreateCard(NewCard{Title: "叫机器人", Project: "p", Workflow: "bug", Actor: "t"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		seat, _ := proto.EncodeSeatIdentity("opencode", "sess-coord")
+		if err := s.BindSeat(c.ID, seat, proto.SeatSourceCoordinate,
+			SeatBearing{Carrier: "coord-carrier", Machine: "linux-01"}); err != nil {
+			t.Fatalf("叫机器人坐下: %v", err)
+		}
+		if err := s.SetSeatDesktop(c.ID, seat, desk); !errors.Is(err, ErrBadState) {
+			t.Fatalf("coordinate 席位应 ErrBadState，得 %v", err)
+		}
+		assertUntouched(t, c.ID)
+	})
+
+	card, seat := b434BindCard(t, s, "cli-guard")
+
+	t.Run("条53 CAS 不符", func(t *testing.T) {
+		if err := s.SetSeatDesktop(card, "cli:claude#someone-else", desk); !errors.Is(err, ErrCASConflict) {
+			t.Fatalf("expect 不符应 ErrCASConflict，得 %v", err)
+		}
+		assertUntouched(t, card)
+	})
+
+	t.Run("条54 非法桌面端会话 id", func(t *testing.T) {
+		for _, bad := range []string{"", "local_", "31eda11a-a6fe", "local_a b", "local_a#b", "local_a/b"} {
+			bd := desk
+			bd.Session = bad
+			err := s.SetSeatDesktop(card, seat, bd)
+			if !errors.Is(err, ErrBadState) || errors.Is(err, proto.ErrDesktopNotImplemented) {
+				t.Fatalf("非法 id %q 应 ErrBadState（且非空壳错误），得 %v", bad, err)
+			}
+		}
+		assertUntouched(t, card)
+	})
+
+	t.Run("来源词表外", func(t *testing.T) {
+		for _, via := range []string{"", "browser", "Page"} {
+			bd := desk
+			bd.Via = via
+			if err := s.SetSeatDesktop(card, seat, bd); !errors.Is(err, ErrBadState) {
+				t.Fatalf("via=%q 应 ErrBadState，得 %v", via, err)
+			}
+		}
+		assertUntouched(t, card)
+	})
+
+	t.Run("卡不存在", func(t *testing.T) {
+		if err := s.SetSeatDesktop("P999999", seat, desk); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("卡不存在应 ErrNotFound，得 %v", err)
+		}
+	})
+
+	// 正控制：同一张卡给对的 expect 能成功——证明上面的拒绝不是夹具坏了。
+	if err := s.SetSeatDesktop(card, seat, desk); err != nil {
+		t.Fatalf("正控制写入失败: %v", err)
+	}
+	if n := b434SeatDesktopRows(t, s, card); n != 1 {
+		t.Fatalf("正控制后 seat_desktops 行数 = %d，期望 1", n)
+	}
+}

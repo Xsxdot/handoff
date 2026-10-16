@@ -38,15 +38,55 @@ type SeatDesktop struct {
 	BoundAt time.Time
 }
 
+// validSeatDesktopVia 报告 via 是否在 proto.SeatDesktopVia* 词表内。写闸处校验：
+// 词表外取值一旦进了 seat_desktop_set 载荷，timeline 读者无从解释。
+func validSeatDesktopVia(via string) bool {
+	switch via {
+	case proto.SeatDesktopViaPage, proto.SeatDesktopViaLauncher, proto.SeatDesktopViaManual:
+		return true
+	}
+	return false
+}
+
 // SetSeatDesktop 为卡上已有的 bind 席位写入桌面端记录（upsert，覆盖旧值）。
-// T2 最薄路径版：只有正路径；写闸（id/via 校验、来源判定、CAS）由 T3 补齐。
+//
+// 参数：id 卡号；expect 调用方读到的当前席位身份（CAS 期望值，原始字节比较）；
+// desk 桌面端记录——Session 必须过 proto.ValidateDesktopSessionID，Via 必须是
+// proto.SeatDesktopVia* 之一，Machine 允许空串（= 本机），BoundAt 被忽略（由账本
+// 时钟写入）。
+//
+// 返回：nil = 同一事务内恰写（或覆盖）一行 seat_desktops 并落恰一条
+// EvSeatDesktopSet（actor = 席位身份，载荷 {identity, desktop_session, machine, via}）。
+// 非法 id / 词表外 via / 空座 / 非 bind 席位 → 包 ErrBadState；expect 与卡上席位
+// 不符 → 包 ErrCASConflict；卡不存在 → 包 ErrNotFound。任一错误下不写行、不落事件。
 func (s *Store) SetSeatDesktop(id, expect string, desk SeatDesktop) error {
 	log().Info("开始写桌面端席位记录", "card", id, "has_expect", expect != "",
 		"desktop_session", desk.Session, "machine", desk.Machine, "via", desk.Via)
+	if err := proto.ValidateDesktopSessionID(desk.Session); err != nil {
+		wrapped := fmt.Errorf("桌面端会话 id 非法（%v）: %w", err, ErrBadState)
+		log().Warn("写桌面端席位记录被拒：会话 id 非法", "card", id, "cause", wrapped)
+		return wrapped
+	}
+	if !validSeatDesktopVia(desk.Via) {
+		err := fmt.Errorf("桌面端席位来源 %q 不在词表 {page,launcher,manual}: %w", desk.Via, ErrBadState)
+		log().Warn("写桌面端席位记录被拒：来源非法", "card", id, "cause", err)
+		return err
+	}
 	err := s.mutate(func(tx *sql.Tx, sink *eventSink) error {
 		card, err := getCardTx(s, tx, id)
 		if err != nil {
 			return fmt.Errorf("写桌面端记录读卡 %s: %w", id, err)
+		}
+		// 先判来源再判 CAS：空座的 driver_session 是空串，expect="" 会让纯 CAS 漏放。
+		if card.DriverSource != string(proto.SeatSourceBind) || card.DriverSession == "" {
+			err := fmt.Errorf("卡 %s 不是 bind 席位（source=%q），不能写桌面端记录: %w", id, card.DriverSource, ErrBadState)
+			log().Warn("写桌面端席位记录被拒：非 bind 席位或空座", "card", id, "source", card.DriverSource, "cause", err)
+			return err
+		}
+		if card.DriverSession != expect {
+			err := fmt.Errorf("卡 %s 当前席位与期望不符，请重读后再写: %w", id, ErrCASConflict)
+			log().Warn("写桌面端席位记录被拒：CAS 冲突", "card", id, "cause", err)
+			return err
 		}
 		if _, err := tx.Exec(s.q(`INSERT INTO seat_desktops
 				(card_id, identity, desktop_session, machine, via, bound_at)
