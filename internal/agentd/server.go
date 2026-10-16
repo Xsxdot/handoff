@@ -238,8 +238,9 @@ type Server struct {
 	// desktopNow 是 TTL 测试缝；生产为 nil，使用 time.Now。
 	desktopNow func() time.Time
 	// desktopOpen 把 claude://code/continue 深链交给本机 Claude 桌面端（B434 契约 §3.7）。
-	// 本字段由 B434.4（V）定名，只作注入点：同包测试直接赋 spy；生产装配（darwin
-	// `open`、其它平台报「本平台不支持 Claude 桌面端深链」）归 B434 G2 在 NewServer 落。
+	// NewServer 不装配（测试进程永远拿不到真实 opener）；生产由 cmd/agentd.go 组装点经
+	// SetDesktopOpener(PlatformDesktopOpener(runtime.GOOS)) 装配（darwin `open`、其它平台报
+	// 「本平台不支持 Claude 桌面端深链」，契约 r12 第 3 条）；同包测试直接赋 spy。
 	// nil = 本机不能发深链：wakeDesktopSeat 按「信已落盘、continue 未发出」返回
 	// desktopUnopenedError。只在装配期写、运行期只读，不加锁。
 	desktopOpen desktopOpener

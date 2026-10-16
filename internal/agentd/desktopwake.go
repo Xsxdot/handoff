@@ -10,10 +10,10 @@
 //   - 拉起器代开：给项目拉起器写一封装着拉起材料的信并 continue 唤醒它。
 //
 // 边界：写信箱与发深链是 gateway 对本机的出站 I/O（d_gateway），不进 d_execution，
-// 不经 keystone（keystone.Wake / LaunchForCard 对桌面端席位零调用）。本机唤醒主缝
-// （wakeDesktopSeat 本机分支、desktopLetter 其它事件段、writeDesktopLetter、
-// claudeContinueURL、围栏渲染层）由 B434.4 落码；其余函数仍是空壳，行为在
-// G1/G2/G3 落码（TODO(B434)）。契约见 docs/superpowers/specs/b434-contract.md §3.5–§3.8。
+// 不经 keystone（keystone.Wake / LaunchForCard 对桌面端席位零调用）。本机唤醒主缝与
+// 围栏渲染层由 B434.4 落码；拉起材料由 G1 落码；来信全段、信箱补强、needs_human 唤醒、
+// 失败段、跨机转交与生产 opener 由 G2（B434.5）落码；拉起器投递与代开仍是空壳，归 G3
+// （TODO(B434)）。契约见 docs/superpowers/specs/b434-contract.md §3.5–§3.8。
 package agentd
 
 import (
@@ -25,6 +25,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -544,6 +545,51 @@ func claudeContinueURL(desktopSession string) (string, error) {
 		return "", fmt.Errorf("continue 深链的桌面端会话 id 非法: %w", err)
 	}
 	return proto.ClaudeContinueURLPrefix + url.QueryEscape(desktopSession), nil
+}
+
+// errDesktopDeepLinkUnsupported 是非 darwin 平台生产 opener 的固定错误（契约 §3.7）：
+// 席位唤醒照常写信，continue 一步按「信已落盘、continue 未发出」走失败段。
+var errDesktopDeepLinkUnsupported = errors.New("本平台不支持 Claude 桌面端深链")
+
+// desktopOpenTimeout 是 darwin `open` 子进程的上限：open 只把 URL 交给 LaunchServices
+// 即返回（毫秒级），挂住多半是 GUI 会话异常（屏幕锁定、登出）；给上限免得拖住单协程消费循环。
+const desktopOpenTimeout = 15 * time.Second
+
+// PlatformDesktopOpener 按 GOOS 给出生产 opener（契约 §3.7、r12 第 3 条）：darwin →
+// openDesktopDeepLinkDarwin；其余平台 → 恒返回 errDesktopDeepLinkUnsupported。
+// 参数 goos 而非读 runtime.GOOS：测试在任何平台都能锁住两条分支。
+// 注意：NewServer 不调用它——装配只在 cmd/agentd.go 组装点经 SetDesktopOpener 完成，测试进程
+// 经 NewServer 得到的 Server 保持 nil opener，永远不会在开发机上真的拉起桌面端。
+func PlatformDesktopOpener(goos string) func(string) error {
+	if goos != "darwin" {
+		return func(string) error { return errDesktopDeepLinkUnsupported }
+	}
+	return openDesktopDeepLinkDarwin
+}
+
+// SetDesktopOpener 装配 continue 深链 opener（契约 r12 第 3 条，与既有 srv.SetX 同形）：只在
+// 组装期调用一次，运行期只读不加锁。open 为 nil 等价于未装配（wakeDesktopSeat 按「信已落盘、
+// continue 未发出」处置）。
+func (s *Server) SetDesktopOpener(open func(string) error) {
+	s.desktopOpen = open
+	s.log.Info("桌面端 continue 深链 opener 已装配", "installed", open != nil)
+}
+
+// openDesktopDeepLinkDarwin 以 `open <link>` 把 continue 深链交给 Claude 桌面端。
+//   - 只放行 proto.ClaudeContinueURLPrefix 开头的链接（opener 不做通用 URL 打开器）；
+//   - 子进程带 desktopOpenTimeout 上限；失败把合并输出带进错误，交 wakeDesktopSeat 的
+//     「未打开」出口记 Error。
+func openDesktopDeepLinkDarwin(link string) error {
+	if !strings.HasPrefix(link, proto.ClaudeContinueURLPrefix) {
+		return fmt.Errorf("拒绝打开非 continue 深链: %q", link)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), desktopOpenTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "open", link).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("open %s: %w（输出：%s）", link, err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 // deliverDesktopLetter 是拉起器投递（r5）。machine 为本机 → renderLauncherLetter
