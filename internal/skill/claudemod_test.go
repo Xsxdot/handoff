@@ -201,6 +201,7 @@ func TestB434InstallClaudeModIdempotent(t *testing.T) {
 	for name, list := range map[string]string{
 		"绝对路径": "/opt/a" + sep + "@ABS@",
 		"~ 写法": "~/" + ClaudeModRelDir + sep + "/opt/a",
+		"尾斜杠":  "/opt/a" + sep + "@ABS@/",
 	} {
 		t.Run(name, func(t *testing.T) {
 			home := t.TempDir()
@@ -313,6 +314,26 @@ func TestB434InstallClaudeModFollowsSymlinkedSettings(t *testing.T) {
 	}
 	if fi, _ := os.Stat(real); fi.Mode().Perm() != 0o600 {
 		t.Fatalf("原文件权限 0600 未保留: %v", fi.Mode().Perm())
+	}
+}
+
+// TestB434InstallClaudeModSkipsDanglingSettingsLink：settings.json 是指向不存在目标的符号链接时整次跳过、
+// Note 点名 settings.json；链接本身保留（不被 rename 换成普通文件），mod 也不写。
+func TestB434InstallClaudeModSkipsDanglingSettingsLink(t *testing.T) {
+	home := homeWithClaude(t, "")
+	link := filepath.Join(home, ".claude", "settings.json")
+	if err := os.Symlink(filepath.Join(t.TempDir(), "gone", "settings.json"), link); err != nil {
+		t.Skip("本平台不能建符号链接:", err)
+	}
+	site := InstallClaudeMod(testClaudeMod("1"), home)
+	if site.State != StateSkipped || !strings.Contains(site.Note, "settings.json") {
+		t.Fatalf("site=%+v，期望 skipped 且 Note 点名 settings.json", site)
+	}
+	if fi, err := os.Lstat(link); err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatal("悬空的 settings.json 链接被替换成了普通文件")
+	}
+	if _, err := os.Stat(filepath.Join(home, ClaudeModRelDir)); !os.IsNotExist(err) {
+		t.Fatal("跳过时不得写 mod 文件")
 	}
 }
 
@@ -429,13 +450,37 @@ func TestB434ClaudeModStatusStale(t *testing.T) {
 	}
 }
 
-// TestB434ClaudeModStatusEnvMissing 锁条 136：文件全对但 env 不含目录 → 不报 in_sync（报 stale，Note 点名变量）。
+// TestB434ClaudeModStatusEnvMissing 锁条 136（r8 口径）：文件全对但 env 不含目录 → stale（Note 点名变量），
+// 让 handoff skill 提示重装；settings.json 不存在或读不了同样是「Claude 不会加载」，也报 stale。
 func TestB434ClaudeModStatusEnvMissing(t *testing.T) {
-	home := installedHome(t)
-	os.WriteFile(filepath.Join(home, ".claude", "settings.json"), []byte(`{"env":{"CLAUDE_CODE_PLUGIN_DIRS":"/opt/a"}}`), 0o600)
-	s := ClaudeModStatus(testClaudeMod("1"), home)
-	if s.State == StateInSync || !strings.Contains(s.Note, "CLAUDE_CODE_PLUGIN_DIRS") {
-		t.Fatalf("site=%+v，env 不含目录不得报 in_sync", s)
+	settings := func(home string) string { return filepath.Join(home, ".claude", "settings.json") }
+	for name, breakIt := range map[string]func(t *testing.T, home string){
+		"env 不含目录": func(t *testing.T, home string) {
+			os.WriteFile(settings(home), []byte(`{"env":{"CLAUDE_CODE_PLUGIN_DIRS":"/opt/a"}}`), 0o600)
+		},
+		"settings.json 不存在": func(t *testing.T, home string) {
+			if err := os.Remove(settings(home)); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"settings.json 读失败": func(t *testing.T, home string) {
+			// 换成同名目录：os.ReadFile 必然失败，与权限无关（root 下也成立）
+			if err := os.Remove(settings(home)); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Mkdir(settings(home), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			home := installedHome(t)
+			breakIt(t, home)
+			s := ClaudeModStatus(testClaudeMod("1"), home)
+			if s.State != StateStale || !strings.Contains(s.Note, "CLAUDE_CODE_PLUGIN_DIRS") || InSync([]Site{s}) {
+				t.Fatalf("site=%+v，期望 stale 且 Note 点名 CLAUDE_CODE_PLUGIN_DIRS", s)
+			}
+		})
 	}
 }
 

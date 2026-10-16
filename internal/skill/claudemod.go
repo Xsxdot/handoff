@@ -199,8 +199,14 @@ type pluginDirsEdit struct {
 // 文件不存在视为空对象；不是 JSON 对象、env 不是对象、变量不是字符串都返回错误（调用方整次跳过）。
 func planPluginDirsEdit(settingsPath, dir, home string) (pluginDirsEdit, error) {
 	edit := pluginDirsEdit{path: settingsPath, perm: 0o644}
-	if real, err := filepath.EvalSymlinks(settingsPath); err == nil {
-		// 用户常把 settings.json 链到 dotfiles 仓库；rename 到链接本身会把链接换成普通文件
+	if fi, err := os.Lstat(settingsPath); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+		// 用户常把 settings.json 链到 dotfiles 仓库；rename 到链接本身会把链接换成普通文件，
+		// 所以写链接目标。目标不存在（悬空链接）时不猜：建目标是在替用户改 dotfiles 布局，
+		// 写链接本身又会毁掉链接——整次跳过，交给用户处置
+		real, err := filepath.EvalSymlinks(settingsPath)
+		if err != nil {
+			return edit, fmt.Errorf("是指向不存在目标的符号链接，不替换链接本身: %w", err)
+		}
 		edit.path = real
 	}
 	var root []jsonMember
