@@ -4,7 +4,8 @@
 //   - 白名单放行/拒绝：拒绝路径一律断言 opener 零调用，不只看返回值（返回值对已处理
 //     的拒绝也是 true，只看它是假绿温床，breakdown §5.7 第 4 条）；
 //   - 日志不出现完整目标 URL 与 q（简报全文）；
-//   - 三条 raw 通道对来源 frame 的判据一致（breakdown §5.7 第 5 条）。
+//   - 三条 raw 通道对来源 frame 的判据一致（breakdown §5.7 第 5 条）；
+//   - desktop/main.go RawMessageHandler 的接线顺序与生产 opener（源码守卫）。
 //
 // 不启动真实 opener、不 import Wails。
 package shell_test
@@ -13,6 +14,9 @@ import (
 	"bytes"
 	"encoding/base64"
 	"errors"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"log/slog"
 	"strings"
 	"testing"
@@ -248,4 +252,75 @@ func TestRawMessageSourceFrameCriteriaConsistent(t *testing.T) {
 			}
 		}
 	}
+}
+
+// 源码守卫（契约 §3.11）：desktop/main.go 的 RawMessageHandler 依次尝试剪贴板、系统浏览器、
+// 深链三个处理器，深链的 opener 生产注入为 app.Browser.OpenURL。package main 因
+// go:embed all:frontend/dist 与 Wails 应用构造无法在 go test 下实例化，故读源码断言。
+func TestRawMessageHandlerWiresDeepLinkThird(t *testing.T) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "../../main.go", nil, 0)
+	if err != nil {
+		t.Fatalf("parse main.go: %v", err)
+	}
+	var handler *ast.FuncLit
+	ast.Inspect(file, func(n ast.Node) bool {
+		kv, ok := n.(*ast.KeyValueExpr)
+		if !ok {
+			return true
+		}
+		if key, ok := kv.Key.(*ast.Ident); ok && key.Name == "RawMessageHandler" {
+			handler, _ = kv.Value.(*ast.FuncLit)
+			return false
+		}
+		return true
+	})
+	if handler == nil {
+		t.Fatal("main.go 未找到 RawMessageHandler: func(...) {...}")
+	}
+	var order []string
+	var deepLinkOpener string
+	ast.Inspect(handler.Body, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		pkg, ok := sel.X.(*ast.Ident)
+		if !ok || pkg.Name != "shell" || !strings.HasPrefix(sel.Sel.Name, "HandleExternal") {
+			return true
+		}
+		order = append(order, sel.Sel.Name)
+		if sel.Sel.Name == "HandleExternalDeepLinkMessage" && len(call.Args) == 4 {
+			deepLinkOpener = exprString(call.Args[3])
+		}
+		return true
+	})
+	want := []string{
+		"HandleExternalClipboardMessage",
+		"HandleExternalBrowserMessage",
+		"HandleExternalDeepLinkMessage",
+	}
+	if strings.Join(order, ",") != strings.Join(want, ",") {
+		t.Fatalf("RawMessageHandler 处理器顺序 = %v，want %v", order, want)
+	}
+	if deepLinkOpener != "app.Browser.OpenURL" {
+		t.Fatalf("深链 opener = %q，want app.Browser.OpenURL", deepLinkOpener)
+	}
+}
+
+// exprString 把 a.b.c 形式的选择子表达式还原成点分字符串；其它形状返回空串。
+func exprString(e ast.Expr) string {
+	switch v := e.(type) {
+	case *ast.Ident:
+		return v.Name
+	case *ast.SelectorExpr:
+		if left := exprString(v.X); left != "" {
+			return left + "." + v.Sel.Name
+		}
+	}
+	return ""
 }

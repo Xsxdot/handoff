@@ -161,9 +161,16 @@ func main() {
 			) {
 				return
 			}
-			if !shell.HandleExternalBrowserMessage(
+			if shell.HandleExternalBrowserMessage(
 				logger, message, sourceFrameURL,
 				issueExternalBrowserURL, app.Browser.OpenURL,
+			) {
+				return
+			}
+			// B434：深链白名单（claude://code/{new,continue}）在 shell 包完成；opener 与
+			// 系统浏览器同为 app.Browser.OpenURL（darwin 上是 `open <url>`，不回报退出码）。
+			if !shell.HandleExternalDeepLinkMessage(
+				logger, message, sourceFrameURL, app.Browser.OpenURL,
 			) {
 				logger.Debug("忽略未识别的原始宿主消息", "message_bytes", len(message))
 			}
