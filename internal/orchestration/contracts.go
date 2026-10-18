@@ -168,6 +168,9 @@ func NewFailedPayload(reason, branch, commit string) FailedPayload {
 //
 // B376：Executor 记录最终生效的候选名（failover 后停下的那个），空=未配置/
 // 旧路径。additive 字段，omitempty 保证旧事件形态不变。
+//
+// B405：Model 记录该候选实际使用的模型名；未指定时 = "默认"（ApproverModelDefaultLabel）。
+// addit 字段，omitempty 保证旧事件形态不变。
 type ApproverDecisionPayload struct {
 	TicketID   string `json:"ticket_id"`
 	Permission string `json:"permission"`
@@ -175,6 +178,7 @@ type ApproverDecisionPayload struct {
 	Reason     string `json:"reason"`
 	ElapsedMS  int64  `json:"elapsed_ms"`
 	Executor   string `json:"executor,omitempty"`
+	Model      string `json:"model,omitempty"`
 }
 
 // —— Dispatch 哨兵（gateway server 层映射为 400/500）——
