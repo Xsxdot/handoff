@@ -3,8 +3,8 @@
 // 能力——task 生命周期、waiting_review、verdict 解析等派发状态机概念一律
 // 不经此门面；执行域照旧不认识账本/会话/编制域。
 //
-// 命名说明：包名取 hostapi 而不是 internal/prochost/api，因为代码图扫描按
-// 包名生成容器 id，多个域各开 `api` 子包会撞容器。实现走 `opencode run` 无头
+// 命名说明：包名取 hostapi 而不是 internal/prochost/api，多个域各开 `api` 子包
+// 会让包名互撞、日志与导入别名难以分辨。实现走 `opencode run` 无头
 // 形态（见 driver.go），同属 d_execution 顶层域，不跨子系统边界；会话身份由
 // CLI 自家存储承担，本门面零状态。
 package hostapi

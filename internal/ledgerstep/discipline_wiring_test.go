@@ -1,6 +1,6 @@
 // B229 缝 1 派发侧接线的回归测试：Dispatcher 数据字段携带的已解析三元组要
 // 原样到达 Transport 与 dispatched 快照，未点名模板仍携带纯平台层正文，
-// 正文原文不进日志。测试允许 import discipline——测试不进代码图，生产
+// 正文原文不进日志。测试允许 import discipline——测试文件不构成生产边，生产
 // import 面零变化（契约 §5 直通竖切同款边界）。
 package ledgerstep
 

@@ -188,3 +188,20 @@
   - CMD1 `env -u CLAUDE_CODE_SESSION_ID sh -c 'go build ./... && go vet ./... && go test ./... -count=1'`（裁决 4：以 `env -u` 读数为准）→ **exit 0**，64 包 ok、零 FAIL。原始输出 `$TMPDIR/b436-s9b-cmd1.txt`。
   - CMD5 `npm --prefix web run typecheck && npm --prefix web test && npm --prefix web run build && test -f web/dist/index.html`（与 CMD1 串行、不并发）→ **exit 0**，`Test Files 146 passed (146)`、`Tests 1943 passed (1943)`、`✓ built in 1.61s`、`web/dist/index.html` 1062 字节。原始输出 `$TMPDIR/b436-s9b-cmd5.txt`。
 - 六条全 0，S5 零行；`git status --short` 干净后提交。
+
+## 2026-10-18 review 与最终验收（协调者会话）
+
+### review（独立 subagent，只读）
+
+- 裁决 **pass（附条件）**：五故事复跑全绿（CMD1 `env -u CLAUDE_CODE_SESSION_ID` 64 包 ok；gofmt 0；Windows amd64/arm64 build + vet 0；desktop tidy 0；web 146 文件 / 1943 用例、dist 1062 B；S5 `/usr/bin/grep` 零输出；go.mod/go.sum×4 零命中）。变异复验：`b23317AssemblyFiles` 名单加入 `internal/agentd/handlers.go` → `TestB23317AssemblyFilesHaveNoHandlerDefs` 转红（报 21 个 handle*），还原回绿；对照 `TestRootRejectsDeletedGraphCommand` PASS、ProjectTree cards/edit 菜单用例 ✓。禁区 `git diff --exit-code` 三份历史文档 exit 0。
+- 三条已披露越权交协调者：④ mobile-nav-note 文案去「代码图」、⑥ roadmap「被依赖子系统的实现迁进标准结构」条保留、⑨ `mobile/go.sum` tidy。协调者裁决：三条全部接受（入口没了文案必须跟；主语非代码图；go.sum 非源码），已落卡 timeline（seq 24795）。
+- Minor 1：`internal/hostapi/hostapi.go:6`、`internal/ledgerstep/discipline_wiring_test.go:3`、`discipline_passthrough_test.go:4` 以「代码图扫描 / 不进代码图」为论据——finish 文档对齐改写（本提交），`go build`/`go vet` 两包 ok、gofmt 空。Minor 2：执行者遇待裁决未按 plan 结束回合，无实害，记此。
+- 旁证：`charter:acceptance` skill 已不在本机 skill 列表（Skill 工具报 Unknown skill），验收纪律按 `charter:review`「验收：行为事实只能跑出来」节执行。
+
+### 最终验收真机（协调者，被验对象身份先钉）
+
+- 二进制：`go build -tags embedweb -o $TMPDIR/handoff-b436e .`（worktree HEAD `9011105a` + 本节三处注释改动；`internal/webui/dist` 临时从 `web/dist` 拷入后删除，不入库），sha256 前 16 位 `33b9ed1616fd9e6e`；`/usr/bin/grep -c codegraph` 该二进制 = **0**，对照本机旧 `~/.local/bin/handoff` = 32。
+- 隔离 agentd：config `listen 127.0.0.1:7799`、独立 datadir/repo_root、`--executor fake`、无 ledger、无 targets。`GET /api/status`（Bearer）200。
+- **S2**：`GET /api/projects/x/codegraph`（Bearer）→ `HTTP/1.1 404 Not Found`，`Content-Type: text/plain`，body `404 page not found`（ServeMux 原生裁决）；对照既有路由 `GET /api/projects/x/branches` → 404 `application/json`（业务 404）。无 Bearer → 401。`/codegraph/source` → 404。`GET /codegraph/app/` 与 `GET /` 响应体 `cmp` **IDENTICAL**（回落 handoff 根 SPA）。`data/agentd.log` 2 行，`grep -c -E '代码图|viewer'` = **0**。
+- **S1**：内置浏览器打开 `handoff console --print-url` 的兑换 URL；1400×900 桌面宽度下 `find "代码图"` 无匹配，dock 按钮枚举为 工作项 / 任务看板 / 流程 / 工单 / 设置 / home 基准终端；直访 `/codegraph?project=x` → `find "iframe"` 无匹配，页面文本为工作台「请从左栏选择项目或目录」。截图两张见会话。
+- 收尾：`pkill -f handoff-b436e`，隔离 datadir 留在 `$TMPDIR/b436-agentd`。

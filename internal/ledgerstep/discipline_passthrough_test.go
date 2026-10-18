@@ -1,7 +1,7 @@
 // discipline_passthrough_test.go —— B229 直通竖切（重档法定步骤）：
 // 一次真实调用穿过缝 2（真实 SQLite 库 + PutDiscipline 种子）与缝 1
 // （discipline.ResolveDispatch 的组装与能力位判定）。库缝按 spec 取义：
-// 测试夹具直调。本文件是测试，不进代码图；ledgerstep 生产代码对
+// 测试夹具直调。本文件是测试，不构成生产边；ledgerstep 生产代码对
 // discipline/ledger 保持既有依赖面不变。
 package ledgerstep_test
 
