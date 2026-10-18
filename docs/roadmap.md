@@ -997,3 +997,18 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 - **跨机拉式 wait**：远端 agentd 驱动的 `wait`，B435 沿用既有转交不改。来源：b435.md §11。
 - **协调者小队在席位模式下的轮换策略**：来源：b435.md §11。
 - **席位地址游标键含卡号**：B435 契约 C-112 游标键 = 席位身份原样，同一 CLI 会话同时坐两张卡时共享一份游标、可能丢积压；K0 按冻结实现并进真机清单 K0-5，改键需重走 contract。来源：`docs/superpowers/plans/b435.1-plan.md` §0 知悉项。
+
+### B435 finish 残余（2026-10-19；来源各子卡 impl-ledger 与 `b435-ledger.md` 十五）
+
+- **用户机待验**（机制半边已在隔离靶子验过，设备/凭据项留档）：K0-3 其他 agent 解析 `card wait` 输出；K0-D 装过 B434 的用户机升级回填；R-1m 真手机控制台无 @ 发言；R-5b 真 opencode + 模型凭据跑 S1 一轮；O2-U1…U6 真 mod ≤16s 取信、桌面端组织者会话按简报行事、900s 回收后 continue 拉起、归档后新会话 `sit` 续读；O2-M1 双机门铃；W-0 真手机浏览器与薄壳内 W-7；X-U1 用户真实 SQLite 账本副本升级；X-U2 用户机 mod/桌面端/薄壳 `/new` 拒绝与 CLAUDE.md 旧片段。来源：`b435-ledger.md` 十五 15.5。
+- **主线合并后 `codegraph absorb cards-B435-charter-1`**：`validate` 9 条 no-import 全部源于本卡删除的 import，absorb 前已知；absorb 后复核 `check` 三处存量 over-budget 是否变化。来源：X 偏离 #18。
+- **`MessageWakeTargets` / `WakeTargets` / `SessionMessageCandidatesContext` 删除与过时文件头**：`internal/collab/sessions.go:304-316` 生产零调用方；`internal/ledger/session_candidates.go:5`、`seat_revision.go:4` 文件头仍称其为唯一裁决。来源：R plan Q12 乙 + review M4（I 卡未做，留下一期顺手）。
+- **O2 review Minor-1/2/3**：(a″) 第二读失败分支与「新命中并入在途重试」补测试锁；`residentwake.go` `human` 变量名改 `addressable`。来源：`b435.4-impl-ledger.md`。
+- **W review M2/M3**：`rooms.ts` `isNoRecipientReason`/`isSessionMemberKind` 只供契约测试（入参先过守卫或注明）；`SessionChat`/`SessionDetail` 各补一支词表外值组件用例。来源：`b435.6-impl-ledger.md`。
+- **X review Minor-3**：退役 flag 不带卡号时 cobra `ExactArgs(1)` 先报参数错、看不到墓碑。来源：`b435.5-impl-ledger.md`。
+- **空库双 agentd 首启 DDL 竞争**：`CREATE TABLE IF NOT EXISTS` 并发 → `pg_type_typname_nsp_index` 重复键，一边启动失败（基线行为）。来源：O1-1。
+- **O1 m1–m3 / N5**：换人 + 崩溃窗幂等锚按当前驻场者查可能重发；已终局认领让过不记 handled 的重复开销；含空白项目名建不了房；200 条页耗时未造。来源：`b435.3-impl-ledger.md`。
+- **opencode executor 测试时序抖动**：`TestCoordinatorCancelTurnUsesSessionID` 全包并跑偶红、单跑绿。来源：O1 合入后复跑。
+- **R 残余**：两阶段拉起（R plan Q3 乙）；diag 测试无 `--timeout`（M5）；图覆盖债重扫（#27）。来源：`b435.2-impl-ledger.md`。
+- **派发简报纪律**（O2 Minor-4 回旋镖）：修复轮越禁区测试文件须单列 F 行；简报更强调逐段红绿。
+- **升级说明进发布文档**：同版本整队升级、先起 agentd 再跑 CLI、回退只在留痕。来源：`b435-contract.md` §15。

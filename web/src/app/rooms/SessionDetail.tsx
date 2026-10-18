@@ -29,7 +29,7 @@ export function SessionDetail({ detail, onOpenCard, onArchive, archiveBusy, arch
     const mode = seatModeView(raw, 'seat_mode')
     return <span data-testid={testId} title={mode.hint} className={`${layout} font-mono text-xs text-muted-foreground`}>· {mode.text}</span>
   }
-  const renderTimelineRow =(row: typeof timeline[number], index: number, prefix = 'timeline') => (
+  const renderTimelineRow = (row: typeof timeline[number], index: number, prefix = 'timeline') => (
     <div key={row.seq} data-testid={`${prefix}-row-${index}`} className="flex items-baseline gap-2 py-1 text-xs">
       <span className="shrink-0 font-mono text-[10px] text-muted-foreground">{formatRelative(row.created_at)}</span>
       <span className="shrink-0 font-medium">{timelineKindLabel(row.kind)}</span>

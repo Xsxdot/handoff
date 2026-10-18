@@ -106,3 +106,11 @@ B358 §3.8 冻结 `EventsFromAsc(nil, cursor, 500)` 全流读取，§4.6 条 49 
 - 不新增领域方向或组装点：现有 `d_cli → d_collab` 与 `d_collab → d_ledger` 接缝继续使用；本轮不冻结方法名、参数或 DTO，因此无 Ticket 0、无新符号视图 diff。
 - 无 wire/编码变更；backlog JSON 金样继续由 session r2 contract 及其现有消费方测试约束。本轮无需新协议金样运行测试。
 - 移交 U5 plan：将本增量作为 U5 的物理读基准；在实现前完成 U4/U5 实际新增 LedgerClient 方法/DTO 清点。若相同新增 seam 被两个工作单元消费，先独立冻结那个最小接口 contract；若没有则不造共享接口。
+
+## B435 连带修订（finish 回写，2026-10-19；来源 `b435-contract.md` §6）
+
+- 条 2「可能定向到订阅 member」读作「可能命中订阅地址」。
+- 条 3–5 外增一支「无 mentions 的同会话无卡 `room_message`」（B435 C-148–C-150，默认收件人）。
+- 条 19「命中订阅 member」读作「`Matches` 命中订阅地址」。
+- 条 28「无持久交付游标时 `last_delivered_seq=0`」对**席位地址**改为 B435 C-119 的下界；对驻场者地址不变。
+- 条 56/57 不变。

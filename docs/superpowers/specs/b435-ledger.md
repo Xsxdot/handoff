@@ -446,3 +446,75 @@ WARN 原文 internal/collab/sessions.go:393-394：`log().Warn("会话成员身�
 - 卡：B435.5 `accept` 已验 → `finish` → `已完成`；B435 → `integrate`。
 - **残余追加**：X Minor-1 升级说明（同版本整队升级、先起 agentd 再跑 CLI、回退只在留痕）→ 文档；Minor-2 注释勘误（finish 顺手）；Minor-3 → roadmap；`validate` 9 条 no-import 待主线 absorb；X-U1/X-U2 留用户机。
 - **回旋镖（X）**：plan H5「`validate` 不增」按 API 事实写成了结论——删 import 必然留下陈旧边直到 absorb，这是可 grep 的图机制却没在 plan 阶段核；K0 测试帮手裸 `?` 占位是「只在 SQLite 跑过的测试帮手」族——PG 孪生首跑才暴露，下次凡复用既有测试帮手跑 PG，plan 真机清单应把「帮手本身跑过 PG 吗」列为前置核。
+
+## 十五、父卡最终验收（2026-10-19，协调者执行；父分支 `d71a5b3c`，全部六张子卡合入之后）
+
+**裁决表头**：父卡最终 ｜ spec `b435.md` r4 全部必交故事 S1–S10 ｜ 拆解 `b435-breakdown.md` §4 行为闭环 1–12、§6 真机清单 1–20 ｜ 契约 r3 ｜ 无原型/流程图附件（自动免除对照）。全量读数见十四（64 包 ok、门禁存量三处逐字同基线、desktop 两包 ok、web tsc 0 / vitest 145 文件 1928 用例 / eslint 存量、`gofmt -l` 1327 文件为空）。
+
+### 15.1 故事逐项核销
+
+| 故事 | 本轮证据（批次 / 条目，读数在各子卡 impl-ledger「阶段验收」节） | 裁决 |
+| --- | --- | --- |
+| S1 push 协调者 | K0-1（真 agentd + opencode stub 载体：无 @ → 恰一轮、续同 session、`driver_mode=push`）；R-6/R-5（F-RM1 修后 resume 两键 = 席位、协调者以席位身份 `session send` 落账）；O1-6 回归同读数；失败呈现：O1-4 `no_recipient=root_no_seat` + W-5「无收件人（@ 指定）」渲染 | **通过**（机内 + 隔离靶子）；R-5b 真 opencode + 模型凭据留用户机 |
+| S2 pull 协调者 | K0-2（`card bind` 缺省 pull、`card wait` 一行、agentd 零回合、`driver_mode=pull`）；K0-5 游标；K0-PG/R-PG；超时 124 与游标不越过未输出消息由 cmd 契约测试锁（契约 §4.1） | **通过**；K0-3（其他 agent 按 skill 文本解析输出）留用户机 |
+| S3 驻场者 | R-1（`session sit` + `session wait`，手机仿真控制台无 @ → 驻场者收到、根卡零唤醒）、R-7（判定表第 5 行）、R-9（第二驻场者 `sit` 被拒 / 换人旧进程退出 1） | **通过**；R-1m 真手机留用户机 |
+| S4a 默认收件人（无驻场者） | K0-4(a)(b)(c)(d) + K0-4 detail（一根一子只到根卡、两根 `needs_mention` 零唤醒、@子卡、reply_to、`agent:` 无 @ 零唤醒、人数恒 ≤1）；O1-4 投影、W-5「需 @」渲染 | **通过** |
+| S4b 默认收件人（有驻场者） | R-2 / K0-4b（`sit` 后无 @ 改到驻场者，@子卡与 reply_to 不变） | **通过** |
+| S5 项目房间与组织者 | O1-1（两 agentd 共享 PG 每事件恰一条）、O1-2（三类通知、`agent:handoff` @驻场者）、O1-3（无驻场者零通知 + `card show` stderr 恰一行）、O1-5 PG；O2-T1/T4（门铃信两行、continue 深链、`sit --project` → `card add` → 通知 → 门铃）、O2-T2 异机零动作、O2-T3 信箱不可写活性；W-4/W-6 项目房间入口 | **通过**（stub `open`、隔离靶子）；真 mod ≤16s、桌面端组织者实际行为（O2-U1…U6）、双机 M1 留用户机 |
+| S6 组织者答协调者 | O2-T5（(a″) 组织者 `@T1` 答回卡会话 → T1 一轮；不带 @ `non_human_unaddressed`；无关驻场者被拒）；O1-7（(a′) 协调者到项目房间发言并 @ 组织者）；内容类转问人 = 简报纪律（SKILL 组织者节，三支文本测试锁） | **通过**（机制半边）；桌面端真会话内问人留用户机（O2-U） |
+| S7 B434 处置落地 | X-T1 八条墓碑、X-T2 存量迁移留痕 + 二次 Open 零改动、X-T3 保留项不回归、X-PG 四支、X-M1 PG 混版本并发恰一份；W-7 控制台三退役文案零出现、`desktop-launch` 零请求 | **通过**；X-U1（用户真实 SQLite 账本副本）、X-U2（用户机 mod/桌面端/薄壳 `/new` 拒绝）留用户机 |
+| S8 组织者恢复 | R-9（驻场者换人 / 续坐时 `resident:` 游标按身份续用）、R-4（无人监听时游标不推进）；O2 简报 P8「`from_seq=0` 当回放」（SKILL 文本测试锁） | **通过**（游标机制）；归档桌面端会话再 `sit` 的端到端留用户机（拆解 #15，O2-U） |
+| S9 驻场者升格 | R-3（同会话 `card bind` 后两地址各收、`session detail` 同一人两行、`stand` 不影响席位）；W-3 详情两行渲染 | **通过** |
+| S10 pull 席位无人监听 | R-4（@它 → 落账、游标停住、之后 `card wait` 一次性续收、详情页 `last_active` 不报在线）；K0-2 | **通过** |
+
+### 15.2 行为闭环（拆解 §4 1–12）在生产代码中成立
+
+| 行 | 生产触发 → 载体 → 消费者（本轮核过的落点） | 结论 |
+| --- | --- | --- |
+| 1 / 1b | `internal/agentd/wakeconsumer.go:338` `s.rooms.Recipients(msg, ev.Actor)` → push 席位 keystone `WakeMessage`；空集 → `internal/agentd/roomsapi.go#handleRoomMessages` 投影 `no_recipient` → `web/src/app/rooms/deliveryCopy.ts` 文案 | 成立（K0-1、O1-4、W-5） |
+| 2 / 2b | `cmd` `card wait` 经匹配函数 + `ledger.SessionMessageCandidatesContext` 有界候选读 → stdout；退出 124 | 成立（K0-2、契约测试） |
+| 3 / 3b | `session sit` 驻场者表 → `Recipients` 第 5 行 → `session wait` | 成立（R-1、R-7、R-9） |
+| 4 / 5 | 判定表 3/4/5/6/8 行同一函数 `internal/collab/sessions.go#Service.Recipients` | 成立（K0-4、R-2） |
+| 6 / 6b | `internal/agentd/projectnotify.go`（认领 + `agent:handoff` 发信）→ 项目房间 | 成立（O1-1/2/3） |
+| 7 / 7b | `internal/agentd/residentwake.go`（本机判据、门铃信、continue 深链）← `wakeconsumer.go` 驻场者地址分支 | 成立至 `open` 调用（O2-T1/T2/T4；真 mod 留用户机） |
+| 8 | (a′)/(a″) `internal/collab/service.go#sessionWriters` + SKILL 组织者节 | 成立（O1-7、O2-T5） |
+| 9 | `cmd/retired_b434.go` 墓碑；`internal/ledger/store.go:637` `migrateRetireB434Tables` → `b434_retire_migrate.go`；web 三按钮删除 | 成立（X-T1/T2、W-7） |
+| 10 | `resident:` 游标 + `SessionBacklog.from_seq` | 成立（R-9、R-4） |
+| 11 | 驻场者行 + 卡席位并存，两游标 | 成立（R-3） |
+| 12 | `Matches` 命中、无输出不推进 | 成立（R-4） |
+
+无一行只剩接口/空壳/测试替身：每行的生产调用方在上表给出且被对应真机条目穿过。
+
+### 15.3 集成阶段新发现缺陷
+
+- 无产品缺陷新增。唯一事件：首轮全量脚本 `tee | head` 管道截断 go test（只计 1 包），属脚本错误，作废重跑（十四）。
+- 跨卡接缝在批间已各自撞出并修复（O1-7 (a′)、O2 #12 (a″)、X-PG F1 K0 帮手），integrate 全量未再暴露新接缝。
+
+### 15.4 回旋镖对账（plan/拆解预测 vs 实测）
+
+| 预测 | 实测 | 归类 |
+| --- | --- | --- |
+| R-K1 (a)「协调者向项目房间提问零机制改动」 | 协调者席位不是项目房间书写者（O1-7）；组织者不是卡会话书写者（O2 #12）→ 追加 (a′)/(a″) | 假设错误：书写权与寻址没分开核 |
+| 契约 C-514「`card show` stderr 恰一行」机内可锁 | 真进程 slog 默认把账本 INFO 写进 stderr（O1 review F1）；夹具只捕 cobra 缓冲 | 夹具编码了错误现实 |
+| W plan §8 既有断言豁免只列删除与 `CardView` 样本 | 词表加值撞「恰三值」断言（W #5） | 预测缺口（影响面漏列） |
+| X plan H5「`validate` 不增」 | 删 import 必然留陈旧边，1→9，只能 absorb 清 | 判据错误（按 API 事实写行为结论） |
+| K0 真机 push 一轮「现成通路」 | 撞存量 F-RM1（回合不注入席位环境变量）；随 R 顺手修 | 原承诺遗漏（存量缺陷） |
+| 拆解 P5 甲「存量行一律清除并留痕」可无损 | X-T2/M1 留痕逐字段等于快照、`bound_at` 原串保留 | 预测成立 |
+| 拆解 §5.5 X 并发风险「两 agentd 同刻 Open 须恰一份迁移」 | X-M1 pg2 迁、pg3 跳过；PG 孪生并发用例 PASS | 预测成立 |
+| 拆解 §5.3「多机通知恰一条」 | O1-1 每事件恰一条、另一边让过 | 预测成立；但撞出空库双 agentd 首启 DDL 竞争（基线行为，roadmap） |
+| 耗时 | plan 未写耗时预测，不对账；实际六张子卡 2026-10-18 → 10-19 两天 | — |
+
+### 15.5 未验留档（指定环境不可用，不以等价充抵）
+
+K0-3（其他 agent 解析 `card wait` 输出）、K0-D（装过 B434 的用户机升级回填）、R-1m（真手机控制台）、R-5b（真 opencode + 模型凭据）、O2-U1…U6（真 mod、桌面端组织者会话、900s 回收后 continue 拉起、归档后 `sit` 续读）、O2-M1（双机门铃）、W-0 真手机浏览器与薄壳内 W-7、X-U1（用户真实账本副本）、X-U2（用户机 mod/桌面端/薄壳）。全部为设备/凭据项，机制半边已在隔离靶子验过；逐条落 roadmap「用户机待验」。
+
+**裁决：最终验收通过**（机内与隔离靶子可达部分全部已验；用户机项留档）。下一步：图对账（本分支有视图 diff；`validate` 9 条 no-import 为 absorb 前已知，absorb 在合入主线后执行）→ finish。
+
+## 十六、图对账与 finish（2026-10-19，协调者本地）
+
+- **图对账**：视图 diff `codegraph/diffs/cards-B435-charter-1.json` 与分支改动一致（X 段 7 登记、W 登记 web 删除节点）；`--view check` 1 处存量；`validate` 9 条 no-import 源于本卡删除的 import，absorb 在合入主线后执行（卡 note 留痕）。卡 `accept` 已验 → `图对账` → `finish`。
+- **finish 静态门禁**：`gofmt -l`（`git ls-files '*.go'` 1327 文件）为空；全量读数见十四。
+- **顺手小修**：W M1 `SessionDetail.tsx` 空白还原；X Minor-2 `cmd/retired_b434.go` 注释勘误。复跑：`go build` 0、`go test -run 'Retired|Tombstone|B435' ./cmd/` ok（23.3s）、`tsc -b` 0、`vitest run src/app/rooms` 10 文件 132 用例全过（`rm/finish_tests.out`）。
+- **文档回写**（提交 `dff058ef`，10 文件 +108/−4）：契约 §15（C-505 勘误、§7 保留行 165–176 勘误、R-K1 (a′)/(a″) 追加记录、升级说明、§5/§6 已回写指针）；`b358-contract.md` 末尾修订记录块；B409r2 契约末尾连带修订块；spec r5（§9 迁移句按 P5 甲）；拆解 §3.6 ⑤ 补 ⑧；W plan §11 勘误；roadmap「B435 finish 残余」（用户机待验、absorb、`MessageWakeTargets` 删除、各 review Minor、DDL 竞争、R 残余、升级说明）。SKILL 的书写者集规则已由 O1/O2 修复轮写入，finish 未再改。
+- **未做、留用户**：push 与合入 `main`（集成方式归用户：本地合并 / PR / 保留分支）；主线合并后 `codegraph absorb cards-B435-charter-1`；用户机待验项见十五 15.5。
+- 提交记录：`git commit` → `dff058ef`（finish 批）；本节随后 amend 进同批（hash 会变，收口判据为工作树干净）。

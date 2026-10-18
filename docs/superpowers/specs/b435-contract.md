@@ -599,3 +599,12 @@ r3 补签轮（⑤）自检：
 3. **Ticket 0**：只加 DTO 键（`RoomHistoryItem`、`SessionSummary.Project`）与 Go 金样本，不写投影逻辑（§10.1）；`go build ./...` 退出 0。
 4. **可执行冻结**：`no_recipient` 出/不出键与 `project` 出/不出键有逐字节金样本且已跑 PASS；`card show` stderr 行与 TS 镜像未有金样本——前者归 O1 测试、后者归 W，均记 §12 欠账 14。
 5. **拍板记录**：命中一条 D-E（读时求值）；`card show` 提示走 stderr 由 spec r4 §2 直接决定，审过不立。
+
+## 15. finish 回写（2026-10-19，父卡 finish；冻结条目字面不改，勘误与追加裁决记此）
+
+- **C-505 勘误**（O1 偏离 #13）：读作「投影代码 `handleRoomMessages` 不读 `.Mentions`；`roomsapi.go` 全文件不调 `MessageWakeTargets` / `IsHumanAuthor`」。基线两处非寻址 `.Mentions`（`handleRoomSend` 请求体透传、`collectInboxItems` 调 `collab.Service.Mentions`）按函数登记为守卫例外（`TestB435RoomsAPISourceGuard`），其余函数新出现即红。
+- **§7「保留」行 165–176 勘误**（X plan B-1 / Q2 甲）：保留 175–176（wire `CoordinatorWakeResp.LetterUnopened` + `TestB434CoordinatorWakeRespLetterUnopenedWire`）与 push 转交主路径；165–174 以卡级桌面端 bind 席位为前提，随 D10 退役不可达，`scheddrain.go` / `coordapi.go` 两端分支已删。
+- **追加裁决 R-K1 (a′)/(a″)——会话书写者集**（拆解 §2.3；O1-7 真机与 O2 #12 各撞出一半；r3 无对应条目，此处作追加记录，不编号入 §4）：书写者集 = 显式成员 ∪ 会话驻场者 ∪ 会话内各卡当前席位；(a′) 项目房间另 ∪ 同项目各卡当前席位；(a″) 含项目 p 的卡的会话另 ∪ p 的项目房间驻场者。寻址判定表不变（答话仍须 `@<卡号>` 或 `--reply-to`）。落码 `internal/collab/service.go#sessionWriters` 一函数；SKILL「发言自由，身份执法」条与「组织者」节已写（文本测试锁）。
+- **§5 / §6 回写已做**：B358 修订记录块已追加到 `b358-contract.md` 末尾；B409r2 连带修订块已追加到 `2026-09-25-session-bounded-candidate-read-contract.md` 末尾；B389、B399 不改。
+- **升级说明**（X review Minor-1 / 拆解 N2）：共享账本的所有机器同版本升级；混版本窗口内旧二进制 Open 会重建空表、旧命令仍能写新行，下一次新版 Open 再迁（追加批次、按行去重，X-M1 实测）；升级后先启动 agentd 再跑 CLI，使每卡 Warn 落在 agentd 日志；回退无回填工具，数据只在 `ledger_meta` 留痕。
+- **图**：本分支视图 diff `codegraph/diffs/cards-B435-charter-1.json`；`validate` 9 条 no-import 全部源于本卡删除的 import，合入主线后 `codegraph absorb cards-B435-charter-1` 清除。

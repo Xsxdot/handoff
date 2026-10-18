@@ -77,7 +77,8 @@ func init() {
 		byCmd[rf.cmd] = append(byCmd[rf.cmd], rf)
 	}
 	for c, flags := range byCmd {
-		// 包裹而非覆盖：命令日后若自带 PreRunE，墓碑仍先判。
+		// 包裹而非覆盖：在本 init 之前已设的 PreRunE 于墓碑判定后继续执行；之后再赋值的 PreRunE 会覆盖本钩子
+		// （当前无命令另设 PreRunE；测试锁 PreRunE 非空）。
 		next := c.PreRunE
 		c.PreRunE = func(cmd *cobra.Command, args []string) error {
 			for _, rf := range flags {
