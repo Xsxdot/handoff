@@ -6,14 +6,12 @@ package cmd
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"strings"
 	"text/tabwriter"
 
-	"github.com/Xsxdot/handoff/internal/client"
 	"github.com/Xsxdot/handoff/internal/ledger"
 	"github.com/Xsxdot/handoff/internal/logx"
 	"github.com/spf13/cobra"
@@ -491,21 +489,15 @@ var cardExportCmd = &cobra.Command{
 	},
 }
 
-// cardCoordinateDesktop 对应 card coordinate --desktop（B434 P7=d）。
-var cardCoordinateDesktop bool
-
 // cardCoordinateCmd 叫机器人为该卡占 coordinate 席位。与 squad 族同走 agentd
 // HTTP；服务端 400 的指路文案（未登记协调者小队 → handoff squad create）经
-// httpStatusError 原样透传。--desktop 改走拉起器代开（runCardCoordinateDesktop），
-// 两条路径互斥、都不接受 --cli/--session。
+// httpStatusError 原样透传。不接受 --cli/--session；B434 的 --desktop 已退役
+// （retired_b434.go 墓碑接管）。
 var cardCoordinateCmd = &cobra.Command{
 	Use:   "coordinate <卡号>",
-	Short: "叫机器人占该卡的 coordinate 席位（POST coordinator/launch；未登记小队时按报文指路 squad create）；--desktop 改为请项目拉起器代开 Claude 桌面端协调者会话",
+	Short: "叫机器人占该卡的 coordinate 席位（POST coordinator/launch；未登记小队时按报文指路 squad create）",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if cardCoordinateDesktop {
-			return runCardCoordinateDesktop(cmd, args[0])
-		}
 		cl, done, err := newTargetClient()
 		if err != nil {
 			return err
@@ -517,36 +509,6 @@ var cardCoordinateCmd = &cobra.Command{
 		}
 		return json.NewEncoder(cmd.OutOrStdout()).Encode(resp)
 	},
-}
-
-// runCardCoordinateDesktop 请卡所属项目的拉起器代开一场桌面端协调者会话（契约 §3.10、
-// 条 253–260）。
-//
-// 参数：cmd 提供 ctx 与输出；id 卡号。
-// 返回：200 → stdout 一行 DesktopLauncherOpenResp JSON，nil；agentd 拒绝 → 只含服务端
-// `error` 原文的错误（cobra 打到 stderr、退出 1）；请求没送到 → 带上下文的原错误。
-// 注意：只调代开端点、零调 coordinator/launch（不查小队、不经准入）；空座判定在服务端
-// （CLI 不预判，避免 TOCTOU 与两份判据）；不打 needs_human（端点已落，条 145/260）。
-func runCardCoordinateDesktop(cmd *cobra.Command, id string) error {
-	slog.Default().Info("CLI 拉起器代开入口", "card", id)
-	cl, done, err := newTargetClient()
-	if err != nil {
-		slog.Default().Warn("CLI 拉起器代开取目标客户端失败", "card", id, "cause", err)
-		return err
-	}
-	defer done()
-	resp, err := cl.DesktopLauncherOpen(cmd.Context(), id)
-	if err != nil {
-		if msg, ok := client.ServerErrorText(err); ok {
-			slog.Default().Warn("CLI 拉起器代开被 agentd 拒绝", "card", id, "cause", err)
-			return errors.New(msg)
-		}
-		slog.Default().Warn("CLI 拉起器代开请求失败", "card", id, "cause", err)
-		return fmt.Errorf("请拉起器代开卡 %s 的桌面端协调者: %w", id, err)
-	}
-	slog.Default().Info("CLI 拉起器代开已受理", "card", id,
-		"launcher", resp.Launcher, "machine", resp.Machine, "handled_by", resp.HandledBy)
-	return json.NewEncoder(cmd.OutOrStdout()).Encode(resp)
 }
 
 // printAcceptanceInFlightNotice 把本次 --accept 新增的在飞影响评论投影到 stderr。
@@ -639,7 +601,6 @@ func init() {
 	cardMergeCmd.Flags().BoolVar(&cardMergeYes, "yes", false, "跳过确认")
 	cardNoteCmd.Flags().BoolVar(&cardNoteFix, "correction", false, "记为更正（变更痕迹）")
 	cardNoteCmd.Flags().StringVar(&cardNoteResetNode, "reset-node", "", "重置该节点的裁决回合计数（如 review）")
-	cardCoordinateCmd.Flags().BoolVar(&cardCoordinateDesktop, "desktop", false, "改为请项目登记的拉起器代开一场 Claude 桌面端协调者会话（不查协调者小队）")
 	cardExportCmd.Flags().StringVar(&cardExportOut, "out", "", "输出文件路径")
 
 	cardCmd.AddCommand(cardAddCmd, cardListCmd, cardShowCmd, cardUpdateCmd, cardMoveCmd,
