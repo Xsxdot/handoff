@@ -30,6 +30,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Xsxdot/handoff/internal/collab"
+	"github.com/Xsxdot/handoff/internal/collab/client"
 	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/keystone"
 	"github.com/Xsxdot/handoff/internal/ledger"
@@ -488,5 +490,266 @@ func TestB435ResidentBridgeSourceGuard(t *testing.T) {
 	})
 	if !callsMatcher {
 		t.Errorf("residentwake.go 未调用 Recipients 或 Matches——门铃触发只经匹配函数（C-234/C-408）")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 段 1：聚合、筛选与读失败（C-407、C-408、C-409、C-228 消费侧、契约 §13 第 4 条）
+// ---------------------------------------------------------------------------
+
+// o2ResidentEnv 起一个带 push 根卡与驻场者（本机桌面端地址）的会话夹具，排干后返回。
+func o2ResidentEnv(t *testing.T) (*ledgerEnv, *queueTraceRunner, string, string, string, *o2OpenerSpy) {
+	t.Helper()
+	env, runner := newNoPTYAutomationEnv(t)
+	root := createCoordCard(t, env)
+	b435BindPush(t, env, root, "o2-root-1")
+	sessionID := b435Session(t, env, root)
+	o2SitResident(t, env, sessionID, o2Resident, o2DesktopSession, o2CLISession, o2Hostname(t))
+	home, spy := o2Wire(t, env.srv)
+	drainAutomation(t, env)
+	return env, runner, sessionID, root, home, spy
+}
+
+func o2WantLetter(session string, count int, minSeq, maxSeq int64) string {
+	return proto.RenderResidentLetter(proto.ResidentLetter{Session: session, Count: count, MinSeq: minSeq, MaxSeq: maxSeq})
+}
+
+// C-407/C-408/§13 第 4 条：一轮里驻场者命中 3 条（人类无 @ ×2 + agent:handoff 显式 @驻场者 ×1，模拟 O1
+// 通知）→ 恰一封，Count=3、Min/Max 覆盖三条；其间 @push 卡（席位地址，照常唤醒该卡）与 agent: 无 @
+// （non_human_unaddressed）不计入。各条正文带哨兵，信中均不出现（C-403）。
+func TestB435ResidentDoorbellBatchesPerAddress(t *testing.T) {
+	env, runner, sessionID, root, home, spy := o2ResidentEnv(t)
+	for _, m := range []string{"agent:handoff", "agent:x"} {
+		if err := env.ledger.AddSessionMember(sessionID, m, "user:tester"); err != nil {
+			t.Fatalf("登记成员 %s: %v", m, err)
+		}
+	}
+	drainAutomation(t, env)
+	s1 := sendSessionMessage(t, env.srv.rooms, sessionID, "user:tester", "无 @ 一 O2-S1", nil, 0)
+	sendSessionMessage(t, env.srv.rooms, sessionID, "user:tester", "@根卡 O2-S2", []string{root}, 0)
+	sendSessionMessage(t, env.srv.rooms, sessionID, "agent:x", "agent 无 @ O2-S3", nil, 0)
+	sendSessionMessage(t, env.srv.rooms, sessionID, "agent:handoff", "卡 T3 新建：标题（项目 handoff）O2-S4",
+		[]string{o2Resident}, 0)
+	s5 := sendSessionMessage(t, env.srv.rooms, sessionID, "user:tester", "无 @ 二 O2-S5", nil, 0)
+
+	o2Consume(t, env.srv)
+
+	letters := o2Letters(t, home)
+	if len(letters) != 1 {
+		t.Fatalf("同一地址一轮应恰一封，得 %d", len(letters))
+	}
+	if want := o2WantLetter(sessionID, 3, s1, s5); letters[0].body != want {
+		t.Fatalf("聚合信件不符:\n得 %q\n应 %q", letters[0].body, want)
+	}
+	for _, sentinel := range []string{"O2-S1", "O2-S2", "O2-S3", "O2-S4", "O2-S5", "agent:handoff", "agent:x"} {
+		if strings.Contains(letters[0].body, sentinel) {
+			t.Fatalf("信中不得含正文/作者 %q（C-403）: %q", sentinel, letters[0].body)
+		}
+	}
+	if n := len(spy.calls()); n != 1 {
+		t.Fatalf("一封信 opener 恰一次，得 %d", n)
+	}
+	if got := b435Resumes(runner); len(got) != 1 || !b435WokeCard(got[0], root) {
+		t.Fatalf("@根卡（席位地址）应照常唤醒恰一次: %v", got)
+	}
+}
+
+// N5：两个会话各一名驻场者（不同 cli_session）→ 两封、opener 两次（不合并）。
+func TestB435ResidentDoorbellTwoAddressesTwoLetters(t *testing.T) {
+	env, _ := newNoPTYAutomationEnv(t)
+	s1, s2 := b435Session(t, env), b435Session(t, env)
+	host := o2Hostname(t)
+	o2SitResident(t, env, s1, "agent:org-a", "local_o2-a", "o2-cli-a", host)
+	o2SitResident(t, env, s2, "agent:org-b", "local_o2-b", "o2-cli-b", host)
+	home, spy := o2Wire(t, env.srv)
+	drainAutomation(t, env)
+	q1 := sendSessionMessage(t, env.srv.rooms, s1, "user:tester", "会话一", nil, 0)
+	q2 := sendSessionMessage(t, env.srv.rooms, s2, "user:tester", "会话二", nil, 0)
+
+	o2Consume(t, env.srv)
+
+	letters := o2Letters(t, home)
+	if len(letters) != 2 {
+		t.Fatalf("两地址应两封，得 %d", len(letters))
+	}
+	byCLI := map[string]string{}
+	for _, l := range letters {
+		byCLI[strings.SplitN(l.name, ".", 2)[0]] = l.body
+	}
+	if byCLI["o2-cli-a"] != o2WantLetter(s1, 1, q1, q1) || byCLI["o2-cli-b"] != o2WantLetter(s2, 1, q2, q2) {
+		t.Fatalf("两封信各归其信箱键与会话: %+v", letters)
+	}
+	urlA, _ := claudeContinueURL("local_o2-a")
+	urlB, _ := claudeContinueURL("local_o2-b")
+	got := spy.calls()
+	sort.Strings(got)
+	want := []string{urlA, urlB}
+	sort.Strings(want)
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("opener 应各一次: %v", got)
+	}
+}
+
+// C-409：驻场者无桌面端三列（R 的无 flag sit 形态）→ 零信、零 opener；同夹具补上三列后下一条命中写信，
+// 信只覆盖新命中（旧命中已处置，不补按）。
+func TestB435ResidentDoorbellNoCLISessionNoLetter(t *testing.T) {
+	env, _ := newNoPTYAutomationEnv(t)
+	sessionID := b435Session(t, env)
+	o2SitResident(t, env, sessionID, o2Resident, "", "", "")
+	home, spy := o2Wire(t, env.srv)
+	drainAutomation(t, env)
+	sendSessionMessage(t, env.srv.rooms, sessionID, "user:tester", "无桌面端地址时", nil, 0)
+	o2Consume(t, env.srv)
+	if n, c := len(o2Letters(t, home)), len(spy.calls()); n != 0 || c != 0 {
+		t.Fatalf("无 cli_session 应零信零 opener，得信 %d、opener %d", n, c)
+	}
+	b435ExecSQL(t, env, `UPDATE session_residents SET desktop_session = ?, cli_session = ?, machine = ? WHERE session = ?`,
+		o2DesktopSession, o2CLISession, o2Hostname(t), sessionID)
+	seq := sendSessionMessage(t, env.srv.rooms, sessionID, "user:tester", "补上地址之后", nil, 0)
+	o2Consume(t, env.srv)
+	letters := o2Letters(t, home)
+	if len(letters) != 1 || letters[0].body != o2WantLetter(sessionID, 1, seq, seq) {
+		t.Fatalf("补上桌面端地址后下一条命中应恰一封且只覆盖新命中: %+v", letters)
+	}
+	if n := len(spy.calls()); n != 1 {
+		t.Fatalf("opener 应恰一次，得 %d", n)
+	}
+}
+
+// C-202：by_system:null 旧边界行、by_system:true 结构行、pointer 行 → 零信；对照同轮后人类无 @ 恰一封
+// 且只计那一条。
+func TestB435ResidentDoorbellStructuralRowsDoNotRing(t *testing.T) {
+	env, _, sessionID, _, home, _ := o2ResidentEnv(t)
+	b435RawSessionRow(t, env, `{"room":"`+sessionID+`","kind":"user","body":"旧边界","by_system":null}`)
+	b435RawSessionRow(t, env, `{"room":"`+sessionID+`","kind":"user","body":"系统结构行","by_system":true}`)
+	if _, err := env.srv.rooms.Pointer(sessionID, proto.RoomMessage{Body: "指针行"}); err != nil {
+		t.Fatalf("写指针行: %v", err)
+	}
+	o2Consume(t, env.srv)
+	if n := len(o2Letters(t, home)); n != 0 {
+		t.Fatalf("结构行不得按铃，得 %d 封", n)
+	}
+	seq := sendSessionMessage(t, env.srv.rooms, sessionID, "user:tester", "对照：人类无 @", nil, 0)
+	o2Consume(t, env.srv)
+	letters := o2Letters(t, home)
+	if len(letters) != 1 || letters[0].body != o2WantLetter(sessionID, 1, seq, seq) {
+		t.Fatalf("对照应恰一封且只计人类那一条: %+v", letters)
+	}
+}
+
+// staleResidentLC 让匹配函数读到旧驻场者身份（模拟「判定后、读行前有人 stand + 换人 sit」）；其余透传。
+type staleResidentLC struct {
+	client.LedgerClient
+	identity string
+}
+
+func (lc staleResidentLC) SessionResident(sessionID string) (proto.SessionResident, bool, error) {
+	r, ok, err := lc.LedgerClient.SessionResident(sessionID)
+	if err != nil || !ok {
+		return r, ok, err
+	}
+	r.Identity = lc.identity
+	return r, true, nil
+}
+
+// fixedResidentLC 让匹配函数读到固定驻场者（不读表）；其余透传。用于把读失败隔离在门铃自己的读面。
+type fixedResidentLC struct {
+	client.LedgerClient
+	r proto.SessionResident
+}
+
+func (lc fixedResidentLC) SessionResident(sessionID string) (proto.SessionResident, bool, error) {
+	if sessionID != lc.r.Session {
+		return lc.LedgerClient.SessionResident(sessionID)
+	}
+	return lc.r, true, nil
+}
+
+// TOCTOU：匹配函数给出旧身份 agent:old 的驻场者地址，门铃读到的行已是 agent:org → 不给新驻场者按旧
+// 地址的铃（零信、Info 可查）；对照：匹配函数恢复后，下一条命中给 agent:org 恰一封。
+func TestB435ResidentDoorbellIdentityMismatchNoLetter(t *testing.T) {
+	env, _, sessionID, _, home, spy := o2ResidentEnv(t)
+	logs := o2CaptureLog(env.srv)
+	real := env.srv.rooms
+	sendSessionMessage(t, real, sessionID, "user:tester", "换人窗口里的发言", nil, 0)
+	env.srv.SetRooms(collab.New(staleResidentLC{LedgerClient: env.srv.autoLedger, identity: "agent:old"}))
+	o2Consume(t, env.srv)
+	if n, c := len(o2Letters(t, home)), len(spy.calls()); n != 0 || c != 0 {
+		t.Fatalf("身份不一致不得按铃，得信 %d、opener %d", n, c)
+	}
+	if !strings.Contains(logs.String(), "驻场者已换人") {
+		t.Fatalf("换人跳过应有 Info 可查: %s", logs.String())
+	}
+	env.srv.SetRooms(real)
+	seq := sendSessionMessage(t, real, sessionID, "user:tester", "换人之后", nil, 0)
+	o2Consume(t, env.srv)
+	letters := o2Letters(t, home)
+	if len(letters) != 1 || letters[0].body != o2WantLetter(sessionID, 1, seq, seq) {
+		t.Fatalf("对照：当前驻场者应恰一封: %+v", letters)
+	}
+}
+
+// C-228 消费侧两种读失败，各配「恢复后恰一封」对照：
+//   - matcher：匹配函数读驻场者失败（表改名）→ 本轮报错、水位不越过、零信；
+//   - resident_row：匹配函数成功（fixedResidentLC 不读表）但门铃读驻场者行失败 → 同上。
+//
+// 恢复后连跑两轮恰一封：门铃不得因主循环把该事件标 seen 而丢铃，也不得重按（plan 台账 L4.4）。
+func TestB435ResidentDoorbellRecipientsErrorHoldsWatermarkAndRingsLater(t *testing.T) {
+	for _, isolateBell := range []bool{false, true} {
+		name := "matcher"
+		if isolateBell {
+			name = "resident_row"
+		}
+		t.Run(name, func(t *testing.T) {
+			env, _, sessionID, _, home, _ := o2ResidentEnv(t)
+			real := env.srv.rooms
+			seq := sendSessionMessage(t, real, sessionID, "user:tester", "读失败期间的发言", nil, 0)
+			if isolateBell {
+				env.srv.SetRooms(collab.New(fixedResidentLC{LedgerClient: env.srv.autoLedger,
+					r: proto.SessionResident{Session: sessionID, Identity: o2Resident}}))
+			}
+			b435ExecSQL(t, env, `ALTER TABLE session_residents RENAME TO session_residents_o2`)
+			if _, _, err := env.srv.consumeAutomationEventsOnce(context.Background()); err == nil {
+				t.Fatal("读驻场者失败时消费轮必须报错")
+			}
+			if c := o2Cursor(env.srv); c >= seq {
+				t.Fatalf("读失败的消息不得被越过：cursor=%d seq=%d", c, seq)
+			}
+			if n := len(o2Letters(t, home)); n != 0 {
+				t.Fatalf("读失败时零信，得 %d", n)
+			}
+			b435ExecSQL(t, env, `ALTER TABLE session_residents_o2 RENAME TO session_residents`)
+			env.srv.SetRooms(real)
+			o2Consume(t, env.srv)
+			o2Consume(t, env.srv)
+			letters := o2Letters(t, home)
+			if len(letters) != 1 || letters[0].body != o2WantLetter(sessionID, 1, seq, seq) {
+				t.Fatalf("恢复后应恰一封: %+v", letters)
+			}
+		})
+	}
+}
+
+// 水位被他处在飞认领挡住（无关卡键、seq 小于驻场者命中）时连跑三轮，同一命中仍恰一封（每进程每事件
+// 至多一次）；并核夹具有效：水位确实停在认领之前。
+func TestB435ResidentDoorbellNoDoubleRingWhileWatermarkHeld(t *testing.T) {
+	env, _, sessionID, _, home, spy := o2ResidentEnv(t)
+	hold := sendSessionMessage(t, env.srv.rooms, sessionID, "user:tester", "挡水位锚", []string{"B9999"}, 0)
+	if got, err := env.ledger.ClaimWake(hold, "o2-hold", "other-holder", time.Hour); err != nil || !got {
+		t.Fatalf("预占在飞认领: got=%v err=%v", got, err)
+	}
+	seq := sendSessionMessage(t, env.srv.rooms, sessionID, "user:tester", "挡水位期间的发言", nil, 0)
+	for i := 0; i < 3; i++ {
+		o2Consume(t, env.srv)
+	}
+	if c := o2Cursor(env.srv); c >= hold {
+		t.Fatalf("夹具失效：在飞认领应挡住水位（< %d），得 %d", hold, c)
+	}
+	letters := o2Letters(t, home)
+	if len(letters) != 1 || letters[0].body != o2WantLetter(sessionID, 1, seq, seq) {
+		t.Fatalf("水位被挡时连跑三轮仍应恰一封: %+v", letters)
+	}
+	if n := len(spy.calls()); n != 1 {
+		t.Fatalf("opener 应恰一次，得 %d", n)
 	}
 }
