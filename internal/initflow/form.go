@@ -171,6 +171,11 @@ func Apply(cfg *config.Config, fields []Field, answers map[string]string) error 
 			cfg.Executor.Default = ans
 		case "executor_model":
 			cfg.Executor.Model = ans
+		case "name":
+			if err := config.ValidateSelfName(ans); err != nil {
+				return err
+			}
+			cfg.Name = ans
 		case "repo_root":
 			cfg.RepoRoot = ans
 		case "approver_executor":
@@ -256,6 +261,11 @@ func Form(cfg *config.Config, rs []toolchain.Result, goos string, cfgExisted boo
 	return []Field{
 		{Key: "role", Kind: KindSelect, Title: "这台机器的角色",
 			Default: roleDefault, Options: RoleOptions(goos), Notice: roleNotice},
+		{Key: "name", Kind: KindInput, Title: "本机机器名 name（全队唯一；有账本 DSN 时必填）",
+			Default: cfg.Name,
+			Notice: "机器名 name 是这台机器在全队的唯一身份（落共享账本、按名路由）。" +
+				"有账本 DSN 时必须设置；留空时 agentd 照常起，但账本/镜像/卡派发/调度不挂载。" +
+				"不能是 local/本机，不能含空白或 /。"},
 		{Key: "executor_default", Kind: KindSelect, Title: "默认执行者",
 			Default: execDef, Options: ExecutorOptions(rs), Roles: []string{RoleExecutor, RoleBoth},
 			Advanced: true},

@@ -1,5 +1,7 @@
 out|以下每一问直接回车即保留预选项。
 select|这台机器的角色|def=executor|opts=executor=执行机;coordinator=协调者;both=两者
+out|机器名 name 是这台机器在全队的唯一身份（落共享账本、按名路由）。有账本 DSN 时必须设置；留空时 agentd 照常起，但账本/镜像/卡派发/调度不挂载。不能是 local/本机，不能含空白或 /。
+input|本机机器名 name（全队唯一；有账本 DSN 时必填）|def=
 select|默认执行者|def=opencode|opts=opencode=opencode（就绪）;claude=claude（已安装，登录态未知）;grok=grok（没装）;codex=codex（已安装，未登录）
 input|执行者模型（空=用执行者自身默认）|def=
 select|监听地址|def=all|opts=loopback=仅本机（127.0.0.1:7777）;all=所有网卡（0.0.0.0:7777）;custom=手填（如绑单个网卡 IP，本机命令自动走辅助监听）

@@ -16,7 +16,7 @@ func TestFormKeysAndOrder(t *testing.T) {
 		got = append(got, f.Key)
 	}
 	want := []string{
-		"role", "executor_default", "executor_model",
+		"role", "name", "executor_default", "executor_model",
 		"listen_preset", "listen",
 		"repo_root", "approver_executor", "approver_model", "sync_auto",
 	}

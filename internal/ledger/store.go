@@ -29,6 +29,10 @@ type Store struct {
 	dialect dialect
 	path    string // 仅 SQLite：文件路径（测试用）
 	dsn     string // 原始 DSN（Follow 的 PG LISTEN 需要开第二条裸连接）
+	// shared 标记这是全队共享账本（B439）。共享账本上的新派发快照 target
+	// 必须是全队机器名，不得为空串——'' 在全队账本里无法归属到具体机器。
+	// 本机/单机账本（无 DSN）允许 ''，单机语义下它无歧义（S5）。
+	shared bool
 
 	mu        sync.Mutex
 	listeners []func(seq int64) // SQLite 回退模式的进程内事件推送
@@ -47,10 +51,23 @@ func (s *Store) timeNow() time.Time {
 	return time.Now()
 }
 
-// Open 打开账本库并幂等建 schema。dsn 以 postgres:// 或 postgresql://
+// Open 打开本机/单机账本并幂等建 schema。dsn 以 postgres:// 或 postgresql://
 // 开头走 PG，否则视为 SQLite 文件路径（单机回退模式）。
-func Open(dsn string) (*Store, error) {
-	s := &Store{dsn: dsn}
+//
+// 注意：本函数声明的账本是**非共享**语义——单机账本允许 target=”（” 在
+// 单机里无歧义）。共享账本请用 OpenShared。
+func Open(dsn string) (*Store, error) { return openStore(dsn, false) }
+
+// OpenShared 打开全队共享账本（B439）。声明共享后，新派发快照的 target
+// 不得为空串（F3）——” 在共享账本里无法归属到具体机器。
+//
+// 为什么显式声明而不是按 DSN 方言推断：方言不是语义——同一台 SQLite 文件
+// 既可能被当单机账本，也可能被当共享账本；由组装点按配置显式表态才不含糊。
+func OpenShared(dsn string) (*Store, error) { return openStore(dsn, true) }
+
+// openStore 是 Open / OpenShared 的共用实现，shared 决定 target=” 是否被拒。
+func openStore(dsn string, shared bool) (*Store, error) {
+	s := &Store{dsn: dsn, shared: shared}
 	var err error
 	if strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://") {
 		s.dialect = dialectPG
@@ -80,7 +97,7 @@ func Open(dsn string) (*Store, error) {
 	if s.dialect == dialectSQLite {
 		dialectName = "sqlite"
 	}
-	log().Info("账本库已打开", "dialect", dialectName, "database", databaseLabel(dsn, s.dialect))
+	log().Info("账本库已打开", "dialect", dialectName, "database", databaseLabel(dsn, s.dialect), "shared", shared)
 	return s, nil
 }
 

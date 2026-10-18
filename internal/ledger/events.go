@@ -177,6 +177,17 @@ func (s *Store) RecordDispatch(cardID string, snap DispatchSnapshot) error {
 // 返回：派发快照 seq、挂账 comment seq，以及账本写入或挂账失败的原始错误包装。
 // 注意：快照与挂账只在提交后对镜像可见，事务内顺序仍固定为快照→挂账。
 func (s *Store) RecordDispatchAndLinkTask(cardID string, snap DispatchSnapshot) (int64, int64, error) {
+	// F3：共享账本上的新派发快照 target 不得为空串。'' 在全队账本里无法
+	// 归属到具体机器（谁写的都长一样），正是 B439 要杀的静默失效族。拒绝
+	// 发生在任何写行之前，事务零残留。本机/单机账本（shared=false）允许 ''，
+	// 单机语义下无歧义（S5 逐点不变）。
+	if s.shared && snap.Target == "" {
+		err := fmt.Errorf("派发落账被拒：目标机 identity 缺失（空串）；" +
+			"共享账本里的 target 必须是全队机器名——请检查 config.yaml 的 name: 与派发目标解析")
+		log().Warn("派发落账被拒：共享账本 target 为空", "card", cardID, "node", snap.Node,
+			"attempt", snap.Attempt, "task", snap.TaskID, "cause", err)
+		return 0, 0, err
+	}
 	log().Debug("派发快照与挂账事务进入", "card", cardID, "node", snap.Node,
 		"attempt", snap.Attempt, "target", snap.Target, "task", snap.TaskID,
 		"seq", 0, "type", EvDispatched)
