@@ -6,12 +6,19 @@
 package cmd
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
+	"log"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/proto"
 )
 
@@ -209,5 +216,50 @@ func TestB435CardShowHintReadFailureSilent(t *testing.T) {
 				t.Fatalf("读失败不得改 stdout:\n%s\n%s", baseline, out)
 			}
 		})
+	}
+}
+
+// C-514 的真进程面（review F1）：提示行之外，进程 fd 2 上不得有任何别的输出——未经 logx.Setup 的默认 slog
+// 会把账本 INFO 行直接写到进程 stderr，「恰一行」在真进程里就成了多行。cobra 的 ErrOrStderr 缓冲捕不到
+// 那些行，所以这里同时接管 os.Stderr 与 log 包默认输出（默认 slog 落在后者）。测试基座自己的输出
+// （seed 时的账本 Open、config 退休键 WARN）在接管之前完成或根本不产生，泄漏只可能来自命令本身。
+func TestB435CardShowProcessStderrOnlyHint(t *testing.T) {
+	b435UnsetSessionEnv(t)
+	e := newB435WaitEnv(t)
+	card := createCardWaitFixture(t, e.dir)
+	cfgPath := filepath.Join(e.dir, "config.yaml")
+	if err := config.Save(cfgPath, &config.Config{Listen: "127.0.0.1:0", Token: "t", DataDir: e.dir, StallTimeout: 2 * time.Hour}); err != nil {
+		t.Fatalf("写测试配置: %v", err)
+	}
+	args := []string{"card", "show", card}
+	seedCardCLIForTest(t, e.dir, args)
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	origStderr, origLogOut := os.Stderr, log.Writer()
+	os.Stderr = w
+	log.SetOutput(w)
+	t.Cleanup(func() { os.Stderr = origStderr; log.SetOutput(origLogOut) })
+	resetAllFlags(rootCmd)
+	var out, errb bytes.Buffer
+	rootCmd.SetOut(&out)
+	rootCmd.SetErr(&errb)
+	rootCmd.SetArgs(append([]string{"--config", cfgPath}, args...))
+	runErr := Execute()
+	resetAllFlags(rootCmd)
+	configPath = cfgPath
+	os.Stderr = origStderr
+	log.SetOutput(origLogOut)
+	_ = w.Close()
+	leaked, _ := io.ReadAll(r)
+	if runErr != nil {
+		t.Fatalf("card show: %v", runErr)
+	}
+	if errb.String() != b435NoOrganizerHint() {
+		t.Fatalf("stderr 应逐字节为提示行，得 %q", errb.String())
+	}
+	if len(leaked) != 0 {
+		t.Fatalf("进程 stderr 除提示行外不得有别的输出，泄漏 %d 字节：%q", len(leaked), string(leaked))
 	}
 }

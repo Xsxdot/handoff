@@ -15,6 +15,7 @@ import (
 
 	"github.com/Xsxdot/handoff/internal/client"
 	"github.com/Xsxdot/handoff/internal/ledger"
+	"github.com/Xsxdot/handoff/internal/logx"
 	"github.com/spf13/cobra"
 )
 
@@ -114,6 +115,9 @@ var cardShowCmd = &cobra.Command{
 	Short: "看卡：字段 + 关系 + 挂账 task + 最近事件（单 JSON 对象）",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// C-514 的真进程面：stderr 只许有提示行。默认 slog 把账本 INFO 直接写到 fd 2，
+		// 这里与 card wait / session wait 同先例装 logx（默认 warn 级，HANDOFF_LOG_LEVEL 可调）。
+		slog.SetDefault(logx.Setup("cli", ""))
 		st, err := openLedger()
 		if err != nil {
 			return err
@@ -173,7 +177,7 @@ func cardShowOrganizerHint(cmd *cobra.Command, st *ledger.Store, cardID, project
 			return
 		}
 	}
-	slog.Default().Info("card show：项目无组织者，stderr 提示", "card", cardID, "project", project, "has_room", ok)
+	slog.Default().Debug("card show：项目无组织者，stderr 提示", "card", cardID, "project", project, "has_room", ok)
 	fmt.Fprintf(cmd.ErrOrStderr(), cardShowNoOrganizerHint, project, project)
 }
 
