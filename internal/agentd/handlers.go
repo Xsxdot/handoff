@@ -1,8 +1,8 @@
 // handlers.go —— agentd HTTP/WS 处理请求的实现（B233.17 从 server.go 迁出）。
 //
 // 职责：实现 /api 与 /ws 的处理函数与其私有 DTO/helper。
-// 边界：**不在 codegraph assembly 免检名单**——请求处理不享受开机插线豁免，
-// 对后厨的跨域直调会被 codegraph check 看见。URL→函数名登记（Handler()）、
+// 边界：请求处理不享受开机插线豁免，跨域直调由源码级守卫
+// `TestB23317AssemblyFilesHaveNoHandlerDefs` 看见。URL→函数名登记（Handler()）、
 // 构造与 Set* 注入仍在 server.go（插线，名单内）。
 package agentd
 

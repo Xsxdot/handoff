@@ -2,8 +2,8 @@
 //
 // 为什么走 agentd HTTP 而不像 card/workflow 直连账本库：小队登记是编制域规则调用
 // （校验/角色词表/成员存在性都在编制域 scheduling 包的入站门面里），冻结依赖方向
-// 只有 d_gateway→d_scheduling 一条（codegraph/target.json 没有 d_cli→d_scheduling，
-// best.json 里 schedclient 容器也归 d_scheduling）；CLI 直连会在图外开第二条写入口，
+// 只有 d_gateway→d_scheduling 一条（按架构法依赖方向，d_cli 没有到 d_scheduling 的
+// 契约方向，schedclient 容器也归 d_scheduling）；CLI 直连会另开第二条写入口，
 // 违反「gateway 端点与 CLI 写命令最终都汇入 scheduling.Service 单一入口」。
 // 代价是本机 agentd 必须在线——登记面是控制面配置，该前提成立；够不着时报
 // ErrUnreachable 可行动错误。

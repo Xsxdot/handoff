@@ -1449,7 +1449,7 @@ func TestStopKillFailureServeDeadDrops(t *testing.T) {
 // 的 tool part 无权限 id，应答端点要求真实 id），只能告警留痕、人工兜底。
 func TestReconnectWarnsLostPermission(t *testing.T) {
 	buf := captureLog(t)
-	taskID := "task-recon-0001"
+	taskID := "task-audit-0001"
 	var mu sync.Mutex
 	conns := 0
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

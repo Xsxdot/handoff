@@ -3,11 +3,8 @@
 // 执行机制）。判据 (a)：全仓非测试 .go 文件里对 collab.Service.Pointer 的引用
 // 只允许出现在白名单 pointerWhitelist 内；白名单外出现第二处即红。
 //
-// 为什么是读源码的 Go 测试而不是 graph check / TestRepoContractGate：
-// cmd/graph_gate_test.go:36 的 codegraph.Check 四入参全部来自 JSON，不解析源码；
-// 新增一条真实调用而不写进视图 diff，闸门眼里它不存在（B156.3 决定性实验：
-// internal/ledgerstep 放真调 Service.Pointer，build/vet/graph check/TestRepoContractGate
-// 四项与基线一个数都不差）。只有随 go test 复现的读源码测试才有牙齿。
+// 图闸已随 B436 删除；本测试从一开始就是读源码的守卫——只有随 go test 复现的
+// 读源码测试才看得见「新增一条真实调用」（B156.3 决定性实验）。
 //
 // 判定机制（按接收者形状，协调者复核定案）：go/ast 收集全部 SelectorExpr 且
 // Sel.Name=="Pointer"；排除 X 为标识符 unsafe 的（unsafe.Pointer( 类型转换，恰 6 处：
@@ -50,23 +47,11 @@ type pointerWhitelistEntry struct {
 
 var pointerWhitelist = []pointerWhitelistEntry{
 	{"internal/keystone/room_narrator.go", "roomNarrator.Say",
-		"组装点适配器（target.json assembly 登记点，B233.22 起在 internal/keystone/room_narrator.go）：B156.3 叙事换绑轮把协调者叙事经此落卡房间（Service.Pointer）；不在 HTTP 路由可达图上。"},
+		"组装点适配器（B233.22 起在 internal/keystone/room_narrator.go）：B156.3 叙事换绑轮把协调者叙事经此落卡房间（Service.Pointer）；不在 HTTP 路由可达图上。"},
 	{"cmd/card_dispatch.go", "roomPointer",
 		"CLI 裸派发的派发指针行经测试缝 roomPointer（包级 var 闭包承载，归属实测名）落账（岔口八范围），不在 HTTP 路由可达图上。"},
 	{"internal/workspace/identity.go", "HasLedgerAttachField",
 		"反射提取结构体元数据（reflect.Pointer 解引用，非 collab.Service.Pointer 路由），用于断言工作区请求/响应结构体零挂卡字段。"},
-	{"scripts/codegraph-rescan/main.go", "methodNodeOf",
-		"B233.23/26 机械扫描器：go/types.Pointer 类型断言，不是 collab.Service.Pointer 路由。"},
-	{"scripts/codegraph-rescan/main.go", "namedOf",
-		"同上，go/types.Pointer 类型断言。"},
-	{"scripts/codegraph-rescan/main.go", "isCobraCommand",
-		"同上，go/types.Pointer 类型断言。"},
-	{"scripts/codegraph-rescan/main.go", "verifyLifecycle",
-		"同上，go/types.Pointer 类型断言。"},
-	{"scripts/codegraph-rescan/main.go", "sameNamedPtr",
-		"同上，go/types.Pointer 类型断言。"},
-	{"scripts/codegraph-rescan/main.go", "sameNamed",
-		"同上，go/types.Pointer 类型断言。"},
 }
 
 // TestPointerRouteAbsentFromSource 契约 §4 判据 (a)：全仓非测试 .go 文件里每个

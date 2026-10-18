@@ -37,7 +37,7 @@ func TestJudgeSafeCommandTable(t *testing.T) {
 		{"git-cat-file", "git cat-file -p HEAD"},
 		{"git-rev-parse", "git rev-parse HEAD"},
 		{"git-ls-files", "git ls-files internal/"},
-		{"which", "which codegraph"},
+		{"which", "which gofmt"},
 		{"pwd", "pwd"},
 		{"head", "head -n 20 README.md"},
 		{"tail", "tail -n 5 go.mod"},
@@ -71,7 +71,6 @@ func TestJudgeCompoundSilentTable(t *testing.T) {
 		{"管道只读", "ls | head"},
 		{"sed -n 只读", "sed -n '1,20p' file"},
 		{"分号串 sed 与 echo", `sed -n '219,300p' f; echo "=== cursor"`},
-		{"codegraph 读图补全", "codegraph sym Gate.Judge"},
 		{"npm --prefix", "npm --prefix web test"},
 		{"printf 无重定向", `printf '%s\n' hello`},
 		// B376 复审：守卫只拦执行型/改写型标志，只读形态仍须静默。
@@ -109,10 +108,6 @@ func TestJudgeCompoundSilentTable(t *testing.T) {
 		{"sed -n 正则范围只读", `sed -n '/a/,/b/p' f`},
 		{"sed -n 取反地址只读", `sed -n '2!p' f`},
 		{"sed -n GNU 步长地址只读", `sed -n '1~2p' f`},
-		// B376 复审 minor：codegraph 的 --repo 是全局旗标，其后子命令仍走闭集。
-		{"codegraph --repo 读图", "codegraph --repo . sym Gate.Judge"},
-		{"codegraph --view 读图", "codegraph --view cards-B376 sym Gate.Judge"},
-		{"codegraph help", "codegraph --help"},
 		{"sed 正则含 w 只读", `sed -n '/write/p' f`},
 		{"git branch 远程/详情只读", "git branch -r"},
 		{"git branch -v 只读", "git branch -v"},
@@ -245,7 +240,6 @@ func TestJudgeCompoundNotSilent(t *testing.T) {
 		`bash -c "go test ./..."`,
 		"go run ./...",
 		"git log -S x --oneline || true",
-		"codegraph absorb",
 		"npm --prefix web ci",
 	} {
 		v := g.Judge(Request{Tool: "bash", Command: command}, sc)

@@ -13,8 +13,8 @@
 //
 // 归属：本包（d_transport）已是 WaitDeliveryPolicy 的宿主，两处消费点都依赖它；
 // 身份闸与类型表是同一条「是否叫醒」规则的两半，住一处。代价是新增契约方向
-// d_transport→d_ledger（读 ledger.Store 与 ledger.DispatchSnapshot），已在
-// codegraph/target.json 显式声明。
+// d_transport→d_ledger（读 ledger.Store 与 ledger.DispatchSnapshot），按架构法
+// 依赖方向显式承认。
 //
 // 详见 docs/superpowers/specs/b370-contract.md 与 docs/superpowers/plans/b370-plan.md。
 package client

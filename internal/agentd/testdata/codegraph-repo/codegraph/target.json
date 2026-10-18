@@ -1,4 +1,0 @@
-{
-  "meta": { "version": 3, "project": "fixture" },
-  "assembly": ["cmd/run.go"]
-}

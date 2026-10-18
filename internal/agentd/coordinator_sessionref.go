@@ -6,7 +6,7 @@
 // 归属说明（B233.26 刀2）：coordinator_home 的纯函数族（HOME 供给/规范化/
 // ShellQuote）已归域 orchestration；本 resolver 因持 *Server（读编制域端口与
 // 协调者小队）耦合 gateway 生命周期，按卡内判据（新导出面 >2 个符号）留
-// gateway，图对账（刀3）按实然登记其容器。
+// gateway。
 package agentd
 
 import (

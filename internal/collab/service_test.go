@@ -10,8 +10,8 @@
 // 换绑剥权，与 Pointer 实现，全部从入站门面（Service.Send/Service.Pointer）
 // 断言——缝#1 是唯一法定入口，规则实现（room 子包）不设独立单测。
 //
-// 本文件的 import internal/ledger(/api) 仅存在于 _test.go：图边采集排除
-// 测试文件（charter/graph edgegate.go:190），不构成 d_collab→d_ledger 生产边。
+// 本文件的 import internal/ledger(/api) 仅存在于 _test.go，不构成
+// d_collab→d_ledger 生产边。
 package collab
 
 import (

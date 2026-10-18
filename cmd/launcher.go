@@ -10,8 +10,8 @@
 // 边界：只经 ledger.Store 的四个拉起器方法读写账本；登记覆盖式（条 140）、不落卡事件
 // （条 143）。登记身份只取当前会话出示（不接受 --cli/--session 手填）：登记的 CLI 会话
 // id 是信箱文件名的键，手填错一个字信就没人收。探活只读各 agentd 的 /api/status，不调
-// 任何拉起器端点；本机判定不复用 scheduling.IsLocalMachine（d_cli 无到 d_scheduling 的
-// 契约方向，codegraph/target.json）。
+// 任何拉起器端点；本机判定不复用 scheduling.IsLocalMachine（按架构法依赖方向，
+// d_cli 无到 d_scheduling 的契约方向）。
 package cmd
 
 import (

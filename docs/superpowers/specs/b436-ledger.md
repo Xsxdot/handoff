@@ -58,3 +58,43 @@
 - 补核 `internal/agentd/b23317_boundary_test.go:264-300`：`TestB23317AssemblyFilesHaveNoHandlerDefs` 经 `b23317AssemblyFiles` 读 `codegraph/target.json` 的 `assembly`，现值 `['main.go','internal/agentd/server.go','cmd/agentd.go']`（`python3 -c "json.load(open('codegraph/target.json'))['assembly']"`）。plan 决定名单改由测试持有。
 - `grep -n -i -E 'codegraph|recon|图对账|代码图|graph check|baseline\.json|best\.json|target\.json|absorb|图覆盖债|重扫' docs/roadmap.md` → 60 余行，逐条分类进 plan 第 7 步表格（删节 3、删条 29、改词 3、保留其余）。
 - plan 落盘 `docs/superpowers/plans/b436-plan.md`；相对 spec 的偏离四条写在 plan 首节（不加含 `codegraph` 字面量的锁测试；S5 例外补 `CHANGELOG.md`；平台不变量测试改断「查图」；roadmap 裁剪逐条点名）。
+
+## 2026-10-18 implement 节点（subagent）
+
+### 偏离与自主决定
+
+（占位，随进度补全；交回前完整）
+
+### 第 1 步：拔依赖
+
+- `sed -i '' '/github.com\/Xsxdot\/charter\/graph v0.10.2/d' go.mod && git rm -r -q codegraph/` → exit 0；`git status --short` 列出 `codegraph/` 下 baseline/best/target/diffs/domains 全部 D。
+- `go build ./...` → exit 1；`go vet ./...` → exit 1。两者输出相同、只有两条（go 在模块解析阶段即停，不再往下列）：`internal/agentd/codegraph.go:22:2: no required module provides package github.com/Xsxdot/charter/graph/codegraph`、`internal/agentd/server.go:38:2: … charter/graph/webui`。`grep -ln 'charter/graph' cmd/*.go scripts/*/*.go` → 仅 `cmd/graph_gate_test.go`（同一死模块，编译器未到测试阶段）。`scripts/codegraph-rescan/` 有自己的 `go.mod`（不在主模块 `./...` 内）；`scripts/codegraph-flows/` 在主模块内但不 import charter/graph。清单未出现 plan 未列文件，不触发升级。
+
+### 第 2 步：agentd 网关
+
+- `git rm internal/agentd/codegraph.go internal/agentd/codegraph_test.go && git rm -r internal/agentd/testdata/codegraph-repo` → exit 0。
+- `server.go`：删 `charterwebui` import（第 38 行）、两条 `api.HandleFunc(... codegraph ...)`（899-900）、`mux.Handle("/codegraph/app/", ...)` 与两段注释、`s.log.Info("代码图 viewer 静态资源已挂载", ...)`；`newSPAHandler` 仍由 `webui.FS()` 使用，保留。删 import 后留下空行，`gofmt -l` 报 server.go，`gofmt -w` 收口。
+- `webroute_test.go`：删 `TestCodegraphRoute` 整函数及仅被它用的 `bytes`、`regexp` import。
+- `b23328_source_guard_test.go:23` 清单去掉 `"codegraph.go"`。
+- `handlers.go:4-5` 注释改为「请求处理不享受开机插线豁免，跨域直调由源码级守卫 `TestB23317AssemblyFilesHaveNoHandlerDefs` 看见」；`coordinator_sessionref.go:9` 删「图对账（刀3）按实然登记其容器」半句。
+- `go build ./internal/agentd/` → exit 0。`go test ./internal/agentd/ -run 'Route|B23328|B23317' -count=1` → exit 1，FAIL 恰为三条 b23317：`TestB23317AssemblyFreezeExcludesHandlerFile`、`TestB23317FacadeBudgetsStayRatchet`、`TestB23317AssemblyFilesHaveNoHandlerDefs`，报错均为 `open .../codegraph/target.json: no such file or directory`（plan 预期，第 3 步修）。`-run 'Route|B23328'` 单独 → ok。
+
+### 第 3 步：契约闸与守卫
+
+- `git rm cmd/graph_gate_test.go && git rm -r scripts/codegraph-flows scripts/codegraph-rescan` → exit 0。
+- `b23317_boundary_test.go`：删 `TestB23317AssemblyFreezeExcludesHandlerFile`、`b23317FrozenContract` 类型与 `b23317FrozenContracts` 表、`TestB23317FacadeBudgetsStayRatchet`、仅被它用的 `containsStr`（`grep -rn containsStr internal/agentd/` 别处 0 命中）；`b23317AssemblyFiles` 改为不读文件，返回 `[]string{"main.go", "internal/agentd/server.go", "cmd/agentd.go"}`，注释写明名单自 B436 起由本测试持有；删 `encoding/json` import。保留四条守卫。
+- `pointer_gate_test.go`：删白名单六条 `scripts/codegraph-rescan/main.go`；文件头 6-10 行改为「图闸已随 B436 删除；本测试从一开始就是读源码的守卫」一句。另把 keystone 条目 `why` 里的「target.json assembly 登记点」字样去掉（指向已删对象的注释，见「偏离与自主决定」）。
+- `gofmt -l internal/agentd/ cmd/` → 空。`go test ./internal/agentd/ -run 'B23317|Pointer' -count=1 -v` → exit 0，PASS：`TestB23317GatewayProductionDoesNotImportNestedInternals`、`TestB23317NestedInternalGuardHasTeeth`、`TestB23317AssemblyFilesHaveNoHandlerDefs`、`TestB23317HandlerGuardHasTeeth`、`TestPointerRouteAbsentFromSource`。
+
+### 第 4 步：纪律块与权限门
+
+- `internal/discipline/platform.go`：删 `platformInvariantHead` 第 2 条，余三条重编号 1-3；文件头职责注释「两条底线」→「三条底线」（原注释与条目数本就不符，顺手对齐）。`platform_test.go:29-37`：删 go run 入口、「已安装的 codegraph 二进制」、ask 工单三条断言，改为否定断言「不含『查图』」「不含『二进制』」；`handoff graph` 否定断言保留。
+- `internal/permgate/permgate.go`：`SafeCommandIDs` 删 `"codegraph"`；删 `codegraphReadSubcommands`、`codegraphValueFlags`、`codegraphReadSubcommand` 与 `safeCommandID` 的 `fields[0] == "codegraph"` 分支（含 B376 注释）。`permgate_test.go`：删 `:74`、`:112-115`、`:248` 四处用例；`:40` `{"which", "which codegraph"}` 改为 `{"which", "which gofmt"}`（见「偏离与自主决定」）；无表因此为空。
+- `grep -rn codegraph internal/discipline internal/permgate` → exit 1（零命中）。`gofmt -l` → 空。`go vet ./internal/discipline/ ./internal/permgate/ && go test ./internal/discipline/ ./internal/permgate/ -count=1` → exit 0，两包 ok。
+
+### 第 5 步：散落字面量
+
+- `cmd/launcher.go:14`、`cmd/squad.go:5-6`、`internal/client/wakegate.go:17`：论据从「`codegraph/target.json` 已声明 / best.json 容器归属」改为「按架构法依赖方向」，架构论断本身不动。`internal/collab/service_test.go:14` 删「（charter/graph edgegate.go:190）」与「图边采集排除测试文件」半句。
+- `internal/client/execution_test.go:135` 「B380 recon 补记」→「B380 对账补记」；`internal/executor/opencode/adapter_test.go:1452` `task-recon-0001` → `task-audit-0001`；`internal/executor/turn/protocol_test.go:86` 删 `|| strings.Contains(lower, "recon")`，review 半句保留。
+- `.gitignore:24`、`.zcodeignore:24` 删 `prototypes/codegraph/`；`mobile/android/README.md:24` 排除清单删 `codegraph/**`。
+- `go vet ./...` → exit 0；`gofmt -l $(git ls-files '*.go')` → 空，exit 0。

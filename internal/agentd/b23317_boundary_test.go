@@ -1,7 +1,6 @@
 package agentd
 
 import (
-	"encoding/json"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -112,7 +111,10 @@ func TestB23317NestedInternalGuardHasTeeth(t *testing.T) {
 
 // ---- B233.17 缝 1：handler 定义不得住在 assembly 名单文件里 ----
 
-// b23317AssemblyFiles 读仓库 target.json 的 assembly 名单。
+// b23317AssemblyFiles 返回缝 1 的 assembly 名单（开机插线文件，免于 handler 定义
+// 检查）。名单自 B436 起由本测试持有：原先读自 codegraph/target.json 的 assembly
+// 字段，代码图消费侧随 B436 整体删除后，这里写死的即是删除时刻的现值；增减插线
+// 文件须在同一提交改这里并写明理由。
 func b23317AssemblyFiles(t *testing.T) (repo string, assembly []string) {
 	t.Helper()
 	_, thisFile, _, ok := runtime.Caller(0)
@@ -120,17 +122,7 @@ func b23317AssemblyFiles(t *testing.T) (repo string, assembly []string) {
 		t.Fatal("runtime.Caller 失败")
 	}
 	repo = filepath.Dir(filepath.Dir(filepath.Dir(thisFile)))
-	raw, err := os.ReadFile(filepath.Join(repo, "codegraph", "target.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var tgt struct {
-		Assembly []string `json:"assembly"`
-	}
-	if err := json.Unmarshal(raw, &tgt); err != nil {
-		t.Fatal(err)
-	}
-	return repo, tgt.Assembly
+	return repo, []string{"main.go", "internal/agentd/server.go", "cmd/agentd.go"}
 }
 
 // b23317HandlerDefsIn 返回 src 中定义的 Server.handle* 方法名。
@@ -159,103 +151,6 @@ func b23317HandlerDefsIn(src []byte) []string {
 		}
 	}
 	return out
-}
-
-// TestB23317AssemblyFreezeExcludesHandlerFile：锁定本节点冻结的 target.json
-// assembly 名单——handler-only 的 internal/agentd/codegraph.go 必须不在名单里
-// （缝 1：免检只留开机插线）。server.go 瘦身归 implement，届时由 b23317HandlerDefsIn
-// 的当前树断言接管（见 contract 移交 plan）。
-func TestB23317AssemblyFreezeExcludesHandlerFile(t *testing.T) {
-	_, assembly := b23317AssemblyFiles(t)
-	for _, f := range assembly {
-		if f == "internal/agentd/codegraph.go" {
-			t.Fatalf("codegraph.go 整文件是 handler，必须退出 assembly 免检名单（缝 1）")
-		}
-	}
-}
-
-// b23317FrozenContract 是本节点冻结的有门面方向配额（缝 3）。预算只降不抬：
-// 把配额调大来让 red 变绿即违法，本测试是那条纪律的可执行锁。interfaces 也一并
-// 锁住，防止删接口假绿。
-type b23317FrozenContract struct {
-	From, To   string
-	Budget     int
-	Interfaces []string
-}
-
-var b23317FrozenContracts = []b23317FrozenContract{
-	// B233.26 反转 D1：OrchestrationClient 契约族随十文件迁入提供方 orchestration，
-	// 接口不再定义在使用方侧——interfaces 声明从本方向移除（若未来回潮须先补冻结值
-	// 再收口，见 TestB23317FacadeBudgetsStayRatchet 的 interfaces 锁）。方向语义随
-	// 反转：不再是 gateway 直读留驻 store，而是 gateway 对编排实现/数据的真实依赖。
-	// 重扫 raw 87 中 10 条落已声明 entries、另 1 条源在 assembly 免除，check 判定直调
-	// 76；预算按「只降不抬」由 B233.23 的 83 收紧到 76（超过 76 仍红），未抬配额抹绿。
-	// 收窄（经查询门面）归后续卡。
-	{From: "d_gateway", To: "d_orchestration", Budget: 76},
-	{From: "d_cli", To: "d_workspace", Budget: 0},
-	{From: "d_gateway", To: "d_workspace", Budget: 0},
-	{From: "d_orchestration", To: "d_workspace", Budget: 0},
-	{From: "d_workspace", To: "d_protocol", Budget: 0},
-	// B233.25 移除 d_workspace→d_orchestration（原冻结 0）：B233.23 重扫后该方向
-	// 在 target.json 不再有条目——B233.13/B233.19 把 workspace 对编排的引用经
-	// PreviewStore/ProjectTreeSource/RemoteTaskSource 反转为 d_workspace→d_gateway
-	// 后，internal/workspace 生产代码对 internal/orchestration 零 import
-	// （go list ./internal/workspace/... 实证），零引用方向重扫不发射条目。
-	// 该方向已消亡，棘轮 vacuous；若未来重扫再发射此方向，须先补冻结值再收口。
-}
-
-// TestB23317FacadeBudgetsStayRatchet 断言六条有门面方向的 legacyBudget 不高于
-// 冻结值（只降不抬），且 d_gateway→d_orchestration 的接口声明仍在。
-func TestB23317FacadeBudgetsStayRatchet(t *testing.T) {
-	_, thisFile, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("runtime.Caller 失败")
-	}
-	repo := filepath.Dir(filepath.Dir(filepath.Dir(thisFile)))
-	raw, err := os.ReadFile(filepath.Join(repo, "codegraph", "target.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var tgt struct {
-		Contracts []struct {
-			From         string   `json:"from"`
-			To           string   `json:"to"`
-			LegacyBudget int      `json:"legacyBudget"`
-			Interfaces   []string `json:"interfaces"`
-		} `json:"contracts"`
-	}
-	if err := json.Unmarshal(raw, &tgt); err != nil {
-		t.Fatal(err)
-	}
-	idx := map[string]int{}
-	for i, c := range tgt.Contracts {
-		idx[c.From+"->"+c.To] = i
-	}
-	for _, want := range b23317FrozenContracts {
-		i, ok := idx[want.From+"->"+want.To]
-		if !ok {
-			t.Fatalf("冻结方向 %s→%s 的契约条目缺失", want.From, want.To)
-		}
-		got := tgt.Contracts[i].LegacyBudget
-		if got > want.Budget {
-			t.Fatalf("%s→%s 配额 %d 高于冻结值 %d——棘轮只降不抬，不许抬配额抹绿",
-				want.From, want.To, got, want.Budget)
-		}
-		for _, iface := range want.Interfaces {
-			if !containsStr(tgt.Contracts[i].Interfaces, iface) {
-				t.Fatalf("%s→%s 的 interfaces 缺 %q（删接口即假绿）", want.From, want.To, iface)
-			}
-		}
-	}
-}
-
-func containsStr(xs []string, s string) bool {
-	for _, x := range xs {
-		if x == s {
-			return true
-		}
-	}
-	return false
 }
 
 // TestB23317AssemblyFilesHaveNoHandlerDefs 是缝 1 的实质断言：assembly 名单里的
