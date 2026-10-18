@@ -105,6 +105,10 @@ var cardListCmd = &cobra.Command{
 	},
 }
 
+// cardShowNoOrganizerHint 是 `card show` 的「项目无组织者」stderr 提示行（B435 契约 §3.5 逐字冻结，C-514；
+// 两个 %s 均为卡的 project 原值）。stdout JSON 不受影响（C-515）。
+const cardShowNoOrganizerHint = "提示：项目无组织者（项目 %s；handoff project room %s 取项目房间后 session sit 坐下）\n"
+
 var cardShowCmd = &cobra.Command{
 	Use:   "show <id>",
 	Short: "看卡：字段 + 关系 + 挂账 task + 最近事件（单 JSON 对象）",
@@ -135,11 +139,42 @@ var cardShowCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		return json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]any{
+		if err := json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]any{
 			"card": card, "effective_base_branch": base,
 			"relations": relations, "tasks": links, "events": events,
-		})
+		}); err != nil {
+			return err
+		}
+		cardShowOrganizerHint(cmd, st, card.ID, card.Project)
+		return nil
 	},
+}
+
+// cardShowOrganizerHint 在 stdout 编码之后判「项目无组织者」（C-514/C-516）：卡 project 非空，且该项目无
+// 项目房间或项目房间无驻场者 → stderr 恰一行提示（cardShowNoOrganizerHint）。读失败 → 不提示、只 Warn
+// （C-517：不得把读失败说成「项目无组织者」）；stdout 与退出码一概不受影响（C-515）。
+func cardShowOrganizerHint(cmd *cobra.Command, st *ledger.Store, cardID, project string) {
+	if project == "" {
+		return
+	}
+	room, ok, err := st.ProjectRoom(project)
+	if err != nil {
+		slog.Default().Warn("card show 组织者提示跳过：读项目房间失败", "card", cardID, "project", project, "cause", err)
+		return
+	}
+	if ok {
+		_, seated, err := st.SessionResident(room)
+		if err != nil {
+			slog.Default().Warn("card show 组织者提示跳过：读驻场者失败", "card", cardID, "project", project,
+				"room", room, "cause", err)
+			return
+		}
+		if seated {
+			return
+		}
+	}
+	slog.Default().Info("card show：项目无组织者，stderr 提示", "card", cardID, "project", project, "has_room", ok)
+	fmt.Fprintf(cmd.ErrOrStderr(), cardShowNoOrganizerHint, project, project)
 }
 
 var cardUpdateCmd = &cobra.Command{

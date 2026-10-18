@@ -7,6 +7,8 @@
 // proto.SessionResident JSON（C-406 两种键集），stand 一行 {"ok":true}（join/leave 先例）。
 // 边界：不做匹配判定、不写信、不碰卡席位；记法校验在 collab（本文件不重复）。桌面端形状与
 // 信箱键校验在本文件自写，不引用 cmd/card_seat_desktop.go（B435-X 整文件删除）。
+// B435 O1：`sit --project <p>` 先经 collab.Service.EnsureProjectRoom 取或建项目房间，再走同一 SitResident
+// 入口；会话号位置参数与 --project 互斥、必有其一（O1 plan Q4 甲），不绑定既有会话。
 // 失败一律非 0 且 ≠124（cobra 返回错误 → 退出 1），stderr 给可行动的下一条命令。
 package cmd
 
@@ -29,15 +31,28 @@ import (
 var (
 	sessionSitAs             string
 	sessionSitDesktopSession string
+	sessionSitProject        string
 	sessionStandAs           string
 )
 
 var sessionSitCmd = &cobra.Command{
-	Use:   "sit <session>",
-	Short: "登记为会话房间驻场者（一房间至多一名）：--as 驻场身份必填；--desktop-session 登记桌面端地址",
-	Args:  cobra.ExactArgs(1),
+	Use:   "sit (<session> | --project <project>)",
+	Short: "登记为会话房间驻场者（一房间至多一名）：--as 驻场身份必填；--project 坐进项目房间（不存在则创建）；--desktop-session 登记桌面端地址",
+	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		session := strings.TrimSpace(args[0])
+		project := strings.TrimSpace(sessionSitProject)
+		byProject := cmd.Flags().Changed("project")
+		// O1 plan Q4 甲：位置参数与 --project 互斥、必有其一；判定在开账本之前（被拒零写入，项目房间也不建）。
+		switch {
+		case byProject && len(args) == 1:
+			return fmt.Errorf("会话号与 --project 只能给一个：坐进项目房间用 handoff session sit --project %s --as <身份>", project)
+		case !byProject && len(args) == 0:
+			return fmt.Errorf("缺会话：handoff session sit <session> --as <身份>，或坐进项目房间 handoff session sit --project <项目> --as <身份>")
+		}
+		session := ""
+		if len(args) == 1 {
+			session = strings.TrimSpace(args[0])
+		}
 		identity := strings.TrimSpace(sessionSitAs)
 		if identity == "" {
 			return fmt.Errorf("--as 必填：驻场身份用统一记法 user:<名字> 或 agent:<名字>（agent 身份可用 session send --agent 回房间）")
@@ -53,13 +68,26 @@ var sessionSitCmd = &cobra.Command{
 			resident.CLISession = cliSession
 			resident.Machine = machine
 		}
-		slog.Default().Info("CLI 驻场登记入口", "session", session, "identity", identity,
+		slog.Default().Info("CLI 驻场登记入口", "session", session, "project", project, "identity", identity,
 			"has_desktop", resident.DesktopSession != "")
 		svc, st, err := openRoomService()
 		if err != nil {
 			return err
 		}
 		defer st.Close()
+		if byProject {
+			// 先确保项目房间（不存在则创建，与 project room 同一入口），再走 R 的 SitResident 同一入口。
+			room, created, err := svc.EnsureProjectRoom(project, ledgerActor())
+			if err != nil {
+				slog.Default().Warn("CLI 驻场登记失败：确保项目房间", "project", project, "identity", identity, "cause", err)
+				return fmt.Errorf("session sit --project %s: %w", project, err)
+			}
+			if created {
+				fmt.Fprintf(cmd.ErrOrStderr(), "已创建项目房间 %s（项目 %s）\n", room.ID, project)
+			}
+			session = room.ID
+			resident.Session = session
+		}
 		got, err := svc.SitResident(resident)
 		if err != nil {
 			slog.Default().Warn("CLI 驻场登记失败", "session", session, "identity", identity, "cause", err)
@@ -173,6 +201,8 @@ func init() {
 	sessionSitCmd.Flags().StringVar(&sessionSitAs, "as", "", "驻场身份（统一记法 user:<名字>/agent:<名字>，必填）")
 	sessionSitCmd.Flags().StringVar(&sessionSitDesktopSession, "desktop-session", "",
 		"本机 Claude 桌面端会话 id（local_…）；须在该会话的 Claude Code 里执行，用于门铃信")
+	sessionSitCmd.Flags().StringVar(&sessionSitProject, "project", "",
+		"坐进该项目的项目房间（不存在则创建；与会话号位置参数互斥）")
 	sessionStandCmd.Flags().StringVar(&sessionStandAs, "as", "", "要请下的驻场身份（须等于现驻场者，必填）")
 	sessionCmd.AddCommand(sessionSitCmd, sessionStandCmd)
 }
