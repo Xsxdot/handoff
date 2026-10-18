@@ -157,15 +157,16 @@ func TestB435NoRecipientVocabulary(t *testing.T) {
 	}
 }
 
-// 条 C-201：人类作者判据——只认 user:<name>。
+// 条 C-201：人类作者判据——user:<name> ∪ CLI 人形 cli:<user>@<host>（spec r3 R3）。
 func TestB435IsHumanAuthor(t *testing.T) {
-	for _, actor := range []string{"user:sy", "user:a-b_c"} {
+	for _, actor := range []string{"user:sy", "user:a-b_c", "cli:sy@mac-pro", "cli:unknown@linux-01.local"} {
 		if !IsHumanAuthor(actor) {
 			t.Fatalf("%q 应为人类作者", actor)
 		}
 	}
 	for _, actor := range []string{
-		"", "agent:main", SystemNotifierIdentity, "cli:codex#t1", "cli:sy@mac-pro",
+		"", "agent:main", SystemNotifierIdentity, "cli:codex#t1", "cli:sy@mac#t1",
+		"cli:@host", "cli:sy@", "cli:sy", "cli:a@b@c", "cli:s y@h",
 		"web:127.0.0.1", "user:", "user: sy", "sy", "agentd", "node:implement",
 	} {
 		if IsHumanAuthor(actor) {

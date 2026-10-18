@@ -8,6 +8,11 @@
 // 不是地址。本文件不读账本、不解析 mentions。
 package proto
 
+import (
+	"strings"
+	"unicode"
+)
+
 // DeliveryAddressKind 是收件地址种类。
 type DeliveryAddressKind string
 
@@ -84,12 +89,28 @@ type Delivery struct {
 	NoRecipient NoRecipientReason
 }
 
-// IsHumanAuthor 报告 actor 是否为人类作者：当且仅当它是统一记法 user:<name>
-// （ParseMemberIdentity 成功且种类为 user）。agent:*（含系统发信身份 agent:handoff）、
-// 席位 cli:<cli>#<sid>、旧传输层脸 cli:<user>@<host> / web:<host> 一律不是。
+// IsHumanAuthor 报告 actor 是否为人类作者（B435 spec r3 R3 裁决）：
+//   - 统一记法 user:<name>（ParseMemberIdentity 成功且种类为 user）；或
+//   - CLI 人形 actor cli:<user>@<host>（cmd/ledgercli.go#ledgerActor 的形状）：
+//     cli: 前缀、余部恰一个 '@' 且两侧非空、不含 '#' 与空白。
+//
+// '#' 是席位分隔符（seat.go:39-40），故席位 cli:<cli>#<sid> 恒不是人类；
+// agent:*（含系统发信身份 agent:handoff）、web:<host> 也不是。
 func IsHumanAuthor(actor string) bool {
-	kind, _, err := ParseMemberIdentity(actor)
-	return err == nil && kind == IdentityKindUser
+	if kind, _, err := ParseMemberIdentity(actor); err == nil {
+		return kind == IdentityKindUser
+	}
+	return isCLIHumanActor(actor)
+}
+
+// isCLIHumanActor 判 cli:<user>@<host> 形状；与 ParseSeatIdentity 互斥（含 '#' 即拒）。
+func isCLIHumanActor(actor string) bool {
+	rest, ok := strings.CutPrefix(actor, "cli:")
+	if !ok || strings.ContainsRune(rest, '#') || strings.IndexFunc(rest, unicode.IsSpace) >= 0 {
+		return false
+	}
+	user, host, ok := strings.Cut(rest, "@")
+	return ok && user != "" && host != "" && !strings.ContainsRune(host, '@')
 }
 
 // SystemNotifierIdentity 是 agentd 向项目房间发通知时的成员身份（B435 D8）：

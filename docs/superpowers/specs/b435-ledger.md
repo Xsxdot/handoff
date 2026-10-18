@@ -272,3 +272,12 @@ WARN 原文 internal/collab/sessions.go:393-394：`log().Warn("会话成员身�
 - R3 裁决：人类作者 = `user:<n>` ∪ `cli:<user>@<host>`（CLI 人形 actor）；席位身份、`agent:*`、`web:*` 非人类。S1 剧本不改。C-201 与 `TestB435IsHumanAuthor` 需补签。
 - 户口更正：消费循环按 `best.json` 归 d_gateway，spec §8 r3 更正。
 - 以上写入 spec r3（头部修订记录 + D1/D4/D10/§8/§9），交回 contract 节点补签。
+
+### 五.7 补签（2026-10-18，协调者裁决 → spec r3 `0e673c6b`）
+- 入口：`git log --oneline -3` → `0e673c6b docs(B435): spec r3——contract 退回 R1–R3 与 D-B 的协调者裁决` / `4099e2c0 …contract 冻结四条缝…` / `7f860685 …`；`git status --short` 空。
+- 裁决落条目：D-B 确认（§8 改「协调者 2026-10-18 确认」）；R1 → 新增 C-313a/313b（`bind --mode push` 非 0 拒绝 + 指路 `card coordinate`）、C-314a（push 只经 coordinate / rebind --launch / agentd）、C-314b（B389 不动），§3.3 表与 §6 B389 行同改；R2 甲 → 新增 C-415–C-418（只由 `SessionResident.machine` 所在机写信、他机零动作、转交只服务 push、不新建 DTO），§1.3、§7 保留/退役表同注；R3 → C-201 改为 `user:<n>` ∪ `cli:<user>@<host>`，§3.2 签名注释与判定表第 4 行同改；§2 去掉「d_scheduling」并注 spec r3 已更正；§9 三项标「已裁」；§12 欠账 1、2 改为已裁。冻结条目 137 → 145。
+- 代码：`internal/proto/delivery.go` `IsHumanAuthor` 增 CLI 人形分支 + 私有 `isCLIHumanActor`（`cli:` 前缀、余部恰一个 `@` 两侧非空、拒 `#` 与空白——与 `ParseSeatIdentity` 互斥，seat.go:39-40）；`TestB435IsHumanAuthor` 正例加 `cli:sy@mac-pro`、`cli:unknown@linux-01.local`，反例加 `cli:sy@mac#t1`、`cli:@host`、`cli:sy@`、`cli:sy`、`cli:a@b@c`、`cli:s y@h`。
+- 契约文档批改走 scratchpad 脚本 `r3edit.py`（每处替换断言恰一次命中），输出 `ok`。
+- `gofmt -l internal/proto` 空；`go build ./...` 无输出；`go test -count=1 ./internal/proto/ ./internal/collab/...` → `ok internal/proto 1.291s`、`ok internal/collab 1.730s`、`ok internal/collab/room 1.082s`；`go test -count=1 -run TestB435IsHumanAuthor -v ./internal/proto/` → PASS。
+- 视图 diff 重生成：`mkdiff.py` 加 `n_proto_isCLIHumanActor` 与边 → `16 added; 4 modified; 2 edges`；`codegraph validate` → `issues: null`；`resolve --doc b435-contract.md` → 12 锚，0 坏锚。
+- 补签提交：`git commit -q -m "docs(B435): contract r2 补签…"` → `git log --oneline -1` = `4d5bc514 docs(B435): contract r2 补签——按 spec r3 裁决补 R1–R3 与 D-B 条目`（历史读数；amend 一次收进本行，hash 会变，不回写）。未 push。

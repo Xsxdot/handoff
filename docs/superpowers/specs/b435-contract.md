@@ -1,8 +1,8 @@
 # B435 契约增量：协调者统一模型——一套 wait、一个匹配函数、席位模式、驻场者来信
 
-**上游状态：已批准**（源 spec：`docs/superpowers/specs/b435.md`，头部「**上游状态：r2 已批准**（用户 2026-10-18 批准…）」——本轮对工作树复核一致，无需回写）
+**上游状态：已批准**（源 spec：`docs/superpowers/specs/b435.md`，r2 用户 2026-10-18 批准；r3（提交 `0e673c6b`）回写协调者对本契约 R1–R3 与 D-B 的裁决——本契约 r2 补签轮据此修订，见 §9）
 **级别：L3 ｜ 选档复核：重档确认**（spec §2：≥7 个子系统契约面；本轮冻结四条缝均有独立消费者，见 §2）
-**冻结状态：本提交冻结 spec §2 的四条缝（① 两个 wait 的 stdout/退出码/游标；② 匹配函数判定表；③ 席位模式 wire；④ 驻场者来信正文）。Ticket 0 骨架编译通过、11+1 支契约测试全绿（§10）；分支视图 diff `codegraph/diffs/cards-B435-charter-1.json` 同批提交；`codegraph/target.json` 不改（§11）。三项退回 spec（R1–R3，§9）不在冻结范围内。**
+**冻结状态：本提交冻结 spec §2 的四条缝（① 两个 wait 的 stdout/退出码/游标；② 匹配函数判定表；③ 席位模式 wire；④ 驻场者来信正文）。Ticket 0 骨架编译通过、11+1 支契约测试全绿（§10）；分支视图 diff `codegraph/diffs/cards-B435-charter-1.json` 同批提交；`codegraph/target.json` 不改（§11）。r2 补签轮（2026-10-18）：R1–R3 与 D-B 已由协调者裁决（spec r3 `0e673c6b`），相应条目补签冻结（C-201、C-313a/313b、C-314a/314b、C-415–C-418，§9；冻结条目 137 → 145）。**
 **有效基线：** `cards/B435-charter-1` @ `7f860685`（基 `origin/main` `88e4d4e2`）
 **架构形态：** 按子系统分域的平铺领域包，无横向分层（沿用 `codegraph/best.json`；本卡不新增领域）
 **交棒：** breakdown（spec §7：Wave 0 = S2 + S4a + 席位模式字段）。
@@ -67,7 +67,7 @@
 | `proto.ClaudeNewSessionURLPrefix` / `ClaudeNewQMaxChars` | 控制台坐下按钮、简报 | 薄壳通道 | 随 D10 退役后零生产者 → 删除（§7） |
 | mod `submitPrefill`（预填 `[handoff]` 代发） | 深链 `claude://code/new?q=`（D10 退役） | mod | 退役后**无生产者**（疑似漂移）；mod 零改动原则下保留，不在本卡删 |
 | `EvSeatDesktopSet` | `SetSeatDesktop` | 消费循环清失败段 `wakeconsumer.go:730-734` | 随 `seat_desktops` 退役（§7） |
-| `CoordinatorWakeResp.LetterUnopened` | 被转交端 | 发起端 `transferCoordinatorWake` | spec D10 保留；对驻场者可用性挂 R2 |
+| `CoordinatorWakeResp.LetterUnopened` | 被转交端 | 发起端 `transferCoordinatorWake` | spec D10 保留；R2 已裁：只服务 push 席位，驻场者不经它（C-417） |
 
 ### 1.4 图覆盖债
 
@@ -77,7 +77,7 @@
 
 ## 2. 户口、生产者/消费者与依赖方向
 
-不新增领域。按 `codegraph/best.json`：agentd 消费循环与桌面端桥属 **d_gateway**（spec §8 记作 d_scheduling 的「agentd 消费循环」即此；`internal/scheduling` 才是 d_scheduling）。spec §8 禁令按实际落点施行。
+不新增领域。按 `codegraph/best.json`：agentd 消费循环与桌面端桥属 **d_gateway**（spec r3 §8 已同步更正）；spec §8 禁令施于 d_gateway 的消费循环。
 
 | 缝 | 冻结理由 | 生产者 | 独立消费者 |
 | --- | --- | --- | --- |
@@ -131,7 +131,7 @@ type DeliveryAddress struct { Kind DeliveryAddressKind; Session, Card, Identity 
 func DeliveryCursorKey(a DeliveryAddress) string
 type NoRecipientReason string              // structural | not_session_room | non_human_unaddressed | addressed_unresolved | root_no_seat | needs_mention
 type Delivery struct { Addresses []DeliveryAddress; Default bool; NoRecipient NoRecipientReason }
-func IsHumanAuthor(actor string) bool      // ⇔ ParseMemberIdentity 成功且种类 user
+func IsHumanAuthor(actor string) bool      // ⇔ user:<n>（ParseMemberIdentity）∪ cli:<user>@<host>（无 '#'）
 const SystemNotifierIdentity = "agent:handoff"
 ```
 
@@ -142,7 +142,7 @@ const SystemNotifierIdentity = "agent:handoff"
 | 1 | `BySystem` 或 `kind=pointer` 或载荷 `by_system:null` | 空集，`structural` |
 | 2 | `msg.Room` 不是会话房间 | 空集，`not_session_room` |
 | 3 | `IsAddressed(msg, replyAuthor)` 为真 | 显式分支：`ResolveDelivery` 每个 target → 本会话某卡当前席位身份 ⇒ 该卡席位地址；本会话驻场者身份 ⇒ 驻场者地址；其余丢弃。全丢 → 空集，`addressed_unresolved`。**不回落默认收件人** |
-| 4 | 无寻址且 `!IsHumanAuthor(author)` | 空集，`non_human_unaddressed` |
+| 4 | 无寻址且 `!IsHumanAuthor(author)`（人类 = `user:<n>` ∪ `cli:<user>@<host>`） | 空集，`non_human_unaddressed` |
 | 5 | 无寻址、人类作者、会话有驻场者 | `[驻场者地址]`，`Default=true` |
 | 6 | 无寻址、人类作者、无驻场者、根卡恰一张且有席位 | `[该卡席位地址]`，`Default=true` |
 | 7 | 同上但该根卡空座 | 空集，`root_no_seat` |
@@ -173,7 +173,7 @@ ALTER TABLE cards ADD COLUMN driver_mode TEXT;   -- '' | 'push' | 'pull'
 | 写入路径 | mode |
 | --- | --- |
 | `card bind <id>`（无 `--mode`）/ `--mode pull` | pull |
-| `card bind --mode push` | **不冻结，退回 R1** |
+| `card bind --mode push` | **拒绝**：非 0 退出，提示改用 `card coordinate`（R1 已裁） |
 | `card coordinate <id>`（不注册 `--mode`） | push |
 | `card rebind --self` | pull |
 | `card rebind --launch`、agentd `RebindSeat`（`scheddrain.go:325/:608`）、`BindSeat`（`:328`） | push |
@@ -269,7 +269,7 @@ type SessionResident struct { Session, Identity, DesktopSession, CLISession, Mac
 
 ### 4.4 ② 匹配函数判定表
 
-201. 人类作者 ⇔ `user:<name>`；`agent:*`、`agent:handoff`、席位、`cli:<u>@<h>`、`web:*` 均非人类（T0 `TestB435IsHumanAuthor`）。
+201. 人类作者 ⇔ `user:<name>` ∪ CLI 人形 actor `cli:<user>@<host>`（`cli:` 前缀、余部恰一个 `@` 且两侧非空、不含 `#` 与空白）；席位 `cli:<cli>#<sid>`（`#` 是席位分隔符，`seat.go:39-40`）、`agent:*`（含 `agent:handoff`）、`web:*` 均非人类（T0 `TestB435IsHumanAuthor`；r2 补签按 R3 裁决改）。
 202. 结构行（`BySystem` / `kind=pointer` / 载荷 `by_system:null`）→ 空集，`structural`（条 26 留）。
 203. 非会话房间消息 → 空集，`not_session_room`。
 204. `IsAddressed` 为真时只走显式分支，绝不回落默认收件人。
@@ -330,7 +330,11 @@ type SessionResident struct { Session, Identity, DesktopSession, CLISession, Mac
 311. `card bind <id>` 不带 `--mode` → pull。
 312. `card bind <id> --mode pull` → pull。
 313. `card bind <id> --mode <非 push/pull>` → 非 0 退出，且不坐下。
+313a. `card bind <id> --mode push` → 非 0（≠124）退出，且不坐下（R1 已裁，本期拒绝）。
+313b. 上条 stderr 含改用 `handoff card coordinate <id>` 的提示。
 314. `card coordinate <id>` → push，且不注册 `--mode`。
+314a. push 席位只经 `card coordinate`、`card rebind --launch` 与 agentd 侧拉起/换绑/重建产生；任何 bind 写面不产生 push 席位。
+314b. B389 承载规则（`binding.go:216-229` 按来源执法，`SetSeatBearing` 只收 coordinate）本期不改。
 315. keystone `Wake` 对 pull 席位 no-op（替换 `keystone.go:123` 的来源判定）。
 316. `wakeCoordinatorRoundID` 对 pull 席位零回合（替换 `scheddrain.go:463` 的来源判定）。
 317. `resolveWakeCard` 按 mode 判（替换 `wakeconsumer.go:521` 的来源判定）。
@@ -362,6 +366,10 @@ type SessionResident struct { Session, Identity, DesktopSession, CLISession, Mac
 412. 写信后对 `desktop_session` 调 continue 深链（B434 条 83–84 沿用）。
 413. 驻场者身份须为统一记法（`ValidateMemberIdentity`）。
 414. 一房间至多一名驻场者（第二次 sit 被拒）。
+415. 驻场者来信只由 `SessionResident.machine` 所在机的 agentd 写（本机判据同 `scheduling.IsLocalMachine(machine) || Server.IsSelfTarget(machine)`；`machine` 空 = 登记时的本机）（R2 已裁甲）。
+416. 其他机器的消费循环对非本机驻场者地址零动作：零写信、零 opener、零转交请求、零 needs_human。
+417. `transferCoordinatorWake` 与 `CoordinatorWakeResp.LetterUnopened` 保留，只服务 push 席位；驻场者地址从不经它。
+418. 不新建以会话/驻场者为键的转交 DTO；`/api/desktop/deliver` 随拉起器代开退役（§7），不复用。
 
 ---
 
@@ -390,7 +398,7 @@ type SessionResident struct { Session, Identity, DesktopSession, CLISession, Mac
 ## 6. 其它既有契约的连带修订（由 finish 节点回写）
 
 - **B409r2**（`2026-09-25-session-bounded-candidate-read-contract.md`）：条 2「可能定向到订阅 member」读作「可能命中订阅地址」；条 3–5 外增一支「无 mentions 的同会话无卡 room_message」（C-148–C-150）；条 19「命中订阅 member」读作「`Matches` 命中订阅地址」；条 28「无持久交付游标时 last_delivered_seq=0」对**席位地址**改为 C-119 的下界，对驻场者地址不变；条 56/57 不变。
-- **B389**（`b389-contract.md` §2.2 规则 1/2、条 210–212、拍板 4）：本轮**不改**——承载形态执法仍按来源词（写面完整性，非唤醒判定）；`card bind --mode push` 的承载来源随 R1 裁决再议。
+- **B389**（`b389-contract.md` §2.2 规则 1/2、条 210–212、拍板 4）：本轮**不改**——承载形态执法仍按来源词（写面完整性，非唤醒判定）；R1 已裁：本期拒绝 `card bind --mode push`（C-313a），承载规则不动（C-314b）。
 - **B399**：push 回合沿用 30 分钟上界、回合内续租、超时保留 session（spec §9），本卡不改其任何条目。
 
 ## 7. B434 处置清单（`b434-contract.md`；D10）
@@ -403,7 +411,7 @@ type SessionResident struct { Session, Identity, DesktopSession, CLISession, Mac
 | 退役 | `GET …/desktop-launch` 拉起材料与简报 `DesktopLaunchMaterial`（§3.2 `:141-160`、§3.5 `:216-248`） | 1–14、200–202 | `internal/agentd/desktopwake_material_test.go` 随删 |
 | 退役 | composer 深链 `ClaudeNewSessionURLPrefix`、`ClaudeNewQMaxChars`、TS `claudeDeepLink.ts`（§3.1 `:122-139`、§3.12 `:510-548`） | 15–27 | `claudeDeepLink.test.ts` 随删；`TestB434DesktopWireLiterals` **改**：删 new/QMax 两断言，保留 marker/dir/prefix/continue |
 | 退役 | 薄壳通道的 new-session 形态（§3.11 `:499-508`） | 31 | `external_deeplink_test.go` **改**：`/new` 改为被拒；28–30、32–41 保留 |
-| 退役 | 拉起器代开 `openViaDesktopLauncher`、`renderLauncherLetter`、`/api/desktop/deliver` 与 `DesktopDeliverReq/Resp`、`DesktopLauncherOpenResp`（§3.2、§3.9.1 `:447-471`） | 144–158、194–222、243–251 | `desktopwake_launcher_test.go`、`TestB434DesktopDeliverReqWireKeys` 随删（若 R2 选候选乙，按新 DTO 另立，不沿用 card 键） |
+| 退役 | 拉起器代开 `openViaDesktopLauncher`、`renderLauncherLetter`、`/api/desktop/deliver` 与 `DesktopDeliverReq/Resp`、`DesktopLauncherOpenResp`（§3.2、§3.9.1 `:447-471`） | 144–158、194–222、243–251 | `desktopwake_launcher_test.go`、`TestB434DesktopDeliverReqWireKeys` 随删（R2 已裁甲：不另立会话键 DTO，C-418） |
 | 退役 | 卡级信件 `desktopLetter` 与围栏渲染层（§3.6 `:249-341`） | 71–80、263–275、280 | `desktopwake_letter_test.go`、`TestB434DesktopQuoteFenceLiterals/QuoteEscape/LetterAuthorRoster/LetterNoBareQuote`、`testdata/b434_desktop_letter.golden` 随删 |
 | 退役 | needs_human 唤醒桌面端席位 `desktopNeedsHumanWakes`、`desktopNeedsHumanSystemActors`（§3.8.1 `:408-436`） | 177–188、191 | `TestB434NeedsHumanSystemActorTable`、`desktopwake_needs_test.go` 随删 |
 | 退役 | 控制台「用 Claude Code 坐下」「复制简报」「让拉起器代开」与 `desktopSeatCopy.ts`（§3.12） | 194–199、203–210、223–242 | `desktopSeatCopy.test.ts`、`CoordinatorPanel.test.tsx` 中对应用例随删 |
@@ -413,7 +421,7 @@ type SessionResident struct { Session, Identity, DesktopSession, CLISession, Mac
 | 保留 | 信箱目录与原子写入 `writeDesktopLetter`（§3.6 `:249-266`） | 67–70、81–82 | `desktopwake_mailbox_test.go` 保留 |
 | 保留 | continue 深链 `claudeContinueURL`、`ClaudeContinueURLPrefix`、`ValidateDesktopSessionID`、`DesktopSessionPrefix` | 32、55–59、83–84 | 保留 |
 | 保留 | mod 与 `skill install`（§3.13 `:550-566`） | 112–138、279 | `register.test.ts`、`claudemod_test.go` 保留；预填分支 121–124 无生产者（§1.3） |
-| 保留 | 异机转交 `transferCoordinatorWake` + `CoordinatorWakeResp.LetterUnopened`（§3.7 `:342-373`） | 165–176 | `TestB434CoordinatorWakeRespLetterUnopenedWire` 保留；对驻场者是否可用挂 R2 |
+| 保留 | 异机转交 `transferCoordinatorWake` + `CoordinatorWakeResp.LetterUnopened`（§3.7 `:342-373`） | 165–176 | `TestB434CoordinatorWakeRespLetterUnopenedWire` 保留；只服务 push 席位，驻场者不经它（R2 已裁，C-417） |
 | 保留 | `card needs` actor 改席位身份（§3.8.1 `:433`）、`needs_cleared` 不唤醒 | 189–190、192–193 | 保留 |
 | 保留 | 依赖与图 | 162–164 | — |
 | 保留 | 不带 `--desktop` 的 `card coordinate`、`card bind` 既有 stdout | 42–44、255–256、64–65 | 保留（64 的「来源仍为 bind」与 C-311 并存） |
@@ -428,7 +436,7 @@ type SessionResident struct { Session, Identity, DesktopSession, CLISession, Mac
 难逆转：交付通道数决定游标数——改成「信内含原文」需要信箱桥（d_gateway）写 d_ledger 的交付游标（违背 B434 条 82）或接受两套进度，同时牵动 mod 提交的信任边界（B434 拍板 D7 的围栏/名册/授权规则要复活）与组织者恢复（S8）语义，跨 gateway/ledger/cli/skill 四处。无上下文会惊讶：B434 的卡级信内嵌原文、带围栏与作者名册，后人看到驻场者信只有两行会以为「漏了内容」并顺手「补上」。真取舍：被否方案甲——沿用 B434 卡级信形态（原文 + 围栏）且写信不推进游标：组织者从游标恢复时会重放已经由信交付并处理过的消息；被否方案乙——信含原文且写信即推进驻场者游标：组织者若同时跑 `session wait`，同一消息经两条通道各交付一次，且「信落盘 = 已交付」与 mod「先删后提交、提交失败即丢」（`register.ts:109-120`）冲突。**反过来写不会有任何测试变红**（C-401 只锁当前正文；改成含原文的新金样本即可过）——这是本记录存在的主要理由。显式不做：信内不放消息正文、不放作者身份、不放未读数。
 
 **D-B 「解析结果 ≤ 1 人」只约束默认收件人分支；显式寻址人数按发送者写下的人数。**
-难逆转：匹配函数返回形状（`Delivery.Addresses` 为切片、默认分支为单值）被 d_gateway 消费循环、两个 wait、信箱桥四方编译依赖，源码守卫（C-213）与 B358 条 20–25 的金样本同时依赖这一切分。无上下文会惊讶：spec §4 E / D4 / §9.1 条 30 都写「恒 ≤ 1 人」，后人读到 `Addresses []DeliveryAddress` 会以为违反 spec 而改成单值或截断首个。真取舍：被否方案——一切消息 ≤1（多 @ 只取首个或拒发）：推翻 spec 同表明文「留」的条 23/25，且 spec 未给多 @ 的处置，等于让契约替 spec 发明规则；本方案的依据是同一张 §9.1 表把条 20–25 列为「留」、§3「找别人显式 @」与 §4 E「每次 @ 很麻烦」的上下文只针对无寻址消息。**请协调者在交棒时确认此读法**（若 spec 意图是前者，退回 spec 改条 20–25）。
+难逆转：匹配函数返回形状（`Delivery.Addresses` 为切片、默认分支为单值）被 d_gateway 消费循环、两个 wait、信箱桥四方编译依赖，源码守卫（C-213）与 B358 条 20–25 的金样本同时依赖这一切分。无上下文会惊讶：spec §4 E / D4 / §9.1 条 30 都写「恒 ≤ 1 人」，后人读到 `Addresses []DeliveryAddress` 会以为违反 spec 而改成单值或截断首个。真取舍：被否方案——一切消息 ≤1（多 @ 只取首个或拒发）：推翻 spec 同表明文「留」的条 23/25，且 spec 未给多 @ 的处置，等于让契约替 spec 发明规则；本方案的依据是同一张 §9.1 表把条 20–25 列为「留」、§3「找别人显式 @」与 §4 E「每次 @ 很麻烦」的上下文只针对无寻址消息。**协调者 2026-10-18 确认此读法**（spec r3 `0e673c6b`）。
 
 **D-C 席位地址游标无行时，积压下界取该身份最近一次坐下/换绑事件 seq，而非 0。**
 审过不立：可逆（单包 CLI 读法，改回 0 只动 `cmd/card_wait.go`），不满足「难逆转」；以 C-119 冻结为条目，理由记台账 §五.4。
@@ -441,11 +449,11 @@ type SessionResident struct { Session, Identity, DesktopSession, CLISession, Mac
 
 ---
 
-## 9. 退回 spec（不自选；协调者/用户裁决后回本节点补签）
+## 9. 退回 spec（三项均已裁，spec r3 `0e673c6b`；本节点 r2 补签轮已补条目）
 
-- **R1 `card bind --mode push` 的承载来源。** push 起回合需要承载（carrier + machine，`scheddrain.go:496-520`）；B389 规则 1/2 按来源词执法「bind 必零承载」（`binding.go:217`），`SetSeatBearing` 只收 coordinate（`:175`）——spec D1 允许的 bind+push 在现有写面上不可运行。两处规则分属 d_ledger（承载形态）与 d_gateway（push 驱动），spec 未定。候选：(a) 本期拒绝 `bind --mode push`（退出非 0，指路 `card coordinate`）；(b) `card bind --mode push` 增 `--carrier/--machine`，B389 规则 1/2 改按 mode；(c) bind+push 允许零承载、走缺承载修复路径，`SetSeatBearing` 放开到 push 席位。本轮只冻结 bind 缺省 pull（C-311）与非法值拒绝（C-313）。
-- **R2 驻场者跨机写信路径。** spec D10 保留「异机投递沿既有 `transferCoordinatorWake` + `LetterUnopened`」，但该端点是卡路径 `/api/cards/{id}/coordinator/wake`、以 `card.DriverSession == req.Seat` CAS（`coordapi.go:178-195`），驻场者不是卡席位，保留项与驻场者语义不相容。候选：(甲) 只由驻场者桌面端地址所在机的 agentd 写信（每台 agentd 都跑消费循环，`scheddrain.go:54-66`），不转交；(乙) 以会话 + 驻场者身份为键新立转交 DTO（可复用 `/api/desktop/deliver` 路由但不沿用 `card` 键）。本轮冻结信正文与文件名（C-401–C-406），不冻结由哪台机器写。
-- **R3 S1 剧本与 D4 人类作者判据冲突。** S1 用 CLI `session send` 无 @ 发言期望唤醒协调者；CLI 人形发言作者是 `cli:<USER>@<host>`（`cmd/ledgercli.go:44-51`、`cmd/session.go:881-897`），按 D4 字面（`user:` 记法）不是人类作者 → 不触发默认收件人。本轮按 spec 字面冻结 C-201。候选：(a) S1 改用控制台/移动端发言；(b) d_cli 让人形 `session send` 出示 `user:` 身份（如读 `console_user` 配置或 `--as user:<n>`），属 d_cli 新面，非本轮四缝。
+- **R1 `card bind --mode push` 的承载来源。【已裁：本期拒绝（a）；`--mode pull` 接受；push 只经 coordinate / rebind --launch；B389 不动 → C-313a/313b、C-314a/314b】** push 起回合需要承载（carrier + machine，`scheddrain.go:496-520`）；B389 规则 1/2 按来源词执法「bind 必零承载」（`binding.go:217`），`SetSeatBearing` 只收 coordinate（`:175`）——spec D1 允许的 bind+push 在现有写面上不可运行。两处规则分属 d_ledger（承载形态）与 d_gateway（push 驱动），spec 未定。候选：(a) 本期拒绝 `bind --mode push`（退出非 0，指路 `card coordinate`）；(b) `card bind --mode push` 增 `--carrier/--machine`，B389 规则 1/2 改按 mode；(c) bind+push 允许零承载、走缺承载修复路径，`SetSeatBearing` 放开到 push 席位。本轮只冻结 bind 缺省 pull（C-311）与非法值拒绝（C-313）。
+- **R2 驻场者跨机写信路径。【已裁：甲——只由 `SessionResident.machine` 所在机写信；他机零动作；转交只服务 push 席位；不新建 DTO → C-415–C-418】** spec D10 保留「异机投递沿既有 `transferCoordinatorWake` + `LetterUnopened`」，但该端点是卡路径 `/api/cards/{id}/coordinator/wake`、以 `card.DriverSession == req.Seat` CAS（`coordapi.go:178-195`），驻场者不是卡席位，保留项与驻场者语义不相容。候选：(甲) 只由驻场者桌面端地址所在机的 agentd 写信（每台 agentd 都跑消费循环，`scheddrain.go:54-66`），不转交；(乙) 以会话 + 驻场者身份为键新立转交 DTO（可复用 `/api/desktop/deliver` 路由但不沿用 `card` 键）。本轮冻结信正文与文件名（C-401–C-406），不冻结由哪台机器写。
+- **R3 S1 剧本与 D4 人类作者判据冲突。【已裁：人类作者 = `user:<n>` ∪ `cli:<user>@<host>`；S1 剧本不改 → C-201 改、`proto.IsHumanAuthor` 与 `TestB435IsHumanAuthor` 同改】** S1 用 CLI `session send` 无 @ 发言期望唤醒协调者；CLI 人形发言作者是 `cli:<USER>@<host>`（`cmd/ledgercli.go:44-51`、`cmd/session.go:881-897`），按 D4 字面（`user:` 记法）不是人类作者 → 不触发默认收件人。本轮按 spec 字面冻结 C-201。候选：(a) S1 改用控制台/移动端发言；(b) d_cli 让人形 `session send` 出示 `user:` 身份（如读 `console_user` 配置或 `--as user:<n>`），属 d_cli 新面，非本轮四缝。
 
 ---
 
@@ -489,21 +497,21 @@ type SessionResident struct { Session, Identity, DesktopSession, CLISession, Mac
 ## 11. 依赖方向、组装点、预算与图
 
 - **`codegraph/target.json`：不改**——无新方向、无新组装点、无预算变化（§2）。组装点仍是 `main.go`、`internal/agentd/server.go`、`cmd/agentd.go`；CLI 侧仍是 `cmd/room.go#roomServiceFor`。
-- **分支视图 diff**：`codegraph/diffs/cards-B435-charter-1.json`（分支 `cards/B435-charter-1` 扁平化），新增 15 节点（7 model + 8 func）、修改 4 节点（`Card`/`CardView`/`SessionCard`/`LedgerClient`）、新增 1 边（`IsHumanAuthor → ParseMemberIdentity`）；常量与哨兵不入图。
+- **分支视图 diff**：`codegraph/diffs/cards-B435-charter-1.json`（分支 `cards/B435-charter-1` 扁平化），新增 16 节点（7 model + 9 func，r2 补签加 `isCLIHumanActor`）、修改 4 节点（`Card`/`CardView`/`SessionCard`/`LedgerClient`）、新增 2 边（`IsHumanAuthor → ParseMemberIdentity`、`IsHumanAuthor → isCLIHumanActor`）；常量与哨兵不入图。
 - `codegraph validate` → `issues: null`，视图含 `cards-B435-charter-1`。
 - `codegraph --view cards-B435-charter-1 check` → 3 处 over-budget，**与不带视图的基线 check 完全相同**（d_cli→d_maintenance、d_gateway→d_collab、d_ledger→d_protocol 存量），本视图未引入新违规。
 
 ## 12. 本节点欠账（实现节点逐条补齐，不得静默带走）
 
-1. **R1/R2/R3 未裁**：bind+push 承载、驻场者跨机写信、S1 人形作者——裁决后回本节点补签对应条目。
-2. **D-B 读法待协调者确认**（§8）。
+1. ~~R1/R2/R3 未裁~~ **已裁**（spec r3 `0e673c6b`）；条目已补签（C-201、C-313a/313b、C-314a/314b、C-415–C-418）。
+2. ~~D-B 读法待确认~~ **协调者 2026-10-18 已确认**（§8）。
 3. 两个 wait 的改造与 C-101–C-151 全部行为条目（Wave 0 至少 C-101–C-129、C-145–C-151 的席位半边）。
 4. 匹配函数落码替换空壳；删除 `TestB435RecipientsShellNeverSucceeds`；守卫改写（§5 三行）。
 5. `cards.driver_mode` DDL（两方言）、加列迁移与回填（C-303、C-325/326）；`ledger.Card` 投影与 Facade 映射。
 6. `card bind --mode`、`card rebind` 写 mode、`card show`/`session detail` 投影（C-310–C-314、C-323/324、C-327）。
 7. 驻场者登记表、`Store` 读写、`Facade.SessionResident` 落码；`session sit/stand`（含驻场者身份来源 flag，§13）。
 8. 消费循环改接（C-229–C-238）、四处来源判定改读 mode 与源码守卫 C-318。
-9. 信箱桥改写为驻场者门铃信（C-401–C-412）；驻场者写信失败的处置（B434 失败段随卡级席位退役，驻场者侧无现成语义——归 plan，必要时回 contract）。
+9. 信箱桥改写为驻场者门铃信（C-401–C-412）；驻场者写信失败的处置（B434 失败段随卡级席位退役，驻场者侧无现成语义——归 plan，必要时回 contract）；本机判据落码（C-415/416）。
 10. B434 退役清单（§7）落地与迁移；`desktop_launchers`/`seat_desktops` 行迁移留痕（S7）。
 11. TS 镜像：`web/src/api/ledger.ts` 的 `SeatMode`/`driver_mode`、会话 DTO 的 `seat_mode`/`resident`、`contract.test.ts` fixture（本机无 `node_modules`，未编译验证）。
 12. 图覆盖债：`runSessionWait`、`sessionWaitMatch` 未入图；`Service.MessageWakeTargets` 图中签名陈旧。
