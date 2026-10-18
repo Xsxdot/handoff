@@ -878,3 +878,4 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 - **p2p 包日志级别与包注释对齐**：`internal/p2p/agent.go` 收集/建代理失败三处打 Warn，与包注释「只打 Debug」矛盾，且失败时每轮退避多一条 WARN。来源：B438.1 review Minor 2。
 - **ICE Disconnected 期间不选直连的专门断言**：`Conn.Selectable()` 目前只被变异间接锁住。来源：B438.1 review Minor 4。
 - **Android 去掉 anet 与 `-checklinkname=0`**：由 Android 壳经 gomobile 绑定接口把网卡地址列表传进 Go，作为 pion 的自定义 `transport.Net` 实现（经 `P2POptions.Net` 注入），去掉 wlynxg/anet 及其 linkname 依赖和这个链接参数（参考：Tailscale Android 的网卡信息由 Java 侧提供）。现状风险：升级 Go 可能令 anet 运行时出错，靠升级时重跑 bind 测试与模拟器取证兜底。来源：B438.2（协调者 2026-10-19）。
+- **锁住 spec 冻结的 p2p 用户可见日志级别**：现有断言只比消息文本，`p2p 直连已建立` 等 INFO 降成 Debug 时 relay 与 mobilecore 测试照绿（B438.1 起即有的缺口）。改进：捕获 handler 记录级别并断言 INFO/WARN。来源：B438.2 review 第 2 轮 Minor 3。
