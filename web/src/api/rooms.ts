@@ -1,7 +1,7 @@
 // 协作房间域（B156.2）的 TS 契约镜像。与 internal/proto/rooms.go 逐字段
 // 对应；形状由 Go 金样本（internal/proto/rooms_fixture_test.go）与本目录
 // testdata/RoomsFixture.json 孪生锁定，改形状先回 contract 节点。
-import type { LedgerEvent } from './ledger'
+import type { LedgerEvent, SeatMode } from './ledger'
 
 export const ROOM_MSG_ESCALATION = 'escalation'
 export const ROOM_MSG_DEVIATION = 'deviation'
@@ -80,14 +80,56 @@ export interface RoomSummary {
   preview?: RoomPreview
 }
 
-export type RoomHistoryItem = LedgerEvent
+/**
+ * 消息收件地址集为空的原因（B435 ⑤ C-509；与 proto.NoRecipientReason 逐值同序，
+ * B435Vocab.json 夹具对照）。读时求值（D-E）：同一条消息随席位/驻场者变化可能不再出键。
+ */
+export type NoRecipientReason =
+  | 'structural'
+  | 'not_session_room'
+  | 'non_human_unaddressed'
+  | 'addressed_unresolved'
+  | 'root_no_seat'
+  | 'needs_mention'
+
+/** NoRecipientReason 词表（只读，顺序 = Go 常量声明序）。 */
+export const NO_RECIPIENT_REASONS: readonly NoRecipientReason[] = [
+  'structural',
+  'not_session_room',
+  'non_human_unaddressed',
+  'addressed_unresolved',
+  'root_no_seat',
+  'needs_mention',
+]
+
+/** isNoRecipientReason 判 wire 值是否在词表内；空串与词表外值 false。 */
+export function isNoRecipientReason(value: unknown): value is NoRecipientReason {
+  return typeof value === 'string' && (NO_RECIPIENT_REASONS as readonly string[]).includes(value)
+}
+
+/**
+ * 房间历史视图一行（GET /api/rooms/{id}/messages 的 messages[]）：账本事件平铺 +
+ * 可省略的 no_recipient（有收件人、非 room_message 或服务端判定读失败时缺键，C-507）。
+ */
+export interface RoomHistoryItem extends LedgerEvent {
+  no_recipient?: NoRecipientReason
+}
 
 // ---- B358 会话（群）域 wire 形状（§3.2 键集；与 internal/proto/sessions.go 逐字段对应，
 // 孪生金样本 = testdata/RoomsFixture.json + internal/proto/sessions_fixture_test.go，改形状先回 contract）----
 
 export const SESSION_KIND = 'session'
 
-export type SessionMemberKind = 'human' | 'agent' | 'seat'
+/** 成员种类（B435 增 resident = 房间驻场者，无 card_id；与 proto.SessionMember* 逐值同序）。 */
+export type SessionMemberKind = 'human' | 'agent' | 'seat' | 'resident'
+
+/** SessionMemberKind 词表（只读，顺序 = Go 常量声明序）。 */
+export const SESSION_MEMBER_KINDS: readonly SessionMemberKind[] = ['human', 'agent', 'seat', 'resident']
+
+/** isSessionMemberKind 判 wire 值是否在成员种类词表内。 */
+export function isSessionMemberKind(value: unknown): value is SessionMemberKind {
+  return typeof value === 'string' && (SESSION_MEMBER_KINDS as readonly string[]).includes(value)
+}
 // 「看板不说谎」：与 proto.SessionMember* 状态词表逐值一致（sessions_fixture_test.go 冻结）。
 export type SessionMemberStatus = 'working' | 'listening' | 'last_active' | 'empty'
 
@@ -100,7 +142,8 @@ export interface SessionMember {
   last_active?: string
 }
 
-export interface SessionCard { card_id: string; title?: string; status?: string; seat?: string }
+/** 会话里的一张卡；seat 缺键 = 空座。seat_mode（B435 C-307/327）与 seat 同缺同出。 */
+export interface SessionCard { card_id: string; title?: string; status?: string; seat?: string; seat_mode?: SeatMode }
 
 export interface SessionSummary {
   id: string
@@ -108,6 +151,8 @@ export interface SessionSummary {
   title: string
   owner: string
   archived: boolean
+  /** B435 ⑤ C-510/511：项目房间标记（取值项目名）；非项目房间不出键。 */
+  project?: string
   unread: number
   needs_human: boolean
   last_activity: string
