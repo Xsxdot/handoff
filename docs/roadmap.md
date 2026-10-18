@@ -873,3 +873,4 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 - **TURN / 多 relay 区域选择**：B438 不做 TURN，兜底即 relay。来源：B438 spec OOS。
 - **真手机运营商 NAT 下的打洞实测**：B438.2 无真手机/运营商网络取证。来源：B438 spec OOS。
 - **预览 raw 流（preview SOCKS）走打洞直连**：B438 P1 拍板本期留 relay，预览流量照旧计入 relay 配额。来源：B438 plan P1。
+- **打洞双方同步起跳（应对无入站防火墙的 Linux NAT 的 conntrack 冲突）**：B438.1 真机发现 INPUT 为 ACCEPT 的 Linux MASQUERADE 上，对端首个检查先到会被确认成 conntrack 条目、占住映射元组，本端出站被迫换端口，打洞失败（正确降级 relay）。家用路由器缺省 WAN 入站丢弃不受影响。改进：信令加一次 RTT 测量 + 同步起跳（DCUtR 式 RTT/2 对齐），或应答方延迟检查。来源：B438.1 真机 `docs/superpowers/evidence/b438/b438.1-realmachine.md`。

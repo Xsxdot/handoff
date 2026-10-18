@@ -122,7 +122,7 @@ func Gather(ctx context.Context, cfg Config, role Role) (*Agent, error) {
 	}
 	ia, err := ice.NewAgentWithOptions(opts...)
 	if err != nil {
-		log.Warn("p2p 创建 ICE 代理失败", "role", role.String(), "cause", err)
+		log.Warn("p2p 创建 ICE 代理失败", "ice_role", role.String(), "cause", err)
 		return nil, fmt.Errorf("p2p 创建 ICE 代理: %w", err)
 	}
 	a := &Agent{agent: ia, role: role, log: log, failed: make(chan struct{})}
@@ -148,7 +148,7 @@ func Gather(ctx context.Context, cfg Config, role Role) (*Agent, error) {
 	start := time.Now()
 	if err := ia.GatherCandidates(); err != nil {
 		_ = ia.GracefulClose()
-		log.Warn("p2p 收集候选失败", "role", role.String(), "cause", err)
+		log.Warn("p2p 收集候选失败", "ice_role", role.String(), "cause", err)
 		return nil, fmt.Errorf("p2p 收集候选: %w", err)
 	}
 	select {
@@ -168,7 +168,7 @@ func Gather(ctx context.Context, cfg Config, role Role) (*Agent, error) {
 	}
 	a.local = Description{Ufrag: ufrag, Pwd: pwd, Candidates: cands}
 	mu.Unlock()
-	log.Debug("p2p 候选收集完成", "role", role.String(), "count", len(a.local.Candidates),
+	log.Debug("p2p 候选收集完成", "ice_role", role.String(), "count", len(a.local.Candidates),
 		"stun_servers", len(urls), "elapsed", time.Since(start).Round(time.Millisecond))
 	return a, nil
 }
@@ -177,7 +177,7 @@ func Gather(ctx context.Context, cfg Config, role Role) (*Agent, error) {
 func (a *Agent) Local() Description { return a.local }
 
 func (a *Agent) handleState(s ice.ConnectionState) {
-	a.log.Debug("p2p ICE 状态变化", "role", a.role.String(), "state", s.String())
+	a.log.Debug("p2p ICE 状态变化", "ice_role", a.role.String(), "state", s.String())
 	if s == ice.ConnectionStateFailed || s == ice.ConnectionStateClosed {
 		a.failedOnce.Do(func() { close(a.failed) })
 	}
@@ -232,7 +232,7 @@ func (a *Agent) Connect(ctx context.Context, remote Description) (*Conn, error) 
 	if err != nil {
 		return nil, a.classify(ctx, "ICE 连通", err)
 	}
-	a.log.Debug("p2p ICE 已连通", "role", a.role.String(), "elapsed", time.Since(start).Round(time.Millisecond))
+	a.log.Debug("p2p ICE 已连通", "ice_role", a.role.String(), "elapsed", time.Since(start).Round(time.Millisecond))
 	// sctp 的 Server 无 ctx：预算到点或 ICE 失败时关掉 ICE 连接让它返回。
 	stop := make(chan struct{})
 	go func() {
@@ -248,14 +248,14 @@ func (a *Agent) Connect(ctx context.Context, remote Description) (*Conn, error) 
 		return nil, a.classify(ctx, "sctp 建流", err)
 	}
 	conn := newConn(a, iceConn, assoc, stream)
-	a.log.Debug("p2p 直连流已建立", "role", a.role.String(), "elapsed", time.Since(start).Round(time.Millisecond))
+	a.log.Debug("p2p 直连流已建立", "ice_role", a.role.String(), "elapsed", time.Since(start).Round(time.Millisecond))
 	return conn, nil
 }
 
 func (a *Agent) classify(ctx context.Context, stage string, err error) error {
 	select {
 	case <-a.failed:
-		return fmt.Errorf("%w（%s）", ErrICEFailed, stage)
+		return fmt.Errorf("%w（阶段：%s）", ErrICEFailed, stage)
 	default:
 	}
 	if ctx.Err() != nil {

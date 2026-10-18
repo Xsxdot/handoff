@@ -170,15 +170,16 @@ func (d *Dialer) finishAttempt(path *directPath, err error) {
 	d.nextAttempt = d.now().Add(retry)
 	d.mu.Unlock()
 	reason := "unknown"
+	cause := err
 	var ue *upgradeError
 	if errors.As(err, &ue) {
-		reason = ue.reason
+		reason, cause = ue.reason, ue.err // reason 已单列，cause 不再重复它
 	}
 	if reason == reasonE2EFailed {
-		d.log.Warn("p2p 直连 E2E 握手失败，继续走 relay", "node", d.node, "reason", reason, "cause", err.Error(), "retry_in", retry.String())
+		d.log.Warn("p2p 直连 E2E 握手失败，继续走 relay", "node", d.node, "reason", reason, "cause", cause.Error(), "retry_in", retry.String())
 		return
 	}
-	d.log.Info("p2p 打洞失败，继续走 relay", "node", d.node, "reason", reason, "cause", err.Error(), "retry_in", retry.String())
+	d.log.Info("p2p 打洞失败，继续走 relay", "node", d.node, "reason", reason, "cause", cause.Error(), "retry_in", retry.String())
 }
 
 // nextBackoff 计算退避序列（单测锁住：30s,60s,…,600s,600s）。
