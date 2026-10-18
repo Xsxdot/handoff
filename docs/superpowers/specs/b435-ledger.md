@@ -422,3 +422,14 @@ WARN 原文 internal/collab/sessions.go:393-394：`log().Warn("会话成员身�
 - **残余追加**：R-K1 (a″) 书写者集规则进 SKILL/契约回写（与 (a′) 同条）；Minor-1/2/3（I 卡：两支测试补锁 + `human`→`addressable`）；Minor-4 回旋镖（修复轮越禁区测试文件须单列 F 行；派发简报须更强调逐段红绿）；Minor-5 转 X plan；O2-U1…U6、O2-M1、N5 200 条页、R-1m/R-5b、K0-3/K0-D 留用户机。
 - **回旋镖（批 2）**：plan/拆解/contract 三份都把「书写者集」当既有不变式而没当接缝核，R-K1 (a)「零机制改动」在两个方向上都错（(a′) 协调者→项目房间，(a″) 组织者→卡会话）；两次都由真机（O1-7）与实现（O2 #12）各撞出一半——下次跨房间的「谁对谁说话」承诺，spec 阶段就该把书写权与寻址分开核。
 - 下一批（批 3）：W（B435.6）与 X（B435.5）plan 并行出稿，基线 `21735127`；合并序 W 先于 X。
+
+## 十三、批 3 第一张：W（B435.6）全节点读数与合入（2026-10-19）
+
+- **plan**（opus subagent 出稿 2026-10-18，协调者拍板 2026-10-19，`b24ebc08` 与 X plan 同批）：Q1 甲（符号链接主检出 `web/node_modules` 替代 `npm ci`，拆解 P10 追加裁决）、Q2 乙（TS 金样本经 Go 解码再编码 `-update` 生成）、Q3 甲（W 删 B434 夹具 case/JSON/TS 段，Go DTO 归 X；与 X Q5 甲同口径——「W 不晚于 X」由夹具编译强制）、Q4–Q9 甲（控制台形态：模式读数保留「来源」、驻场者/组织者两标签、项目房间归属规则归 `sessionModel` 一处 + 侧栏徽章、气泡下标注 + 悬停语义提示、`deliveryCopy.ts` 常量 + 穷尽 switch）、Q10 乙（占位句只删错误陈述）；B-1 七处文件集修正回写拆解 §3.6 ⑤。
+- **implement**（opus subagent，`cards/B435.6-charter-1` 自 `b24ebc08`）：段 0–7 七提交 `c0d36164..f43858cb`（段 1 单独提交红态——O2 #9 回旋镖未重现），46 files +1346/−1040，全部落在 `web/src/**`、web testdata、`contract_fixture_test.go`、视图 diff；禁区零 diff。偏离 12 条——**#5 既有断言改动**（`sessionModel.test.ts`「kind 标签恰三值」→ 对照 Go 生成词表四值）越出 §8 豁免但已披露，**追认**（改后锁得更紧；§8 豁免漏列属 plan 预测缺口，记回旋镖）；检查点 `4c442406`。
+- **review**（opus 独立审查）：**pass**；偏离已核、抽查无漏报（两处表面改动记 Minor）；12 处变异 11 红 1 等价（`CardDrawer` 恒计算 `driverMode` 渲染仍在席位分支内）；架构轴通过（禁区空、归属规则一处、新 HTTP 请求零条）；序列化边界三条穿透断言齐；Minor 4 条：M1 `SessionDetail.tsx:32` 空白改动、M2 `rooms.ts` 两守卫仅测试调用、M3 `SessionChat`/`SessionDetail` 各缺一支词表外值组件用例、M4 `ledger.test.ts` 未进偏离表。记录 `b2c5969e`。
+- **阶段验收：真机批 3**（`b435.6-impl-ledger.md` 同名节；靶子 7778 + O2 二进制 `cc020b54f31bb8eb`，vite 5241 反代，桌面 1024×768 + 手机 375×812 仿真）：W-0 ticket 登录；W-1/W-2 列表与抽屉 push/pull/空座（含悬停文案、空座无模式行）；W-3 驻场者行 + 席位行带卡名与 pull、`session stand` 后驻场者行消失；W-4 登记项目后项目房间归到 `handoff` 节点、详情 `agent:org2 组织者`、按项目筛选命中；W-5 无 @ 不标、`@T1.1` 空座「无收件人（@ 指定）」、会话 B「需 @」、`agent:` 作者不标、`card bind` 后标注消失（D-E）；W-6 移动工作台项目下出现项目房间、「全部协作会话」仅项目房间带徽章、375 宽下标注可见；W-7 空座抽屉只有「▶ 叫机器人」、三退役文案零出现、`desktop-launch` 网络与日志零次；W-8 `@` 候选含 `agent:org 驻场者` 与两席位、拉卡进群/换绑/attach 在。真手机浏览器与薄壳留 I 卡。记录 `34bb578d`。
+- **合入**：`git merge --no-ff cards/B435.6-charter-1` → **`ea2db47b`**；`merge-base --is-ancestor 34bb578d` 成立。合入后复跑（父卡工作树，`web/node_modules` 链接）：`go build` 0；`go test ./internal/proto/` ok；`tsc -b` 0；`vitest run` 145/1928；`eslint .` 2 errors/38 warnings 存量。
+- 卡：B435.6 `accept` 已验 → `finish` → `已完成`；B435.5 → `implement`（基线 `ea2db47b`）。
+- **残余追加**：review M1–M4（finish/I 卡）；plan 两处锚指向本卡删除的符号（finish 文档勘误）；W-0 真手机、薄壳内 W-7、X 合入后 W-7 复跑（I 卡）；隔离 registry 登记了 `handoff`（指向主检出路径，只在靶子里）。
+- **回旋镖（W）**：plan §8「既有测试需改断言」的豁免只列了删除与 `CardView` 样本——词表加值必然撞「恰 N 值」断言，下次 plan 凡裁定词表扩值，应同批列出受影响的锁断言；拆解 §3.6 ⑤ 文件集漏了 7 处（现状核对不足，与 O1 B-1 同形）。
