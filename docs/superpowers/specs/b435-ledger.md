@@ -388,3 +388,15 @@ WARN 原文 internal/collab/sessions.go:393-394：`log().Warn("会话成员身�
 - 合入后复跑（父分支 `08c7a158`）：`go build ./...` 退出 0；`go test -count=1 -run B435 ./cmd/ ./internal/agentd/ ./internal/ledger/ ./internal/collab/... ./internal/keystone/ ./internal/proto/` 全 ok（cmd 21.9s）。
 - 卡：B435.1 `finish` → `已完成`（生产账本）；B435 note seq 25182 留痕；B435 仍停 `breakdown` 等聚合。
 - **F-RM1 裁决（2026-10-18，用户）**：随 R 批（B435.2）顺手修，不单开卡；拆解 §3.2 追加裁决一段（对 R 禁止清单开 `coordinatorRunner.Launch/Resume` 注入环境变量的例外）。B435.2 已挂拆解附件、移 `plan` 列，plan 由 opus subagent 出稿、协调者拍板。
+
+## 十、R（B435.2）plan → implement → review → 阶段验收 → 合入（2026-10-18）
+
+- plan：opus subagent 出稿 `2645e523`，协调者拍板 `72687032`（Q1 乙 / Q2 甲 / Q3 甲 / Q4 甲 / Q5–Q9 甲 / Q10 乙 / Q11 甲 / Q12 乙 / Q13 甲 / Q14 甲；B-1 回写拆解 §3.2 追加裁决：验收文本与例外范围——keystone 简报、executor/keysclient `Env` 对称字段、opencode 适配器、`collab/service.go#sessionWriters`）。
+- implement：opus subagent 于独立工作树 `cards+B435.2-charter-1` 段 0–8 共 8 提交（`d12d8017`…`c15e675a`）；偏离 29 条，协调者检查点 `1104d2e7`（#20/#14 采信、#21/#28 记勘误、#27 归 I）。
+- review：独立 opus subagent pass（`bad4bcb9` 记录）；变异 1 主 4 辅全红还原；Minor M1（简报→cmd 无穿透，并入真机 R-5）、M2/M3（披露粒度）、M4（`SessionMessageCandidatesContext` 零调用与两处过时文件头 → I）、M5（diag 测试无 `--timeout` → roadmap）。
+- 阶段验收真机批 1（`5677aa5b`，读数全文在 `docs/superpowers/plans/b435.2-impl-ledger.md`「阶段验收：真机批 1」）：R-6/R-5（F-RM1 真路径：resume 两键 = 席位、launch 两键缺、stub 照简报原文 `session send` 落账 actor=席位、书写者拒 0 次）、R-1/R-7/R-2/R-3/R-4/K0-4b/R-9/R-8 全通过；R-PG linux-01 PG 18.6 `-run B435` 全 PASS。R-1m/R-5b 未验（用户裁决跳过，留待配合）。`card accept B435.2` 已验。
+- 合入：`git merge --no-ff cards/B435.2-charter-1` → 父分支合并提交 **`69639a7e`**（批 1 基线）；`merge-base --is-ancestor 5677aa5b` 成立。
+- 合入后复跑（`69639a7e`）：`go build ./...` 退出 0；`go test -count=1 ./internal/ledger/... ./internal/collab/... ./internal/keystone/ ./internal/agentd/ ./internal/executor/opencode/ ./internal/proto/ ./internal/skill/` 全 ok（agentd 67.7s）；`./cmd/`（环境键 unset）仅存量 `TestRepoContractGate` 红（基线图三处，未变）。
+- 卡：B435.2 `finish` → `已完成`；B435 note seq 25709；B435 仍停 `breakdown` 等聚合。
+- 残余（finish 统一落 roadmap）：两阶段拉起（R plan Q3 乙）；M5 测试卫生；`MessageWakeTargets`/`SessionMessageCandidatesContext` 删除与过时文件头（I 卡，Q12 乙 + M4）；图覆盖债重扫（#27）。
+- 下一批：批 2 = O1（B435.3）与 O2（B435.4），需用户点火；O2 硬依赖 R 的 `--desktop-session` 三列（R-8 已验）。
