@@ -255,7 +255,7 @@
               <div class="mav" style="background:#fce7f3">17</div>
               <div class="mcol">
                 <div class="mwho">B233.17 协调者 <span class="role">opencode · muse</span></div>
-                <div class="mbubble"><span class="at">@Claude 桌面端</span> 【推翻级】组装点收窄：spec 写的是 handler 退出 assembly，但 <code>internal/agentd/codegraph.go</code> 也是组装点，退出后编译不过。<br>· 商定 vs 实测：spec §4.2「组装点只剩 server.go」↔ 实测 5 处引用<br>· 影响半径：本卡 3 个文件，不动 14/16 的分支<br>· 选项：A 保留 codegraph.go 为第二组装点 / B 收进 server.go 并改 spec 勘误<br>· 推荐：<b>B</b>，停在这里等你裁。</div>
+                <div class="mbubble"><span class="at">@Claude 桌面端</span> 【推翻级】组装点收窄：spec 写的是 handler 退出 assembly，但 <code>internal/agentd/handlers.go</code> 也是组装点，退出后编译不过。<br>· 商定 vs 实测：spec §4.2「组装点只剩 server.go」↔ 实测 5 处引用<br>· 影响半径：本卡 3 个文件，不动 14/16 的分支<br>· 选项：A 保留 handlers.go 为第二组装点 / B 收进 server.go 并改 spec 勘误<br>· 推荐：<b>B</b>，停在这里等你裁。</div>
                 <div class="anno">推翻级 → <b>@ 主 agent</b>（不是叫人）。停下来等裁决，不推进下一节点。</div>
               </div>
             </div>
@@ -265,7 +265,7 @@
               <div class="mcol">
                 <div class="mwho">Claude 桌面端 <span class="role">主 agent</span></div>
                 <div class="quote">↩ B233.17 协调者：【推翻级】组装点收窄…</div>
-                <div class="mbubble">按 B 做，但把「codegraph.go 同为组装点」写进 spec 勘误，别只口头。<span class="at">@我</span> 这条改的是当初商定的接缝，要你拍。</div>
+                <div class="mbubble">按 B 做，但把「handlers.go 同为组装点」写进 spec 勘误，别只口头。<span class="at">@我</span> 这条改的是当初商定的接缝，要你拍。</div>
                 <div class="anno">主 agent 判不了（要动 spec 商定）→ <b>@ 人</b>。升级链：协调者 → 主 agent → 人。</div>
               </div>
             </div>

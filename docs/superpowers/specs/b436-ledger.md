@@ -78,6 +78,7 @@
 13. **曾清理 `prototypes/mobile-app/` 后回退**：S5 先命中该目录 6 文件，当作孤立遗漏清掉；随后 BSD grep 全仓分类发现是 8 个 fork 目录的一类问题，判断超出 plan 范围，`git checkout HEAD -- prototypes/mobile-app` 回退，净变化为零，整类列「待裁决」1。
 14. **遇「待裁决」未结束回合**：三项待裁决（roadmap 两条、prototypes 一类、env 敏感测试）均为纯文档/判据层面、不影响第 8、9 步机械执行，故记台账后继续到收口；所有待裁决对象原样未动。
 15. **提交粒度**：第 1-5 步合一提交（第 1、2 步单独不可编译/不过测），第 6、7、8 步各一，最后一提交收第 9 步修正（注释、mobile/go.sum）与台账。plan 允许合理归并。
+16. **协调者裁决后补做（见「协调者裁决后的补做」小节）**：待裁决 1-4 全部按裁决执行。裁决之外的自主决定三处：(a) b264 / b285 / b288 fork 的 `index.html` 除 dock 钮外另有项目行 hover 簇的 JS 字符串 `'<a href="pages/codegraph.html?project=…" title="代码图">◈</a>'`，裁决未点名，按「与 base 同法」删该行；(b) b275 / b279 fork README 的代码图表行首列是 `（未建页）` 而非 `pages/codegraph.html`，按行内容定位删除；(c) b358 README `:16` 列举镜像页的括号去掉 `pages/codegraph.html` 一项、`:58` 「未复制 data/ … 与 pages/codegraph.html」一句整句删（对象已不存在）。mobile-task.html 的 `go vet` 输出行按裁决改命令后、原 mock 输出 `fails=1 over-budget…` 换成 `(无输出)` 以与命令自洽。
 
 ### 第 1 步：拔依赖
 
@@ -169,3 +170,21 @@
 2. **`docs/roadmap.md:185`** `- **非 12–16 方向的老债配额**：d_gateway → d_ledger 17、d_cli → d_policy 32 等本卡不清零。棘轮只覆盖 12–16 交出的有门面方向。`——主语是 `target.json` legacyBudget 配额，与已删「预算棘轮」族同源；plan 表未点名，按表保留。
 3. **`docs/roadmap.md` `## 来自「修图」实测（2026-08-24，B233 前置排查）` 整节**（五条：容器粒度假读数 / 阴性结果一、二（`best.json 不该动`）/ 探测器不能当裁判 / …）——全节是代码图自身粒度与归属的读数；plan 表「保留」，且其结论「B232 是 B233 的前置」仍是架构排序依据。按表保留。
 4. **`TestSessionSendActorResolution` 对 `CLAUDE_CODE_SESSION_ID` 环境敏感**（`cmd/card_seat.go:68`）：在 Claude Code 会话内跑 `go test ./cmd/` 必红，CI 与裸 shell 不受影响。非 B436 引入、未改。是否记 roadmap「测试隔离」项、以及 CMD1 的权威读数是否以 `env -u` 跑为准，归协调者。
+
+### 协调者裁决后的补做（2026-10-18）
+
+裁决原文四条：(1) prototypes 八个 fork 选 (a) 同法清理；(2) roadmap「非 12–16 方向的老债配额」删；(3) roadmap「来自『修图』实测」整节删；(4) `TestSessionSendActorResolution` 不修、CMD1 以 `env -u` 读数为准、roadmap「来自 B436 finish」追加一条。
+
+- (1) `git rm` 9 份拷贝：`prototypes/{b264-tab-groups,b285-workbench-polish,b288-workbench-ux,b292-squad-concurrency,mobile-app}/pages/codegraph.html`、`prototypes/{b292-squad-concurrency,mobile-app}/data/graph.{js,json}` → exit 0。六个 fork `index.html` 删 dock「代码图」钮行（mobile-app / b358 / b288 / b292 / b264 / b285）；b264 / b285 / b288 另删项目行 JS 字符串钮（偏离 16a）。五个 fork README 删表格行与「代码图页的形态基准…」整段（mobile-app / b279 / b275 / b264 / b285；b275 / b279 的表行首列为 `（未建页）`，偏离 16b）；b358 README 两句上下文（偏离 16c）。b358 `sessions.html` / `sessions-v2.html`：`internal/agentd/codegraph.go` → `internal/agentd/handlers.go`、「A 保留 codegraph.go 为第二组装点」「codegraph.go 同为组装点」同步改名。mobile-app `mobile-task.html`：`codegraph check 2>&1 | head -8` → `go vet ./... 2>&1 | head -8`（mock 输出改 `(无输出)`）、`📄 codegraph/target.json — 冲突现场` → `📄 go.mod — 冲突现场`。
+  `/usr/bin/grep -rIl -E 'codegraph|charter/graph|图对账|\brecon\b' prototypes` → exit 1，**零输出**；`/usr/bin/grep -rIn -E '代码图|graph\.js|graph\.json' prototypes` 亦零输出。
+- (2) `docs/roadmap.md` 删 `- **非 12–16 方向的老债配额**…` 一行（B233.17 spec 节）。
+- (3) `docs/roadmap.md` 删 `## 来自「修图」实测（2026-08-24，B233 前置排查）` 整节（标题至下一 `## ` 前，含五条）。空节检查 → 无；878 行 → 858 行。
+- (4) 测试未动；`## 来自 B436 finish` 节追加裁决原文一条。
+- 第 9 步重跑（补做后，S5 用 `/usr/bin/grep`）：
+  - CMD2 `test -z "$(gofmt -l $(git ls-files '*.go'))"` → **exit 0**。
+  - CMD3 `GOOS=windows GOARCH=amd64 go build ./... && GOOS=windows GOARCH=arm64 go build ./... && GOOS=windows GOARCH=amd64 go vet ./...` → **exit 0**。
+  - CMD4 `(cd desktop && go mod tidy && git diff --exit-code -- go.mod go.sum)` → **exit 0**。
+  - CMD6 `/usr/bin/grep -rIn -E 'codegraph|charter/graph|图对账|\brecon\b' --exclude-dir=.git --exclude-dir=node_modules --exclude-dir=.claude --exclude-dir=dist . | /usr/bin/grep -v -E '^\./(docs/|CHANGELOG\.md)'` → **零输出（0 行）**。
+  - CMD1 `env -u CLAUDE_CODE_SESSION_ID sh -c 'go build ./... && go vet ./... && go test ./... -count=1'`（裁决 4：以 `env -u` 读数为准）→ **exit 0**，64 包 ok、零 FAIL。原始输出 `$TMPDIR/b436-s9b-cmd1.txt`。
+  - CMD5 `npm --prefix web run typecheck && npm --prefix web test && npm --prefix web run build && test -f web/dist/index.html`（与 CMD1 串行、不并发）→ **exit 0**，`Test Files 146 passed (146)`、`Tests 1943 passed (1943)`、`✓ built in 1.61s`、`web/dist/index.html` 1062 字节。原始输出 `$TMPDIR/b436-s9b-cmd5.txt`。
+- 六条全 0，S5 零行；`git status --short` 干净后提交。

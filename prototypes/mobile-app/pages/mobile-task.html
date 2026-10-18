@@ -120,8 +120,8 @@
 
         <div class="pane" data-pane="term">
           <div class="term">
-            <div><span class="g">➜</span> <span class="b">handoff</span> <span class="dim">git:(</span><span class="y">cards/B233.17</span><span class="dim">)</span> codegraph check 2>&1 | head -8</div>
-            <div class="dim">fails=1  over-budget: cli → orchestration 15/13</div>
+            <div><span class="g">➜</span> <span class="b">handoff</span> <span class="dim">git:(</span><span class="y">cards/B233.17</span><span class="dim">)</span> go vet ./... 2>&1 | head -8</div>
+            <div class="dim">(无输出)</div>
             <div>&nbsp;</div>
             <div><span class="g">➜</span> <span class="b">handoff</span> <span class="dim">git:(</span><span class="y">cards/B233.17</span><span class="dim">)</span> git log --oneline -3</div>
             <div>53bbce50 ratchet: B233.17 预算棘轮</div>
@@ -138,7 +138,7 @@
 
         <div class="pane" data-pane="files" hidden>
           <div class="files">
-            <div>📄 codegraph/target.json <span style="color:var(--muted-foreground)">— 冲突现场</span></div>
+            <div>📄 go.mod <span style="color:var(--muted-foreground)">— 冲突现场</span></div>
             <div>📄 cmd/card_dispatch.go <span style="color:var(--muted-foreground)">— B 方案要动的两条直调</span></div>
             <div>📄 docs/superpowers/specs/b233.17.md</div>
           </div>

@@ -182,7 +182,6 @@
 ## 来自 B233.17 spec（2026-09-12）
 
 - **SetupAutomation 里房间 / keystone / hostapi 的构造仍在 gateway 文件**：本卡只让处理请求的函数退出免检名单，不把这三处 `New` 上移 `cmd`。B233.14 已划出。要收口时从本条重走 spec。来源：`docs/superpowers/specs/b233.17.md` Out of Scope。
-- **非 12–16 方向的老债配额**：`d_gateway → d_ledger` 17、`d_cli → d_policy` 32 等本卡不清零。棘轮只覆盖 12–16 交出的有门面方向。来源：同上。
 - **全仓 internal/ 按 best.json 重排**：本卡再确认不做（只封已迁出的四包）。原条见「来自 B233.10 spec」。
 
 ## 来自 B233.17 验收（2026-09-13，DUT `53bbce50e`，合线 absorb 同提交）
@@ -397,26 +396,6 @@ review 对目标 75607559 的 1 major + 3 minor 全部作为后续核销项记�
   的 codex 任务在最后一次提交获批后静默 **76 分钟**（与 2026-08-23 那次同样是 76 分钟），
   executor 进程仍存活、`resume` 报「当前 executor 不支持会话对账」，最终靠
   `resume --force` 收口。同一形态第二次出现，不再是偶发。
-
-## 来自「修图」实测（2026-08-24，B233 前置排查）
-
-- **容器粒度在制造假读数（已重定性进 B232，升高优先级）**：跨理想域边 1336 条里
-  **780 条（58%）**有一端落在 ≥50 节点的大杂烩容器；把 `k_agentd_fn` 的 211 个包级函数
-  按多数邻居域重判，**49 个压倒性属于 d_gateway**，重判后 `d_gateway→d_orchestration`
-  **319→142（−55%）**。结论：主动脉直调债多到一半可能是粒度假象。**图信不过之前，
-  按图排 B233 的迁移顺序等于按噪声排**——B232 是 B233 的前置而非附属。
-- **阴性结果一（防重走）**：「类型与其方法分属不同域」全图只有 6 例（98 个同包配对里
-  92 例正确，全部 6 例来自 `k_agentd_model`）。模拟修正后跨域边 1336→1336、双向环
-  5 对不变——**线索听起来严重，实际不是杠杆**。
-- **阴性结果二（防误改）**：`d_workspace` 的成员（Mirror / projectIndex /
-  runOutputBuffer / DirtyWorktreeError）按耦合看像该在 orchestration，但 d_workspace
-  的域声明原文就含「机器镜像发现」——**归属是对的，best.json 不该动**。
-- **「按耦合找错归属」的探测器不能当裁判**：25 个「嫌疑」里多数是正常的契约/消费关系
-  （如 `k_turn_fn` 属 d_execution_contract 却有 143 条边通向 d_execution_adapters——
-  那正是契约包该有的样子）。探测器只配当候选生成器，判决要读代码 + 读域声明。
-- **裸名匹配又咬了一次**：本轮第一版分析用裸类型名跨包配对，把 `codex.Client` 配到
-  `internal/client` 的 `Client`，得出「18 例分裂」的假数；按（包目录, 类型名）重配后
-  真值是 6。与 B173 的 106 条假边同一个坑，**任何跨包按名字配对的分析都要先带包路径**。
 
 ## 来自 B229 spec 的残余（2026-08-24）
 
@@ -876,3 +855,4 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 ## 来自 B436 finish（2026-10-18，代码图消费侧删除）
 
 - **账本纪律块 `charter-recon v3` / `charter-story-recon v1` 待下架**：`handoff discipline` 只有 `get / list / put`，没有删除或下架命令；流 v14 已不引用它们，但 `discipline list` 仍列出。需要给 `discipline` 加下架能力后再清。来源：B436 spec Out of Scope。
+- **`cmd` 包 `TestSessionSendActorResolution` 在 Claude Code 会话内（环境有 `CLAUDE_CODE_SESSION_ID`）必红**，`cmd/card_seat.go:68` 读该环境变量；main 上同样复现。需让测试隔离环境变量（t.Setenv 清空）。来源：B436 implement 第 9 步 CMD1 字面首跑。
