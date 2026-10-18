@@ -181,6 +181,25 @@ targets:
     token: "<执行机 token>"
 ```
 
+**直连优先、relay 兜底**：relay 形态的 target 先经 relay 立即可用，随后后台尝试 NAT 打洞
+（pion/ice；候选在 E2E 加密的 relay 会话内交换，relay 服务端无需任何改动）。打通后新请求
+走点对点直连（日志 `p2p 直连已建立`）；直连断了新请求回落 relay，并按退避重试打洞。配了
+`addr:` 的直连 target 不受影响。两端都可配置：
+
+```yaml
+p2p:
+  enabled: true      # 缺省 true；false = 只走 relay（执行机也拒绝应答打洞）
+  stun:              # 缺省为下列三条；[] = 只用局域网 host 候选、不发任何 STUN 请求
+    - stun:stun.miwifi.com:3478
+    - stun:stun.cloudflare.com:3478
+    - stun:stun.l.google.com:19302
+```
+
+STUN/ICE 是 UDP，**不经** `proxy` 设置，也不经 `HTTPS_PROXY`：配了代理的机器启动时 agentd
+会打一条 INFO 说明这一点；需要全程走代理请设 `p2p.enabled: false`。**滚动升级约束**：只有新版
+agentd 认识 `p2p:` 键，旧版读到未知键会拒绝启动；缺省即开启且 `Save` 不写该键，所以要等这台
+机器换上新版二进制后再写它。
+
 relay 形态与 `addr` 互斥，并要求高熵 token（`handoff init` 生成的 token 默认符合）。
 relay 模式下 `handoff pull` 走隧道内的 Bundle HTTP 端点，不走 git-over-SSH。
 `ws://` 仅供本机 relay 测试，生产必须使用 `wss://`。
