@@ -151,7 +151,7 @@ func (s *Service) Wake(ctx context.Context, card string, evs []WakeEvent, spec k
 	s.mu.Lock()
 	s.sessions[card] = ref
 	s.mu.Unlock()
-	prompt := s.briefing(card, evs)
+	prompt := s.briefing(card, evs, briefingRoomResume(cli, sessionID))
 	result, err := s.runner.Resume(ref, prompt)
 	if err == nil {
 		return RoundResult{Woke: true, SessionID: result.SessionID, Output: result.Output}, nil
@@ -159,7 +159,9 @@ func (s *Service) Wake(ctx context.Context, card string, evs []WakeEvent, spec k
 	// 错误分流是契约（B399 spec r2 §5）：只有「会话真的不存在」才降级重建；
 	// 回合超时与其他错误一律保留会话，下一轮仍 resume 同一 session。
 	if errors.Is(err, keysclient.ErrSessionNotFound) {
-		return s.rebuildAfterResumeFailure(card, prompt, spec, ref, err)
+		// 重建是 launch 回合（新会话 id 回合中才生成、席位回合后才落、两键不注入，R plan Q3 甲）：
+		// 只把本轮事件交给 launchRound 拼首轮简报，不带旧会话的字面席位（B435.2 Q1 乙）。
+		return s.rebuildAfterResumeFailure(card, briefingWakeEvents(evs), spec, ref, err)
 	}
 	return s.failResumeKeepingSession(card, ref, err)
 }
@@ -174,10 +176,10 @@ func (s *Service) failResumeKeepingSession(card string, ref keysclient.SessionRe
 	return RoundResult{SessionID: ref.SessionID}, fmt.Errorf("resume: %w", resumeErr)
 }
 
-func (s *Service) rebuildAfterResumeFailure(card, prompt string, spec keysclient.SessionSpec, ref keysclient.SessionRef, resumeErr error) (RoundResult, error) {
+func (s *Service) rebuildAfterResumeFailure(card, extra string, spec keysclient.SessionSpec, ref keysclient.SessionRef, resumeErr error) (RoundResult, error) {
 	rebuildSpec := spec
 	rebuildSpec.CLI = ref.CLI
-	rebuilt, launchErr := s.launchRound(card, prompt, rebuildSpec, true)
+	rebuilt, launchErr := s.launchRound(card, extra, rebuildSpec, true)
 	if launchErr != nil {
 		// 理由必须可行动：带上两条真实失败原因摘要（截断），否则现场只剩一句
 		// 「resume 与重建均不可用」，排障只能靠猜（spec §4.4）。
@@ -303,7 +305,7 @@ func (s *Service) Forget(card string) {
 // 不再自造空 spec——骨架期忽略入参的欠账已补齐，防空 spec 回潮。重建四步的
 // 输入由开场简报携带：读卡 → 会话史（账本事件流）→ timeline → 仓内文档指针。
 func (s *Service) launchRound(card, extra string, spec keysclient.SessionSpec, rebuild bool) (RoundResult, error) {
-	result, err := s.runner.Launch(spec, s.briefing(card, nil)+extra)
+	result, err := s.runner.Launch(spec, s.briefing(card, nil, briefingRoomFirstRound)+extra)
 	if err != nil {
 		return RoundResult{}, err
 	}
@@ -341,15 +343,54 @@ func overlayResumeRef(ref keysclient.SessionRef, spec keysclient.SessionSpec) ke
 // 简报文本，不是机制：只约束协调者在房间里怎么说话。
 const briefingRoomTone = "房间里只说重点与结果，同事口吻；思考与工具调用留在自己会话。"
 
-// briefing 把本轮的增量上下文拼成回合简报：卡最小指针（卡号、标题、基线）与
+// briefingFirstRound 是 launch 回合（含重建）的首轮句（B435.2 R plan Q3 甲）：会话 id 在回合中
+// 才生成、席位在回合结束后才落，本轮不注入 HANDOFF 席位环境键，`session send` 必然被拒——
+// 明说「下一轮再说」，不让协调者照旧命令撞墙后自造身份。
+const briefingFirstRound = "本轮为首轮，席位尚未落定，本轮发不了房间消息；有话下一轮再说（下一轮简报会给出带席位的发言命令）。"
+
+// briefingSessionSendEnvForm 是解析不到席位值时的回退形态（R plan Q1 乙）：引用 agentd 在
+// resume 回合注入的 HANDOFF 席位对；只作兜底，字面值优先（不把回房间押在工具子进程继承环境上）。
+const briefingSessionSendEnvForm = `handoff session send --cli "$HANDOFF_SESSION_CLI" --session "$HANDOFF_SESSION_ID" <会话> <正文>`
+
+// briefingSessionSend 给出以本卡席位成对出示身份的发言命令（R plan Q1 乙；与 SKILL.md「协调者
+// 用 --cli/--session 成对出示」一致）：两值齐全写字面值，缺任一退回环境键形态。
+func briefingSessionSend(cli, sessionID string) string {
+	if cli == "" || sessionID == "" {
+		return briefingSessionSendEnvForm
+	}
+	return "handoff session send --cli " + cli + " --session " + sessionID + " <会话> <正文>"
+}
+
+// briefingRoomFirstRound 是 launch/重建回合简报里的房间句。
+const briefingRoomFirstRound = "需要人知道的事要发到 IM 房间，但" + briefingFirstRound
+
+// briefingRoomResume 是 resume 回合简报里的房间句：带本卡席位的发言命令。
+func briefingRoomResume(cli, sessionID string) string {
+	return "需要人知道的事**发到 IM 房间**：`" + briefingSessionSend(cli, sessionID) + "`" +
+		"（`--cli/--session` 是本卡席位，须原样带上，否则以终端身份落账会被拒；" +
+		"本卡所在会话可用 `handoff session list` 找到，会话条目里列着本卡）。"
+}
+
+// briefingWakeEvents 拼「本次唤醒事件」段；无事件返回空串。
+func briefingWakeEvents(evs []WakeEvent) string {
+	if len(evs) == 0 {
+		return ""
+	}
+	b := "\n## 本次唤醒事件\n"
+	for _, ev := range evs {
+		b += "- [" + string(ev.Kind) + "] " + ev.Summary + "\n"
+	}
+	return b
+}
+
+// briefing 把本轮的增量上下文拼成回合简报：房间句（resume 回合带席位发言命令，launch/重建
+// 回合写首轮句，见 briefingRoomResume/briefingRoomFirstRound）、卡最小指针（卡号、标题、基线）与
 // 本次唤醒事件。会话里已有的上下文留在会话里，账本只补充增量——不再指示模型
 // 「先读卡」（B399 spec r2 §5：是否读卡由协调者自己判断）。以 ledger 为准不信
 // 记忆——每回合重读，天然幂等。
-func (s *Service) briefing(card string, evs []WakeEvent) string {
+func (s *Service) briefing(card string, evs []WakeEvent, room string) string {
 	b := "你是本卡的机器协调者。**你是一次性回合**：没有交互窗口，本轮跑完即结束；" +
-		"下一次有事会被再次唤醒（续跑同一会话）。\n" +
-		"需要人知道的事**发到 IM 房间**：`handoff session send <会话> <正文>`" +
-		"（本卡所在会话可用 `handoff session list` 找到，会话条目里列着本卡）。" +
+		"下一次有事会被再次唤醒（续跑同一会话）。\n" + room +
 		"不适合现在推就在房间说明原因并结束本轮。" + briefingRoomTone + "\n\n## 本卡上下文\n\n- 卡号：" + card + "\n"
 	if c, err := s.ledger.GetCard(card); err == nil {
 		b += "- 标题：" + c.Title + "\n"
@@ -357,11 +398,5 @@ func (s *Service) briefing(card string, evs []WakeEvent) string {
 	if base, err := s.ledger.EffectiveBaseBranch(card); err == nil && base != "" {
 		b += "- 有效基线分支：" + base + "（本卡的合并目标以此为准，不要越过它碰别的分支）\n"
 	}
-	if len(evs) > 0 {
-		b += "\n## 本次唤醒事件\n"
-		for _, ev := range evs {
-			b += "- [" + string(ev.Kind) + "] " + ev.Summary + "\n"
-		}
-	}
-	return b
+	return b + briefingWakeEvents(evs)
 }

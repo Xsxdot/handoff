@@ -42,10 +42,10 @@ func (c *Coordinator) Resume(ctx context.Context, ref executor.CoordSessionRef, 
 	if err := executor.RequireResumeRef(ref); err != nil {
 		return executor.CoordTurnResult{}, err
 	}
-	c.log.Info("Coordinator.Resume 进入", "cli", ref.CLI, "session_set", ref.SessionID != "")
+	c.log.Info("Coordinator.Resume 进入", "cli", ref.CLI, "session_set", ref.SessionID != "", "env_count", len(ref.Env))
 	return c.turn(ctx, hostapi.TurnRequest{
 		CLI: ref.CLI, HomeDir: ref.HomeDir, Workdir: ref.Workdir,
-		Model: ref.Model, Prompt: prompt, SessionID: ref.SessionID, Env: nil,
+		Model: ref.Model, Prompt: prompt, SessionID: ref.SessionID, Env: ref.Env,
 	})
 }
 

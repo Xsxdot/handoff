@@ -100,8 +100,8 @@ func TestB435SessionWaitResidentDefaultHit(t *testing.T) {
 		t.Fatal(err)
 	}
 	e.sit(t, "user:r")
-	m1 := e.send(t, "大家好")                         // 人类无 @ → 驻场者
-	m2 := e.send(t, "@子卡", child.ID)                // @子卡 → 子卡
+	m1 := e.send(t, "大家好")                                                             // 人类无 @ → 驻场者
+	m2 := e.send(t, "@子卡", child.ID)                                                   // @子卡 → 子卡
 	e.sendAs(t, "agent:x", proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "机器人无 @"}) // → 无人
 	m4 := e.sendAs(t, "user:r", proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "@根卡", Mentions: []string{root}})
 	m5 := e.sendAs(t, "user:tester", proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "回驻场者", ReplyTo: m4})
