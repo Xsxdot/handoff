@@ -1,8 +1,8 @@
 // desktop_rule.go —— B435 组织者授权规则与门铃取信句（契约 §7「改写」行；O2 plan Q4 甲）。
 //
 // 职责：给出两句承重文案的唯一定义点。skills/handoff/SKILL.md 逐字引用它们：
-//   - DesktopLetterAuthorizationRule：「组织者」节、「主 agent 回路」里的 CLAUDE.md 常设授权片段、
-//     「占座」节授权规则引用块（该节整节归 B435 X 删除，删除前须与本常量同文）；
+//   - DesktopLetterAuthorizationRule：「组织者」节、「主 agent 回路」里的 CLAUDE.md 常设授权片段
+//     （「占座」节的 B434 引用块已随 B435 X 删除，plan b435.5 Q4 甲：保节、删 B434 段落）；
 //   - OrganizerDoorbellTakeRule：「组织者」节与 CLAUDE.md 常设授权片段。
 //
 // 由 skill_text_b434_test.go / skill_text_b435_organizer_test.go 读 SKILL.md 断言含本常量。
