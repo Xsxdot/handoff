@@ -341,3 +341,27 @@ WARN 原文 internal/collab/sessions.go:393-394：`log().Warn("会话成员身�
 - P6 理由：`no_recipient` 投影由 d_gateway 产、d_web 消费，是两个工作单元共同依赖的跨进程 wire，按 contract 判据冻结；只补这一条缝，K0 不等补签。
 - P7 理由：甲会让无 agentd 机器上的纯 CLI 驻场者永远收不到通知；乙复用消费循环既有恰一次机制。
 - spec r4：D6/D8/D10 勘误 + §2 增第 ⑤ 缝。拆解稿状态行改「已拍板（2026-10-18）」。
+
+### 五.8 补签 ⑤ 投递投影（2026-10-18，contract 执行者 subagent；工作树 `cards+B435-charter-1` @ `9824af08`，spec r4 / breakdown P6=甲）
+
+- 入口：协调者令「只此一条缝，其余不动」；同时按 spec r4 对齐 D6/D8/D10 措辞。
+- 现状读数：`internal/agentd/roomsapi.go:430-457#Server.handleRoomMessages` → `writeJSON(..., {"messages": events})`，`events []proto.LedgerEvent` 取自 `collab.Service.HistoryContext`（`internal/collab/service.go:383`）；TS `web/src/api/rooms.ts:83` `type RoomHistoryItem = LedgerEvent`、`:175` `request<{ messages: RoomHistoryItem[] }>`；`proto.SessionSummary` 在 `internal/proto/sessions.go:97`，由 `internal/collab/sessions.go:317#summarizeSession` 装配、`internal/agentd/sessionsapi.go:145/168` 出 HTTP；`cmd/card.go:108-143#cardShowCmd` stdout 单 JSON；cmd 既有 stderr 提示惯例 `提示：…`（`cmd/card_records.go:120`）。
+- 判断：DTO 用 `RoomHistoryItem{LedgerEvent 内嵌; NoRecipient omitempty}`——内嵌平铺使无键行与旧 `LedgerEvent` 逐键同形（C-502 金样本兑现），信封与 `HistoryContext` 返回类型都不动；名字与 TS 既有别名同名，W 镜像只加一个可选键。
+- 判断：`project` 装配点（collab `summarizeSession` vs d_gateway 装饰）不由契约选——两者都在既有方向内（d_collab→d_ledger 接口缝 / d_gateway→d_ledger），冻结「只能一处 + 单一写者 O1」，选择归 O1 plan（C-512）。
+- 拍板 D-E：`no_recipient` 读时求值（不做发送时快照），三闸门判据记契约 §8。放弃方案：消费循环把 `Delivery` 写回账本——新写面 + 第二写者。
+- 判断：`card show` 读失败不显示「项目无组织者」（C-517），避免把读错误呈现为业务事实（同 C-228 口径）。
+- 不新增条目（遵令）：r4 D8「协调者提问须显式 @」只在 §4.4 加注，C-201/C-218 不动。
+- r4 对齐：§7 `desktop_launchers` 行由「语义替换→驻场者桌面端地址」改为「退役、表删除；驻场者登记落新表（会话主键）」；§7 迁移段与 §12 第 10 条改为两表删除、存量行清除留痕（P5=甲）；§12 第 13 条补项目房间创建来源与显式 @。
+- 落码（Ticket 0，零投影逻辑）：`internal/proto/delivery.go` 增 `RoomHistoryItem`；`internal/proto/sessions.go` `SessionSummary` 增 `Project string json:"project,omitempty"`；金样本 `internal/proto/testdata/b435_room_history.json`、`b435_session_summary_project.json`；`internal/proto/b435_contract_test.go` 增 `TestB435RoomHistoryNoRecipientGolden`、`TestB435SessionSummaryProjectGolden`。
+- 首次落测试用复合 heredoc 被沙箱拒（「too complex to verify」）→ 改 Write 工具 + scratchpad `python3 -I` 脚本。
+- `gofmt -l internal/proto` → 空。
+- `go test -count=1 -run TestB435 ./internal/proto/` → `ok  	github.com/Xsxdot/handoff/internal/proto	1.696s`
+- `go build ./...` → 无输出，退出 0。
+- `go test -count=1 ./internal/proto/ ./internal/collab/...` →
+  `ok  	github.com/Xsxdot/handoff/internal/proto	0.190s` / `ok  	github.com/Xsxdot/handoff/internal/collab	3.013s` / `?  	…/collab/client	[no test files]` / `?  	…/collab/cursor	[no test files]` / `ok  	github.com/Xsxdot/handoff/internal/collab/room	2.427s`
+- `go test -count=1 ./internal/agentd/` → `ok  	github.com/Xsxdot/handoff/internal/agentd	70.942s`
+- 图：`mkdiff.py` 增 `m_proto_RoomHistoryItem`（model）与修改 `m_proto_SessionSummary`（字段 `Project`），base 仍 `7f860685` → `17 added; 5 modified; 2 edges`；`codegraph validate` → `issues: null`；`codegraph --view cards-B435-charter-1 check` → 3 处 over-budget（d_cli→d_maintenance 27/25、d_gateway→d_collab 1/0、d_ledger→d_protocol 5/2），与基线同，无新增。
+- `resolve --doc b435-contract.md` 首跑 `roomsapi.go#handleRoomMessages` `file_missing`（短路径）→ 改 `internal/agentd/roomsapi.go#Server.handleRoomMessages` 复跑 → 14 锚 0 坏（ok 6 / moved 8）。`cmd/card.go:108-140` 自查改 `:108-143`。
+- 契约 §4 条目计数（awk 数 `^[0-9]+[ab]?\. `）→ 162（145 + C-501–C-517）。
+- 未建卡、未派发、未跑 `handoff card`；未 push。
+- 提交：`git commit -q -m "docs(B435): contract r3 补签第 ⑤ 缝投递投影（C-501–C-517）+ spec r4 措辞对齐 …"` → 无输出；`git log -1 --format="%H %s"` → `68ac7b6c202918f2e5902068b8dcff0e2e7cf072 docs(B435): contract r3 补签第 ⑤ 缝投递投影（C-501–C-517）+ spec r4 措辞对齐`。随后 amend 一次收进本行（amend 换 hash，不回写）。

@@ -1,7 +1,7 @@
 {
   "view": "cards/B435-charter-1",
   "base": "7f860685752a5d4dea43d38b96441be9437a0565",
-  "summary": "B435 contract Ticket 0：席位驱动模式词表 SeatMode/ParseSeatMode 与 Card/CardView.driver_mode、SessionCard.seat_mode 投影键（③）；收件地址 DeliveryAddress/DeliveryAddressKind、游标键 DeliveryCursorKey、无收件人原因 NoRecipientReason、匹配结果 Delivery、人类作者判据 IsHumanAuthor（②）；匹配函数空壳 collab.Service.Recipients/Matches/defaultRecipient（恒报未实现）；驻场者 DTO SessionResident 与出站接口 LedgerClient.SessionResident（Facade 空壳恒报未实现）；驻场者来信正文 ResidentLetter/RenderResidentLetter（④，正文即 wire 定义）。常量与哨兵不入图。",
+  "summary": "B435 contract Ticket 0：席位驱动模式词表 SeatMode/ParseSeatMode 与 Card/CardView.driver_mode、SessionCard.seat_mode 投影键（③）；收件地址 DeliveryAddress/DeliveryAddressKind、游标键 DeliveryCursorKey、无收件人原因 NoRecipientReason、匹配结果 Delivery、人类作者判据 IsHumanAuthor（②）；匹配函数空壳 collab.Service.Recipients/Matches/defaultRecipient（恒报未实现）；驻场者 DTO SessionResident 与出站接口 LedgerClient.SessionResident（Facade 空壳恒报未实现）；驻场者来信正文 ResidentLetter/RenderResidentLetter（④，正文即 wire 定义）；r3 补签⑤投递投影：房间历史行 RoomHistoryItem（LedgerEvent 平铺 + no_recipient 可省略键）与 SessionSummary.project 可省略键。常量与哨兵不入图。",
   "nodesAdded": {
     "m_proto_SeatMode": {
       "kind": "model",
@@ -16,7 +16,7 @@
       "tests": [
         {
           "name": "TestB435SeatModeLiterals",
-          "file": "internal/proto/b435_contract_test.go:44"
+          "file": "internal/proto/b435_contract_test.go:45"
         }
       ]
     },
@@ -44,7 +44,7 @@
       "tests": [
         {
           "name": "TestB435DeliveryAddressCursorKey",
-          "file": "internal/proto/b435_contract_test.go:117"
+          "file": "internal/proto/b435_contract_test.go:118"
         }
       ]
     },
@@ -61,7 +61,7 @@
       "tests": [
         {
           "name": "TestB435NoRecipientVocabulary",
-          "file": "internal/proto/b435_contract_test.go:141"
+          "file": "internal/proto/b435_contract_test.go:142"
         }
       ]
     },
@@ -89,7 +89,7 @@
       "tests": [
         {
           "name": "TestB435ResidentLetterGolden",
-          "file": "internal/proto/b435_contract_test.go:179"
+          "file": "internal/proto/b435_contract_test.go:180"
         }
       ]
     },
@@ -106,7 +106,24 @@
       "tests": [
         {
           "name": "TestB435SessionResidentWire",
-          "file": "internal/proto/b435_contract_test.go:100"
+          "file": "internal/proto/b435_contract_test.go:101"
+        }
+      ]
+    },
+    "m_proto_RoomHistoryItem": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 1139,
+      "name": "RoomHistoryItem",
+      "file": "internal/proto/delivery.go",
+      "line": 120,
+      "signature": "type RoomHistoryItem struct {\n\tLedgerEvent\n\tNoRecipient NoRecipientReason `json:\"no_recipient,omitempty\"`\n}",
+      "summary": "RoomHistoryItem 是房间历史视图（GET /api/rooms/{id}/messages 的 messages[]）的一行 （B435 ⑤ 投递投影）：账本事件原样平铺 + 可省略的 no_recipient。仅当该行是会话房间 room_message 且经 collab.Service.Recipients 解析为空集时出键，取值 = 该次的 NoRecipientReason；有收件人、非 room_message 或判定读失败时不出键。",
+      "modelKind": "dto",
+      "tests": [
+        {
+          "name": "TestB435RoomHistoryNoRecipientGolden",
+          "file": "internal/proto/b435_contract_test.go:238"
         }
       ]
     },
@@ -122,7 +139,7 @@
       "tests": [
         {
           "name": "TestB435SeatModeLiterals",
-          "file": "internal/proto/b435_contract_test.go:44"
+          "file": "internal/proto/b435_contract_test.go:45"
         }
       ]
     },
@@ -138,7 +155,7 @@
       "tests": [
         {
           "name": "TestB435DeliveryAddressCursorKey",
-          "file": "internal/proto/b435_contract_test.go:117"
+          "file": "internal/proto/b435_contract_test.go:118"
         }
       ]
     },
@@ -154,7 +171,7 @@
       "tests": [
         {
           "name": "TestB435IsHumanAuthor",
-          "file": "internal/proto/b435_contract_test.go:161"
+          "file": "internal/proto/b435_contract_test.go:162"
         }
       ]
     },
@@ -180,11 +197,11 @@
       "tests": [
         {
           "name": "TestB435ResidentLetterGolden",
-          "file": "internal/proto/b435_contract_test.go:179"
+          "file": "internal/proto/b435_contract_test.go:180"
         },
         {
           "name": "TestB435ModStillMatchesLetterWire",
-          "file": "internal/proto/b435_contract_test.go:202"
+          "file": "internal/proto/b435_contract_test.go:203"
         }
       ]
     },
@@ -521,6 +538,79 @@
         ],
         [
           "SeatMode",
+          "string",
+          ""
+        ]
+      ],
+      "modelKind": "dto"
+    },
+    "m_proto_SessionSummary": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 136,
+      "name": "SessionSummary",
+      "file": "internal/proto/sessions.go",
+      "line": 97,
+      "signature": "type SessionSummary struct {\n\tID   string `json:\"id\"`   // session:<n>，不透明\n\tKind string `json:\"kind\"` // SessionKind\n\t// Title 会话标题（人/主 agent 新建时给）。\n\tTitle string `json:\"title\"`\n\t// Owner 群主身份（升级终点）：人 或 主 agent 会话身份。\n\tOwner string `json:\"owner\"`\n\t// Archived 显式归档；归档后只读。卡的终态不等于会话结束。\n\tArchived bool `json:\"archived\"`\n\t// Project 项目房间标记（B435 ⑤/D6）：取值项目名；非项目房间不出键。\n\t// 唯一写者是项目房间绑定（session sit --project / project room 创建的那条）。\n\tProject string `json:\"project,omitempty\"`\n\t// Unread 该成员未读消息数。\n\tUnread int `json:\"unread\"`\n\t// NeedsHuman 会话内任意一张卡处于 needs_human（列表标签）。\n\tNeedsHuman   bool            `json:\"needs_human\"`\n\tLastActivity time.Time       `json:\"last_activity\"`\n\tPreview      *RoomPreview    `json:\"preview,omitempty\"`\n\tMembers      []SessionMember `json:\"members,omitempty\"`\n\tCards        []SessionCard   `json:\"cards,omitempty\"`\n}",
+      "summary": "SessionSummary 是会话列表（谁需要我）的一行。",
+      "fields": [
+        [
+          "ID",
+          "string",
+          ""
+        ],
+        [
+          "Kind",
+          "string",
+          ""
+        ],
+        [
+          "Title",
+          "string",
+          ""
+        ],
+        [
+          "Owner",
+          "string",
+          ""
+        ],
+        [
+          "Archived",
+          "bool",
+          ""
+        ],
+        [
+          "Unread",
+          "int",
+          ""
+        ],
+        [
+          "NeedsHuman",
+          "bool",
+          ""
+        ],
+        [
+          "LastActivity",
+          "time.Time",
+          ""
+        ],
+        [
+          "Preview",
+          "*RoomPreview",
+          ""
+        ],
+        [
+          "Members",
+          "[]SessionMember",
+          ""
+        ],
+        [
+          "Cards",
+          "[]SessionCard",
+          ""
+        ],
+        [
+          "Project",
           "string",
           ""
         ]

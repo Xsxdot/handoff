@@ -1,9 +1,10 @@
 // b435_contract_test.go —— B435 契约（docs/superpowers/specs/b435-contract.md）的可执行冻结：
-// 席位模式字面量与投影键（③）、收件地址游标键与人类作者判据（②）、驻场者来信正文与
+// 席位模式字面量与投影键（③）、投递投影键（⑤）、收件地址游标键与人类作者判据（②）、驻场者来信正文与
 // mod 侧对照（④）。改这里的期望值 = 改冻结契约，先回 contract 节点。
 package proto
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"reflect"
@@ -215,5 +216,61 @@ func TestB435ModStillMatchesLetterWire(t *testing.T) {
 		if !strings.Contains(src, lit) {
 			t.Fatalf("mod 源码缺字面量 %q——来信 wire 与 mod 取信规则失配", lit)
 		}
+	}
+}
+
+// b435CompactGolden 读 testdata 金样本并压成紧凑 JSON（金样本文件可读排版，比对按字节）。
+func b435CompactGolden(t *testing.T, name string) []byte {
+	t.Helper()
+	raw, err := os.ReadFile("testdata/" + name)
+	if err != nil {
+		t.Fatalf("读金样本 %s: %v", name, err)
+	}
+	var buf bytes.Buffer
+	if err := json.Compact(&buf, raw); err != nil {
+		t.Fatalf("金样本 %s 非法 JSON: %v", name, err)
+	}
+	return buf.Bytes()
+}
+
+// 条 C-501–C-505：房间历史视图行 = 账本事件平铺 + 可省略 no_recipient；信封 {"messages": [...]} 不变。
+// TS 镜像（web/src/api/rooms.ts RoomHistoryItem）由 W 子卡对同一金样本补测（契约 §12 欠账）。
+func TestB435RoomHistoryNoRecipientGolden(t *testing.T) {
+	at := time.Date(2026, 10, 18, 0, 0, 0, 0, time.UTC)
+	ev := func(seq int64, actor, body string, d time.Duration) LedgerEvent {
+		p, _ := json.Marshal(map[string]string{"body": body})
+		return LedgerEvent{Seq: seq, CardID: "session:3", Type: "room_message", Actor: actor, Payload: p, CreatedAt: at.Add(d)}
+	}
+	items := []RoomHistoryItem{
+		{LedgerEvent: ev(41, "user:sy", "有人在吗", 0), NoRecipient: NoRecipientNeedsMention},
+		{LedgerEvent: ev(42, "agent:x", "@B9 看一下", time.Second), NoRecipient: NoRecipientAddressedUnresolved},
+		{LedgerEvent: ev(43, "user:sy", "@B7 继续", 2*time.Second)},
+	}
+	got, err := json.Marshal(map[string]any{"messages": items})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := b435CompactGolden(t, "b435_room_history.json"); !bytes.Equal(got, want) {
+		t.Fatalf("房间历史视图 wire 漂移:\n got %s\nwant %s", got, want)
+	}
+	// 有收件人的行与 B435 前 LedgerEvent 逐键同形（向后兼容：旧消费方无感）。
+	if got, want := jsonKeys(t, items[2]), jsonKeys(t, items[2].LedgerEvent); !reflect.DeepEqual(got, want) {
+		t.Fatalf("无 no_recipient 的行键集 = %v, want LedgerEvent 键集 %v", got, want)
+	}
+}
+
+// 条 C-506/C-507：会话列表行 project 键——项目房间出键（取值项目名），非项目房间不出键。
+func TestB435SessionSummaryProjectGolden(t *testing.T) {
+	at := time.Date(2026, 10, 18, 0, 0, 0, 0, time.UTC)
+	rows := []SessionSummary{
+		{ID: "session:5", Kind: SessionKind, Title: "handoff 项目房间", Owner: "user:sy", Project: "handoff", LastActivity: at},
+		{ID: "session:3", Kind: SessionKind, Title: "B435 讨论", Owner: "user:sy", Unread: 2, LastActivity: at},
+	}
+	got, err := json.Marshal(rows)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := b435CompactGolden(t, "b435_session_summary_project.json"); !bytes.Equal(got, want) {
+		t.Fatalf("会话列表行 wire 漂移:\n got %s\nwant %s", got, want)
 	}
 }

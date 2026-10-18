@@ -113,6 +113,15 @@ func isCLIHumanActor(actor string) bool {
 	return ok && user != "" && host != "" && !strings.ContainsRune(host, '@')
 }
 
+// RoomHistoryItem 是房间历史视图（GET /api/rooms/{id}/messages 的 messages[]）的一行
+// （B435 ⑤ 投递投影）：账本事件原样平铺 + 可省略的 no_recipient。仅当该行是会话房间
+// room_message 且经 collab.Service.Recipients 解析为空集时出键，取值 = 该次的
+// NoRecipientReason；有收件人、非 room_message 或判定读失败时不出键。
+type RoomHistoryItem struct {
+	LedgerEvent
+	NoRecipient NoRecipientReason `json:"no_recipient,omitempty"`
+}
+
 // SystemNotifierIdentity 是 agentd 向项目房间发通知时的成员身份（B435 D8）：
 // 以它为作者 Send 普通寻址消息（by_system=false，Mentions=[驻场者身份]）。
 const SystemNotifierIdentity = "agent:handoff"

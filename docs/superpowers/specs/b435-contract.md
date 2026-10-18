@@ -2,7 +2,7 @@
 
 **上游状态：已批准**（源 spec：`docs/superpowers/specs/b435.md`，r2 用户 2026-10-18 批准；r3（提交 `0e673c6b`）回写协调者对本契约 R1–R3 与 D-B 的裁决——本契约 r2 补签轮据此修订，见 §9）
 **级别：L3 ｜ 选档复核：重档确认**（spec §2：≥7 个子系统契约面；本轮冻结四条缝均有独立消费者，见 §2）
-**冻结状态：本提交冻结 spec §2 的四条缝（① 两个 wait 的 stdout/退出码/游标；② 匹配函数判定表；③ 席位模式 wire；④ 驻场者来信正文）。Ticket 0 骨架编译通过、11+1 支契约测试全绿（§10）；分支视图 diff `codegraph/diffs/cards-B435-charter-1.json` 同批提交；`codegraph/target.json` 不改（§11）。r2 补签轮（2026-10-18）：R1–R3 与 D-B 已由协调者裁决（spec r3 `0e673c6b`），相应条目补签冻结（C-201、C-313a/313b、C-314a/314b、C-415–C-418，§9；冻结条目 137 → 145）。**
+**冻结状态：本提交冻结 spec §2 的四条缝（① 两个 wait 的 stdout/退出码/游标；② 匹配函数判定表；③ 席位模式 wire；④ 驻场者来信正文）。Ticket 0 骨架编译通过、11+1 支契约测试全绿（§10）；分支视图 diff `codegraph/diffs/cards-B435-charter-1.json` 同批提交；`codegraph/target.json` 不改（§11）。r2 补签轮（2026-10-18）：R1–R3 与 D-B 已由协调者裁决（spec r3 `0e673c6b`），相应条目补签冻结（C-201、C-313a/313b、C-314a/314b、C-415–C-418，§9；冻结条目 137 → 145）。r3 补签轮（2026-10-18，spec r4 `9824af08`，breakdown P6=甲）：补冻结第 ⑤ 条缝「投递投影」（C-501–C-517，§3.5/§4.7；拍板 D-E 读时求值，§8），并按 spec r4 对齐 D6/D8/D10 措辞（§4.4 注、§7、§12）；冻结条目 145 → 162。**
 **有效基线：** `cards/B435-charter-1` @ `7f860685`（基 `origin/main` `88e4d4e2`）
 **架构形态：** 按子系统分域的平铺领域包，无横向分层（沿用 `codegraph/best.json`；本卡不新增领域）
 **交棒：** breakdown（spec §7：Wave 0 = S2 + S4a + 席位模式字段）。
@@ -85,11 +85,13 @@
 | ② 匹配函数判定表 | 四个工作单元共同依赖同一判定 | d_collab（`internal/collab/recipients.go`） | d_gateway 消费循环、d_gateway 信箱桥、d_cli 两个 wait |
 | ③ 席位模式 wire | 跨进程/跨子系统字面量 | d_ledger（列）、d_cli（`--mode`）、d_gateway（launch/rebind 写 push） | d_keystone、d_gateway 消费循环、d_cli card wait、d_web 控制台 |
 | ④ 驻场者来信正文 | 跨进程 wire；mod 是零 import 独立交付物且已装在用户机 | d_gateway 信箱桥 | mod（不改）、桌面端组织者会话 |
+| ⑤ 投递投影（r3 补签） | 跨进程、跨语言 wire：O1 与 W 两个独立工作单元共同依赖（breakdown P6=甲）；`card show` stdout 是对外承诺 | O1 子卡单一写者：d_gateway `internal/agentd/roomsapi.go#Server.handleRoomMessages`（`no_recipient`）、会话摘要 `project` 键（装配点见 C-512）、d_cli `cmd/card.go#cardShowCmd`（stderr 一行） | W 子卡 d_web（`web/src/api/rooms.ts` 镜像、房间页标注、项目房间入口）；读 `card show` 的人与 agent |
 
 依赖方向（全部落既有 `target.json` 契约面，零新方向、零预算变化）：
 
 - d_gateway → d_collab：`collab.Service.Recipients`（「collab 入站门面」entries）。
 - d_cli → d_collab：`collab.Service.Matches`（同上，进程内调用，沿 `cmd/room.go#roomServiceFor` 组装点）。
+- ⑤ d_gateway → d_collab：房间历史投影调 `collab.Service.Recipients`（同一门面 entry，不新增方向）；d_web 只消费 d_gateway HTTP。
 - d_collab → d_ledger：`client.LedgerClient.SessionResident`（接口缝，零调用预算不变）。
 - d_collab / d_gateway / d_cli / d_ledger → d_protocol：`proto.SeatMode`、`proto.DeliveryAddress`、`proto.Delivery`、`proto.SessionResident`、`proto.RenderResidentLetter`（「proto 实体」「proto（包级函数）」entries）。
 - **禁止**（spec §8，§4 源码守卫兑现）：d_keystone 读席位来源词；d_gateway 消费循环持有事件白名单之外的寻址判定；d_cli 自带匹配逻辑；d_gateway 信箱桥自拼判定。
@@ -201,6 +203,30 @@ type SessionResident struct { Session, Identity, DesktopSession, CLISession, Mac
 ```
 
 文件名 `<SessionResident.CLISession>.<19 位零填充 UnixNano>.md`，目录 `$HOME/.handoff/desktop-wake`，tmp + Link 原子写——`writeDesktopLetter` 与 `b434-contract.md` 条 67–70 原样沿用。mod 对照：`register.ts` 只认首行 `[handoff]` 与上述文件名（C-405 CDC）。
+
+### 3.5 ⑤ 投递投影（r3 补签；d_protocol DTO 键 + d_gateway/d_cli 生产；Ticket 0 只落 DTO 键与 Go 金样本）
+
+现状（`9824af08`）：`GET /api/rooms/{id}/messages` → `internal/agentd/roomsapi.go:430-457#handleRoomMessages` 写 `{"messages": []proto.LedgerEvent}`（取自 `collab.Service.HistoryContext`，`internal/collab/service.go:383`）；TS 镜像 `web/src/api/rooms.ts:83` `type RoomHistoryItem = LedgerEvent`。会话列表/详情头 `proto.SessionSummary`（`internal/proto/sessions.go:97`）由 `internal/collab/sessions.go:317#summarizeSession` 装配，经 `internal/agentd/sessionsapi.go:145/168` 出 HTTP。`card show` stdout 是单 JSON 对象（`cmd/card.go:108-143`）。
+
+```go
+// internal/proto/delivery.go（新增）
+type RoomHistoryItem struct {
+	LedgerEvent                                     // 平铺：seq/card_id/type/actor/payload/source_*/created_at 键不变
+	NoRecipient NoRecipientReason `json:"no_recipient,omitempty"`
+}
+// internal/proto/sessions.go（SessionSummary 增一键，位于 archived 之后）
+Project string `json:"project,omitempty"`
+```
+
+信封不变：`{"messages": [RoomHistoryItem...]}`。金样本 `internal/proto/testdata/b435_room_history.json`、`internal/proto/testdata/b435_session_summary_project.json`（比对按紧凑 JSON 逐字节）。
+
+`card show` 提示行（stderr，恰一行，`<p>` 为卡的 project 原值）：
+
+```text
+提示：项目无组织者（项目 <p>；handoff project room <p> 取项目房间后 session sit 坐下）
+```
+
+消费方文案映射（W，文案逐字取 spec §9）：`addressed_unresolved`、`root_no_seat` → 「无收件人（@ 指定）」；`needs_mention` → 「需 @」；`structural`、`not_session_room`、`non_human_unaddressed` → 不标。
 
 ---
 
@@ -315,6 +341,8 @@ type SessionResident struct { Session, Identity, DesktopSession, CLISession, Mac
 244. 系统通知的 `Mentions` 恰为 `[驻场者身份]`。
 245. 项目房间无驻场者 → 不发系统通知（只落卡事件）。
 
+> r4 对齐（spec r4 D6/D8，不新增条目、不改 C-201/C-218）：协调者向项目房间提问须显式 @ 组织者身份——席位身份非人类作者，无 @ 按 C-218 得空集；`handoff project room <p>` 打印驻场者身份供引用，push 简报与 skill 文本写明（简报纪律，非机制）。项目房间只由 `session sit --project` / `handoff project room <p>` 创建；系统通知以驻场者存在为前提（C-245），从不是首个写入方。
+
 ### 4.5 ③ 席位模式
 
 301. 字面量 `push`（T0）。
@@ -371,6 +399,26 @@ type SessionResident struct { Session, Identity, DesktopSession, CLISession, Mac
 417. `transferCoordinatorWake` 与 `CoordinatorWakeResp.LetterUnopened` 保留，只服务 push 席位；驻场者地址从不经它。
 418. 不新建以会话/驻场者为键的转交 DTO；`/api/desktop/deliver` 随拉起器代开退役（§7），不复用。
 
+### 4.7 ⑤ 投递投影（r3 补签，spec r4 §2、breakdown P6=甲）
+
+501. `GET /api/rooms/{id}/messages` 信封仍为 `{"messages": [...]}`；元素 wire 形状 = `proto.RoomHistoryItem`：`LedgerEvent` 全部键平铺 + 可省略 `no_recipient`（T0 金样本 `TestB435RoomHistoryNoRecipientGolden`）。
+502. 不出 `no_recipient` 的行键集逐键等于 B435 前 `LedgerEvent` 键集（旧消费方无感，T0）。
+503. 出键当且仅当：该行 `type=room_message` 且 `collab.Service.Recipients` 对它返回 `len(Addresses)==0`；取值 = 该次 `Delivery.NoRecipient`（C-209 六值之一，非空串）。
+504. 有收件人（含默认收件人分支命中）的行不出键；非 `room_message` 行不出键。
+505. 投影的判定唯一来源是 `Recipients`：`roomsapi.go` 非测试源码不调用 `MessageWakeTargets`、`IsHumanAuthor`，不读 `.Mentions`（源码守卫，同 C-233/234 口径）。
+506. 读时求值（D-E）：按读请求当时的账本状态解析；不落账本、不推进 `session_delivery_cursors`、不唤醒、不写信。
+507. 某行 `Recipients` 返回错误 → 该行不出键、Warn 日志（room、seq、cause），整页仍 200；错误不得投影为任何 `NoRecipientReason`（同 C-228）。
+508. `no_recipient` 单一写者 = O1（`internal/agentd/roomsapi.go#Server.handleRoomMessages`）；`HistoryContext` 返回类型不变，投影在 d_gateway 组装。
+509. TS 镜像（W）：`RoomHistoryItem` 增 `no_recipient?: NoRecipientReason`，`NoRecipientReason` 为六值字面量联合；缺键与空串可区分；消费方映射按 §3.5（W 补对同一金样本的 TS 测试，§12 欠账 14）。
+510. `SessionSummary.project`：项目房间出键、取值项目名；非项目房间不出键（T0 金样本 `TestB435SessionSummaryProjectGolden`）。
+511. 会话列表（`GET /api/sessions`）与会话详情头（`SessionDetail.summary`）同一 `SessionSummary` 投影，两处同出/同不出 `project`。
+512. `project` 值来源 = 账本项目房间绑定（D6 project ↔ session）；单一写者 = O1；装配点只能一处（`collab.Service.summarizeSession` 或 d_gateway 装饰，二择一归 O1 plan，均在既有方向内）。
+513. 每个项目至多一场会话带该 `project` 值（D6 每项目恰一场）。
+514. `card show`：卡 `project` 非空，且该项目无项目房间或项目房间无驻场者 → stderr 恰一行，逐字节 = §3.5 提示行 + `\n`。
+515. `card show` stdout JSON 逐字节不变（键集 `card`/`effective_base_branch`/`relations`/`tasks`/`events`），退出码不变（spec §9 外部承诺）。
+516. 卡 `project` 为空，或项目房间有驻场者 → 不出提示行。
+517. 项目房间/驻场者读失败 → 不出提示行、stdout 与退出码不变、Warn 日志（card、project、cause）；不得把读失败显示为「项目无组织者」。
+
 ---
 
 ## 5. B358 修订记录（`b358-contract.md` §4；由 finish 节点回写，本轮不改其正文）
@@ -416,7 +464,7 @@ type SessionResident struct { Session, Identity, DesktopSession, CLISession, Mac
 | 退役 | needs_human 唤醒桌面端席位 `desktopNeedsHumanWakes`、`desktopNeedsHumanSystemActors`（§3.8.1 `:408-436`） | 177–188、191 | `TestB434NeedsHumanSystemActorTable`、`desktopwake_needs_test.go` 随删 |
 | 退役 | 控制台「用 Claude Code 坐下」「复制简报」「让拉起器代开」与 `desktopSeatCopy.ts`（§3.12） | 194–199、203–210、223–242 | `desktopSeatCopy.test.ts`、`CoordinatorPanel.test.tsx` 中对应用例随删 |
 | 退役 | `handoff launcher register/show/unregister`、`handoff status` 拉起器段（§3.10） | 139–143、159–161 | `cmd/launcher_b434_test.go` 随删 |
-| 语义替换 | `desktop_launchers` 表（§3.4 `:190-215`）→ 驻场者桌面端地址（`SessionResident` 的 identity/desktop_session/cli_session/machine） | 139–143 由 C-406、C-413、C-414 取代 | 新 DTO 金样本 `TestB435SessionResidentWire`（T0） |
+| 退役 + 新表（spec r4 勘误） | `desktop_launchers` 表（§3.4 `:190-215`）「替别人开会话」语义退役、表删除；驻场者登记（identity/desktop_session/cli_session/machine）落**新表、会话为主键**，库层兑现一房间至多一名（C-414） | 139–143 退役；驻场者面由 C-406、C-413、C-414 取代 | 新 DTO 金样本 `TestB435SessionResidentWire`（T0）；B434 launcher 用例随删 |
 | 改写 | 授权规则 `DesktopLetterAuthorizationRule` 与 SKILL「占座」节、CLAUDE.md 常设授权片段（§3.6 `:336`） | 262、276–278 | `TestB434DesktopLetterAuthorizationRuleLiteral` 随新文案改写（组织者授权，文案归 plan） |
 | 保留 | 信箱目录与原子写入 `writeDesktopLetter`（§3.6 `:249-266`） | 67–70、81–82 | `desktopwake_mailbox_test.go` 保留 |
 | 保留 | continue 深链 `claudeContinueURL`、`ClaudeContinueURLPrefix`、`ValidateDesktopSessionID`、`DesktopSessionPrefix` | 32、55–59、83–84 | 保留 |
@@ -426,7 +474,7 @@ type SessionResident struct { Session, Identity, DesktopSession, CLISession, Mac
 | 保留 | 依赖与图 | 162–164 | — |
 | 保留 | 不带 `--desktop` 的 `card coordinate`、`card bind` 既有 stdout | 42–44、255–256、64–65 | 保留（64 的「来源仍为 bind」与 C-311 并存） |
 
-退役以「生产路径删除 + 对应测试删除」为准，`desktop_launchers`/`seat_desktops` 的数据迁移按 spec §9（SQLite + PG 双方言、幂等、同一迁移内删旧列）。表中测试文件按文件名归档，个别文件混有保留用例（如 `desktopwake_remote_test.go` 含转交用例），由 plan 逐用例拆分。
+退役以「生产路径删除 + 对应测试删除」为准。`desktop_launchers`/`seat_desktops` 两表删除（spec r4 D10）；存量行无法无损映射为驻场者，一律清除并留痕（breakdown P5=甲，留痕载体归 X plan）；SQLite + PG 双方言、幂等、同一迁移内删表。表中测试文件按文件名归档，个别文件混有保留用例（如 `desktopwake_remote_test.go` 含转交用例），由 plan 逐用例拆分。
 
 ---
 
@@ -437,6 +485,9 @@ type SessionResident struct { Session, Identity, DesktopSession, CLISession, Mac
 
 **D-B 「解析结果 ≤ 1 人」只约束默认收件人分支；显式寻址人数按发送者写下的人数。**
 难逆转：匹配函数返回形状（`Delivery.Addresses` 为切片、默认分支为单值）被 d_gateway 消费循环、两个 wait、信箱桥四方编译依赖，源码守卫（C-213）与 B358 条 20–25 的金样本同时依赖这一切分。无上下文会惊讶：spec §4 E / D4 / §9.1 条 30 都写「恒 ≤ 1 人」，后人读到 `Addresses []DeliveryAddress` 会以为违反 spec 而改成单值或截断首个。真取舍：被否方案——一切消息 ≤1（多 @ 只取首个或拒发）：推翻 spec 同表明文「留」的条 23/25，且 spec 未给多 @ 的处置，等于让契约替 spec 发明规则；本方案的依据是同一张 §9.1 表把条 20–25 列为「留」、§3「找别人显式 @」与 §4 E「每次 @ 很麻烦」的上下文只针对无寻址消息。**协调者 2026-10-18 确认此读法**（spec r3 `0e673c6b`）。
+
+**D-E（r3 补签）`no_recipient` 读时求值，不做发送时快照。**
+难逆转：改为发送时快照需要新的账本写面（每条消息落一份投递结果）——那是一条新缝、一次迁移，且已渲染的历史标注语义随之改变。无上下文会惊讶：后人看到「空座卡被 @ 的旧消息在补座后不再标无收件人」会以为投影漏判。真取舍：被否方案——消费循环处理消息时把 `Delivery` 写回账本、历史视图读快照；代价是新写面与消费循环成为投影的第二写者（违反 C-508 单一写者），且 spec r4 §2 只要求「经 `Recipients` 解析为空集时出键」，未要求冻结发送时状态。本方案的已知局限（标注随当前状态变化）由 W 在房间页提示语义上承担，不另立机制。
 
 **D-C 席位地址游标无行时，积压下界取该身份最近一次坐下/换绑事件 seq，而非 0。**
 审过不立：可逆（单包 CLI 读法，改回 0 只动 `cmd/card_wait.go`），不满足「难逆转」；以 C-119 冻结为条目，理由记台账 §五.4。
@@ -467,7 +518,9 @@ type SessionResident struct { Session, Identity, DesktopSession, CLISession, Mac
 | `internal/proto/delivery.go`（新） | `DeliveryAddressKind/DeliveryAddress`、`DeliveryCursorKey`、`NoRecipientReason` 六值、`Delivery`、`IsHumanAuthor`、`SystemNotifierIdentity` | 编码与判据即 wire 定义 |
 | `internal/proto/resident_letter.go`（新） | `ResidentLetterTakeCmd`、`ResidentLetter`、`RenderResidentLetter` | 正文渲染即 wire 定义 |
 | `internal/proto/ledger.go`（改） | `Card.DriverMode`、`CardView.DriverMode` | DTO 键 |
-| `internal/proto/sessions.go`（改） | `SessionMemberResident`、`SessionCard.SeatMode`、`SessionResident` | DTO |
+| `internal/proto/sessions.go`（改） | `SessionMemberResident`、`SessionCard.SeatMode`、`SessionResident`；r3：`SessionSummary.Project` | DTO |
+| `internal/proto/delivery.go`（r3 改） | `RoomHistoryItem`（`LedgerEvent` 平铺 + `no_recipient`） | DTO 键（投影逻辑不落，C-508 归 O1） |
+| `internal/proto/testdata/b435_room_history.json`、`b435_session_summary_project.json`（r3 新） | ⑤ Go 侧金样本 | fixture |
 | `internal/collab/recipients.go`（新） | `Service.Recipients/Matches/defaultRecipient` | **空壳**：恒返回 `errRecipientsNotImplemented` |
 | `internal/collab/client/client.go`（改） | `LedgerClient.SessionResident` | 接口缝 |
 | `internal/ledger/api/api.go`（改） | `Facade.SessionResident` | **空壳**：恒返回未实现错误（不报「无驻场者」冒充成功） |
@@ -478,6 +531,7 @@ type SessionResident struct { Session, Identity, DesktopSession, CLISession, Mac
 ### 10.2 契约测试（本轮新增，全部已跑 PASS）
 
 - `internal/proto/b435_contract_test.go`：`TestB435SeatModeLiterals`（C-301/302）、`TestB435CardDriverModeWireKey`（C-305/306）、`TestB435SessionCardSeatModeWireKey`（C-307）、`TestB435SessionResidentWire`（C-208/406）、`TestB435DeliveryAddressCursorKey`（C-206/207）、`TestB435NoRecipientVocabulary`（C-209/210）、`TestB435IsHumanAuthor`（C-201）、`TestB435ResidentLetterGolden`（C-401/402，`testdata/b435_resident_letter.golden`）、`TestB435ModStillMatchesLetterWire`（C-405，CDC 读 `register.ts`）。
+- r3：`internal/proto/b435_contract_test.go` 增 `TestB435RoomHistoryNoRecipientGolden`（C-501/502/503 形状）、`TestB435SessionSummaryProjectGolden`（C-510）。
 - `internal/collab/recipients_b435_test.go`：编译期签名断言（C-211/212）、`TestB435DefaultRecipientReturnsSingleAddress`（C-213）、`TestB435RecipientsShellNeverSucceeds`（空壳不得成功；实现节点删）。
 - `cmd/card_wait_b435_test.go`：`TestB435CardWaitLineShapes`（C-105/106/107，锁现状，改造后不得改期望值）。
 
@@ -490,6 +544,8 @@ type SessionResident struct { Session, Identity, DesktopSession, CLISession, Mac
 - `go test -run 'TestB435|TestB353CardWait|TestB409CardWait' -v github.com/Xsxdot/handoff/cmd` → 15 支 PASS，`ok`。
 - `go test -count=1 -run NONE_B435 ./...` → 全仓测试二进制编译通过，退出 0。
 
+- r3 补签轮（原始输出见台账 §五.8）：`go build ./...` 退出 0；`go test -count=1 ./internal/proto/ ./internal/collab/...` 3 包 ok；`go test -count=1 ./internal/agentd/` ok。
+
 无哈希、密钥派生或加密编码命中。
 
 ---
@@ -497,7 +553,7 @@ type SessionResident struct { Session, Identity, DesktopSession, CLISession, Mac
 ## 11. 依赖方向、组装点、预算与图
 
 - **`codegraph/target.json`：不改**——无新方向、无新组装点、无预算变化（§2）。组装点仍是 `main.go`、`internal/agentd/server.go`、`cmd/agentd.go`；CLI 侧仍是 `cmd/room.go#roomServiceFor`。
-- **分支视图 diff**：`codegraph/diffs/cards-B435-charter-1.json`（分支 `cards/B435-charter-1` 扁平化），新增 16 节点（7 model + 9 func，r2 补签加 `isCLIHumanActor`）、修改 4 节点（`Card`/`CardView`/`SessionCard`/`LedgerClient`）、新增 2 边（`IsHumanAuthor → ParseMemberIdentity`、`IsHumanAuthor → isCLIHumanActor`）；常量与哨兵不入图。
+- **分支视图 diff**：`codegraph/diffs/cards-B435-charter-1.json`（分支 `cards/B435-charter-1` 扁平化），新增 17 节点（8 model + 9 func；r2 补签加 `isCLIHumanActor`，r3 补签加 `RoomHistoryItem`）、修改 5 节点（`Card`/`CardView`/`SessionCard`/`SessionSummary`/`LedgerClient`）、新增 2 边（`IsHumanAuthor → ParseMemberIdentity`、`IsHumanAuthor → isCLIHumanActor`）；常量与哨兵不入图。
 - `codegraph validate` → `issues: null`，视图含 `cards-B435-charter-1`。
 - `codegraph --view cards-B435-charter-1 check` → 3 处 over-budget，**与不带视图的基线 check 完全相同**（d_cli→d_maintenance、d_gateway→d_collab、d_ledger→d_protocol 存量），本视图未引入新违规。
 
@@ -512,10 +568,11 @@ type SessionResident struct { Session, Identity, DesktopSession, CLISession, Mac
 7. 驻场者登记表、`Store` 读写、`Facade.SessionResident` 落码；`session sit/stand`（含驻场者身份来源 flag，§13）。
 8. 消费循环改接（C-229–C-238）、四处来源判定改读 mode 与源码守卫 C-318。
 9. 信箱桥改写为驻场者门铃信（C-401–C-412）；驻场者写信失败的处置（B434 失败段随卡级席位退役，驻场者侧无现成语义——归 plan，必要时回 contract）；本机判据落码（C-415/416）。
-10. B434 退役清单（§7）落地与迁移；`desktop_launchers`/`seat_desktops` 行迁移留痕（S7）。
+10. B434 退役清单（§7）落地与迁移；`desktop_launchers`/`seat_desktops` 两表删除、存量行清除并留痕（spec r4 D10、P5=甲，S7）；驻场者新表（会话主键）。
 11. TS 镜像：`web/src/api/ledger.ts` 的 `SeatMode`/`driver_mode`、会话 DTO 的 `seat_mode`/`resident`、`contract.test.ts` fixture（本机无 `node_modules`，未编译验证）。
 12. 图覆盖债：`runSessionWait`、`sessionWaitMatch` 未入图；`Service.MessageWakeTargets` 图中签名陈旧。
-13. 系统通知（C-243–C-245）与项目房间（D6）的落码；needs_human 通知事件表（D8）。
+13. 系统通知（C-243–C-245）与项目房间（D6）的落码；needs_human 通知事件表（D8）；项目房间只由 `session sit --project` / `project room` 创建；`project room` 打印驻场者身份、push 简报与 skill 文本写明「向组织者提问须显式 @」（spec r4 D8）。
+14. **⑤ 投影逻辑归 O1/W**：O1 落 `handleRoomMessages` 投影（C-501–C-508）、`SessionSummary.project` 装配（C-510–C-513）、`card show` stderr 提示（C-514–C-517）及 C-505 源码守卫；W 落 TS 镜像（`rooms.ts` 的 `RoomHistoryItem.no_recipient`、`SessionSummary.project`）与对本轮 Go 金样本的 TS 侧测试（C-509；本机无 `node_modules`，本轮未编译验证）及房间页标注、项目房间入口。
 
 ## 13. 移交 plan 附区（不占冻结名额、不参与逐条对账；plan 出稿时吸收并在此标注销区）
 
@@ -523,6 +580,7 @@ type SessionResident struct { Session, Identity, DesktopSession, CLISession, Mac
 - `session sit` 需要一个驻场者身份来源（spec 未给 flag）；建议 `--as user:<n>|agent:<n>`，缺省读控制台 `console_user`——属 d_cli 实现选择，若成为他方依赖再回 contract。
 - card wait 房间命中段与卡事件段可共用一个按 fence 推进的轮询循环（两段各自读到同一 `MaxSeq` 上界后合并按 seq 输出），满足 C-121/C-125；不建议两 goroutine 各自写 stdout。
 - 信箱门铃按「消费循环一批 × 一个驻场者地址」聚合成一封（C-407）；`Count` 取本批命中条数。
+- ⑤ 历史页每行调一次 `Recipients` 会把一页 N 条放大为 N 次会话/卡读；O1 可在单次请求内缓存会话与卡快照（同 `desktopwake.go:270` 的顾虑），不改 C-506 的读时语义。
 - `SessionMember` 的 `resident` 种类在 `sessionMembers`（`internal/collab/sessions.go:386`）派生时追加一行，`Identity` 为驻场者身份；S9 升格后同一人以 resident 与 seat 两行出现。
 
 ## 14. 本轮法定核对（收尾自检 5 项）
@@ -532,3 +590,11 @@ type SessionResident struct { Session, Identity, DesktopSession, CLISession, Mac
 3. **Ticket 0**：需要（②③④ 新建面两侧独立编译）；`go build ./...` 退出 0、全仓测试二进制编译退出 0（§10.3）。① 不建骨架。
 4. **可执行冻结**：wire 形状（mode 字面量与键、地址游标键、`SessionResident` 键集、来信正文、mod 对照、card wait 两种行）均有金样本/CDC 且本轮跑过 PASS（§10.2）；`SessionWake`/`SessionBacklog` 沿用既有金样本不改。
 5. **拍板记录**：命中两条（D-A 门铃信、D-B ≤1 的作用域），另审过不立五条并记依据（§8）。
+
+r3 补签轮（⑤）自检：
+
+1. **契约增量**：§3.5 现状带 `file:line`（`9824af08`）与精确签名；§4.7 C-501–C-517 原子条目；§2 户口表增 ⑤ 行（生产 O1、消费 W）。
+2. **图**：新符号 `RoomHistoryItem` 入分支视图 diff，`SessionSummary` 记修改；`validate` 零 issue；`check` 仍为基线同样 3 处存量 over-budget；`target.json` 不改（d_gateway→d_collab 走既有门面）。
+3. **Ticket 0**：只加 DTO 键（`RoomHistoryItem`、`SessionSummary.Project`）与 Go 金样本，不写投影逻辑（§10.1）；`go build ./...` 退出 0。
+4. **可执行冻结**：`no_recipient` 出/不出键与 `project` 出/不出键有逐字节金样本且已跑 PASS；`card show` stderr 行与 TS 镜像未有金样本——前者归 O1 测试、后者归 W，均记 §12 欠账 14。
+5. **拍板记录**：命中一条 D-E（读时求值）；`card show` 提示走 stderr 由 spec r4 §2 直接决定，审过不立。

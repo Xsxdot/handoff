@@ -103,6 +103,9 @@ type SessionSummary struct {
 	Owner string `json:"owner"`
 	// Archived 显式归档；归档后只读。卡的终态不等于会话结束。
 	Archived bool `json:"archived"`
+	// Project 项目房间标记（B435 ⑤/D6）：取值项目名；非项目房间不出键。
+	// 唯一写者是项目房间绑定（session sit --project / project room 创建的那条）。
+	Project string `json:"project,omitempty"`
 	// Unread 该成员未读消息数。
 	Unread int `json:"unread"`
 	// NeedsHuman 会话内任意一张卡处于 needs_human（列表标签）。
