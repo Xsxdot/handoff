@@ -357,7 +357,7 @@ func (s *Server) roomMessageWakeEvents(ev proto.LedgerEvent) ([]keystone.WakeEve
 	seenCard := make(map[string]bool, len(delivery.Addresses))
 	for _, addr := range delivery.Addresses {
 		if addr.Kind != proto.DeliverySeat {
-			s.log.Info("会话消息命中驻场者地址：不经 keystone（门铃信桥归后续子卡）",
+			s.log.Info("会话消息命中驻场者地址：不经 keystone（门铃由 residentwake.go 另行判定）",
 				"seq", ev.Seq, "session", addr.Session, "identity", addr.Identity, "default", delivery.Default)
 			continue
 		}
@@ -798,6 +798,10 @@ func (s *Server) consumeAutomationEventsOnce(ctx context.Context) (processed int
 			"reason", "not_actionable")
 	}
 
+	// B435 O2 门铃（Q2 甲）：逐事件循环之后、卡批循环（attach 暂缓会提前返回）与水位推进之前；仅判定读失败报错。
+	if bellErr := s.ringResidentDoorbells(from, events); bellErr != nil {
+		return processed, escalated, bellErr
+	}
 	cards := make([]string, 0, len(pendingByCard))
 	for card := range pendingByCard {
 		cards = append(cards, card)

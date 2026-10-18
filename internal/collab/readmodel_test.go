@@ -133,7 +133,8 @@ func (f *fakeLC) EnsureProjectRoom(project, owner, actor string) (proto.Session,
 	f.ensureCalls = append(f.ensureCalls, [3]string{project, owner, actor})
 	return proto.Session{ID: "session:1", Title: "项目房间 " + project, Owner: owner, Members: []string{owner}}, true, nil
 }
-func (f *fakeLC) SessionProject(sessionID string) (string, error) { return "", nil }
+func (f *fakeLC) SessionProject(sessionID string) (string, error)  { return "", nil }
+func (f *fakeLC) ProjectRoom(project string) (string, bool, error) { return "", false, nil }
 func (f *fakeLC) EventsFromAsc(cardIDs []string, fromSeq int64, limit int) ([]proto.LedgerEvent, error) {
 	f.eventReads++
 	if f.errEvents != nil {

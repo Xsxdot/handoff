@@ -208,6 +208,9 @@ type Server struct {
 	// projectNotify 是项目房间系统通知器的 handled 集（B435 O1 Q6 甲，projectnotify.go）：只记「已发且
 	// 收尾 / 判定不适用 / 确定性放弃」的源事件 seq；零值可用，自带锁，不经 automationMu。
 	projectNotify projectNotifyHandled
+	// residentWake 是驻场者门铃信桥的进程内状态（B435 O2，residentwake.go）：已处置事件 seq 与「信未落盘」
+	// 的在途重试；零值可用，自带锁，不经 automationMu。
+	residentWake residentWakeState
 	// automationBackoff 记录每张卡最近一次失败唤醒的 seq 与退避截止时刻（B389
 	// §3.5.4）：同卡同 seq 在退避窗内不重复试跑，防止失败事件反复引发唤醒。
 	// 进程内存：重启后重试一次是安全方向（不丢事件）。

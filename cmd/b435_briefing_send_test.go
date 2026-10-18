@@ -126,3 +126,37 @@ func TestB435CoordinatorSeatSendsToProjectRoom(t *testing.T) {
 		}
 	}
 }
+
+// R-K1 (a″)：组织者（项目房间驻场者 agent:org）把组织类回答发回同项目卡所在会话——`session send --agent org`
+// 以 agent:org 落账，显式 @卡号 进 mentions（寻址不变）。O2 implement 发现 #12 的 CLI 复现。
+func TestB435OrganizerAnswersInCardSession(t *testing.T) {
+	b435UnsetSessionEnv(t)
+	e := newB435WaitEnv(t)
+	root := e.card(t) // project=demo，挂在卡会话 e.session
+	e.push(t, root, "ses_x")
+	pr, _, err := e.svc.EnsureProjectRoom(b435CLIProject, "user:tester")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.svc.SitResident(proto.SessionResident{Session: pr.ID, Identity: "agent:org"}); err != nil {
+		t.Fatal(err)
+	}
+	body := "@" + root + " B435 组织类回答"
+	out, _, err := runLedgerCLI(t, e.dir, "session", "send", "--agent", "org", e.session, body)
+	if err != nil || !strings.Contains(out, `"ok":true`) {
+		t.Fatalf("组织者向同项目卡会话发言应成功: err=%v out=%q", err, out)
+	}
+	ev, ok := e.lastRoomMessage(t, "B435 组织类回答")
+	if !ok || ev.Actor != "agent:org" {
+		t.Fatalf("落账 actor 应为 agent:org，得 %q（found=%v）", ev.Actor, ok)
+	}
+	var payload struct {
+		Mentions []string `json:"mentions"`
+	}
+	if err := json.Unmarshal(ev.Payload, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(payload.Mentions, root) {
+		t.Fatalf("mentions 应含卡号 %s，得 %v（payload=%s）", root, payload.Mentions, ev.Payload)
+	}
+}

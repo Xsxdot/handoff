@@ -124,6 +124,9 @@ type LedgerClient interface {
 	// SessionProject 读会话绑定的项目名（SessionSummary.project 的数据源，C-512）；非项目房间返回空串。
 	// 读失败返回错误（调用方不得当作非项目房间）。
 	SessionProject(sessionID string) (string, error)
+	// ProjectRoom 读项目的项目房间会话 id（SessionProject 的反向读面，B435 R-K1 (a″)）；项目无项目房间 →
+	// ok=false、err=nil。读失败返回错误（调用方不得当作无项目房间）。
+	ProjectRoom(project string) (session string, ok bool, err error)
 	// BindDriver 绑定/换绑（expect=CAS 前值；实现侧落 EvDriverTakeover 审计）。
 	BindDriver(id, session, carrier, expect string) error
 	// DriverLease 读绑定者活性租约：过期时刻 + 行是否存在。不过滤过期，
