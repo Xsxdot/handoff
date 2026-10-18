@@ -28,6 +28,7 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Xsxdot/handoff/internal/config"
@@ -44,6 +45,7 @@ import (
 //   - Err: 非 nil 表示该候选失败（命令失败/解析失败/未绑定/超时）
 //   - ElapsedMS: 本候选耗时
 //   - Model: 本候选实际使用的模型名；未指定时 = ApproverModelDefaultLabel
+//   - Machine: 本尝试所属环的机器名（B437 共享链）；空 = 本地配置链路径
 type ApproverAttempt struct {
 	Executor  string
 	Decision  string
@@ -51,6 +53,7 @@ type ApproverAttempt struct {
 	Err       error
 	ElapsedMS int64
 	Model     string
+	Machine   string
 }
 
 // ApproverDecision 是审批者一次裁决的结果。
@@ -96,6 +99,51 @@ type Approver struct {
 	// shots 是候选名 → 一次性调用能力（B376）。单候选路径绑定到 names[0]，
 	// 兼容既有 BindOneShot 调用方。
 	shots map[string]executor.OneShot
+
+	// ---- B437 共享审批链（全部经 setter 在装配期注入，零值时 S5 路径逐字不变）----
+	//
+	// chainMu 保护 chainReader/remoteDecider/lastGood 的读写：装配期注入一次、
+	// 运行期只读；lastGood 由裁决 goroutine 与 Available() 并发更新。
+	chainMu       sync.Mutex
+	chainReader   ChainReader
+	remoteDecider RemoteDecider
+	// localShot 是共享链本机环的 OneShot 解析缝（B437 §4.9）：shots 未命中时用它。
+	localShot func(name string) (executor.OneShot, error)
+	// selfMachine 判断环的机器名是否本机（B439 唯一自名判据，组装点注入）。
+	selfMachine func(name string) bool
+	// lastGood 是最近一次成功读到的共享链；读失败时沿用，ErrApproverChainAbsent 清空。
+	lastGood *ApproverChain
+	// warnMu/warnAt 实现「同类告警每分钟至多一条」的限频（本次补充 P2 约束）。
+	warnMu sync.Mutex
+	warnAt map[string]time.Time
+}
+
+// SetChainReader 注入共享链读取口（nil = 无共享链，恒走本地配置链）。
+func (a *Approver) SetChainReader(r ChainReader) {
+	a.chainMu.Lock()
+	defer a.chainMu.Unlock()
+	a.chainReader = r
+}
+
+// SetRemoteDecider 注入他机环的远程裁决口（nil = 他机环一律失败）。
+func (a *Approver) SetRemoteDecider(d RemoteDecider) {
+	a.chainMu.Lock()
+	defer a.chainMu.Unlock()
+	a.remoteDecider = d
+}
+
+// SetLocalShot 注入共享链本机环的 OneShot 解析缝（shots 未命中时用它）。
+func (a *Approver) SetLocalShot(fn func(name string) (executor.OneShot, error)) {
+	a.chainMu.Lock()
+	defer a.chainMu.Unlock()
+	a.localShot = fn
+}
+
+// SetSelfMachine 注入「环的机器名是否本机」判据（B439 唯一自名判据）。
+func (a *Approver) SetSelfMachine(fn func(name string) bool) {
+	a.chainMu.Lock()
+	defer a.chainMu.Unlock()
+	a.selfMachine = fn
 }
 
 // ApproverModelDefaultLabel 是候选未解析出模型名时审计记录里的显式占位。
@@ -150,6 +198,22 @@ func NewApprover(cfg config.ApproverConfig, env *envfile.Resolver, log *slog.Log
 	if cfg.Executor.Empty() {
 		return nil, nil
 	}
+	return newApprover(cfg, env, log), nil
+}
+
+// NewApproverForShared 为「可能收到共享审批链」的机器构造审批者：即使本地
+// approver.executor 为空也返回非 nil 的 Approver（B437 §4.2 启用门缺口）。
+//
+// 为什么需要：DSN+身份的机器可能一条本地链都没配，全靠共享链生效。若沿用
+// NewApprover 的「空配置返 nil」，门 shouldConsultApprover 会在 m.approver==nil
+// 时恒 false，S1「配一次、其它机器什么都不配」直接落空。空配置返 nil 的既有
+// 语义保留（S5 回归钉），共享机构造走本函数。链读取口等由组装点 setter 后补注入。
+func NewApproverForShared(cfg config.ApproverConfig, env *envfile.Resolver, log *slog.Logger) (*Approver, error) {
+	return newApprover(cfg, env, log), nil
+}
+
+// newApprover 是 NewApprover / NewApproverForShared 的共同构造体。
+func newApprover(cfg config.ApproverConfig, env *envfile.Resolver, log *slog.Logger) *Approver {
 	names := append([]string(nil), cfg.Executor...)
 	// 拷贝而不是直接引用 cfg.Models：NewApprover 的入参是值，但 map 是引用
 	// 类型，调用方之后改自己的 map 不该影响已构造的 Approver。
@@ -163,15 +227,19 @@ func NewApprover(cfg config.ApproverConfig, env *envfile.Resolver, log *slog.Log
 	if log == nil {
 		log = slog.Default()
 	}
+	executorName := ""
+	if len(names) > 0 {
+		executorName = names[0]
+	}
 	return &Approver{
 		log:          log,
 		names:        names,
-		executorName: names[0],
+		executorName: executorName,
 		model:        cfg.Model,
 		models:       models,
 		timeout:      cfg.Timeout,
 		env:          env,
-	}, nil
+	}
 }
 
 // randNonce 生成一次性裁决随机数（8 字节 → 16 位十六进制）。
@@ -198,7 +266,111 @@ func randNonce() string {
 // 返回：
 //   - ApproverDecision，见该类型注释（fail-closed：一切无法干净裁决的输入
 //     都返回 Approve=false + Err 非 nil）
+//
+// B437：先尝试读共享审批链；读到（或读到过 last-good）则按链逐环裁决，否则
+// 走构造期本地配置链（S5 路径逐字不变）。
 func (a *Approver) Decide(ctx context.Context, permission, taskSummary string) ApproverDecision {
+	if chain, ok := a.effectiveChain(ctx); ok {
+		return a.decideSharedChain(ctx, chain, permission, taskSummary)
+	}
+	return a.decideLocalChain(ctx, permission, taskSummary)
+}
+
+// Available 报告审批者此刻是否有可用的链（B437 §4.2 启用门判据）。
+//
+// 本地配置链非空（今天语义）→ true，不读账本；否则若有共享链读取口，读一次
+// （带 ApproverChainReadTimeout 短时限）判断共享链是否存在。DSN 机器无任何链
+// → false，与今天「直接升级人工」逐字一致（零新事件、零计数）。
+func (a *Approver) Available() bool {
+	if a == nil {
+		return false
+	}
+	if len(a.names) > 0 {
+		return true
+	}
+	a.chainMu.Lock()
+	hasReader := a.chainReader != nil
+	a.chainMu.Unlock()
+	if !hasReader {
+		return false
+	}
+	_, ok := a.effectiveChain(context.Background())
+	return ok
+}
+
+// effectiveChain 解析本次裁决实际应使用的共享链。
+//
+// 读优先级（P2 + 本次补充）：
+//   - 读取口 nil → (zero,false)，走本地链（S5）
+//   - 读成功 → 更新 last-good，返回链
+//   - ErrApproverChainAbsent（clear 的数据结论）→ 清 last-good，返回 false 回落本地链
+//   - 其余错误（含超时/解码失败）→ 有 last-good 用它，否则回落本地链；各打一次限频 WARN
+//
+// 读封顶 ApproverChainReadTimeout：账本读在独立 goroutine 里跑，主协程 select
+// 到点即返回——底层驱动若不尊重 ctx，也不会把裁决拖到裁决时限。
+func (a *Approver) effectiveChain(ctx context.Context) (ApproverChain, bool) {
+	a.chainMu.Lock()
+	reader := a.chainReader
+	a.chainMu.Unlock()
+	if reader == nil {
+		return ApproverChain{}, false
+	}
+	chain, err := a.readChain(ctx, reader)
+	switch {
+	case err == nil:
+		if len(chain.Rings) == 0 {
+			return ApproverChain{}, false
+		}
+		cp := chain
+		a.chainMu.Lock()
+		a.lastGood = &cp
+		a.chainMu.Unlock()
+		return chain, true
+	case errors.Is(err, ErrApproverChainAbsent):
+		a.chainMu.Lock()
+		a.lastGood = nil
+		a.chainMu.Unlock()
+		a.warnLimited("chain_absent", "共享审批链已被清除，回落本地审批链")
+		return ApproverChain{}, false
+	default:
+		a.chainMu.Lock()
+		lg := a.lastGood
+		a.chainMu.Unlock()
+		if lg != nil {
+			a.warnLimited("chain_read_fail", "读共享审批链失败，沿用 last-good 链", "cause", err)
+			return *lg, true
+		}
+		a.warnLimited("chain_read_fail", "读共享审批链失败且无 last-good，回落本地审批链", "cause", err)
+		return ApproverChain{}, false
+	}
+}
+
+// readChain 带独立短时限执行一次链读取。
+func (a *Approver) readChain(ctx context.Context, reader ChainReader) (ApproverChain, error) {
+	return ReadChainWithTimeout(ctx, reader)
+}
+
+// warnLimited 按 key 限频打 WARN：同类告警每分钟至多一条（本次补充 P2 约束）。
+//
+// 为什么限频：共享账本读失败在热路径上会每个权限请求各来一次，逐请求打 WARN
+// 会把真正需要注意的失败淹没在噪音里。
+func (a *Approver) warnLimited(key, msg string, args ...any) {
+	a.warnMu.Lock()
+	if a.warnAt == nil {
+		a.warnAt = map[string]time.Time{}
+	}
+	now := time.Now()
+	if t, ok := a.warnAt[key]; ok && now.Sub(t) < time.Minute {
+		a.warnMu.Unlock()
+		return
+	}
+	a.warnAt[key] = now
+	a.warnMu.Unlock()
+	a.log.Warn(msg, args...)
+}
+
+// decideLocalChain 是既有本地配置链路径（B376/B405 语义，S5 一字不改）。
+func (a *Approver) decideLocalChain(ctx context.Context, permission, taskSummary string) ApproverDecision {
 	start := time.Now()
 	nonce := randNonce()
 	if nonce == "" {
@@ -246,6 +418,151 @@ func (a *Approver) Decide(ctx context.Context, permission, taskSummary string) A
 	a.log.Error("审批者全部候选失败", "executors", strings.Join(a.names, ","),
 		"tried", len(attempts), "cause", final.Err)
 	return final
+}
+
+// decideSharedChain 按共享审批链逐环裁决（B437）。
+//
+// 每个环各记一条 attempt（带 machine）；某环给出干净裁决即停；全部环失败返回
+// 一个总 Err（请求级失败计 1，与本地链路径同款），由上层做连续失败计数。
+func (a *Approver) decideSharedChain(ctx context.Context, chain ApproverChain, permission, taskSummary string) ApproverDecision {
+	start := time.Now()
+	timeout := EffectiveApproverChainTimeout(chain)
+	a.log.Info("审批者开始裁决（共享链）", "permission", turn.TruncateRunes(permission, 80),
+		"rings", len(chain.Rings), "timeout", timeout)
+
+	var attempts []ApproverAttempt
+	var lastErr error
+	for _, ring := range chain.Rings {
+		attempt := a.decideRing(ctx, ring, timeout, permission, taskSummary)
+		attempts = append(attempts, attempt)
+		if attempt.Err == nil {
+			return ApproverDecision{
+				Approve:   attempt.Decision == "approve",
+				Reason:    attempt.Reason,
+				ElapsedMS: time.Since(start).Milliseconds(),
+				Executor:  ring.Executor,
+				Model:     attempt.Model,
+				Attempts:  attempts,
+			}
+		}
+		lastErr = attempt.Err
+		a.log.Warn("审批者环失败，尝试下一环", "machine", ring.Machine,
+			"executor", ring.Executor, "cause", attempt.Err, "tried", len(attempts))
+	}
+	if lastErr == nil {
+		lastErr = errors.New("共享审批链无可用环")
+	}
+	final := ApproverDecision{
+		Approve:   false,
+		ElapsedMS: time.Since(start).Milliseconds(),
+		Err:       fmt.Errorf("全部审批环均失败（%d 环）: %w", len(chain.Rings), lastErr),
+		Attempts:  attempts,
+	}
+	if len(attempts) > 0 {
+		final.Executor = attempts[len(attempts)-1].Executor
+		final.Model = attempts[len(attempts)-1].Model
+	}
+	a.log.Error("审批者全部环失败", "rings", len(chain.Rings),
+		"tried", len(attempts), "cause", final.Err)
+	return final
+}
+
+// decideRing 执行共享链上的一个环：本机环就地跑 OneShot，他机环经远程裁决口。
+func (a *Approver) decideRing(ctx context.Context, ring ApproverRing, timeout time.Duration, permission, taskSummary string) ApproverAttempt {
+	candStart := time.Now()
+	if a.isSelfRing(ring.Machine) {
+		shot, err := a.resolveLocalShot(ring.Executor)
+		if err != nil {
+			a.log.Error("审批者本机环缺少 OneShot", "machine", ring.Machine,
+				"executor", ring.Executor, "cause", err)
+			return ApproverAttempt{Executor: ring.Executor, Machine: ring.Machine, Decision: "error",
+				Reason: err.Error(), Err: err, ElapsedMS: time.Since(candStart).Milliseconds(),
+				Model: modelLabelOr(ring.Model)}
+		}
+		out := RunLocalRing(ctx, shot, ring.Executor, ring.Model, permission, taskSummary, timeout, a.env, a.log)
+		return ringOutcomeAttempt(ring, out)
+	}
+	a.chainMu.Lock()
+	rd := a.remoteDecider
+	a.chainMu.Unlock()
+	if rd == nil {
+		err := fmt.Errorf("远程裁决口未装配，环 %s 不可用", ring.Machine)
+		a.log.Error("审批者远程裁决口缺失", "machine", ring.Machine, "executor", ring.Executor)
+		return ApproverAttempt{Executor: ring.Executor, Machine: ring.Machine, Decision: "error",
+			Reason: err.Error(), Err: err, ElapsedMS: time.Since(candStart).Milliseconds(),
+			Model: modelLabelOr(ring.Model)}
+	}
+	out := rd.DecideRemote(ctx, ring, permission, taskSummary, timeout)
+	return remoteOutcomeAttempt(ring, out)
+}
+
+// isSelfRing 判断环的机器名是否本机（无注入判据时按「恒非本机」处理）。
+func (a *Approver) isSelfRing(machine string) bool {
+	a.chainMu.Lock()
+	fn := a.selfMachine
+	a.chainMu.Unlock()
+	return fn != nil && fn(machine)
+}
+
+// resolveLocalShot 解析本机环的 OneShot：本地配置链的既有绑定优先，未命中走
+// localShot 缝（B437 §4.9）。两条路径在 decideRing 内汇合成同一执行逻辑。
+func (a *Approver) resolveLocalShot(name string) (executor.OneShot, error) {
+	a.chainMu.Lock()
+	shot := a.shots[name]
+	fn := a.localShot
+	a.chainMu.Unlock()
+	if shot != nil {
+		return shot, nil
+	}
+	if fn == nil {
+		return nil, fmt.Errorf("本机执行器 %q 无可用 OneShot（本地绑定与解析缝均未命中）", name)
+	}
+	return fn(name)
+}
+
+// ringOutcomeAttempt 把单环本机裁决结果投影成审计 attempt。
+func ringOutcomeAttempt(ring ApproverRing, out RingOutcome) ApproverAttempt {
+	at := ApproverAttempt{Executor: ring.Executor, Machine: ring.Machine,
+		Decision: out.Decision, Reason: out.Reason, ElapsedMS: out.ElapsedMS, Model: out.Model}
+	if at.Model == "" {
+		at.Model = modelLabelOr(ring.Model)
+	}
+	if out.Decision == "error" {
+		if at.Reason == "" {
+			at.Reason = ApproverFailReason(out.ErrorKind)
+		}
+		at.Err = errors.New(at.Reason)
+	}
+	return at
+}
+
+// remoteOutcomeAttempt 把远程环裁决结果投影成审计 attempt，并把失败类别翻成人读理由。
+func remoteOutcomeAttempt(ring ApproverRing, out RemoteOutcome) ApproverAttempt {
+	at := ApproverAttempt{Executor: ring.Executor, Machine: ring.Machine,
+		Decision: out.Decision, Reason: out.Reason, ElapsedMS: out.ElapsedMS, Model: out.Model}
+	if at.Model == "" {
+		at.Model = modelLabelOr(ring.Model)
+	}
+	if out.Decision == "error" {
+		kind := out.ErrorKind
+		if kind == "" {
+			kind = ApproverFailInternal
+		}
+		if kind == ApproverFailInternal && out.Reason != "" {
+			at.Reason = out.Reason
+		} else {
+			at.Reason = ApproverFailReason(kind)
+		}
+		at.Err = errors.New(at.Reason)
+	}
+	return at
+}
+
+func modelLabelOr(model string) string {
+	if model == "" {
+		return ApproverModelDefaultLabel
+	}
+	return model
 }
 
 // decideWithCandidate 对单个候选执行一次裁决尝试。

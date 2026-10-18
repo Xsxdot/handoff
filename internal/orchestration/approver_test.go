@@ -438,6 +438,47 @@ func TestConsultApproverWritesPerAttemptEventsManagerPath(t *testing.T) {
 	}
 }
 
+// TestConsultApproverSharedChainMachineManagerPath 钉住 B437 双投影之 Manager 路径：
+// 共享链他机环的 attempt 落 approver_decision 事件时带 machine（非 OpenCode 执行器）。
+func TestConsultApproverSharedChainMachineManagerPath(t *testing.T) {
+	ap, err := NewApproverForShared(config.ApproverConfig{Timeout: time.Second}, nil, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ap.SetSelfMachine(func(string) bool { return false })
+	ap.SetRemoteDecider(&stubRemoteDecider{fn: func(ApproverRing) RemoteOutcome {
+		return RemoteOutcome{Decision: "approve", Reason: "对端放行", Model: "m", ElapsedMS: 3}
+	}})
+	ap.SetChainReader(&funcChainReader{fn: func(context.Context) (ApproverChain, error) {
+		return ApproverChain{Rings: []ApproverRing{{Machine: "linux-01", Executor: "codex"}}}, nil
+	}})
+	fk := fake.New(nil)
+	m, st, _ := newTestManagerWithApprover(t, map[string]executor.Adapter{"fake": fk}, "fake", ap)
+	task := mustApproverDispatch(t, m)
+	m.handlePermission(context.Background(), task.ID,
+		executor.AdapterEvent{Type: "permission", PermissionID: "p1", Text: "something",
+			Perm: &executor.PermRequest{Tool: executor.PermToolOther}})
+	waitApproverIdle(t, m)
+
+	var decisions []ApproverDecisionPayload
+	for _, e := range mustEvents(t, st, task.ID) {
+		if e.Type != proto.EventTypeApproverDecision {
+			continue
+		}
+		var p ApproverDecisionPayload
+		if err := json.Unmarshal(e.Payload, &p); err != nil {
+			t.Fatalf("解析 approver_decision: %v", err)
+		}
+		decisions = append(decisions, p)
+	}
+	if len(decisions) != 1 {
+		t.Fatalf("期望一条 approver_decision，得到 %d: %+v", len(decisions), decisions)
+	}
+	if decisions[0].Machine != "linux-01" || decisions[0].Executor != "codex" || decisions[0].Decision != "approve" {
+		t.Fatalf("attempt 事件应带 machine/executor/approve: %+v", decisions[0])
+	}
+}
+
 // TestApproverDisabledEscalationReasonManagerPath 钉住 B376 复审：审批链停用
 // 后的升级理由必须点名停用，且对非 OpenCode 执行器同样成立——不能只在
 // opencode 的 Client.Request 里改写。理由同时落工单请求体与 permission_request

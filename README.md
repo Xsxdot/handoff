@@ -299,6 +299,11 @@ approver:                     # 分级审批链的廉价模型审批者
   timeout: 60s                # 单次裁决超时，超时按 escalate（fail-closed）
   blacklist:                  # 自定义黑名单正则；命中即跳过审批者直接升级
     - "kubectl .*delete"
+# 全队共享审批链（B437，需 ledger.dsn）：一条链跨机逐环尝试，取代每机一份 approver:
+#   handoff approver set -f chain.yaml   # 链文件：timeout + candidates[{machine,executor,model}]
+#   handoff approver show                # 任一机器看到同一条链与版本号（改链不重启即生效）
+#   handoff approver clear               # 清除共享链，各机回落本地 approver: 键
+# 有共享链时本地 approver.executor/model/models/timeout 被取代（启动打一次 WARN，可删）
 executor:                     # dispatch 未显式指定执行者时的缺省
   default: opencode
   model: ""                   # 缺省模型（dispatch --model 可逐任务覆盖）
@@ -468,6 +473,12 @@ approver:                     # tiered approval chain: a cheap model screens per
   timeout: 60s                # a ruling timeout is treated as escalation (fail-closed)
   blacklist:                  # a hit skips the approver and escalates straight to a human
     - "kubectl .*delete"
+# Team-shared approval chain (B437, needs ledger.dsn): one chain tried ring-by-ring across machines,
+# replacing the per-machine approver: keys:
+#   handoff approver set -f chain.yaml   # chain file: timeout + candidates[{machine,executor,model}]
+#   handoff approver show                # every machine sees the same chain + version (no restart needed)
+#   handoff approver clear               # drop the shared chain; machines fall back to local approver: keys
+# When a shared chain exists, local approver.executor/model/models/timeout are superseded (one startup WARN)
 
 env:                          # env-var files injected when the executor starts (put them in ~/.handoff/env/)
   opencode: dev.env           # value is a bare filename; executors not listed get nothing injected

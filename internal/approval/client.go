@@ -38,6 +38,8 @@ type ApproverAttempt struct {
 	ElapsedMS int64
 	// Model 是本候选实际使用的模型名；未指定时 = "默认"（B405）。
 	Model string
+	// Machine 是本尝试所属环的机器名（B437 共享链）；空 = 本地配置链路径。
+	Machine string
 }
 
 // ConsultDecision is the agentd-independent result of an approver call.
@@ -360,6 +362,7 @@ func (c *Client) consult(ctx context.Context, ev executor.AdapterEvent) (executo
 				ElapsedMS:  at.ElapsedMS,
 				Executor:   at.Executor,
 				Model:      at.Model,
+				Machine:    at.Machine,
 			}); err != nil {
 				c.logger().Error("追加 approver_decision 事件失败", "task", c.taskID,
 					"ticket", ticketID, "executor", at.Executor, "cause", err)
@@ -553,6 +556,7 @@ type approverDecisionPayload struct {
 	ElapsedMS  int64  `json:"elapsed_ms"`
 	Executor   string `json:"executor,omitempty"`
 	Model      string `json:"model,omitempty"`
+	Machine    string `json:"machine,omitempty"`
 }
 
 type ticketAnsweredPayload struct {
