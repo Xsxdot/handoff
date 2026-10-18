@@ -189,3 +189,76 @@ func TestB435ProjectRoomIsOrdinarySession(t *testing.T) {
 		t.Fatalf("旧 project:<name> 房间应仍只读（ErrReadOnly），得 %v", err)
 	}
 }
+
+// R-K1 (a′) 追加裁决：项目房间的书写者集另并入同项目各卡的当前席位——协调者的卡挂在自己的工作房间（一卡
+// 同时只属一个会话），却要能到项目房间显式 @ 组织者提问（spec D8）。反例：他项目卡席位仍被拒；非项目房间
+// 的书写者集不扩；成功那条的寻址不变（显式 @ 命中驻场者地址）。真 Store + Facade + collab。
+func TestB435ProjectRoomWritersIncludeSameProjectSeats(t *testing.T) {
+	svc, st, lc := newSessionFixture(t)
+	pr, _, err := svc.EnsureProjectRoom("p", proto.SystemNotifierIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.SitResident(proto.SessionResident{Session: pr.ID, Identity: "agent:org"}); err != nil {
+		t.Fatal(err)
+	}
+	work, err := svc.CreateSession("A 的工作房间", "user:o", "user:o")
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := svc.CreateSession("A 不在里面的普通会话", "user:o", "user:o")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seat := func(project, sid string) string {
+		t.Helper()
+		card, err := st.CreateCard(ledger.NewCard{Title: "卡 " + project, Project: project, Workflow: "bug", Actor: "t"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		identity := "cli:opencode#" + sid
+		if err := st.BindSeat(card.ID, identity, proto.SeatSourceBind, ledger.SeatBearing{}); err != nil {
+			t.Fatal(err)
+		}
+		if project == "p" {
+			if err := svc.JoinCard(work.ID, card.ID, "user:o"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return identity
+	}
+	seatA, seatB := seat("p", "a-1"), seat("q", "b-1")
+
+	ask := proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "@agent:org 问题", Mentions: []string{"agent:org"}}
+	seq, err := svc.Send(pr.ID, ask, seatA)
+	if err != nil {
+		t.Fatalf("同项目卡席位应可在项目房间发言: %v", err)
+	}
+	if ev, ok, err := st.EventBySeq(seq); err != nil || !ok || ev.Actor != seatA {
+		t.Fatalf("读回 seq=%d: ok=%v err=%v actor=%q", seq, ok, err, ev.Actor)
+	}
+	if _, err := svc.Send(pr.ID, ask, seatB); !errors.Is(err, ErrNotWriter) {
+		t.Fatalf("他项目卡席位向项目房间发言应 ErrNotWriter，得 %v", err)
+	}
+	if _, err := svc.Send(other.ID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "串门"}, seatA); !errors.Is(err, ErrNotWriter) {
+		t.Fatalf("非项目房间的书写者集不得扩（应 ErrNotWriter），得 %v", err)
+	}
+	ask.Room = pr.ID
+	got, err := svc.Recipients(ask, seatA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := proto.DeliveryAddress{Kind: proto.DeliveryResident, Session: pr.ID, Identity: "agent:org"}
+	hit := false
+	for _, a := range got.Addresses {
+		hit = hit || a == want
+	}
+	if !hit {
+		t.Fatalf("显式 @ 驻场者应命中驻场者地址 %+v，得 %+v", want, got)
+	}
+	readErr := errors.New("项目绑定读失败")
+	broken := New(failingProjectLC{LedgerClient: lc, err: readErr})
+	if _, err := broken.Send(pr.ID, ask, seatA); !errors.Is(err, readErr) || errors.Is(err, ErrNotWriter) {
+		t.Fatalf("读项目绑定失败应原样上抛、不是 ErrNotWriter，得 %v", err)
+	}
+}

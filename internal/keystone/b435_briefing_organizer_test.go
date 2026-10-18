@@ -14,7 +14,7 @@ import (
 )
 
 func TestB435BriefingAsksOrganizerByMention(t *testing.T) {
-	for _, must := range []string{"handoff project room", "@"} {
+	for _, must := range []string{"handoff project room", "@", "项目房间", "session send"} {
 		if !strings.Contains(briefingAskOrganizer, must) {
 			t.Fatalf("briefingAskOrganizer 应含 %q，得 %q", must, briefingAskOrganizer)
 		}
