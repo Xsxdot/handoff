@@ -216,7 +216,9 @@ func (s *Service) WakeTargets(ev proto.LedgerEvent) ([]string, error) {
 }
 
 // MessageWakeTargets 是 WakeTargets 的消息级半边（已在手解析好 replyAuthor 的
-// 调用方用它）。唤醒路径只认它——签名里没有成员集合，扇出形状写不出来。
+// 调用方用它）。签名里没有成员集合，扇出形状写不出来。B435 起 push 消费循环与
+// card wait 改走匹配函数 Recipients/Matches（recipients.go）；本函数仅剩 session wait
+// （cmd/session.go，后续子卡 R 改接后 collab 外零调用，C-241）。
 func (s *Service) MessageWakeTargets(msg proto.RoomMessage) ([]string, error) {
 	if msg.BySystem || msg.Kind == proto.RoomMsgPointer {
 		return nil, nil
@@ -251,28 +253,6 @@ func (s *Service) resolveMessageTargets(msg proto.RoomMessage, replyAuthor strin
 		return card.DriverSession, ok
 	}
 	return room.ResolveDelivery(msg, replyAuthor, resolveSeat), nil
-}
-
-// AddressesCard 判断一条消息的寻址是否命中该卡当前席位（唤醒路径的必要条件）。
-// 装配缺失（无账本）或卡无席位时返回 false——宁缺毋滥，杜绝广播回潮。
-func (s *Service) AddressesCard(msg proto.RoomMessage, cardID string) bool {
-	if cardID == "" {
-		return false
-	}
-	card, err := s.lc.GetCard(cardID)
-	if err != nil || card.DriverSession == "" {
-		return false
-	}
-	targets, err := s.MessageWakeTargets(msg)
-	if err != nil {
-		return false
-	}
-	for _, target := range targets {
-		if target == card.DriverSession {
-			return true
-		}
-	}
-	return false
 }
 
 // replyEventOf 按全局 seq 点读引用条；不存在、跨房间或非消息都不是有效回复。
@@ -456,6 +436,7 @@ func sessionCards(session proto.Session, byCard map[string]proto.Card) []proto.S
 		}
 		out = append(out, proto.SessionCard{
 			CardID: card.ID, Title: card.Title, Status: card.Status, Seat: card.DriverSession,
+			SeatMode: card.DriverMode,
 		})
 	}
 	return out

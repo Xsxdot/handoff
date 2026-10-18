@@ -97,8 +97,9 @@ func (s *Service) Decide(ev WakeEvent) Decision {
 }
 
 // Wake 跑一个唤醒回合：同卡积压事件合并为一回合，先读账对齐现场（以 ledger
-// 为准不信记忆），再为 coordinate 席位无头续会话送入开场简报。bind 席位属于
-// 当前终端，不拥有可供 agentd 续接的会话，因此必须 no-op；空座和非法旧值也
+// 为准不信记忆），再为 push 席位无头续会话送入开场简报。pull 席位由持有者自己
+// 跑 card wait 收件，agentd 不拥有可续接的会话，因此必须 no-op（B435 C-315：判定
+// 只读席位模式，来源词只作记录与 ValidateSeat 实参）；空座、模式非法的旧值也
 // 不能被误判成可拉起的新机器人。resume 失败才进入重建四步，最终失败转等人。
 //
 // spec 由组装点解析（小队 → LaunchAdmit → 载体）。它只补齐账本身份没有持久化
@@ -116,13 +117,21 @@ func (s *Service) Wake(ctx context.Context, card string, evs []WakeEvent, spec k
 	if err != nil {
 		return zero, fmt.Errorf("keystone: 读取卡 %s 席位: %w", card, err)
 	}
-	if seat.DriverSession == "" && seat.DriverSource == "" {
+	if seat.DriverSession == "" && seat.DriverMode == "" {
 		s.Forget(card)
 		return zero, nil
 	}
-	if seat.DriverSource == string(proto.SeatSourceBind) {
+	switch proto.SeatMode(seat.DriverMode) {
+	case proto.SeatModePull:
+		log().Info("pull 席位不起唤醒回合", "card", card, "event_count", len(evs))
 		s.Forget(card)
 		return zero, nil
+	case proto.SeatModePush:
+	default:
+		s.Forget(card)
+		err := fmt.Errorf("keystone: 卡 %s 席位模式非法 %q", card, seat.DriverMode)
+		log().Warn("唤醒被拒：席位模式非法", "card", card, "mode", seat.DriverMode, "cause", err)
+		return zero, err
 	}
 	if err := proto.ValidateSeat(seat.DriverSession, proto.SeatSource(seat.DriverSource)); err != nil {
 		s.Forget(card)
@@ -248,7 +257,8 @@ func (s *Service) Locate(card, workdir string) (keysclient.AttachInfo, error) {
 			return keysclient.AttachInfo{}, errors.New("keystone: 该卡没有绑定的协调者会话")
 		}
 		seat, err := s.ledger.GetCard(card)
-		if err != nil || seat.DriverSource != string(proto.SeatSourceCoordinate) {
+		// 冷 attach 只对 push 席位（agentd 驱动的会话）成立；pull 席位的会话属于持有者终端。
+		if err != nil || seat.DriverMode != string(proto.SeatModePush) {
 			return keysclient.AttachInfo{}, errors.New("keystone: 该卡没有绑定的协调者会话")
 		}
 		cli, sessionID, err := proto.ParseSeatIdentity(seat.DriverSession)
@@ -327,6 +337,10 @@ func overlayResumeRef(ref keysclient.SessionRef, spec keysclient.SessionSpec) ke
 	return ref
 }
 
+// briefingRoomTone 是 push 简报的房间口吻句（B435 D11，措辞以 spec D11 为准）。
+// 简报文本，不是机制：只约束协调者在房间里怎么说话。
+const briefingRoomTone = "房间里只说重点与结果，同事口吻；思考与工具调用留在自己会话。"
+
 // briefing 把本轮的增量上下文拼成回合简报：卡最小指针（卡号、标题、基线）与
 // 本次唤醒事件。会话里已有的上下文留在会话里，账本只补充增量——不再指示模型
 // 「先读卡」（B399 spec r2 §5：是否读卡由协调者自己判断）。以 ledger 为准不信
@@ -336,7 +350,7 @@ func (s *Service) briefing(card string, evs []WakeEvent) string {
 		"下一次有事会被再次唤醒（续跑同一会话）。\n" +
 		"需要人知道的事**发到 IM 房间**：`handoff session send <会话> <正文>`" +
 		"（本卡所在会话可用 `handoff session list` 找到，会话条目里列着本卡）。" +
-		"不适合现在推就在房间说明原因并结束本轮。\n\n## 本卡上下文\n\n- 卡号：" + card + "\n"
+		"不适合现在推就在房间说明原因并结束本轮。" + briefingRoomTone + "\n\n## 本卡上下文\n\n- 卡号：" + card + "\n"
 	if c, err := s.ledger.GetCard(card); err == nil {
 		b += "- 标题：" + c.Title + "\n"
 	}

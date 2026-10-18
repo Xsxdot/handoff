@@ -224,13 +224,21 @@ func (f *Facade) AddSessionMember(sessionID, identity, actor string) error {
 	return translateNotFound(f.st.AddSessionMember(sessionID, identity, actor))
 }
 
-// errSessionResidentNotImplemented 是 B435 Ticket 0 空壳期哨兵：驻场者登记表与 Store
-// 读面由实现节点落码（契约 b435-contract.md ②/④），空壳绝不报「无驻场者」冒充成功。
-var errSessionResidentNotImplemented = errors.New("ledger api: B435 驻场者登记尚未实现（Ticket 0 空壳）")
-
-// SessionResident 读会话房间的驻场者登记（B435）。Ticket 0：恒返回未实现错误。
+// SessionResident 读会话房间的驻场者登记（B435）：直通 Store.SessionResident 并逐字段
+// 映射 wire DTO。无登记 → ok=false、err=nil；读失败原样上抛（调用方不得当作无驻场者）。
 func (f *Facade) SessionResident(sessionID string) (proto.SessionResident, bool, error) {
-	return proto.SessionResident{}, false, errSessionResidentNotImplemented
+	r, ok, err := f.st.SessionResident(sessionID)
+	if err != nil || !ok {
+		return proto.SessionResident{}, ok, err
+	}
+	return proto.SessionResident{
+		Session:        r.Session,
+		Identity:       r.Identity,
+		DesktopSession: r.DesktopSession,
+		CLISession:     r.CLISession,
+		Machine:        r.Machine,
+		SatAt:          r.SatAt,
+	}, true, nil
 }
 
 // translateNotFound 把账本 ErrNotFound 翻成使用方哨兵 client.ErrNotFound；
@@ -294,6 +302,7 @@ func cardWire(v ledger.CardView) proto.Card {
 		Following:          v.Following,
 		DriverSession:      c.DriverSession,
 		DriverSource:       c.DriverSource,
+		DriverMode:         c.DriverMode,
 		DriverHeartbeatAt:  c.DriverHeartbeatAt,
 		CreatedAt:          c.CreatedAt,
 		UpdatedAt:          c.UpdatedAt,

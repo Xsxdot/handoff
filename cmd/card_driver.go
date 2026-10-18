@@ -2,6 +2,7 @@
 // 边界：bind/rebind --self 只调用 ledger.Store 的席位原子操作；机器人换绑走
 // agentd；release/takeover 保留旧命令但不再改变协调者席位。
 // B434：bind 可带 --desktop-session 同时记录 Claude 桌面端会话 id（两步提交，拍板 D2）。
+// B435：bind/rebind --self 坐的恒为 pull 席位（--mode 只认 pull，push 被拒并指向 card coordinate）。
 package cmd
 
 import (
@@ -22,6 +23,10 @@ var cardBindDesktopSession, cardBindMachine, cardBindVia string
 
 var cardRebindCLI, cardRebindSession string
 
+// cardBindMode 是 bind 的 --mode 原样字面量（B435 C-311–C-313）：缺省 pull；push 被拒
+// （机器人占座走 card coordinate）；其余一律经 proto.ParseSeatMode 拒绝。
+var cardBindMode string
+
 var cardBindCmd = &cobra.Command{
 	Use:   "bind <id>",
 	Short: "让当前会话坐下成为这张卡的协调者",
@@ -29,7 +34,19 @@ var cardBindCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		id := args[0]
 		withDesktop := cardBindDesktopSession != ""
-		slog.Default().Info("CLI 坐下入口", "card", id, "desktop", withDesktop)
+		slog.Default().Info("CLI 坐下入口", "card", id, "desktop", withDesktop, "mode", cardBindMode)
+		// 模式在出示身份与坐下之前校验：被拒时席位三列不得有任何写入（C-313b）。
+		mode, err := proto.ParseSeatMode(cardBindMode)
+		if err != nil {
+			slog.Default().Warn("CLI 坐下拒绝非法席位模式", "card", id, "mode", cardBindMode, "cause", err)
+			return fmt.Errorf("坐下卡 %s: %w", id, err)
+		}
+		if mode == proto.SeatModePush {
+			hint := fmt.Sprintf("card bind 只坐 pull 席位；要机器人驱动请改用 handoff card coordinate %s", id)
+			slog.Default().Warn("CLI 坐下拒绝 push 模式", "card", id, "mode", cardBindMode)
+			fmt.Fprintln(cmd.ErrOrStderr(), hint)
+			return fmt.Errorf("坐下卡 %s: --mode push 被拒（%s）", id, hint)
+		}
 		if !withDesktop && (cmd.Flags().Changed("machine") || cmd.Flags().Changed("via")) {
 			err := fmt.Errorf("--machine / --via 只能与 --desktop-session 一起使用")
 			slog.Default().Warn("CLI 坐下拒绝孤立的桌面端 flag", "card", id, "cause", err)
@@ -62,7 +79,7 @@ var cardBindCmd = &cobra.Command{
 			return err
 		}
 		defer st.Close()
-		if err := st.BindSeat(id, identity, proto.SeatSourceBind, ledger.SeatBearing{}); err != nil {
+		if err := st.BindSeatMode(id, identity, proto.SeatSourceBind, mode, ledger.SeatBearing{}); err != nil {
 			slog.Default().Warn("CLI 坐下失败", "card", id, "cause", err)
 			return fmt.Errorf("坐下卡 %s: %w", id, err)
 		}
@@ -160,7 +177,7 @@ var cardRebindCmd = &cobra.Command{
 			if err != nil {
 				return fmt.Errorf("读取换绑卡 %s: %w", id, err)
 			}
-			if err := st.RebindSeat(id, identity, proto.SeatSourceBind, card.DriverSession, ledger.SeatBearing{}); err != nil {
+			if err := st.RebindSeatMode(id, identity, proto.SeatSourceBind, proto.SeatModePull, card.DriverSession, ledger.SeatBearing{}); err != nil {
 				slog.Default().Warn("CLI self 换绑失败", "card", id, "cause", err)
 				return fmt.Errorf("换绑卡 %s: %w", id, err)
 			}
@@ -202,6 +219,8 @@ func init() {
 	cardBindCmd.Flags().StringVar(&cardBindSession, "session", "", "手填当前会话 id（需与 --cli 成对）")
 	cardBindCmd.Flags().StringVar(&cardBindDesktopSession, "desktop-session", "", "同时记录这场 claude 会话的 Claude 桌面端会话 id（local_…），供信箱唤醒")
 	cardBindCmd.Flags().StringVar(&cardBindMachine, "machine", "", "桌面端会话所在机器（缺省本机 hostname；仅与 --desktop-session 同用）")
+	cardBindCmd.Flags().StringVar(&cardBindMode, "mode", string(proto.SeatModePull),
+		"席位驱动模式：只认 pull（自驱，消息经 card wait 交付）；要机器人驱动用 card coordinate <id>")
 	cardBindCmd.Flags().StringVar(&cardBindVia, "via", proto.SeatDesktopViaManual, "这场会话怎么开出来的：page|launcher|manual（仅与 --desktop-session 同用）")
 	cardRebindCmd.Flags().BoolVar(&cardRebindSelf, "self", false, "当前会话接班")
 	cardRebindCmd.Flags().BoolVar(&cardRebindLaunch, "launch", false, "叫机器人接班")

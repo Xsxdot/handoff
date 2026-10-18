@@ -209,7 +209,7 @@ func ddlStatements(pg bool) []string {
 				project TEXT NOT NULL, parent_id TEXT REFERENCES cards(id),
 				workflow_name TEXT NOT NULL, workflow_version INT NOT NULL,
 				attachments JSONB NOT NULL DEFAULT '[]', acceptance_criteria TEXT,
-				base_branch TEXT, driver_session TEXT, driver_source TEXT, driver_heartbeat_at TIMESTAMPTZ,
+				base_branch TEXT, driver_session TEXT, driver_source TEXT, driver_mode TEXT, driver_heartbeat_at TIMESTAMPTZ,
 				created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL)`,
 			`CREATE INDEX IF NOT EXISTS idx_cards_board ON cards(project, status)`,
 			`CREATE INDEX IF NOT EXISTS idx_cards_parent ON cards(parent_id)`,
@@ -377,6 +377,15 @@ func ddlStatements(pg bool) []string {
 				PRIMARY KEY (session_id, card_id))`,
 			`CREATE UNIQUE INDEX IF NOT EXISTS uq_session_cards_card
 				ON session_cards(card_id)`,
+			// B435 房间驻场者登记：会话为主键，库层兑现「一房间至多一名」（C-414）。
+			// K0 只建表与只读面；写面（session sit/stand）归后续子卡 R。
+			`CREATE TABLE IF NOT EXISTS session_residents (
+				session TEXT PRIMARY KEY,
+				identity TEXT NOT NULL,
+				desktop_session TEXT NOT NULL DEFAULT '',
+				cli_session TEXT NOT NULL DEFAULT '',
+				machine TEXT NOT NULL DEFAULT '',
+				sat_at TIMESTAMPTZ NOT NULL)`,
 			`CREATE TABLE IF NOT EXISTS card_prefixes (
 				project TEXT PRIMARY KEY, prefix TEXT NOT NULL UNIQUE)`,
 			`CREATE TABLE IF NOT EXISTS registry (
@@ -399,7 +408,7 @@ func ddlStatements(pg bool) []string {
 				project TEXT NOT NULL, parent_id TEXT REFERENCES cards(id),
 				workflow_name TEXT NOT NULL, workflow_version INTEGER NOT NULL,
 				attachments TEXT NOT NULL DEFAULT '[]', acceptance_criteria TEXT,
-				base_branch TEXT, driver_session TEXT, driver_source TEXT, driver_heartbeat_at TEXT,
+				base_branch TEXT, driver_session TEXT, driver_source TEXT, driver_mode TEXT, driver_heartbeat_at TEXT,
 				created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 			`CREATE INDEX IF NOT EXISTS idx_cards_board ON cards(project, status)`,
 			`CREATE INDEX IF NOT EXISTS idx_cards_parent ON cards(parent_id)`,
@@ -555,6 +564,13 @@ func ddlStatements(pg bool) []string {
 				PRIMARY KEY (session_id, card_id))`,
 			`CREATE UNIQUE INDEX IF NOT EXISTS uq_session_cards_card
 				ON session_cards(card_id)`,
+			`CREATE TABLE IF NOT EXISTS session_residents (
+				session TEXT PRIMARY KEY,
+				identity TEXT NOT NULL,
+				desktop_session TEXT NOT NULL DEFAULT '',
+				cli_session TEXT NOT NULL DEFAULT '',
+				machine TEXT NOT NULL DEFAULT '',
+				sat_at TEXT NOT NULL)`,
 			`CREATE TABLE IF NOT EXISTS registry (
 				kind TEXT NOT NULL, id TEXT NOT NULL, version INTEGER NOT NULL,
 				seq INTEGER NOT NULL, body TEXT NOT NULL,
@@ -566,6 +582,55 @@ func ddlStatements(pg bool) []string {
 		}
 	}
 	return ddl
+}
+
+// driverModeBackfillSQL 是 B435 迁移回填语句（契约 C-325/C-326）：存量非空座、mode 为空
+// 的行按来源回填 bind→pull、coordinate→push。它是生产代码里唯一以来源词决定模式之处
+// （C-326 澄清行）；未知来源不回填（由调用方 Warn 计数）。单条 UPDATE 在两方言都是
+// 原子语句、两方言同形；WHERE 已排除已回填行，故每次 Open 重跑即幂等。
+const driverModeBackfillSQL = `UPDATE cards SET driver_mode = CASE driver_source WHEN 'bind' THEN 'pull' WHEN 'coordinate' THEN 'push' END
+	WHERE (driver_mode IS NULL OR driver_mode = '')
+	  AND driver_session IS NOT NULL AND driver_session <> ''
+	  AND driver_source IN ('bind', 'coordinate')`
+
+// migrateDriverMode B435 加列 + 回填：旧库补 cards.driver_mode 列（新库已内联建列），
+// 随后执行回填。加列容忍两方言的重复列文案（同 driver_source 先例）。
+func (s *Store) migrateDriverMode() error {
+	dialectName := map[bool]string{true: "postgres", false: "sqlite"}[s.dialect == dialectPG]
+	if _, err := s.db.Exec(`ALTER TABLE cards ADD COLUMN driver_mode TEXT`); err != nil {
+		msg := err.Error()
+		if !strings.Contains(msg, "duplicate column") && !strings.Contains(msg, "already exists") {
+			log().Warn("账本加列迁移失败", "table", "cards", "column", "driver_mode", "dialect", dialectName, "cause", err)
+			return fmt.Errorf("迁移 cards.driver_mode: %w", err)
+		}
+		log().Info("cards.driver_mode 列已存在，跳过加列")
+	} else {
+		log().Info("账本加列迁移完成", "table", "cards", "column", "driver_mode")
+	}
+	res, err := s.db.Exec(driverModeBackfillSQL)
+	if err != nil {
+		log().Warn("席位模式回填失败", "dialect", dialectName, "cause", err)
+		return fmt.Errorf("回填 cards.driver_mode: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		log().Warn("席位模式回填读影响行数失败", "dialect", dialectName, "cause", err)
+		return fmt.Errorf("回填 cards.driver_mode 读影响行数: %w", err)
+	}
+	log().Info("席位模式回填完成", "rows", n, "dialect", dialectName)
+	var unknown int64
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM cards
+		WHERE (driver_mode IS NULL OR driver_mode = '')
+		  AND driver_session IS NOT NULL AND driver_session <> ''`).Scan(&unknown); err != nil {
+		log().Warn("席位模式回填后核对失败", "dialect", dialectName, "cause", err)
+		return fmt.Errorf("核对 cards.driver_mode 回填: %w", err)
+	}
+	if unknown > 0 {
+		// 来源词不在 bind/coordinate 的非空座无法推导模式：不猜，留空并告警，
+		// 唤醒与 card wait 都按「非法席位」处理（不唤醒、不收房间行）。
+		log().Warn("存在来源未知的非空座席位，未回填席位模式", "rows", unknown, "dialect", dialectName)
+	}
+	return nil
 }
 
 // ensureSchema 幂等建表。与 internal/store 相同的策略：CREATE IF NOT
@@ -614,6 +679,9 @@ func (s *Store) ensureSchema() error {
 		log().Info("cards.driver_source 列已存在，跳过加列")
 	} else {
 		log().Info("账本加列迁移完成", "table", "cards", "column", "driver_source")
+	}
+	if err := s.migrateDriverMode(); err != nil {
+		return err
 	}
 	if err := s.ensureOpenTicketProjection(); err != nil {
 		return fmt.Errorf("初始化未决工单投影: %w", err)

@@ -1,5 +1,6 @@
 // 绑定席位与驱动活性租约（B312）。权威在账本域卡上：席位身份和来源是
-// cards.driver_session/driver_source，所有新占用与换绑都经本文件的两个原子写面；
+// cards.driver_session/driver_source（B435 起另有驱动模式 driver_mode），所有新占用与
+// 换绑都经本文件的两个原子写面 BindSeatMode/RebindSeatMode（旧名只是测试垫片）；
 // driver_carrier 与 driver_leases 仅保留兼容语义，不能成为席位的第二真源。
 package ledger
 
@@ -26,13 +27,57 @@ const (
 	DriverLeaseRenewInterval = 2 * time.Minute
 )
 
-// BindSeat 只把空座原子地占为规范 identity/source，不写 driver_carrier；
-// 同一事务落恰一条 EvDriverSeatBound（B358：协调者入群的 timeline 事实源，
-// 与换绑的 EvDriverTakeover 配对）。读、判空、写入、落事件在同一个账本
-// 事务内完成。B389：叫机器人席位必须同时落承载记录（§2.2 规则 1-3），
-// 人尺度坐下必须为零承载（规则 4）。
+// legacySeatMode 是旧签名测试垫片的来源→模式委托（C-326 澄清行：只供 internal/ledger
+// 内的测试兼容旧签名；包外生产代码不得调用旧名，由 TestB435LegacySeatWriteNotCalledInProduction
+// 守卫）。未知来源返回空串，由新写面的模式校验拒绝。
+func legacySeatMode(source proto.SeatSource) proto.SeatMode {
+	switch source {
+	case proto.SeatSourceBind:
+		return proto.SeatModePull
+	case proto.SeatSourceCoordinate:
+		return proto.SeatModePush
+	default:
+		return ""
+	}
+}
+
+// BindSeat 是 B435 前的旧签名，降为测试兼容垫片：按来源委托 BindSeatMode
+// （bind→pull、coordinate→push）。生产代码必须改调 BindSeatMode 显式传 mode。
 func (s *Store) BindSeat(id, identity string, source proto.SeatSource, bearing SeatBearing) error {
-	log().Info("开始坐下", "card", id, "source", source, "carrier", bearing.Carrier)
+	return s.BindSeatMode(id, identity, source, legacySeatMode(source), bearing)
+}
+
+// RebindSeat 是 B435 前的旧签名，降为测试兼容垫片：按来源委托 RebindSeatMode。
+// 生产代码必须改调 RebindSeatMode 显式传 mode。
+func (s *Store) RebindSeat(id, identity string, source proto.SeatSource, expect string, bearing SeatBearing) error {
+	return s.RebindSeatMode(id, identity, source, legacySeatMode(source), expect, bearing)
+}
+
+// validateSeatMode 校验写入的席位模式（C-302/C-309/C-314a）：只认 push/pull 两个
+// 字面量（逐字比较常量，不经 proto 包级函数以免新增 d_ledger→d_protocol 调用边）；
+// bind 来源不得产生 push 席位（push 席位只经 coordinate/launch，C-314a）。
+func validateSeatMode(source proto.SeatSource, mode proto.SeatMode) error {
+	if mode != proto.SeatModePush && mode != proto.SeatModePull {
+		return fmt.Errorf("席位模式非法 %q：只认 push 或 pull: %w", mode, ErrBadState)
+	}
+	if source == proto.SeatSourceBind && mode == proto.SeatModePush {
+		return fmt.Errorf("bind 坐下不能产生 push 席位（push 只经 card coordinate / rebind --launch）: %w", ErrBadState)
+	}
+	return nil
+}
+
+// BindSeatMode 只把空座原子地占为规范 identity/source/mode，不写 driver_carrier；
+// 同一事务落恰一条 EvDriverSeatBound（B358：协调者入群的 timeline 事实源，
+// 与换绑的 EvDriverTakeover 配对）。读、判空、写入三列、落事件在同一个账本
+// 事务内完成（B435 C-304）。B389：叫机器人席位必须同时落承载记录（§2.2 规则 1-3），
+// 人尺度坐下必须为零承载（规则 4）——承载规则仍按来源执法（C-314b）。
+// 参数 mode 是显式席位模式（push/pull），调用方决定，本函数不从来源推导。
+func (s *Store) BindSeatMode(id, identity string, source proto.SeatSource, mode proto.SeatMode, bearing SeatBearing) error {
+	log().Info("开始坐下", "card", id, "source", source, "mode", mode, "carrier", bearing.Carrier)
+	if err := validateSeatMode(source, mode); err != nil {
+		log().Warn("坐下被拒：席位模式不合法", "card", id, "source", source, "mode", mode, "cause", err)
+		return err
+	}
 	if identity == "" {
 		err := fmt.Errorf("坐下需要当前会话席位身份: %w", ErrBadState)
 		log().Warn("坐下被拒：身份为空", "card", id, "source", source, "cause", err)
@@ -57,8 +102,8 @@ func (s *Store) BindSeat(id, identity string, source proto.SeatSource, bearing S
 			log().Warn("坐下被拒：席位非空", "card", id, "source", source, "cause", err)
 			return err
 		}
-		if _, err := tx.Exec(s.q(`UPDATE cards SET driver_session = ?, driver_source = ?, driver_heartbeat_at = ? WHERE id = ?`),
-			identity, source, s.tval(s.timeNow()), id); err != nil {
+		if _, err := tx.Exec(s.q(`UPDATE cards SET driver_session = ?, driver_source = ?, driver_mode = ?, driver_heartbeat_at = ? WHERE id = ?`),
+			identity, source, mode, s.tval(s.timeNow()), id); err != nil {
 			return fmt.Errorf("坐下写席位 %s: %w", id, err)
 		}
 		if err := s.writeSeatBearing(tx, id, identity, bearing); err != nil {
@@ -79,15 +124,20 @@ func (s *Store) BindSeat(id, identity string, source proto.SeatSource, bearing S
 		log().Warn("坐下失败", "card", id, "source", source, "cause", err)
 		return err
 	}
-	log().Info("坐下成功", "card", id, "source", source)
+	log().Info("坐下成功", "card", id, "source", source, "mode", mode)
 	return nil
 }
 
-// RebindSeat 以 expect 原始字节值 CAS 覆写非空席位，并在同一事务落恰一条
-// EvDriverTakeover。expect 由服务层从账本读出，不来自用户可控 flag。
-// B389：承载记录随席位同事务整体覆写——换绑可能同时换机器、换载体、换环境。
-func (s *Store) RebindSeat(id, identity string, source proto.SeatSource, expect string, bearing SeatBearing) error {
-	log().Info("开始换绑席位", "card", id, "source", source, "has_expect", expect != "", "carrier", bearing.Carrier)
+// RebindSeatMode 以 expect 原始字节值 CAS 覆写非空席位（身份/来源/模式三列同事务，
+// B435 C-304），并在同一事务落恰一条 EvDriverTakeover。expect 由服务层从账本读出，
+// 不来自用户可控 flag。B389：承载记录随席位同事务整体覆写——换绑可能同时换机器、
+// 换载体、换环境。参数 mode 是显式席位模式，本函数不从来源推导。
+func (s *Store) RebindSeatMode(id, identity string, source proto.SeatSource, mode proto.SeatMode, expect string, bearing SeatBearing) error {
+	log().Info("开始换绑席位", "card", id, "source", source, "mode", mode, "has_expect", expect != "", "carrier", bearing.Carrier)
+	if err := validateSeatMode(source, mode); err != nil {
+		log().Warn("换绑被拒：席位模式不合法", "card", id, "source", source, "mode", mode, "cause", err)
+		return err
+	}
 	if identity == "" {
 		err := fmt.Errorf("换绑需要目标会话席位身份: %w", ErrBadState)
 		log().Warn("换绑被拒：身份为空", "card", id, "source", source, "cause", err)
@@ -123,8 +173,8 @@ func (s *Store) RebindSeat(id, identity string, source proto.SeatSource, expect 
 			log().Warn("换绑被拒：CAS 冲突", "card", id, "source", source, "cause", err)
 			return err
 		}
-		if _, err := tx.Exec(s.q(`UPDATE cards SET driver_session = ?, driver_source = ?, driver_heartbeat_at = ? WHERE id = ?`),
-			identity, source, s.tval(s.timeNow()), id); err != nil {
+		if _, err := tx.Exec(s.q(`UPDATE cards SET driver_session = ?, driver_source = ?, driver_mode = ?, driver_heartbeat_at = ? WHERE id = ?`),
+			identity, source, mode, s.tval(s.timeNow()), id); err != nil {
 			return fmt.Errorf("换绑写席位 %s: %w", id, err)
 		}
 		if err := s.writeSeatBearing(tx, id, identity, bearing); err != nil {
@@ -150,7 +200,7 @@ func (s *Store) RebindSeat(id, identity string, source proto.SeatSource, expect 
 		log().Warn("换绑席位失败", "card", id, "source", source, "cause", err)
 		return err
 	}
-	log().Info("换绑席位成功", "card", id, "source", source, "had_old", old != "")
+	log().Info("换绑席位成功", "card", id, "source", source, "mode", mode, "had_old", old != "")
 	return nil
 }
 
@@ -271,7 +321,7 @@ func (s *Store) SeatBearingOf(id string) (SeatBearing, bool, error) {
 	return b, true, nil
 }
 
-// clearSeatTx 在调用方事务内清空席位三列并删除承载行与桌面端记录（幂等）。终态转移与
+// clearSeatTx 在调用方事务内清空席位四列（含 B435 driver_mode）并删除承载行与桌面端记录（幂等）。终态转移与
 // 人工清座共用，保证「关单」与「清座」不会分成两步——分成两步就会出现
 // 「卡已终态、席位仍在」的中间态，唤醒路径要靠终态闸额外兜底。
 //
@@ -280,7 +330,7 @@ func (s *Store) SeatBearingOf(id string) (SeatBearing, bool, error) {
 // 才是漏检方向。clearSeatTx 不感知座位是否非空，把判断留给调用方会让 CloseCard
 // 的终态路径漏掉递增，故统一在此递增。
 func (s *Store) clearSeatTx(tx *sql.Tx, card string) error {
-	if _, err := tx.Exec(s.q(`UPDATE cards SET driver_session = '', driver_source = '', driver_heartbeat_at = ? WHERE id = ?`),
+	if _, err := tx.Exec(s.q(`UPDATE cards SET driver_session = '', driver_source = '', driver_mode = '', driver_heartbeat_at = ? WHERE id = ?`),
 		s.tval(time.Time{}), card); err != nil {
 		return fmt.Errorf("清席位写卡 %s: %w", card, err)
 	}

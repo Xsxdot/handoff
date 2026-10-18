@@ -34,9 +34,20 @@ type fakeLC struct {
 	roomSnapshots     []client.RoomMessageSnapshot
 	eventReads        int
 	roomSnapshotReads int
+	// B435 匹配函数测试用：可配置会话（未登记的会话按 {ID:id} 返回，保持旧行为）、
+	// 驻场者登记与各读面的错误注入（C-228：读失败不得当未命中）。
+	sessions      map[string]proto.Session
+	residents     map[string]proto.SessionResident
+	errGetCard    error
+	errGetSession error
+	errResident   error
+	errEvents     error
 }
 
 func (f *fakeLC) GetCard(id string) (proto.Card, error) {
+	if f.errGetCard != nil {
+		return proto.Card{}, f.errGetCard
+	}
 	for _, c := range f.cards {
 		if c.ID == id {
 			return c, nil
@@ -80,6 +91,12 @@ func (f *fakeLC) CreateSession(title, owner, actor string) (proto.Session, error
 	return proto.Session{ID: "session:1", Title: title, Owner: owner}, nil
 }
 func (f *fakeLC) GetSession(id string) (proto.Session, error) {
+	if f.errGetSession != nil {
+		return proto.Session{}, f.errGetSession
+	}
+	if sess, ok := f.sessions[id]; ok {
+		return sess, nil
+	}
 	return proto.Session{ID: id}, nil
 }
 func (f *fakeLC) ListSessions() ([]proto.Session, error) { return nil, nil }
@@ -91,10 +108,19 @@ func (f *fakeLC) LeaveCardToSession(sessionID, cardID, actor string) error { ret
 func (f *fakeLC) SessionOfCard(cardID string) (string, error)              { return "", nil }
 func (f *fakeLC) AddSessionMember(sessionID, identity, actor string) error { return nil }
 func (f *fakeLC) SessionResident(sessionID string) (proto.SessionResident, bool, error) {
+	if f.errResident != nil {
+		return proto.SessionResident{}, false, f.errResident
+	}
+	if r, ok := f.residents[sessionID]; ok {
+		return r, true, nil
+	}
 	return proto.SessionResident{}, false, nil
 }
 func (f *fakeLC) EventsFromAsc(cardIDs []string, fromSeq int64, limit int) ([]proto.LedgerEvent, error) {
 	f.eventReads++
+	if f.errEvents != nil {
+		return nil, f.errEvents
+	}
 	if limit <= 0 {
 		limit = 1000
 	}

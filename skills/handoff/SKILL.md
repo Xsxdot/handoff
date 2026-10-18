@@ -409,7 +409,7 @@ handoff done <task> --note "已验收：重试与失败用例都符合预期"
 | 等人标记 | `handoff card needs <id> "<原因>"` / `--clear` |
 | 搁置 / 复活 / 终止 | `handoff card close <id> --reason 搁置\|取消\|废弃` / `handoff card revive <id>` |
 | 工作流形状 | `handoff workflow show <流>`——**列序与门以账本为准，任何文档都不复制** |
-| 坐下 | `handoff card bind <id>`（空座；见「占座」） |
+| 坐下 | `handoff card bind <id> [--mode pull]`（空座；缺省 pull，`--mode push` 被拒——要机器人用 `card coordinate`；见「占座」） |
 | 叫机器人 | `handoff card coordinate <id>`（空座；在 leader 载体机器的项目主工作树打开控制台 TUI tab；TUI 用宿主 session 自己 bind） |
 | 换绑 | `handoff card rebind <id> --self` 或 `--launch`（有人；见「占座」） |
 | 桌面端坐下 | `handoff card bind <id> --desktop-session <local_…> [--via page\|launcher\|manual] [--machine <名>]`；补记 / 接班后重记 `handoff card seat desktop set <id> --desktop-session <local_…>`（见「占座」） |
@@ -503,7 +503,7 @@ handoff card list --project <项目>     # 落在执行列（既非「待办」�
 
 ```bash
 handoff card dispatch <id> --step <节点名>   # 走工作流节点（节点名 = 看板列名）
-handoff card wait <id> [--subtree] [--follow] [--timeout 3h]
+handoff card wait <id> [--subtree] [--follow] [--timeout 3h] [--since <seq>]
 ```
 
 - **新卡首个节点前先确认基线（B400 首派基线护栏）**：卡无显式 `base_branch` 时，基线由
@@ -539,9 +539,13 @@ handoff card wait <id> [--subtree] [--follow] [--timeout 3h]
   重派前 `card needs <id> --clear`。
 - 一次性覆盖：绑小队的节点不能 `--executor`；`--model`（B203）、`--extra "<本轮补充>"`（进 prompt
   的「本次补充」小节，不落卡、不影响后续轮次）、`--discipline-override <角色>`（应急）。
-- `card wait` 跟的是**账本单流**（卡或整棵动态子树的事件，含镜像进来的 task 事件），
-  stdout 先出建连快照再出逐行原始 `ledger.Event` JSON；过滤发生在消费点，`comment`、`dispatched`、
-  `acceptance_recorded`、审批链/自动审批审计和系统房间指针仍留在账本，`show` 可对质。
+- `card wait` 跟的是**卡事件流 ∪ 寻址命中本卡 pull 席位的会话房间消息**（卡事件含整棵动态子树与
+  镜像进来的 task 事件），stdout 先出建连快照再出逐行原始 `ledger.Event` JSON；过滤发生在消费点，
+  `comment`、`dispatched`、`acceptance_recorded`、审批链/自动审批审计和系统房间指针仍留在账本，`show` 可对质。
+- **房间命中行**就是会话房间里那条 `type=room_message`、`card_id=""` 的事件行，行格式不变。只有本卡
+  席位是 pull（`card bind` 坐下的）时才收；push 席位（机器人）与空座不收房间行；`--subtree` 不扩展
+  房间地址（只收寻址本卡自己的）。无 `--since` 时从持久交付游标续收（坐下之前的 @ 不补发），
+  成功写出 stdout 后才推进游标；`--since <seq>` 两段都只读 seq 之后、排他回放，不读不写游标。
 - **建连第一行是 `card_snapshot`**（B356）：`actionable` 是当时成员集上未决工单
   （`ticket_id` / `source_task` / `source_target` / 子卡 `card_id`），`needs` 是未清
   的等人标记。建连前已经镜像到子卡的工单靠这一行，不靠回放。之后的新事件仍是
@@ -551,7 +555,7 @@ handoff card wait <id> [--subtree] [--follow] [--timeout 3h]
   `--follow` 才持续输出多条可动作事件，直到当前成员全部 `已完成`/`终止`；
   `status_moved` 只触发终态检查，不作为 stdout 唤醒行。
 - 可动作卡事件是 `needs_human`、`needs_cleared`、`decision_opened`、
-  `decision_answered`、真人 `room_message`，以及 `task_mirrored` 解包后经任务
+  `decision_answered`，以及 `task_mirrored` 解包后经任务
   `WaitDeliveryPolicy` 判为真的 task event。任务假集合七项与 `handoff wait` 同值；
   `delivery_failed` 会醒来，按任务处置表执行 `handoff resume <task>`。
 - 默认 `--timeout` 是等到可动作事件或终态收尾的总时长；`--follow` 的 `--timeout`
@@ -565,7 +569,7 @@ handoff card wait <id> [--subtree] [--follow] [--timeout 3h]
   card wait，不再叠加第二条 task 级订阅来补审计噪声。两次默认 wait 之间的偶发订阅真空
   是已接受的后续项，不在本卡创建常驻订阅者。
 - **卡流该有的事件却没动静时，先查自己的命令有没有接管道**（见上文「订阅」一节的
-  过滤器禁令），别先怀疑镜像。父卡 coordinate、子卡空座时，工单会冒泡叫醒父卡；bind 席位仍只靠本命令 stdout。
+  过滤器禁令），别先怀疑镜像。父卡 coordinate、子卡空座时，工单会冒泡叫醒父卡；pull 席位只靠本命令 stdout。
 - 醒来之后**处置方式与任务回路完全相同**：先 `handoff show <task>` 以 state
   为准，再按事件分诊表办。别在这里另发明一套。
 

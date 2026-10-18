@@ -250,7 +250,7 @@ func (s *Server) launchCoordinatorRoundWithExpect(ctx context.Context, card, sou
 	if err != nil {
 		return zero, err
 	}
-	occupied := current.DriverSession != "" || current.DriverSource != ""
+	occupied := current.DriverSession != "" || current.DriverMode != ""
 	if !rebind && occupied {
 		err := fmt.Errorf("卡 %s 当前席位状态不适合此操作: %w", card, ledger.ErrCASConflict)
 		s.log.Warn("协调者拉起在 Launch 前被席位拦截", "card", card, "source", source, "rebind", rebind, "cause", err)
@@ -322,10 +322,10 @@ func (s *Server) launchCoordinatorRoundWithExpect(ctx context.Context, card, sou
 		return zero, fmt.Errorf("编码协调者席位身份: %w", err)
 	}
 	if rebind {
-		err = s.ledger.RebindSeat(card, identity, proto.SeatSourceCoordinate, expect,
+		err = s.ledger.RebindSeatMode(card, identity, proto.SeatSourceCoordinate, proto.SeatModePush, expect,
 			coordinatorBearing(binding, carrier, spec))
 	} else {
-		err = s.ledger.BindSeat(card, identity, proto.SeatSourceCoordinate,
+		err = s.ledger.BindSeatMode(card, identity, proto.SeatSourceCoordinate, proto.SeatModePush,
 			coordinatorBearing(binding, carrier, spec))
 	}
 	if err != nil {
@@ -455,12 +455,14 @@ func (s *Server) wakeCoordinatorRoundID(ctx context.Context, card string,
 	if err != nil {
 		return zero, fmt.Errorf("读取唤醒席位: %w", err)
 	}
-	if current.DriverSession == "" && current.DriverSource == "" {
+	if current.DriverSession == "" && current.DriverMode == "" {
 		s.keystone.Forget(card)
 		s.log.Info("空座跳过协调者唤醒", "card", card, "event_count", len(evs))
 		return zero, nil
 	}
-	if current.DriverSource == string(proto.SeatSourceBind) {
+	if current.DriverMode == string(proto.SeatModePull) {
+		// B435 C-316/C-319：pull 席位零回合（queue_release 直接放行、不回填）。P4 乙过渡：
+		// B434 桌面端记录仍在时沿用既有信箱分支（读记录不读来源词），退役归 X 子卡。
 		// B434（契约 §3.8）：有桌面端记录的 bind 席位走信箱 + continue 深链。插在 bind
 		// 早退处 = 先于 SeatBearingOf / resolveCoordinatorSquad / AdmitSeatCarrier，桌面端
 		// 不占协调者小队名额（拆解稿 §2.4 第 4 条），也不经 keystone（不调 Forget/Wake）。
@@ -488,6 +490,12 @@ func (s *Server) wakeCoordinatorRoundID(ctx context.Context, card string,
 		s.keystone.Forget(card)
 		s.log.Info("bind 席位跳过协调者唤醒", "card", card, "event_count", len(evs))
 		return zero, nil
+	}
+	if current.DriverMode != string(proto.SeatModePush) {
+		err := fmt.Errorf("唤醒席位模式非法 %q（卡 %s）", current.DriverMode, card)
+		s.log.Warn("唤醒被拒：席位模式非法", "card", card, "mode", current.DriverMode, "round_id", roundID, "cause", err)
+		s.writeWakeRoundFail(card, roundID, wakeFailClassOther, err.Error())
+		return zero, err
 	}
 	if err := proto.ValidateSeat(current.DriverSession, proto.SeatSource(current.DriverSource)); err != nil {
 		s.writeWakeRoundFail(card, roundID, wakeFailClassOther, fmt.Sprintf("唤醒席位非法: %v", err))
@@ -605,7 +613,7 @@ func (s *Server) wakeCoordinatorRoundID(ctx context.Context, card string,
 			s.writeWakeRoundFail(card, roundID, wakeFailClassOther, fmt.Sprintf("重建后编码新席位失败: %v", encodeErr))
 			return result, fmt.Errorf("重建后编码新席位: %w", encodeErr)
 		}
-		if rebindErr := s.ledger.RebindSeat(card, identity, proto.SeatSourceCoordinate, current.DriverSession,
+		if rebindErr := s.ledger.RebindSeatMode(card, identity, proto.SeatSourceCoordinate, proto.SeatModePush, current.DriverSession,
 			coordinatorBearing(binding, carrier, spec)); rebindErr != nil {
 			if errors.Is(rebindErr, ledger.ErrCASConflict) {
 				s.log.Error("协调者重建后席位 CAS 冲突，新会话保留待人工回收", "card", card,

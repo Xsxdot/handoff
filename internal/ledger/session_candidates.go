@@ -182,3 +182,94 @@ func (s *Store) SessionMessageCandidatesContext(ctx context.Context, member stri
 		"elapsed_ns", time.Since(started).Nanoseconds())...)
 	return out, nil
 }
+
+// 席位地址无寻址支的方言表达式（B435 C-148/C-150）：同会话房间、mentions 缺键/JSON null/
+// 空数组。非数组 mentions 也放行（超集；权威裁决在匹配函数）。CASE 避免对非数组调用
+// jsonb_array_length 报错。
+const (
+	unaddressedMatchPG = `payload->>'room' = ?
+			AND (CASE WHEN jsonb_typeof(payload->'mentions') = 'array'
+				THEN jsonb_array_length(payload->'mentions') = 0 ELSE true END)`
+	unaddressedMatchSQLite = `json_extract(payload, '$.room') = ?
+			AND (CASE WHEN json_type(payload, '$.mentions') = 'array'
+				THEN json_array_length(payload, '$.mentions') = 0 ELSE 1 END)`
+)
+
+// seatCandidatesUnaddressedBranchSQL 组装席位地址候选的第三支（B435）：该卡所属会话房间内
+// mentions 缺键或为空数组的无卡 room_message。不按 reply_to 过滤（无效回复按无寻址，须进
+// 候选，C-150）。扫描域与既有两支同为无卡 room_message 局部索引 + seq 范围（SQLite 显式
+// INDEXED BY，理由同 sessionCandidatesBranchSQL）。单独抽出供执行计划测试取证。
+func (s *Store) seatCandidatesUnaddressedBranchSQL(session string, fromSeq, toSeq int64) (string, []any) {
+	upper := ""
+	if toSeq > 0 {
+		upper = ` AND seq <= ?`
+	}
+	indexed, match := "", unaddressedMatchPG
+	if s.dialect == dialectSQLite {
+		indexed, match = ` INDEXED BY idx_room_messages_cardless_seq`, unaddressedMatchSQLite
+	}
+	query := `SELECT seq, card_id, type, actor, payload, source_target, source_task, source_seq, created_at
+			FROM card_events` + indexed + `
+			WHERE type = 'room_message' AND card_id IS NULL AND seq > ?` + upper + `
+			AND ` + match
+	args := []any{fromSeq}
+	if toSeq > 0 {
+		args = append(args, toSeq)
+	}
+	return query, append(args, session)
+}
+
+// SeatMessageCandidatesContext 读一页席位地址的会话消息候选（B435 C-148/C-151）：既有两支
+// （identity 身份 @ / identity 当前席位卡 @ / reply→identity 作者）∪ session 房间内无 @ 的
+// 无卡 room_message，seq 升序、UNION 去重。fromSeq 排他；toSeq 包含（<=0 无上界）；limit
+// 必须在 (0, sessionCandidatesLimitMax]。只枚举超集，命中与否只由 collab.Service.Matches
+// 裁决；席位一致性由调用方以 SeatRevision 前后复读保证。既有 SessionMessageCandidatesContext
+// 不变（session wait 仍在用）。
+func (s *Store) SeatMessageCandidatesContext(ctx context.Context, identity, session string, fromSeq, toSeq int64, limit int) ([]Event, error) {
+	if identity == "" || session == "" {
+		return nil, fmt.Errorf("席位候选读需要席位身份与会话（identity=%q session=%q）", identity, session)
+	}
+	if limit <= 0 || limit > sessionCandidatesLimitMax {
+		return nil, fmt.Errorf("席位候选读 limit 必须在 (0,%d]: %d", sessionCandidatesLimitMax, limit)
+	}
+	started := time.Now()
+	mentionsQuery, mentionsArgs := s.sessionCandidatesBranchSQL(identity, fromSeq, toSeq, "mentions")
+	replyQuery, replyArgs := s.sessionCandidatesBranchSQL(identity, fromSeq, toSeq, "reply")
+	unaddressedQuery, unaddressedArgs := s.seatCandidatesUnaddressedBranchSQL(session, fromSeq, toSeq)
+	query := mentionsQuery + `
+		UNION
+		` + replyQuery + `
+		UNION
+		` + unaddressedQuery + `
+		ORDER BY seq ASC LIMIT ?`
+	args := append(append(append(mentionsArgs, replyArgs...), unaddressedArgs...), limit)
+	if err := ctx.Err(); err != nil {
+		log().Info("席位候选读已取消", append(diag.Attrs(ctx), "identity", identity, "session", session,
+			"from_seq", fromSeq, "to_seq", toSeq, "cause", err)...)
+		return nil, err
+	}
+	var out []Event
+	stage, err := s.timedReadQuery(ctx, query, args, func(rows *sql.Rows) (int, int64, error) {
+		events, scanErr := scanProjectionEvents(rows)
+		if scanErr != nil {
+			return 0, 0, scanErr
+		}
+		out = events
+		return len(events), payloadBytesOf(events), nil
+	})
+	if err != nil {
+		class := readErrorClass(err, stage.failedStage)
+		level := log().Warn
+		if class == "canceled" || class == "deadline_exceeded" {
+			level = log().Info
+		}
+		level("席位候选读 SQL 失败", append(diag.Attrs(ctx), "identity", identity, "session", session,
+			"from_seq", fromSeq, "to_seq", toSeq, "error_class", class, "failed_stage", stage.failedStage,
+			"elapsed_ns", time.Since(started).Nanoseconds(), "cause", err)...)
+		return nil, fmt.Errorf("读席位消息候选: %w", err)
+	}
+	log().Debug("席位候选读完成", append(append(diag.Attrs(ctx), "identity", identity, "session", session,
+		"from_seq", fromSeq, "to_seq", toSeq, "rows_returned", len(out),
+		"elapsed_ns", time.Since(started).Nanoseconds()), stage.logAttrs()...)...)
+	return out, nil
+}
