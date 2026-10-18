@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/Xsxdot/handoff/internal/collab/client"
 	"github.com/Xsxdot/handoff/internal/collab/room"
@@ -268,6 +269,31 @@ func mapResidentError(err error) error {
 	}
 }
 
+// ErrProjectName 项目名形状非法（Q15 甲：裁剪后为空，或含空白/控制字符）。
+var ErrProjectName = errors.New("collab: 项目名非法")
+
+// EnsureProjectRoom 取项目的项目房间，不存在则创建——项目房间创建的唯一入口（O1 plan Q3 甲；`handoff
+// project room <p>` 与 `session sit --project <p>` 共用）。参数：project 为卡 project 字段的比较键
+// （调用方已裁剪首尾空白；本层只校验形状，不要求账本已有该项目的卡，Q15 甲）；actor 落 session_created。
+// 新建时群主 = 系统发信身份 agent:handoff（Q1 甲：群主即首个显式成员，系统通知因此是书写者，零书写者
+// 规则改动）。返回会话本体与是否本次新建。错误：项目名非法 → ErrProjectName（零写入）；其余为账本错误。
+// 注意：项目房间创建时零卡、不执法拉卡（Q12 甲）；归档后绑定不变（Q11 甲）。
+func (s *Service) EnsureProjectRoom(project, actor string) (proto.Session, bool, error) {
+	if strings.TrimSpace(project) == "" || strings.IndexFunc(project, func(r rune) bool {
+		return unicode.IsSpace(r) || unicode.IsControl(r)
+	}) >= 0 {
+		log().Warn("确保项目房间被拒：项目名非法", "project", project, "actor", actor)
+		return proto.Session{}, false, fmt.Errorf("项目名 %q 须非空且不含空白与控制字符（即卡的 project 字段值）: %w", project, ErrProjectName)
+	}
+	session, created, err := s.lc.EnsureProjectRoom(project, proto.SystemNotifierIdentity, actor)
+	if err != nil {
+		log().Warn("确保项目房间失败", "project", project, "actor", actor, "cause", err)
+		return proto.Session{}, false, err
+	}
+	log().Info("项目房间已确保", "project", project, "session", session.ID, "created", created, "archived", session.Archived)
+	return session, created, nil
+}
+
 // WakeTargets 解析一条 room_message 的寻址，返回被唤醒成员身份集；空集表示
 // 不唤醒任何人。规则：
 //   - @卡号 解析为该卡当前席位（换绑后指向新席位）；解析不到卡时按外部会话
@@ -368,9 +394,16 @@ func (s *Service) summarizeSession(session proto.Session, byCard map[string]prot
 	if err != nil {
 		return proto.SessionSummary{}, err
 	}
+	// 项目房间标记（B435 ⑤ C-510–C-512，O1 plan Q9 甲）：本函数是列表与详情头的唯一装配点，故 project
+	// 只在此填；读失败上抛——静默缺键会让控制台把项目房间显示成普通会话。
+	project, err := s.lc.SessionProject(session.ID)
+	if err != nil {
+		log().Warn("会话项目绑定读取失败", "session", session.ID, "cause", err)
+		return proto.SessionSummary{}, fmt.Errorf("读取会话 %s 项目绑定: %w", session.ID, err)
+	}
 	summary := proto.SessionSummary{
 		ID: session.ID, Kind: proto.SessionKind, Title: session.Title,
-		Owner: session.Owner, Archived: session.Archived,
+		Owner: session.Owner, Archived: session.Archived, Project: project,
 		LastActivity: session.UpdatedAt,
 		Members:      members,
 		Cards:        sessionCards(session, byCard),

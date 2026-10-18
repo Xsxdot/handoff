@@ -5,8 +5,12 @@ package collab
 
 import (
 	"encoding/json"
+	"errors"
 	"testing"
 
+	"github.com/Xsxdot/handoff/internal/collab/client"
+	"github.com/Xsxdot/handoff/internal/collab/room"
+	"github.com/Xsxdot/handoff/internal/ledger"
 	"github.com/Xsxdot/handoff/internal/proto"
 )
 
@@ -43,5 +47,145 @@ func TestB435SystemNotifierOwnerCanSendToResident(t *testing.T) {
 	}
 	if string(payload["mentions"]) != `["agent:org"]` || string(payload["kind"]) != `"user"` {
 		t.Fatalf("载荷 mentions/kind 不符: %s", ev.Payload)
+	}
+}
+
+// Q15 甲：项目名只校验形状（裁剪后非空、不含空白与控制字符）；被拒零写调用；通过时恰一次写调用且群主 =
+// 系统发信身份（Q1 甲：项目房间以 agent:handoff 为群主创建）。
+func TestB435EnsureProjectRoomValidatesName(t *testing.T) {
+	for _, name := range []string{"", "   ", "a b", "a\nb", " handoff", "a\tb", "a\x00b"} {
+		f := &fakeLC{}
+		if _, _, err := New(f).EnsureProjectRoom(name, "cli:u@h"); !errors.Is(err, ErrProjectName) {
+			t.Errorf("项目名 %q 应被拒（ErrProjectName），得 %v", name, err)
+		}
+		if len(f.ensureCalls) != 0 {
+			t.Errorf("项目名 %q 被拒仍写了账本: %+v", name, f.ensureCalls)
+		}
+	}
+	for _, name := range []string{"handoff", "b435-x", "项目甲"} {
+		f := &fakeLC{}
+		if _, _, err := New(f).EnsureProjectRoom(name, "cli:u@h"); err != nil {
+			t.Errorf("项目名 %q 应通过: %v", name, err)
+		}
+		if len(f.ensureCalls) != 1 || f.ensureCalls[0] != [3]string{name, proto.SystemNotifierIdentity, "cli:u@h"} {
+			t.Errorf("项目名 %q 应恰一次写调用且群主为系统身份: %+v", name, f.ensureCalls)
+		}
+	}
+}
+
+// b435SummaryKeys 把会话摘要编码成原始键值表（序列化边界：区分缺键与空串）。
+func b435SummaryKeys(t *testing.T, s proto.SessionSummary) map[string]json.RawMessage {
+	t.Helper()
+	raw, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatal(err)
+	}
+	return m
+}
+
+// failingProjectLC 让会话 → 项目读失败（其余透传真 Facade）。
+type failingProjectLC struct {
+	client.LedgerClient
+	err error
+}
+
+func (f failingProjectLC) SessionProject(string) (string, error) { return "", f.err }
+
+// C-510/C-511/C-512：列表与详情头同一投影——项目房间两处都出 project 且值为项目名；普通会话两处都缺键；
+// 读项目绑定失败 → 列表与详情都返回错误（不静默缺键）。
+func TestB435SessionSummaryProjectKey(t *testing.T) {
+	svc, _, lc := newSessionFixture(t)
+	pr, created, err := svc.EnsureProjectRoom("handoff", "cli:u@h")
+	if err != nil || !created {
+		t.Fatalf("ensure: created=%v err=%v", created, err)
+	}
+	plain, err := svc.CreateSession("普通", "user:o", "user:o")
+	if err != nil {
+		t.Fatal(err)
+	}
+	list, err := svc.ListSessions("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	inList := map[string]map[string]json.RawMessage{}
+	for _, s := range list {
+		inList[s.ID] = b435SummaryKeys(t, s)
+	}
+	rd, err := svc.SessionDetail(pr.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pd, err := svc.SessionDetail(plain.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for src, keys := range map[string][2]map[string]json.RawMessage{
+		"list":   {inList[pr.ID], inList[plain.ID]},
+		"detail": {b435SummaryKeys(t, rd.Summary), b435SummaryKeys(t, pd.Summary)},
+	} {
+		if string(keys[0]["project"]) != `"handoff"` {
+			t.Errorf("%s：项目房间应出 project=\"handoff\"，得 %s", src, keys[0]["project"])
+		}
+		if raw, has := keys[1]["project"]; has {
+			t.Errorf("%s：普通会话不得出 project 键，得 %s", src, raw)
+		}
+	}
+	readErr := errors.New("项目绑定读失败")
+	broken := New(failingProjectLC{LedgerClient: lc, err: readErr})
+	if _, err := broken.ListSessions(""); !errors.Is(err, readErr) {
+		t.Fatalf("列表读项目绑定失败应返回错误，得 %v", err)
+	}
+	if _, err := broken.SessionDetail(pr.ID); !errors.Is(err, readErr) {
+		t.Fatalf("详情读项目绑定失败应返回错误，得 %v", err)
+	}
+}
+
+// 拆解 §5.3「枚举新值过白名单」：项目房间是普通会话——IsSessionRoom 为真、驻场者可发言、人类无 @ 经
+// Matches 命中驻场者地址、ListRooms 不把它列成旧 project:<name> 房间；旧 project:<name> 房间仍只读。
+func TestB435ProjectRoomIsOrdinarySession(t *testing.T) {
+	svc, st, _ := newSessionFixture(t)
+	pr, _, err := svc.EnsureProjectRoom("handoff", "cli:u@h")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !room.IsSessionRoom(pr.ID) {
+		t.Fatalf("项目房间 %s 应是会话房间", pr.ID)
+	}
+	if _, err := svc.SitResident(proto.SessionResident{Session: pr.ID, Identity: "agent:org"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Send(pr.ID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "收到"}, "agent:org"); err != nil {
+		t.Fatalf("驻场者应可在项目房间发言: %v", err)
+	}
+	addr := proto.DeliveryAddress{Kind: proto.DeliveryResident, Session: pr.ID, Identity: "agent:org"}
+	hit, err := svc.Matches(proto.RoomMessage{Room: pr.ID, Kind: proto.RoomMsgUser, Body: "人类无 @"}, "user:x", addr)
+	if err != nil || !hit {
+		t.Fatalf("人类无 @ 应默认寄驻场者: hit=%v err=%v", hit, err)
+	}
+	if _, err := st.CreateCard(ledger.NewCard{Title: "有卡才有 project 旧房间", Project: "handoff", Workflow: "bug", Actor: "t"}); err != nil {
+		t.Fatal(err)
+	}
+	rooms, err := svc.ListRooms("handoff")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sawLegacy := false
+	for _, r := range rooms {
+		if r.ID == pr.ID {
+			t.Fatalf("ListRooms 不得把项目房间 %s 列成旧房间: %+v", pr.ID, r)
+		}
+		if r.ID == "project:handoff" {
+			sawLegacy = true
+		}
+	}
+	if !sawLegacy {
+		t.Fatalf("前提：ListRooms 应仍列出旧 project:handoff 房间: %+v", rooms)
+	}
+	if _, err := svc.Send("project:handoff", proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "旧房间"}, "user:x"); !errors.Is(err, ErrReadOnly) {
+		t.Fatalf("旧 project:<name> 房间应仍只读（ErrReadOnly），得 %v", err)
 	}
 }

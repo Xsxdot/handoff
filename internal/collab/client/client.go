@@ -117,6 +117,13 @@ type LedgerClient interface {
 	// StandResident 请下会话驻场者（`session stand`）：identity 须等于现驻场者，否则
 	// ErrResidentNotSeated（登记不变）。
 	StandResident(sessionID, identity string) error
+	// EnsureProjectRoom 取项目的项目房间，不存在则以 owner 为群主创建（B435 O1 D6；每项目至多一场、
+	// 每场至多一个项目由实现侧库层兑现）。返回会话本体与是否本次新建。入参为空 → ErrBadState。
+	// 项目名形状校验与群主取值不在实现侧——调用方（collab.Service.EnsureProjectRoom）是唯一入口。
+	EnsureProjectRoom(project, owner, actor string) (proto.Session, bool, error)
+	// SessionProject 读会话绑定的项目名（SessionSummary.project 的数据源，C-512）；非项目房间返回空串。
+	// 读失败返回错误（调用方不得当作非项目房间）。
+	SessionProject(sessionID string) (string, error)
 	// BindDriver 绑定/换绑（expect=CAS 前值；实现侧落 EvDriverTakeover 审计）。
 	BindDriver(id, session, carrier, expect string) error
 	// DriverLease 读绑定者活性租约：过期时刻 + 行是否存在。不过滤过期，
