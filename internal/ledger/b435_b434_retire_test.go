@@ -152,14 +152,13 @@ func (e *b435RetireEnv) batches() []retiredB434Batch {
 	return got
 }
 
-// upgrade 模拟新二进制升级：段 0 直调迁移函数（段 3 接线后改为只 Open）。
+// upgrade 模拟新二进制升级：只 Open（迁移在 ensureSchema 里接线；段 0 曾直调迁移函数）。
 func (e *b435RetireEnv) upgrade() error {
 	s, err := Open(e.dsn)
 	if err != nil {
 		return err
 	}
-	defer s.Close()
-	return s.migrateRetireB434Tables()
+	return s.Close()
 }
 
 // b435RetireFixture 是 ea2db47b 形态的存量：两张 bind/pull 席位卡各一行桌面端记录

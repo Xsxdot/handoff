@@ -334,24 +334,6 @@ func ddlStatements(pg bool) []string {
 				workdir TEXT NOT NULL,
 				model TEXT NOT NULL,
 				bound_at TIMESTAMPTZ NOT NULL)`,
-			// B434 桌面端席位记录：bind 席位的 Claude 桌面端会话 id、所在机器与拉起来源。
-			// 不并入 seat_bearings（拍板 D1：那张表的存在即意味着 coordinate 席位）；
-			// identity 只是写入时的席位一致性见证，席位真源仍是 cards.driver_session。
-			`CREATE TABLE IF NOT EXISTS seat_desktops (
-				card_id TEXT PRIMARY KEY,
-				identity TEXT NOT NULL,
-				desktop_session TEXT NOT NULL,
-				machine TEXT NOT NULL,
-				via TEXT NOT NULL,
-				bound_at TIMESTAMPTZ NOT NULL)`,
-			// B434 项目拉起器登记：每项目至多一条（拍板 D4：存账本才能跨机可见）。
-			`CREATE TABLE IF NOT EXISTS desktop_launchers (
-				project TEXT PRIMARY KEY,
-				desktop_session TEXT NOT NULL,
-				cli_session TEXT NOT NULL,
-				machine TEXT NOT NULL,
-				actor TEXT NOT NULL,
-				registered_at TIMESTAMPTZ NOT NULL)`,
 			// B389 唤醒认领：共库下同一张卡的同一事件只允许一台机器处理。
 			// 主键是 (card, seq) 复合键——card_events.seq 全局唯一，但一条事件可
 			// 合法扇出到多张卡（room_message 寻址），单键会让第二张卡认领失败并
@@ -537,20 +519,6 @@ func ddlStatements(pg bool) []string {
 				workdir TEXT NOT NULL,
 				model TEXT NOT NULL,
 				bound_at TEXT NOT NULL)`,
-			`CREATE TABLE IF NOT EXISTS seat_desktops (
-				card_id TEXT PRIMARY KEY,
-				identity TEXT NOT NULL,
-				desktop_session TEXT NOT NULL,
-				machine TEXT NOT NULL,
-				via TEXT NOT NULL,
-				bound_at TEXT NOT NULL)`,
-			`CREATE TABLE IF NOT EXISTS desktop_launchers (
-				project TEXT PRIMARY KEY,
-				desktop_session TEXT NOT NULL,
-				cli_session TEXT NOT NULL,
-				machine TEXT NOT NULL,
-				actor TEXT NOT NULL,
-				registered_at TEXT NOT NULL)`,
 			`CREATE TABLE IF NOT EXISTS wake_claims (
 				card TEXT NOT NULL,
 				seq INTEGER NOT NULL,
@@ -662,6 +630,12 @@ func (s *Store) ensureSchema() error {
 			}
 			return fmt.Errorf("执行 DDL %q: %w", short, err)
 		}
+	}
+	// B435 X：B434 两张退役表的清除与留痕（b434_retire_migrate.go）。放在 DDL 循环之后：
+	// 留痕写进 ledger_meta，新库要先由 DDL 建出它；两表已不在 DDL 里，新库上本步是 no-op。
+	// 失败上抛、Open 失败（不带病起来，同本函数其它迁移口径）。
+	if err := s.migrateRetireB434Tables(); err != nil {
+		return fmt.Errorf("B434 退役表迁移: %w", err)
 	}
 	// B156.2/B312 绑定席位加列迁移：CREATE IF NOT EXISTS 不会给已存在的表补列，
 	// 加列走「ALTER + 容忍重复列」（store.go 文件头预留的第二版形态；
