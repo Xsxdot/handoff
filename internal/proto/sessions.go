@@ -32,6 +32,8 @@ const (
 	SessionMemberAgent = "agent"
 	// SessionMemberSeat 由会话内某张卡的当前席位派生出的协调者成员。
 	SessionMemberSeat = "seat"
+	// SessionMemberResident 房间驻场者（B435）：无席位的默认收件人，一房间至多一名。
+	SessionMemberResident = "resident"
 )
 
 // SessionMember 的成员状态词表（「看板不说谎」：只报可证实的）。
@@ -69,6 +71,26 @@ type SessionCard struct {
 	Status string `json:"status"`
 	// Seat 该卡当前席位身份；空串 = 还没配人（虚线卡）。
 	Seat string `json:"seat,omitempty"`
+	// SeatMode 该卡席位驱动模式（B435：push|pull）；空座不出键。键名不用 mode，
+	// 避免与 CoordinatorRebindReq.Mode（换绑方式 launch）同名异义。
+	SeatMode string `json:"seat_mode,omitempty"`
+}
+
+// SessionResident 是房间驻场者登记的 wire 投影（B435 D5/D10）。一房间至多一名；
+// 桌面端三字段同空 = 无桌面端地址（只靠 session wait 收件）。
+type SessionResident struct {
+	// Session 会话房间 id（session:<n>）。
+	Session string `json:"session"`
+	// Identity 驻场者成员身份，统一记法 user:<name> / agent:<name>（identity.go）。
+	Identity string `json:"identity"`
+	// DesktopSession Claude 桌面端会话 id（local_…）；continue 深链用。
+	DesktopSession string `json:"desktop_session,omitempty"`
+	// CLISession 该桌面端会话的 CLI 会话 id：信箱文件名键（mod 以 $.session.id() 取同值）。
+	CLISession string `json:"cli_session,omitempty"`
+	// Machine 桌面端所在机器；空串 = 本机。
+	Machine string `json:"machine,omitempty"`
+	// SatAt 登记时刻。
+	SatAt time.Time `json:"sat_at"`
 }
 
 // SessionSummary 是会话列表（谁需要我）的一行。

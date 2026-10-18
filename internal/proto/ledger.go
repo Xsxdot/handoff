@@ -28,9 +28,11 @@ type Card struct {
 	// Following 非空 = 该卡已并入承载卡（merged_into 的 to）。查询期派生标记，
 	// 权威在 ledger.CardView.Following：只在列表投影上有值，单卡读不派生、恒空。
 	// omitempty = 缺席不出键，既有契约 fixture 不受扰（B156.2 岔口一微修订）。
-	Following         string    `json:"following,omitempty"`
-	DriverSession     string    `json:"driver_session,omitempty"`
-	DriverSource      string    `json:"driver_source,omitempty"`
+	Following     string `json:"following,omitempty"`
+	DriverSession string `json:"driver_session,omitempty"`
+	DriverSource  string `json:"driver_source,omitempty"`
+	// DriverMode 席位驱动模式（B435：push|pull，SeatMode 词表）；空座不出键。
+	DriverMode        string    `json:"driver_mode,omitempty"`
 	DriverHeartbeatAt time.Time `json:"driver_heartbeat_at,omitempty"`
 	CreatedAt         time.Time `json:"created_at"`
 	UpdatedAt         time.Time `json:"updated_at"`
@@ -175,6 +177,8 @@ type CardView struct {
 	OpenTickets     int          `json:"open_tickets"`
 	DriverSession   string       `json:"driver_session,omitempty"`
 	DriverSource    string       `json:"driver_source,omitempty"`
+	// DriverMode 席位驱动模式（B435：push|pull）；空座不出键。
+	DriverMode string `json:"driver_mode,omitempty"`
 }
 
 // CardDetail 是卡片详情的 wire DTO。

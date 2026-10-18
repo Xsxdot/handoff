@@ -90,6 +90,9 @@ func (f *fakeLC) JoinCardToSession(sessionID, cardID, actor string) error {
 func (f *fakeLC) LeaveCardToSession(sessionID, cardID, actor string) error { return nil }
 func (f *fakeLC) SessionOfCard(cardID string) (string, error)              { return "", nil }
 func (f *fakeLC) AddSessionMember(sessionID, identity, actor string) error { return nil }
+func (f *fakeLC) SessionResident(sessionID string) (proto.SessionResident, bool, error) {
+	return proto.SessionResident{}, false, nil
+}
 func (f *fakeLC) EventsFromAsc(cardIDs []string, fromSeq int64, limit int) ([]proto.LedgerEvent, error) {
 	f.eventReads++
 	if limit <= 0 {

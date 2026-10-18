@@ -97,6 +97,9 @@ type LedgerClient interface {
 	SessionOfCard(cardID string) (string, error)
 	// AddSessionMember 把一个显式成员（人或主 agent 外部会话身份）记入会话。
 	AddSessionMember(sessionID, identity, actor string) error
+	// SessionResident 读会话房间的驻场者登记（B435 D5，一房间至多一名）；ok=false 表示
+	// 无驻场者（不是错误）。匹配函数的默认收件人与驻场者地址解析只经它读驻场者。
+	SessionResident(sessionID string) (proto.SessionResident, bool, error)
 	// BindDriver 绑定/换绑（expect=CAS 前值；实现侧落 EvDriverTakeover 审计）。
 	BindDriver(id, session, carrier, expect string) error
 	// DriverLease 读绑定者活性租约：过期时刻 + 行是否存在。不过滤过期，

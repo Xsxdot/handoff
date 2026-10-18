@@ -1,0 +1,542 @@
+{
+  "view": "cards/B435-charter-1",
+  "base": "7f860685752a5d4dea43d38b96441be9437a0565",
+  "summary": "B435 contract Ticket 0：席位驱动模式词表 SeatMode/ParseSeatMode 与 Card/CardView.driver_mode、SessionCard.seat_mode 投影键（③）；收件地址 DeliveryAddress/DeliveryAddressKind、游标键 DeliveryCursorKey、无收件人原因 NoRecipientReason、匹配结果 Delivery、人类作者判据 IsHumanAuthor（②）；匹配函数空壳 collab.Service.Recipients/Matches/defaultRecipient（恒报未实现）；驻场者 DTO SessionResident 与出站接口 LedgerClient.SessionResident（Facade 空壳恒报未实现）；驻场者来信正文 ResidentLetter/RenderResidentLetter（④，正文即 wire 定义）。常量与哨兵不入图。",
+  "nodesAdded": {
+    "m_proto_SeatMode": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 1132,
+      "name": "SeatMode",
+      "file": "internal/proto/seat_mode.go",
+      "line": 14,
+      "signature": "type SeatMode string",
+      "summary": "SeatMode 是卡上协调者席位的驱动模式。空串只在空座上合法。",
+      "modelKind": "dto",
+      "tests": [
+        {
+          "name": "TestB435SeatModeLiterals",
+          "file": "internal/proto/b435_contract_test.go:44"
+        }
+      ]
+    },
+    "m_proto_DeliveryAddressKind": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 1133,
+      "name": "DeliveryAddressKind",
+      "file": "internal/proto/delivery.go",
+      "line": 12,
+      "signature": "type DeliveryAddressKind string",
+      "summary": "DeliveryAddressKind 是收件地址种类。",
+      "modelKind": "dto"
+    },
+    "m_proto_DeliveryAddress": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 1134,
+      "name": "DeliveryAddress",
+      "file": "internal/proto/delivery.go",
+      "line": 22,
+      "signature": "type DeliveryAddress struct {\n\tKind     DeliveryAddressKind `json:\"kind\"`\n\tSession  string              `json:\"session\"`\n\tCard     string              `json:\"card,omitempty\"`\n\tIdentity string              `json:\"identity\"`\n}",
+      "summary": "DeliveryAddress 是匹配函数的地址：一张卡的席位，或一个房间的驻场者。",
+      "modelKind": "dto",
+      "tests": [
+        {
+          "name": "TestB435DeliveryAddressCursorKey",
+          "file": "internal/proto/b435_contract_test.go:117"
+        }
+      ]
+    },
+    "m_proto_NoRecipientReason": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 1135,
+      "name": "NoRecipientReason",
+      "file": "internal/proto/delivery.go",
+      "line": 58,
+      "signature": "type NoRecipientReason string",
+      "summary": "NoRecipientReason 是消息收件地址集为空时的原因词表（详情页文案的数据源）。",
+      "modelKind": "dto",
+      "tests": [
+        {
+          "name": "TestB435NoRecipientVocabulary",
+          "file": "internal/proto/b435_contract_test.go:141"
+        }
+      ]
+    },
+    "m_proto_Delivery": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 1136,
+      "name": "Delivery",
+      "file": "internal/proto/delivery.go",
+      "line": 81,
+      "signature": "type Delivery struct {\n\tAddresses   []DeliveryAddress\n\tDefault     bool\n\tNoRecipient NoRecipientReason\n}",
+      "summary": "Delivery 是匹配函数对一条消息的解析结果。 Default=false：Addresses 来自显式寻址（@ / reply_to），人数 = 发送者写下的人数（B358 条 20–25）。 Default=true：Addresses 恰一项，来自默认收件人分支（人类作者、无寻址）。 Addresses 为空时 NoRecipient 非空。",
+      "modelKind": "dto"
+    },
+    "m_proto_ResidentLetter": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 1137,
+      "name": "ResidentLetter",
+      "file": "internal/proto/resident_letter.go",
+      "line": 18,
+      "signature": "type ResidentLetter struct {\n\t// Session 寻址命中所在会话房间 id（session:<n>）。\n\tSession string\n\t// Count 本批命中该驻场者地址的消息条数（≥1）。\n\tCount int\n\t// MinSeq / MaxSeq 本批命中消息的账本 seq 区间（含两端）。\n\tMinSeq, MaxSeq int64\n}",
+      "summary": "ResidentLetter 是一封驻场者来信的全部变量。",
+      "modelKind": "dto",
+      "tests": [
+        {
+          "name": "TestB435ResidentLetterGolden",
+          "file": "internal/proto/b435_contract_test.go:178"
+        }
+      ]
+    },
+    "m_proto_SessionResident": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 1138,
+      "name": "SessionResident",
+      "file": "internal/proto/sessions.go",
+      "line": 81,
+      "signature": "type SessionResident struct {\n\t// Session 会话房间 id（session:<n>）。\n\tSession string `json:\"session\"`\n\t// Identity 驻场者成员身份，统一记法 user:<name> / agent:<name>（identity.go）。\n\tIdentity string `json:\"identity\"`\n\t// DesktopSession Claude 桌面端会话 id（local_…）；continue 深链用。\n\tDesktopSession string `json:\"desktop_session,omitempty\"`\n\t// CLISession 该桌面端会话的 CLI 会话 id：信箱文件名键（mod 以 $.session.id() 取同值）。\n\tCLISession string `json:\"cli_session,omitempty\"`\n\t// Machine 桌面端所在机器；空串 = 本机。\n\tMachine string `json:\"machine,omitempty\"`\n\t// SatAt 登记时刻。\n\tSatAt time.Time `json:\"sat_at\"`\n}",
+      "summary": "SessionResident 是房间驻场者登记的 wire 投影（B435 D5/D10）。一房间至多一名； 桌面端三字段同空 = 无桌面端地址（只靠 session wait 收件）。",
+      "modelKind": "dto",
+      "tests": [
+        {
+          "name": "TestB435SessionResidentWire",
+          "file": "internal/proto/b435_contract_test.go:100"
+        }
+      ]
+    },
+    "n_proto_ParseSeatMode": {
+      "kind": "func",
+      "container": "k_proto_fn",
+      "order": 11,
+      "name": "ParseSeatMode",
+      "file": "internal/proto/seat_mode.go",
+      "line": 25,
+      "signature": "func ParseSeatMode(raw string) (SeatMode, error)",
+      "summary": "ParseSeatMode 把 CLI/wire 上的字面量解析成 SeatMode；只认 push 与 pull 两值 （大小写敏感、不去空白——wire 值逐字比较）。错误信息可行动（列出合法值）。",
+      "tests": [
+        {
+          "name": "TestB435SeatModeLiterals",
+          "file": "internal/proto/b435_contract_test.go:44"
+        }
+      ]
+    },
+    "n_proto_DeliveryCursorKey": {
+      "kind": "func",
+      "container": "k_proto_fn",
+      "order": 12,
+      "name": "DeliveryCursorKey",
+      "file": "internal/proto/delivery.go",
+      "line": 40,
+      "signature": "func DeliveryCursorKey(a DeliveryAddress) string",
+      "summary": "DeliveryCursorKey 返回该地址在持久交付游标（session_delivery_cursors.member 列）里的键： - 席位：Identity 原样（cli:<cli>#<sid>）——与 B435 前 `session wait <席位身份>` 写下的 旧行同键，语义同为「该席位已成功输出的最大命中 seq」，升级后可直接续用； - 驻场者：\"resident:\" + Session + \"/\" + Identity——会话 id（session:<n>）不含 \"/\"， 首个 \"/\" 即分界；与 B435 前按 user:/agent: 成员身份写下的旧行不同键（旧行作废不迁移）。 种类未知或必填段为空返回空串（调用方必须拒绝空键，不得写库）。 包级函数而非方法：proto 词表包的地址类型不另立方法容器。",
+      "tests": [
+        {
+          "name": "TestB435DeliveryAddressCursorKey",
+          "file": "internal/proto/b435_contract_test.go:117"
+        }
+      ]
+    },
+    "n_proto_IsHumanAuthor": {
+      "kind": "func",
+      "container": "k_proto_fn",
+      "order": 13,
+      "name": "IsHumanAuthor",
+      "file": "internal/proto/delivery.go",
+      "line": 90,
+      "signature": "func IsHumanAuthor(actor string) bool",
+      "summary": "IsHumanAuthor 报告 actor 是否为人类作者：当且仅当它是统一记法 user:<name> （ParseMemberIdentity 成功且种类为 user）。agent:*（含系统发信身份 agent:handoff）、 席位 cli:<cli>#<sid>、旧传输层脸 cli:<user>@<host> / web:<host> 一律不是。",
+      "tests": [
+        {
+          "name": "TestB435IsHumanAuthor",
+          "file": "internal/proto/b435_contract_test.go:161"
+        }
+      ]
+    },
+    "n_proto_RenderResidentLetter": {
+      "kind": "func",
+      "container": "k_proto_fn",
+      "order": 14,
+      "name": "RenderResidentLetter",
+      "file": "internal/proto/resident_letter.go",
+      "line": 34,
+      "signature": "func RenderResidentLetter(l ResidentLetter) string",
+      "summary": "RenderResidentLetter 渲染来信正文：恰两行，各以 \"\\n\" 结尾—— [handoff] 会话 <session> 有 <n> 条新消息寻址到你（账本 seq <min>–<max>） 取信：handoff session wait <session> 正文只含 handoff 自生成的骨架（会话 id、条数、seq），不含任何第三方原文， 因此无需 B434 的围栏、名册与转义。区间分隔符是 U+2013（–），与 B434 卡级信同款。",
+      "tests": [
+        {
+          "name": "TestB435ResidentLetterGolden",
+          "file": "internal/proto/b435_contract_test.go:178"
+        },
+        {
+          "name": "TestB435ModStillMatchesLetterWire",
+          "file": "internal/proto/b435_contract_test.go:201"
+        }
+      ]
+    },
+    "n_collab_Service_Recipients": {
+      "kind": "func",
+      "container": "k_collab_Service",
+      "order": 28,
+      "name": "Service.Recipients",
+      "file": "internal/collab/recipients.go",
+      "line": 34,
+      "signature": "func (s *Service) Recipients(msg proto.RoomMessage, author string) (proto.Delivery, error)",
+      "summary": "Recipients 解析一条会话房间消息的收件地址集。author 是该消息账本事件的 actor （默认收件人分支按它判人类作者，proto.IsHumanAuthor）。读账本失败返回错误，调用方 必须上抛（误判未命中会让持久水位越过该消息）。",
+      "tests": [
+        {
+          "name": "TestB435RecipientsShellNeverSucceeds",
+          "file": "internal/collab/recipients_b435_test.go:40"
+        }
+      ]
+    },
+    "n_collab_Service_Matches": {
+      "kind": "func",
+      "container": "k_collab_Service",
+      "order": 29,
+      "name": "Service.Matches",
+      "file": "internal/collab/recipients.go",
+      "line": 41,
+      "signature": "func (s *Service) Matches(msg proto.RoomMessage, author string, addr proto.DeliveryAddress) (bool, error)",
+      "summary": "Matches 是匹配函数的点判形态：addr ∈ Recipients(msg, author).Addresses。两个 wait 与信箱桥用它判「是不是给我的」；push 消费循环用 Recipients 拿全集。二者同源， 不得各自实现。",
+      "tests": [
+        {
+          "name": "TestB435RecipientsShellNeverSucceeds",
+          "file": "internal/collab/recipients_b435_test.go:40"
+        }
+      ]
+    },
+    "n_collab_Service_defaultRecipient": {
+      "kind": "func",
+      "container": "k_collab_Service",
+      "order": 30,
+      "name": "Service.defaultRecipient",
+      "file": "internal/collab/recipients.go",
+      "line": 48,
+      "signature": "func (s *Service) defaultRecipient(sessionID string) (addr proto.DeliveryAddress, reason proto.NoRecipientReason, ok bool, err error)",
+      "summary": "defaultRecipient 是默认收件人分支的唯一产出点：返回值是**单个**地址（ok=false 时 附原因）——「解析结果 ≤ 1 人」由返回类型保证，切片形状写不出来（源码守卫锁定）。 sessionID 是消息所在会话；人类作者与无寻址的前置判定由调用方（Recipients）完成。",
+      "tests": [
+        {
+          "name": "TestB435DefaultRecipientReturnsSingleAddress",
+          "file": "internal/collab/recipients_b435_test.go:23"
+        }
+      ]
+    },
+    "n_ledger_api_Facade_SessionResident": {
+      "kind": "func",
+      "container": "k_ledger_api_Facade",
+      "order": 23,
+      "name": "Facade.SessionResident",
+      "file": "internal/ledger/api/api.go",
+      "line": 232,
+      "signature": "func (f *Facade) SessionResident(sessionID string) (proto.SessionResident, bool, error)",
+      "summary": "SessionResident 读会话房间的驻场者登记（B435）。Ticket 0：恒返回未实现错误。"
+    }
+  },
+  "nodesModified": {
+    "m_proto_Card": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 32,
+      "name": "Card",
+      "file": "internal/proto/ledger.go",
+      "line": 15,
+      "signature": "type Card struct {\n\tID                 string       `json:\"id\"`\n\tTitle              string       `json:\"title\"`\n\tStatus             string       `json:\"status\"`\n\tTerminateReason    string       `json:\"terminate_reason,omitempty\"`\n\tPriority           string       `json:\"priority\"`\n\tProject            string       `json:\"project\"`\n\tParentID           string       `json:\"parent\"`\n\tWorkflowName       string       `json:\"workflow\"`\n\tWorkflowVersion    int          `json:\"workflow_version\"`\n\tAttachments        []Attachment `json:\"attachments,omitempty\"`\n\tAcceptanceCriteria string       `json:\"acceptance_criteria,omitempty\"`\n\tBaseBranch         string       `json:\"base_branch,omitempty\"`\n\t// Following 非空 = 该卡已并入承载卡（merged_into 的 to）。查询期派生标记，\n\t// 权威在 ledger.CardView.Following：只在列表投影上有值，单卡读不派生、恒空。\n\t// omitempty = 缺席不出键，既有契约 fixture 不受扰（B156.2 岔口一微修订）。\n\tFollowing     string `json:\"following,omitempty\"`\n\tDriverSession string `json:\"driver_session,omitempty\"`\n\tDriverSource  string `json:\"driver_source,omitempty\"`\n\t// DriverMode 席位驱动模式（B435：push|pull，SeatMode 词表）；空座不出键。\n\tDriverMode        string    `json:\"driver_mode,omitempty\"`\n\tDriverHeartbeatAt time.Time `json:\"driver_heartbeat_at,omitempty\"`\n\tCreatedAt         time.Time `json:\"created_at\"`\n\tUpdatedAt         time.Time `json:\"updated_at\"`\n}",
+      "summary": "Card 是账本卡片的 wire DTO；字段名与现有账本 HTTP 响应保持一致。",
+      "fields": [
+        [
+          "ID",
+          "string",
+          ""
+        ],
+        [
+          "Title",
+          "string",
+          ""
+        ],
+        [
+          "Status",
+          "string",
+          ""
+        ],
+        [
+          "TerminateReason",
+          "string",
+          ""
+        ],
+        [
+          "Priority",
+          "string",
+          ""
+        ],
+        [
+          "Project",
+          "string",
+          ""
+        ],
+        [
+          "ParentID",
+          "string",
+          ""
+        ],
+        [
+          "WorkflowName",
+          "string",
+          ""
+        ],
+        [
+          "WorkflowVersion",
+          "int",
+          ""
+        ],
+        [
+          "Attachments",
+          "[]Attachment",
+          ""
+        ],
+        [
+          "AcceptanceCriteria",
+          "string",
+          ""
+        ],
+        [
+          "BaseBranch",
+          "string",
+          ""
+        ],
+        [
+          "Following",
+          "string",
+          ""
+        ],
+        [
+          "DriverSession",
+          "string",
+          ""
+        ],
+        [
+          "DriverSource",
+          "string",
+          ""
+        ],
+        [
+          "DriverHeartbeatAt",
+          "time.Time",
+          ""
+        ],
+        [
+          "CreatedAt",
+          "time.Time",
+          ""
+        ],
+        [
+          "UpdatedAt",
+          "time.Time",
+          ""
+        ],
+        [
+          "DriverMode",
+          "string",
+          ""
+        ]
+      ],
+      "modelKind": "dto"
+    },
+    "m_proto_CardView": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 42,
+      "name": "CardView",
+      "file": "internal/proto/ledger.go",
+      "line": 156,
+      "signature": "type CardView struct {\n\tID              string       `json:\"id\"`\n\tTitle           string       `json:\"title\"`\n\tStatus          string       `json:\"status\"`\n\tPriority        string       `json:\"priority\"`\n\tProject         string       `json:\"project\"`\n\tWorkflow        string       `json:\"workflow\"`\n\tWorkflowVersion int          `json:\"workflow_version\"`\n\tParent          string       `json:\"parent\"`\n\tBaseBranch      string       `json:\"base_branch\"`\n\tBaseFrozen      bool         `json:\"base_frozen\"`\n\tAttachments     []Attachment `json:\"attachments\"`\n\tFollowing       string       `json:\"following\"`\n\tBlocked         bool         `json:\"blocked\"`\n\tBlockedBy       []string     `json:\"blocked_by\"`\n\tMergedCount     int          `json:\"merged_count\"`\n\tNeeds           string       `json:\"needs\"`\n\tOpenDecisions   int          `json:\"open_decisions\"`\n\tChildrenTotal   int          `json:\"children_total\"`\n\tChildrenDone    int          `json:\"children_done\"`\n\tConflict        bool         `json:\"conflict\"`\n\tOpenTickets     int          `json:\"open_tickets\"`\n\tDriverSession   string       `json:\"driver_session,omitempty\"`\n\tDriverSource    string       `json:\"driver_source,omitempty\"`\n\t// DriverMode 席位驱动模式（B435：push|pull）；空座不出键。\n\tDriverMode string `json:\"driver_mode,omitempty\"`\n}",
+      "summary": "CardView 是列表卡片及查询期派生标记的 wire DTO。",
+      "fields": [
+        [
+          "ID",
+          "string",
+          ""
+        ],
+        [
+          "Title",
+          "string",
+          ""
+        ],
+        [
+          "Status",
+          "string",
+          ""
+        ],
+        [
+          "Priority",
+          "string",
+          ""
+        ],
+        [
+          "Project",
+          "string",
+          ""
+        ],
+        [
+          "Workflow",
+          "string",
+          ""
+        ],
+        [
+          "WorkflowVersion",
+          "int",
+          ""
+        ],
+        [
+          "Parent",
+          "string",
+          ""
+        ],
+        [
+          "BaseBranch",
+          "string",
+          ""
+        ],
+        [
+          "BaseFrozen",
+          "bool",
+          ""
+        ],
+        [
+          "Attachments",
+          "[]Attachment",
+          ""
+        ],
+        [
+          "Following",
+          "string",
+          ""
+        ],
+        [
+          "Blocked",
+          "bool",
+          ""
+        ],
+        [
+          "BlockedBy",
+          "[]string",
+          ""
+        ],
+        [
+          "MergedCount",
+          "int",
+          ""
+        ],
+        [
+          "Needs",
+          "string",
+          ""
+        ],
+        [
+          "OpenDecisions",
+          "int",
+          ""
+        ],
+        [
+          "ChildrenTotal",
+          "int",
+          ""
+        ],
+        [
+          "ChildrenDone",
+          "int",
+          ""
+        ],
+        [
+          "Conflict",
+          "bool",
+          ""
+        ],
+        [
+          "OpenTickets",
+          "int",
+          ""
+        ],
+        [
+          "DriverSession",
+          "string",
+          ""
+        ],
+        [
+          "DriverSource",
+          "string",
+          ""
+        ],
+        [
+          "DriverMode",
+          "string",
+          ""
+        ]
+      ],
+      "modelKind": "dto"
+    },
+    "m_proto_SessionCard": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 135,
+      "name": "SessionCard",
+      "file": "internal/proto/sessions.go",
+      "line": 68,
+      "signature": "type SessionCard struct {\n\tCardID string `json:\"card_id\"`\n\tTitle  string `json:\"title\"`\n\tStatus string `json:\"status\"`\n\t// Seat 该卡当前席位身份；空串 = 还没配人（虚线卡）。\n\tSeat string `json:\"seat,omitempty\"`\n\t// SeatMode 该卡席位驱动模式（B435：push|pull）；空座不出键。键名不用 mode，\n\t// 避免与 CoordinatorRebindReq.Mode（换绑方式 launch）同名异义。\n\tSeatMode string `json:\"seat_mode,omitempty\"`\n}",
+      "summary": "SessionCard 是会话里的一张工作项卡。Seat 为空 = 空座（进群 ≠ 配人）。",
+      "fields": [
+        [
+          "CardID",
+          "string",
+          ""
+        ],
+        [
+          "Title",
+          "string",
+          ""
+        ],
+        [
+          "Status",
+          "string",
+          ""
+        ],
+        [
+          "Seat",
+          "string",
+          ""
+        ],
+        [
+          "SeatMode",
+          "string",
+          ""
+        ]
+      ],
+      "modelKind": "dto"
+    },
+    "m_collab_client_LedgerClient": {
+      "kind": "model",
+      "container": "k_collab_client_model",
+      "order": 1,
+      "name": "LedgerClient",
+      "file": "internal/collab/client/client.go",
+      "line": 36,
+      "signature": "type LedgerClient interface {\n\t// GetCard 读卡（含 driver_session 绑定投影与终态判定所需字段）。\n\tGetCard(id string) (proto.Card, error)\n\t// ListActiveCards 列项目范围内「已开始未结束」的卡（成员派生规则的输入；\n\t// project 空 = 跨项目）。Status ∉ {已完成, 终止} 即在列。\n\tListActiveCards(project string) ([]proto.Card, error)\n\t// ListAllCards 列项目范围内全部卡（含终态与并入成员）：账本\n\t// ListCards{IncludeTerminal:true} 的直通镜像（B156.2 岔口一方案甲还债\n\t// 直通）。终态房间「沉底可列」与并入只读判定（Following 非空）的唯一\n\t// 枚举源。注意 Following 只在列表方法上有值：GetCard 走单卡读、不派生\n\t// 跟随态，恒为空串。\n\tListAllCards(project string) ([]proto.Card, error)\n\t// RecordRoomMessage 发布房间消息事件（卡房间 cardID=卡号；群级传空串）。\n\tRecordRoomMessage(cardID string, msg proto.RoomMessage, actor string) (int64, error)\n\t// RecordMessageConsumed 落恰好一次的消费标记（幂等由账本事务保证）。\n\tRecordMessageConsumed(cardID string, msgSeq int64, consumer string) error\n\t// EventsFromAsc 升序游标读事件（cardIDs 空 = 全流含群级无卡事件）。\n\tEventsFromAsc(cardIDs []string, fromSeq int64, limit int) ([]proto.LedgerEvent, error)\n\t// EventsFromAscContext 供 HTTP 会话读取在客户端断开时取消事件流查询。\n\tEventsFromAscContext(ctx context.Context, cardIDs []string, fromSeq int64, limit int) ([]proto.LedgerEvent, error)\n\t// RoomMessagesBeforeContext 只读指定房间最近消息；beforeSeq 为排他上界，limit 必须为正。\n\tRoomMessagesBeforeContext(ctx context.Context, roomID string, beforeSeq int64, limit int) ([]proto.LedgerEvent, error)\n\t// RoomMessageSnapshotsContext 批量返回目标 room 最新消息、最大 created_at 与给定 seq 水位之后的消息行数。\n\t// 房间身份按 RoomIDOf 语义解析：card_id 优先，无卡事件才取 payload.room；不解释 member/unread。\n\tRoomMessageSnapshotsContext(ctx context.Context, afterByRoom map[string]int64) ([]RoomMessageSnapshot, error)\n\t// SessionProjectionEventsContext 返回单会话结构事件及调用方给定当前成员卡上的投影事件。\n\tSessionProjectionEventsContext(ctx context.Context, sessionID string, cardIDs []string) ([]proto.LedgerEvent, error)\n\t// LatestNeedsEventsContext 返回每张指定卡最新一条 needs_human/needs_cleared 事实。\n\tLatestNeedsEventsContext(ctx context.Context, cardIDs []string) ([]proto.LedgerEvent, error)\n\t// --- B409 U5 收件箱限域读（recipient-address 候选；U4/U5 seam 清点见\n\t// internal/ledger/message_candidates.go 文件头——与 U4 的范围投影读无共同方法）---\n\t// MentionCandidatesContext 读一页 mentions 精确含 member 的 room_message 候选\n\t// 超集。roomID 非空时限房间（SameRoom 的 SQL 超集：挂卡行按 card_id、无卡行\n\t// 按 payload.room——SameRoom 权威判定仍由调用方执行）；cardlessOnly 只取无卡\n\t// 行（Pending 群级源）；afterSeq 排他；limit 必须 >0。kind/by_system 不在账本\n\t// 过滤——裁决在 collab。\n\tMentionCandidatesContext(ctx context.Context, member, roomID string, cardlessOnly bool, afterSeq int64, limit int) ([]proto.LedgerEvent, error)\n\t// CardRoomUserMessagesContext 读给定卡集合上 kind=user 的房间消息行（Pending\n\t// 第二源）。cardIDs 空返回空集；块间各自升序，跨源归并排序由调用方负责。\n\tCardRoomUserMessagesContext(ctx context.Context, cardIDs []string, afterSeq int64, limit int) ([]proto.LedgerEvent, error)\n\t// ConsumedMessageSeqsContext 读 consumer 已消费的 message_seq 集合（载荷\n\t// message_seq/consumer 精确匹配为权威）。afterSeq 是安全上界：标记事件 seq\n\t// 必大于被标记消息 seq，故不会漏掉 message_seq>afterSeq 的相关标记。\n\tConsumedMessageSeqsContext(ctx context.Context, consumer string, afterSeq int64) ([]int64, error)\n\t// EventBySeq 按全局 seq 点读单条事件（Consume 定位消息所属卡的限域替身）；\n\t// ok=false 表示 seq 不存在。\n\tEventBySeq(seq int64) (proto.LedgerEvent, bool, error)\n\t// --- B358 会话（群）域账本能力 ---\n\t// CreateSession 建一场会话（群），返回带分配 id 的会话本体。\n\tCreateSession(title, owner, actor string) (proto.Session, error)\n\t// GetSession 读单会话；不存在返回错误（由组装点翻译为 ErrNoRoom）。\n\tGetSession(id string) (proto.Session, error)\n\t// ListSessions 列全部会话（含归档），按创建序。\n\tListSessions() ([]proto.Session, error)\n\t// ArchiveSession 显式归档会话；归档后只读，幂等。\n\tArchiveSession(id, actor string) error\n\t// JoinCardToSession 把卡拉进会话；卡已属其它会话时返回错误。\n\tJoinCardToSession(sessionID, cardID, actor string) error\n\t// LeaveCardToSession 把卡移出会话；幂等。\n\tLeaveCardToSession(sessionID, cardID, actor string) error\n\t// SessionOfCard 返回该卡当前所属会话 id；不属于任何会话返回空串。\n\tSessionOfCard(cardID string) (string, error)\n\t// AddSessionMember 把一个显式成员（人或主 agent 外部会话身份）记入会话。\n\tAddSessionMember(sessionID, identity, actor string) error\n\t// SessionResident 读会话房间的驻场者登记（B435 D5，一房间至多一名）；ok=false 表示\n\t// 无驻场者（不是错误）。匹配函数的默认收件人与驻场者地址解析只经它读驻场者。\n\tSessionResident(sessionID string) (proto.SessionResident, bool, error)\n\t// BindDriver 绑定/换绑（expect=CAS 前值；实现侧落 EvDriverTakeover 审计）。\n\tBindDriver(id, session, carrier, expect string) error\n\t// DriverLease 读绑定者活性租约：过期时刻 + 行是否存在。不过滤过期，\n\t// 活性判定由调用方按同一时钟做。\n\tDriverLease(session string) (time.Time, bool, error)\n}",
+      "summary": "LedgerClient 会话子系统消费账本能力的唯一通道。方法集与契约文档 §3.4 一一对应；扩方法先回 contract 节点。",
+      "modelKind": "dto"
+    }
+  },
+  "nodesDeleted": [],
+  "edgesAdded": [
+    [
+      "n_proto_IsHumanAuthor",
+      "n_proto_ParseMemberIdentity"
+    ]
+  ],
+  "edgesDeleted": [],
+  "projectionsAdded": [],
+  "lifecycleAdded": []
+}

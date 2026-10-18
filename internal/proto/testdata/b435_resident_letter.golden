@@ -1,0 +1,2 @@
+[handoff] 会话 session:12 有 3 条新消息寻址到你（账本 seq 101–108）
+取信：handoff session wait session:12

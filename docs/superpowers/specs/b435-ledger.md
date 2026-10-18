@@ -182,3 +182,82 @@ WARN 原文 internal/collab/sessions.go:393-394：`log().Warn("会话成员身�
 | 9 | §12 待裁决清零；未知 2 由 spec 裁 | — | 别名问题随 D2 消失；未知 2 裁为「上走保留且仅限卡自动化事件」；载体扩展仍留用户 |
 
 建议改：`--mode` 字面量 `push|pull` 已定；桌面端登记入口 = `session sit --desktop-session`；信箱格式进 contract ④；补 S9/S10 与 `card show mode`；§4 A 改 `:3685`；B399 约束写入 §9；roadmap「`claude --bg`」条加注。wait 走 HTTP 撤回（§4 H）：CLI 进程内调匹配函数，条 45/49 读侧不改。
+
+## 五、contract 节点台账（2026-10-18，contract 执行者 subagent；工作树 `cards+B435-charter-1` @ `7f860685`）
+
+边干边记：命令、原始读数、放弃的尝试、判断。行号以本工作树为准（spec 行号取自 c944b6b7，逐条复核）。
+
+### 五.1 入口核对
+- `git log --oneline -1` → `7f860685 docs(B435): spec r2 已批准——协调者统一模型（两种驱动模式、一套 wait、驻场者与项目房间组织者）`；`git status --short` 空。
+- spec 头部「上游状态：r2 已批准（用户 2026-10-18 批准…）」——批准状态成立；冻结理由 = spec §2 四条缝（生产者/消费者见契约文档 §2）。
+- 已读：`b435.md` 全文、本台账 §一–§四、`b358-contract.md` §1–§6、`b434-contract.md` §3–§9、`2026-09-25-session-bounded-candidate-read-contract.md` 冻结清单（下称 B409r2 契约）。
+
+### 五.2 存量签名复核（sed/grep，本工作树行号）
+- `cmd/card_wait.go`：`Use: "wait <id>"` :67；`runCardWait` :84，起点 `st.MaxSeq()` :106，**无 `--since`、无持久游标**；建连先输出 `card_snapshot` 行（`encodeCardWaitSnapshot` :352，键 type/card_id/subtree/from_seq/members/actionable/needs，结构 :41-63）；事件行 = `ledger.Event` 原样 JSON（`enc.Encode(e)` :191；键 seq/card_id/type/actor/payload/source_target?/source_task?/source_seq?/created_at，`internal/ledger/types.go:173-183`，`card_id` 无 omitempty）；`st.Follow(ctx, members…)` :160；`cardWaitEventActionable` :233，needs_human/needs_cleared/decision_* 恒可动作 :235-237，room_message 只判 `kind==user && !by_system` 且 `by_system:null` 不可动作 :238-253；超时 124 :211-218；全终态 stderr「子树已全部完成」退 0 :154-158。spec 行号 :235/:249-253/:160 与本树一致。
+- `cmd/session.go`：`Use: "wait <member>"` :67；默认读共享交付水位 `SessionDeliveryCursorContext(ctx, member)` :307；积压单行 `proto.SessionBacklog` :352 起、成功输出后 `AdvanceSessionDeliveryCursor(member, ToSeq)` :389；实时逐条 `SessionWake` 输出后推进 :456；`sessionWaitMatch` :501，`target == member` :517（spec 写 :516，漂移 1 行）；`buildSessionWake` :534；`--since` 显式 = 只读回放不读写游标（:299-310、:452）。
+- `cmd/wait.go:91` `Use: "wait <task>"`——顶层任务 wait，不动（spec D2 一致）。
+- `internal/ledger/session_delivery_cursor.go:14-52`：表 `session_delivery_cursors(member PK, last_seq, updated_at)`，只升不降 upsert :44-47——**游标键当前 = 成员身份串**。
+- `internal/ledger/session_candidates.go:62-135`：候选超集只有两支——mentions（身份精确 ∪ 当前席位卡号）与 reply（reply_to→member 作者），均限 `card_id IS NULL`；**无「无寻址消息」分支** → 默认收件人落地必须扩候选超集（B409r2 契约条 2–5 修订，见契约文档 §6）。
+- `internal/collab/sessions.go`：`MessageWakeTargets` :220（by_system/pointer → nil；`replyAuthorOf` + `resolveMessageTargets`）；`resolveMessageTargets` :233（@卡号 → 该卡 `DriverSession`，**不限本会话**）；`AddressesCard` :258；`sessionMembers` WARN 原文 :393-394。
+- `internal/collab/room/delivery.go`：`ResolveDelivery` :30（返回 `[]string`，可多人）、`IsAddressed` :66。
+- `internal/agentd/wakeconsumer.go`：`automationWakeEvent` :216（needs_human/seat_bearing_missing 不唤醒 :261-264）；`decodeRoomMessageForWake` :275；`automationWakeEvents` :301（needs_human → `desktopNeedsHumanWakes` :315）；`roomMessageWakeEvents` :337（`MessageWakeTargets` :352、`bySeat` 只收**本会话卡** :366-386、外部身份只 Info :397）；`resolveWakeCard` :502（bind 分支 :521-539）；房间消息唤醒同样经 `resolveWakeCard`（:748）——上走对房间消息也生效（D1 要求改）。
+- `internal/agentd/scheddrain.go`：`wakeCoordinatorRoundID` :448，bind 分支 :463-490（桌面端 queue_release 放行 :478-484；「bind 席位跳过协调者唤醒」:489）；远端 coordinate queue_release 显式失败 :509-520；`StartAutomation` :54 每台 agentd 一个自动化循环（共享账本 + wake_claims 去重）。
+- `internal/keystone/keystone.go`：`Wake` :105，bind → Forget :123-126；`LaunchForCard` :201 断言 source==coordinate :202；`Locate` :251 读 source==coordinate。
+- `internal/ledger/binding.go`：`BindSeat` :34（同事务落 `EvDriverSeatBound` payload `{to}`）；`RebindSeat` :89；`SetSeatBearing` :163 只收 coordinate :175；`validateSeatBearing` :216 按 source 判承载 :217；`clearSeatTx` :282（含 `deleteSeatDesktopTx`）。
+- 读席位来源词的判定点全集（`grep -rn "SeatSourceBind\|SeatSourceCoordinate" cmd internal desktop main.go`，排除测试）：keystone.go:123/:202/:251；scheddrain.go:463；wakeconsumer.go:521；desktopwake.go:1053；seat_desktop.go:85；binding.go:175/:217；写入点 card_driver.go:65/:163、scheddrain.go:325/:328/:608。
+- `internal/proto/seat.go`：`SeatSource` :10-15，`EncodeSeatIdentity` :41 / `ParseSeatIdentity` :53（`cli:<cli>#<sid>`，注释 :39-40「旧 cli:user@host 不会被误认成合法席位」）。
+- `internal/proto/identity.go`：`IdentityKindUser/Agent` :18-21；`ParseMemberIdentity` :57；注释 :6-8「web:<host> / cli:<user>@<host> 是旧传输层临时脸，不属本词表」。
+- 作者身份生产者：控制台 `handleRoomSend`（`internal/agentd/roomsapi.go:469`）actor = `id.Member` = `user:<console_user>`；CLI `session send`（`cmd/session.go#sessionSendActor` :881）三形态：`--agent` → `agent:<n>`，`--cli/--session` → 席位 `cli:<cli>#<sid>`，缺省 → `ledgerActor()` = `cli:<USER>@<host>`（`cmd/ledgercli.go:44-51`）。**发现**：CLI 人形发言作者不是 `user:` 记法——按 D4 字面不算人类作者（契约文档退回项 R3）。
+- `internal/proto/ledger.go`：`Card.DriverSession/DriverSource` :32-33；`CardView` :176-177；`CoordinatorRebindReq.Mode`（wire 键 `mode`，取值 launch，`ledger_wire_test.go:56-63`）——**`mode` 键名已被换绑请求占用**，席位模式 wire 键取 `driver_mode`/`seat_mode` 以免同名异义。
+- `cmd/card.go:108-143` `card show` = 单 JSON `{card: ledger.Card, …}`，`ledger.Card` json 标签 `internal/ledger/types.go:156-157`。
+- `plugins/claude-desktop-wake/hooks/register.ts`：`WAKE_MARKER='[handoff]'` :18、`WAKE_DIR_REL` :20、`isOwnLetter` :34-38（前缀 `${sessionId}.` + `/^[0-9]{19}\.md$/`）、`drainBox` 只搬运正文不解析 :94-123、`submitPrefill` :85-91。mod 对正文只认首行前缀——**信件正文改形不需改 mod**。
+- `internal/agentd/desktopwake.go`：`writeDesktopLetter` :437（文件名 `%s.%019d.md` :457）；`desktopLetter` :217（首行「卡 X 有 N 件新事」:240）；`desktopMailboxHome` :976（写信进程本机 HOME）；`desktopNeedsHumanWakes` :1043、bind 判定 :1053；`openViaDesktopLauncher` :1224；围栏渲染层 :1377 起。
+- 路由：`coordapi.go:52/:55`（desktop-launch GET/POST）；`server.go:929` `POST /api/desktop/deliver`；client `internal/client/coordinator.go:81` `DesktopLauncherOpen`；CLI `cmd/card.go:600` `--desktop`、`cmd/card_driver.go:203-205` 三 flag、`cmd/card_seat_desktop.go`、`cmd/launcher.go`。
+- 守卫测试：`internal/collab/room/delivery_gate_test.go:25/:81/:118`；`internal/agentd/wakeconsumer_b358_test.go:62/:96/:121/:164/:186/:219/:253/:274/:326/:356`。
+- 金样本：`internal/proto/sessions_fixture_test.go:182` `TestSessionWakeFixture`；`internal/proto/session_backlog_contract_test.go:22` 读 `testdata/session_backlog.json`；`ledger_wire_test.go:26` 席位两键 omitempty。**`card wait` 行格式无既有逐字金样本**（`cmd/card_wait_test.go` 只做行为断言）→ 本轮补 `TestB435CardWaitLineShapes`。
+
+### 五.3 代码图
+- `codegraph` 不在 PATH；`go run github.com/Xsxdot/charter/graph/cmd/codegraph --repo . validate` 首跑被会话的 git 形态守卫拒（命令串含 `github.com` 被当作 git 调用）——放弃 `cd && …` 复合写法，改 `go build -o <scratchpad>/codegraph github.com/Xsxdot/charter/graph/cmd/codegraph` 后直调二进制。
+- `codegraph --repo <树> validate` → `{"containers":354,"domains":26,"edges":7037,"issues":null,"nodes":5625,"views":["cards-B383-charter"]}`。
+- `sym` 命中：`Service.MessageWakeTargets`（n_collab_Service_MessageWakeTargets，d_collab，sessions.go:220，**图中签名陈旧**：仍是无 error 旧体）、`Service.AddressesCard`、`ResolveDelivery`、`Server.roomMessageWakeEvents`（d_gateway）、`Server.resolveWakeCard`、`runCardWait`、`cardWaitEventActionable`、`writeDesktopLetter`、`Store.BindSeat`、`Server.desktopNeedsHumanWakes`（:1043）、`Server.wakeCoordinatorRoundID`（:448）、`Service.Wake`（keystone.go:105）。
+- **未命中（图覆盖债）**：`runSessionWait`、`sessionWaitMatch`（cmd/session.go）——`who-calls Service.MessageWakeTargets` 因此漏掉 CLI 调用方，只返回 agentd 两个。
+- 归属读数：`codegraph/best.json` containers `k_agentd_*` → **d_gateway**（spec §8 把 agentd 消费循环记作 d_scheduling；按图，消费循环在 d_gateway，`internal/scheduling` 才是 d_scheduling）。spec §8 禁令「d_scheduling 不得持有事件白名单」按实际落点施于 d_gateway 的消费循环——命名差，非归属分歧，不退回。
+- `target.json` 既有方向：`d_gateway→d_collab`（entries「collab 入站门面」，预算 0）、`d_cli→d_collab`（「collab 入站门面」「collab 包级函数」，0）、`d_gateway/d_cli/d_collab/d_ledger→d_protocol`（含「proto 实体」「proto（包级函数）」）。判断：新匹配函数做成 `collab.Service` 方法（门面容器）、地址类型放 proto（实体）→ 零新方向、零预算变化，`target.json` 不改。
+
+### 五.4 判断与放弃的尝试（按出现顺序）
+- **`≤ 1 人` 的作用域**：spec §4 E / D4 / §9.1 条 30 写「解析结果恒 ≤ 1 人」，同表又写条 20–25「留」（`ResolveDelivery` 显式多 @ 返回多人）。两读法：(a) 一切消息 ≤1——会推翻条 23/25 且 spec 未给多 @ 的处置；(b) 只约束默认收件人分支——与「留」一致。取 (b)，记拍板 D-B（契约 §8），并在交棒报告请协调者确认。
+- **人类作者**：D4 字面 `user:` 记法；CLI 人形 `session send` 作者是 `cli:<USER>@<host>`（ledgercli.go:44-51），S1 剧本用 CLI 发言 → 按字面不触发默认收件人。不擅自扩大判据（会把旧传输层脸重新认作人），冻结 `IsHumanAuthor ⇔ user:`，S1 冲突列退回项 R3。
+- **`card bind --mode push`**：push 需承载（carrier+machine）才能起回合；B389 规则 1/2（`binding.go:217`）按来源词执法「bind 必零承载」、`SetSeatBearing` 只收 coordinate（:175）→ bind+push 在现有写面上不可运行；改法要么扩 CLI flag、要么改 B389 按 mode 执法、要么拒绝该组合——跨 d_ledger（承载形态）与 d_gateway（push 驱动）两处规则，spec 未定 → 退回项 R1，不冻结该组合。
+- **信件内容**：B434 卡级信内嵌原文 + 围栏；若驻场者信也内嵌原文，则「信」与 `session wait` 成两条交付通道、两套进度——组织者恢复（S8）从驻场者游标续读会重放已经由信交付的消息（B434 条 82 明令写信不推进游标）。取「门铃信」：信只报会话、条数、seq 区间与取信命令，交付唯一经 `session wait`。记拍板 D-A。
+- **跨机写信**：spec D10「异机投递沿既有 transferCoordinatorWake + LetterUnopened」——该端点是卡路径 `/api/cards/{id}/coordinator/wake`、以 `card.DriverSession == req.Seat` CAS（coordapi.go:178-195），驻场者不是卡席位，无从 CAS → 保留项与驻场者语义不相容。候选「只由驻场者桌面端地址所在机的 agentd 写信（每台 agentd 都跑消费循环，scheddrain.go:54-66）」可行但改了 spec 明文 → 退回项 R2，不冻结。
+- **card wait 游标起点**：席位地址游标无行时若从 0 补收，候选读按**当前**席位解析 `@卡号`（session_candidates.go:44-48），换绑后新持有者会收到全部历史 `@卡号`；取「下界 = 该身份最近一次坐下/换绑事件 seq」。可逆（单包 CLI 读法），不立拍板，冻结为条目。
+- **card wait 卡事件段**：D2「卡事件照旧」→ 卡事件段起点仍是启动时 MaxSeq，不进持久游标；持久游标只管房间命中段。
+- **游标键**：席位键 = 席位身份原样（与旧 `session wait cli:…#…` 行同键同义，可续用）；驻场者键 = `resident:<session>/<identity>`（同一身份驻场多房间不串游标；旧 `user:/agent:` 行作废）。
+- **地址类型落点**：放 proto 而非 collab——d_gateway→d_collab 只允许「collab 入站门面」容器（target.json），collab 自有类型会成为门面外的跨域引用；放 proto 走既有「proto 实体」entries，零方向变更。
+- **CursorKey 先写成方法后改包级函数 `DeliveryCursorKey`**：方法需新建 `k_proto_DeliveryAddress` 容器并改 best.json 归属；包级函数落既有 `k_proto_fn`。
+- **wire 键名**：卡上用 `driver_mode`、会话卡行用 `seat_mode`，不用 `mode`（`CoordinatorRebindReq.Mode` 已占，ledger_wire_test.go:56-63）。
+- **TS 镜像不进 Ticket 0**：`web/node_modules` 不存在（`ls web/node_modules` 空），tsc/vitest 跑不了；不提交未编译的 TS → 欠账。
+- `AddressesCard` 生产调用方为零（`grep -rn "MessageWakeTargets\|AddressesCard" internal cmd`，排除测试与定义处：只剩 wakeconsumer.go:352、cmd/session.go:512 两处 `MessageWakeTargets`）→ 对侧执法：**疑似漂移**，并入匹配函数时直接删除。
+- 会话守卫首轮把 `cd … && gofmt … cmd …`、`go test ./cmd/` 判为疑似 git 调用拒绝；改为不带 cd 的单命令、包路径写模块全名 `github.com/Xsxdot/handoff/cmd`。
+
+### 五.5 Ticket 0 落码与跑数
+- 新增：`internal/proto/seat_mode.go`、`internal/proto/delivery.go`、`internal/proto/resident_letter.go`、`internal/proto/testdata/b435_resident_letter.golden`、`internal/collab/recipients.go`；改：`internal/proto/ledger.go`（Card/CardView +DriverMode）、`internal/proto/sessions.go`（+SessionMemberResident、SessionCard.SeatMode、SessionResident）、`internal/collab/client/client.go`（LedgerClient +SessionResident）、`internal/ledger/api/api.go`（Facade.SessionResident 空壳恒报未实现）、`internal/collab/readmodel_test.go`（fakeLC 补方法）。
+- 测试：`internal/proto/b435_contract_test.go`（9 支）、`internal/collab/recipients_b435_test.go`（2 支 + 编译期签名断言）、`cmd/card_wait_b435_test.go`（1 支，锁现状行格式）。
+- `gofmt -l internal/proto internal/collab internal/ledger/api` → 首跑报 `internal/proto/ledger.go`（字段对齐），`gofmt -w` 后空。
+- `go build ./...` → 无输出，退出 0。
+- `go vet ./internal/proto/ ./internal/collab/... ./internal/ledger/api/` → EXIT=0。
+- `go test ./internal/proto/ ./internal/collab/... ./internal/ledger/api/` → `ok internal/proto 2.127s`、`ok internal/collab 2.500s`、`ok internal/collab/room 1.823s`、`ok internal/ledger/api 1.986s`，EXIT=0。
+- `go test -run TestB435 -v ./internal/proto/ ./internal/collab/`（改名 DeliveryCursorKey 后复跑 `-count=1`）→ 11 支全 PASS。
+- `go test -run 'TestB435|TestB353CardWait|TestB409CardWait' -v github.com/Xsxdot/handoff/cmd` → `TestB435CardWaitLineShapes` PASS，既有 card wait 14 支 PASS，`ok …/cmd 18.833s`。
+- `go test -count=1 -run NONE_B435 ./...`（全仓测试二进制编译）→ 无失败行，EXIT=0。
+- 视图 diff：`python3 -I <scratchpad>/mkdiff.py <树> 7f860685752a5d4dea43d38b96441be9437a0565` → `15 added; 4 modified; 1 edges`，写 `codegraph/diffs/cards-B435-charter-1.json`（view `cards/B435-charter-1`，文件名已扁平化）。首跑误传了一个手拼的错 base hash，立即以 `git rev-parse HEAD` 的值重跑覆盖。
+- `codegraph validate` → `issues: null`，views = [cards-B383-charter, cards-B435-charter-1]。
+- `codegraph --view cards-B435-charter-1 sym Service.Recipients` → `status: added`，domain d_collab，line 34。
+- `codegraph --view cards-B435-charter-1 check` → 3 处 over-budget（d_cli→d_maintenance 27>25、d_gateway→d_collab 1>0、d_ledger→d_protocol 5>2）；**不带 --view 的基线 check 同样这 3 处** → 存量违规，非本视图引入。
+
+### 五.6 出稿与冻结
+- `docs/superpowers/specs/b435-contract.md` 落盘：冻结条目 137 条（① 50：C-101–C-129、C-131–C-151；② 45：C-201–C-245；③ 28：C-301–C-328；④ 14：C-401–C-414）；B358 修订记录 §5；B409r2/B389/B399 连带 §6；B434 处置 §7；拍板 D-A、D-B（另审过不立 5 条）；退回 R1–R3。
+- 出稿自检：首稿引用 b434-contract.md 行号时误用了「持久化输出片段」的相对行号（§3.6 `:130-147`、`:217`，§3.10 `:479-489`，§3.8.1 `:436`），grep 原文件后改为 `:249-266`、`:336`、`:483-489`、`:433`；`cmd/session.go` flag 行 `:888-893` → `:897-902`、`sessionSendActor` `:881-897` → `:881-895`（首处）。
+- `codegraph --view cards-B435-charter-1 resolve --doc docs/superpowers/specs/b435-contract.md` → 12 个锚全部解析（ok 6 / moved 6，无坏锚）；`resolveWakeCard` 锚解析到 :502（文中原写 :500），契约与台账同改为 :502。
+- 终跑：`go build ./...` 无输出；`go test -count=1 ./internal/proto/ ./internal/collab/... ./internal/ledger/api/` 4 包 ok；`go test -count=1 -run TestB435 github.com/Xsxdot/handoff/cmd` ok。
+- 冻结提交：`git add <16 个文件>` + `git commit -q -m "docs(B435): contract 冻结四条缝…"`；`git log --oneline -1` → `9e8c7543 docs(B435): contract 冻结四条缝——一套 wait、匹配函数判定表、席位模式 wire、驻场者门铃信`（历史读数；随后 amend 一次收进本行，hash 会变，不回写）。未 push。

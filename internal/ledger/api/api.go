@@ -224,6 +224,15 @@ func (f *Facade) AddSessionMember(sessionID, identity, actor string) error {
 	return translateNotFound(f.st.AddSessionMember(sessionID, identity, actor))
 }
 
+// errSessionResidentNotImplemented 是 B435 Ticket 0 空壳期哨兵：驻场者登记表与 Store
+// 读面由实现节点落码（契约 b435-contract.md ②/④），空壳绝不报「无驻场者」冒充成功。
+var errSessionResidentNotImplemented = errors.New("ledger api: B435 驻场者登记尚未实现（Ticket 0 空壳）")
+
+// SessionResident 读会话房间的驻场者登记（B435）。Ticket 0：恒返回未实现错误。
+func (f *Facade) SessionResident(sessionID string) (proto.SessionResident, bool, error) {
+	return proto.SessionResident{}, false, errSessionResidentNotImplemented
+}
+
 // translateNotFound 把账本 ErrNotFound 翻成使用方哨兵 client.ErrNotFound；
 // 其它错误原样透传。接口归属使用方（架构法第九条），实现侧负责翻译。
 func translateNotFound(err error) error {
