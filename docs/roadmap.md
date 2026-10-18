@@ -870,3 +870,7 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 - **审批链黑名单全队共享**：B437 共享审批链只共享候选环与时限，`approver.blacklist` 仍各机本地（permgate 启动装配、不热更新）。共享需 permgate 支持热更新。来源：B437 spec Out of Scope。
 - **控制台只读展示共享审批链**：B437 只给 CLI `handoff approver show|set|clear`；编辑仍不进控制台（B160 安全链口径）。来源：B437 spec Out of Scope。
 - **审批链环健康探测与跳过**：B437 每次裁决对不可达的环都要等到连接失败或时限；宜记住近期不可达的环直接跳过。来源：B437 spec Out of Scope。
+- **审批链本机环超时收尾慢、审计理由未归一**：B437 真机，链 timeout=3s 时本机环 codex OneShot `context deadline exceeded` 实际 7592ms 才返回（取消后进程收尾约 4.6s），审计理由是原始错误串而非「超时」；他机环已按五分类归一。宜让本机 OneShot 取消后限时强杀、本机环失败理由同走五分类。来源：B437 finish 真机。
+- **B437 真机残余**：plan §9-6 relay 冷隧道环在连接时限（10s）内能否成功——未验（无授权在 relay 部署、隔离实例占不到 relay 节点名）；§9-7 真实负载下每请求读注册表与对端并发 OneShot 量级——未验；S6「运行中账本不可达 → last-good」只有单测（TestSharedChainReadTimeoutUsesLastGood），隔离实例无法单独掐断到测试库的连接。来源：B437 finish。
+- **协调者 handoff stop 卡派发轮被标成「裁决解析失败」**：B437 两次主动 stop 零提交的 implement 轮，卡上落 comment「裁决解析失败，报文原文：协调者主动中止（handoff stop）」+ needs_human(裁决解析失败)，需手工 needs --clear；应识别主动中止、给独立 reason。来源：B437 协调者。
+- **Mac mini 的 claude CLI 未登录**：`claude -p` → Not logged in，该机 claude 不能当任务执行者或审批环；B437 真机改由 macbook-pro 的 codex 承担他机正面裁决。来源：B437 finish 真机（环境事实，非代码缺陷）。
