@@ -215,7 +215,7 @@ func (s *Server) startCardStep(cardID string, req proto.CardStepReq) error {
 			FrozenTarget:         binding.Target,
 			DisciplineText:       resolved.Text,
 			DisciplineVersion:    resolved.Version,
-			NormalizeTarget:      s.CanonicalTarget,
+			ResolveTarget:        s.ResolveTarget,
 			ProbeBaseAttachments: s.probeBaseAttachments,
 		},
 		Clients: func(target string) (ledgerstep.StepClient, error) {

@@ -29,6 +29,10 @@ import (
 // SetLedger 注入账本库（agentd 启动时；nil = 未配置，除 health 外 API 降级 503）。
 func (s *Server) SetLedger(st *ledger.Store) { s.ledger = st }
 
+// LedgerMounted 报告账本是否已挂载。组装点用它跳过账本依赖的启动步骤
+// （B439 S2 挂载门：有 DSN 缺机器身份时不打开账本，agentd 照常起）。
+func (s *Server) LedgerMounted() bool { return s.ledger != nil }
+
 func (s *Server) registerLedgerRoutes(api *http.ServeMux) {
 	// B409.6 S4：五条读路由套 observeRead（路线限定观测包装），生成贯穿
 	// collab/ledger 日志的 operation_id；写路径与其余端点不套。

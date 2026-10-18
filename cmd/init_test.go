@@ -255,6 +255,7 @@ func TestInitAcceptsAnswers(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "config.yaml")
 	answers := strings.Join([]string{
 		"executor",
+		"", // 机器名 name
 		"", // 默认执行者
 		"", // 模型
 		"custom",
@@ -345,6 +346,7 @@ func TestPrintDetectionQuietForMissingTool(t *testing.T) {
 func execAnswers(installAnswer string) string {
 	return strings.Join([]string{
 		"executor",
+		"", // 机器名 name（B439 新增，所有角色可见）
 		"", // 默认执行者
 		"", // 模型
 		"", // 监听（首次预选 all）
@@ -651,7 +653,7 @@ func TestInitListenSelectAll(t *testing.T) {
 
 func TestInitListenSelectLoopback(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "config.yaml")
-	answers := strings.Join([]string{"executor", "", "", "loopback", "", "", "n"}, "\n") + "\n"
+	answers := strings.Join([]string{"executor", "", "", "", "loopback", "", "", "n"}, "\n") + "\n"
 	if _, err := runInit(t, p, true, answers); err != nil {
 		t.Fatalf("init: %v", err)
 	}

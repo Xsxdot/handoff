@@ -938,11 +938,11 @@ func TestViaTemplateSelfAliasContinuesLocalWorkBranch(t *testing.T) {
 	var dispatched []DispatchOpts
 	d := &Dispatcher{
 		St: st, Actor: "tester",
-		NormalizeTarget: func(target string) string {
-			if target == "local" {
-				return ""
+		ResolveTarget: func(target string) (string, bool) {
+			if target == "local" || target == "" {
+				return "", true
 			}
-			return target
+			return target, false
 		},
 		Transport: func(ctx context.Context, opts DispatchOpts) (string, string, error) {
 			dispatched = append(dispatched, opts)

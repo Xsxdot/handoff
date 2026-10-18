@@ -168,26 +168,37 @@ func swapDispatchTransportWithOpts(fn func(dispatchRequest) (string, string, err
 // addr**，直连构造对它们恒失败（会退化成一个没有 Host 的 URL）。选路判据
 // 只允许有一份，在 internal/targetclient，CLI 与 agentd 共用。
 //
-// canonicalCLITarget 把已登记且指向本机的 target 归一为空串。
+// resolveCLITarget 把 CLI 的目标输入解析成（身份值, 是否本机）。
 //
-// 空串本身就是本机；未知名称保留原名并返回可行动错误，不增加“本机”或
-// “localhost”魔法别名。
-func canonicalCLITarget(target string) (string, error) {
-	if target == "" {
-		return "", nil
-	}
+// 有自名：省略或 == 自名 → 本机（身份值=自名）；其余保留原值。无自名：
+// 回退地址判据（S5，行为与今天一致），本机身份值为空串。未知的非本机名保留
+// 原名并返回可行动错误，不增加“本机”或“localhost”魔法别名。
+func resolveCLITarget(target string) (identity string, isLocal bool, err error) {
 	cfg, err := config.Load(effectiveConfigPath())
 	if err != nil {
-		return "", fmt.Errorf("加载配置: %w", err)
+		return "", false, fmt.Errorf("加载配置: %w", err)
 	}
-	t, ok := cfg.Targets[target]
-	if !ok {
-		return target, fmt.Errorf("目标机 %s 未登记（handoff init/机器登记先行）", target)
+	identity, isLocal = cfg.ResolveTarget(target)
+	if isLocal {
+		return identity, true, nil
 	}
-	if config.IsSelfTarget(cfg.Listen, t) {
+	if _, ok := cfg.Targets[target]; !ok {
+		return target, false, fmt.Errorf("目标机 %s 未登记（handoff init/机器登记先行）", target)
+	}
+	return identity, false, nil
+}
+
+// canonicalCLITarget 返回一次目标输入的**路由值**：本机归一为空串，远端保留
+// 原名。身份值（进账本）见 resolveCLITarget。
+func canonicalCLITarget(target string) (string, error) {
+	identity, isLocal, err := resolveCLITarget(target)
+	if err != nil {
+		return "", err
+	}
+	if isLocal {
 		return "", nil
 	}
-	return target, nil
+	return identity, nil
 }
 
 // targetClient 按规范目标取得一个可用的 agentd 客户端。
@@ -367,13 +378,13 @@ var cardDispatchCmd = &cobra.Command{
 			},
 			DisciplineText:    resolved.Text,
 			DisciplineVersion: resolved.Version,
-			NormalizeTarget: func(target string) string {
-				canonical, err := canonicalCLITarget(target)
+			ResolveTarget: func(target string) (string, bool) {
+				identity, isLocal, err := resolveCLITarget(target)
 				if err != nil {
-					slog.Warn("CLI 派发目标归一失败，保留原值", "target", target, "cause", err)
-					return target
+					slog.Warn("CLI 派发目标解析失败，保留原值", "target", target, "cause", err)
+					return target, false
 				}
-				return canonical
+				return identity, isLocal
 			},
 		}
 		result, err := dispatcher.ViaTemplate(ctx, card, ledgerstep.TemplateDispatch{

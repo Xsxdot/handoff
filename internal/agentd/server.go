@@ -543,15 +543,52 @@ func (s *Server) IsSelfTarget(name string) bool {
 	return ok && config.IsSelfTarget(cfg.Listen, target)
 }
 
-// CanonicalTarget 把本机身份归一为空串，保留远端与未知名称原值。
+// IsSelfMachine 报告 name 是否指本机（B439 身份判据，与路由值无关）。
 //
-// 返回值会写入派发请求、任务挂账与快照；调用方不应继续使用归一前的登记名
-// 作为身份。空串与配置中指向本机的登记名共用本机 client。
+// 判据顺序：有自名且省略或 == 自名 → 本机；否则回退今天判法（空串 / 配置中
+// 指向本机的登记名 / 本机别名）。**WU1 保留本机别名回退**（local/本机/hostname
+// 仍视作本机，S5/S6 边界，§6.3）；旧别名的拒收在 WU3 收敛。
+func (s *Server) IsSelfMachine(name string) bool {
+	cfg := s.conf()
+	if cfg != nil && cfg.Name != "" && cfg.IsSelfName(name) {
+		return true
+	}
+	if s.IsSelfTarget(name) {
+		return true
+	}
+	return scheduling.IsLocalMachine(name)
+}
+
+// ResolveTarget 把一次目标输入解析成（身份值, 是否本机）。
+//
+// 身份值进共享账本与快照；路由值由调用方按 isLocal 折算（本机 → 空串）。
+// 有自名时本机身份值=自名（全队名）；无自名时回退今天判法，本机身份值=空串
+// （旧账本口径，S5 逐点不变）。本机别名在 WU1 仍视作本机（§6.3）。
+func (s *Server) ResolveTarget(name string) (identity string, isLocal bool) {
+	cfg := s.conf()
+	if cfg != nil && cfg.Name != "" {
+		if cfg.IsSelfName(name) || s.IsSelfTarget(name) || scheduling.IsLocalMachine(name) {
+			return cfg.Name, true
+		}
+		return name, false
+	}
+	if s.IsSelfMachine(name) {
+		return "", true
+	}
+	return name, false
+}
+
+// CanonicalTarget 返回一次目标输入的**路由值**：本机归一为空串，保留远端与
+// 未知名称原值。返回值进派发请求选路与 wire，不写共享账本（写账本用身份值，
+// 见 ResolveTarget）。
+//
+// 空串与配置中指向本机的登记名共用本机 client。
 func (s *Server) CanonicalTarget(name string) string {
-	if s.IsSelfTarget(name) || scheduling.IsLocalMachine(name) {
+	identity, isLocal := s.ResolveTarget(name)
+	if isLocal {
 		return ""
 	}
-	return name
+	return identity
 }
 
 // clientForTarget 按规范目标取得 agentd client。

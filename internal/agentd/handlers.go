@@ -579,13 +579,14 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 	s.log.Info("dispatch 任务身份快照已组装", "project", req.ProjectID,
 		"carrier", binding.Carrier, "squad", binding.Squad, "target", binding.Target,
 		"executor", binding.Executor, "home_dir_set", homePtr != nil)
-	// B233.27：准入只核「请求 vs 登记」。现网登记名常是 targets 键（linux-01），
-	// 不能只用 IsLocalMachine（它把 linux-01 当远端）。CanonicalTarget 空串=本机。
-	if canon := s.CanonicalTarget(binding.Target); canon != "" {
+	// B233.27：准入只核「请求 vs 登记」。B439 起用身份判据 IsSelfMachine：
+	// 有自名时按自名判（省略或 == 自名），无自名时回退地址/本机别名判据。
+	// 不能只用 IsLocalMachine（它把登记名 linux-01 当远端）。
+	if !s.IsSelfMachine(binding.Target) {
 		err = fmt.Errorf("%w: 载体登记机 %s 不是当前接收机", errReceiverNotCarrierMachine, binding.Target)
 		s.log.Warn("dispatch 被拒：接收机不是载体登记机", "project", req.ProjectID,
-			"carrier", binding.Carrier, "registered_target", binding.Target,
-			"canonical_target", canon, "error_kind", "receiver_not_carrier_machine", "cause", err)
+			"carrier", req.Carrier, "registered_target", binding.Target,
+			"error_kind", "receiver_not_carrier_machine", "cause", err)
 		s.writeDispatchError(w, req.ProjectID, err)
 		return
 	}
