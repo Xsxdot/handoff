@@ -78,7 +78,7 @@ func toApprovalAttempts(in []ApproverAttempt) []approval.ApproverAttempt {
 	for _, a := range in {
 		out = append(out, approval.ApproverAttempt{
 			Executor: a.Executor, Decision: a.Decision, Reason: a.Reason,
-			Err: a.Err, ElapsedMS: a.ElapsedMS, Model: a.Model,
+			Err: a.Err, ElapsedMS: a.ElapsedMS, Model: a.Model, Machine: a.Machine,
 		})
 	}
 	return out
