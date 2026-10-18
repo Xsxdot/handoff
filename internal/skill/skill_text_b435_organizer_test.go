@@ -40,6 +40,10 @@ var organizerKeySentences = []struct{ why, text string }{
 	// R-K1 (a)/(a′)。
 	{"协调者须显式 @（R-K1）", "协调者向你提问须到项目房间发言并显式 @ 你的身份"},
 	{"无 @ 叫不醒（R-K1）", "无 @ 的发言叫不醒你"},
+	// R-K1 (a″)：组织者是同项目卡会话的书写者，答话须显式寻址。
+	{"组织者可直接答回（R-K1 (a″)）", "项目房间驻场者是同项目卡会话的书写者"},
+	{"答话须显式 @卡号（R-K1 (a″)）", "须显式 `@<卡号>`（或 `--reply-to` 协调者那条）"},
+	{"不带 @ 叫不醒协调者（R-K1 (a″)）", "不带 @ 的答话叫不醒协调者"},
 	// S8 恢复（R Q8 甲）。
 	{"恢复：先 stand（S8）", "handoff session stand <项目房间> --as <身份>"},
 	{"恢复：新会话再 sit（S8）", "--desktop-session <新的 local_… id>"},
@@ -60,6 +64,18 @@ func TestB435SkillOrganizerSectionKeySentences(t *testing.T) {
 		if !strings.Contains(sec, c) {
 			t.Errorf("「组织者」节须逐字含 %s", name)
 		}
+	}
+	// R-K1 (a″) 前的旧句（被拒时告诉人）已失效，不得残留。
+	if stale := "发言被拒（你不是该会话的书写者）"; strings.Contains(sec, stale) {
+		t.Errorf("「组织者」节残留 R-K1 (a″) 前的旧句：%q", stale)
+	}
+}
+
+// R-K1 (a″)：「发言自由，身份执法」条的成员公式含项目房间驻场者这一半（与 collab.Service.sessionWriters 同口径）。
+func TestB435SkillWriterFormulaIncludesProjectRoomResident(t *testing.T) {
+	sec := skillSection(t, readHandoffSkill(t), "### 会话即工作单元")
+	if want := "；含某项目卡的会话另加该项目的项目房间驻场者"; !strings.Contains(sec, want) {
+		t.Errorf("「会话即工作单元」节成员公式缺 R-K1 (a″) 半边：%q", want)
 	}
 }
 

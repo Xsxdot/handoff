@@ -899,6 +899,16 @@
       "signature": "func (f *Facade) SessionProject(sessionID string) (string, error)",
       "summary": "SessionProject 出站门面直通。"
     },
+    "n_ledger_api_Facade_ProjectRoom": {
+      "kind": "func",
+      "container": "k_ledger_api_Facade",
+      "order": 28,
+      "name": "Facade.ProjectRoom",
+      "file": "internal/ledger/api/api.go",
+      "line": 285,
+      "signature": "func (f *Facade) ProjectRoom(project string) (string, bool, error)",
+      "summary": "ProjectRoom 出站门面直通（R-K1 (a″)：卡会话书写者集并入项目房间驻场者的读面）。"
+    },
     "n_collab_Service_EnsureProjectRoom": {
       "kind": "func",
       "container": "k_collab_Service",
@@ -2267,6 +2277,10 @@
     [
       "n_ledger_api_Facade_SessionProject",
       "n_ledger_Store_SessionProject"
+    ],
+    [
+      "n_ledger_api_Facade_ProjectRoom",
+      "n_ledger_Store_ProjectRoom"
     ],
     [
       "n_agentd_Server_consumeAutomationEventsOnce",

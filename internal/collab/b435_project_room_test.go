@@ -262,3 +262,89 @@ func TestB435ProjectRoomWritersIncludeSameProjectSeats(t *testing.T) {
 		t.Fatalf("读项目绑定失败应原样上抛、不是 ErrNotWriter，得 %v", err)
 	}
 }
+
+// R-K1 (a″) 协调者裁决：含项目 p 的卡的会话，书写者集另并入 p 的项目房间驻场者——组织者（项目房间驻场者
+// agent:<名字>）要能把组织类回答发回卡所在会话（spec D9）。反例：只含他项目卡的会话、无卡普通会话、项目
+// 有房间但无驻场者、项目无项目房间——均不扩（ErrNotWriter）。寻址不变：答话显式 @<卡号> 命中卡席位地址。
+// 真 Store + Facade + collab。
+func TestB435CardSessionWritersIncludeProjectRoomResident(t *testing.T) {
+	svc, st, lc := newSessionFixture(t)
+	pr, _, err := svc.EnsureProjectRoom("p", proto.SystemNotifierIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.SitResident(proto.SessionResident{Session: pr.ID, Identity: "agent:org"}); err != nil {
+		t.Fatal(err)
+	}
+	// r 有项目房间但无驻场者；s 无项目房间。
+	if _, _, err := svc.EnsureProjectRoom("r", proto.SystemNotifierIdentity); err != nil {
+		t.Fatal(err)
+	}
+	cardSession := func(project, sid string) (session, cardID, seat string) {
+		t.Helper()
+		sess, err := svc.CreateSession("卡会话 "+project, "user:x", "user:x")
+		if err != nil {
+			t.Fatal(err)
+		}
+		card, err := st.CreateCard(ledger.NewCard{Title: "卡 " + project, Project: project, Workflow: "bug", Actor: "t"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		seat = "cli:opencode#" + sid
+		if err := st.BindSeat(card.ID, seat, proto.SeatSourceBind, ledger.SeatBearing{}); err != nil {
+			t.Fatal(err)
+		}
+		if err := svc.JoinCard(sess.ID, card.ID, "user:x"); err != nil {
+			t.Fatal(err)
+		}
+		return sess.ID, card.ID, seat
+	}
+	s1, cardA, seatA := cardSession("p", "a-1")
+	s2, _, _ := cardSession("q", "q-1")
+	s3, _, _ := cardSession("r", "r-1")
+	s4, _, _ := cardSession("s", "s-1")
+	plain, err := svc.CreateSession("无卡普通会话", "user:x", "user:x")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	answer := proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "@" + cardA + " 组织类回答", Mentions: []string{cardA}}
+	seq, err := svc.Send(s1, answer, "agent:org")
+	if err != nil {
+		t.Fatalf("项目房间驻场者应可向同项目卡会话发言: %v", err)
+	}
+	if ev, ok, err := st.EventBySeq(seq); err != nil || !ok || ev.Actor != "agent:org" {
+		t.Fatalf("读回 seq=%d: ok=%v err=%v actor=%q", seq, ok, err, ev.Actor)
+	}
+	for name, sid := range map[string]string{"他项目卡会话": s2, "无卡普通会话": plain.ID, "项目房间无驻场者": s3, "项目无项目房间": s4} {
+		if _, err := svc.Send(sid, answer, "agent:org"); !errors.Is(err, ErrNotWriter) {
+			t.Errorf("%s：书写者集不得扩（应 ErrNotWriter），得 %v", name, err)
+		}
+	}
+	answer.Room = s1
+	got, err := svc.Recipients(answer, "agent:org")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := proto.DeliveryAddress{Kind: proto.DeliverySeat, Session: s1, Card: cardA, Identity: seatA}
+	hit := false
+	for _, a := range got.Addresses {
+		hit = hit || a == want
+	}
+	if !hit {
+		t.Fatalf("显式 @%s 应命中卡席位地址 %+v，得 %+v", cardA, want, got)
+	}
+	readErr := errors.New("项目房间读失败")
+	broken := New(failingProjectRoomLC{LedgerClient: lc, err: readErr})
+	if _, err := broken.Send(s1, answer, "agent:org"); !errors.Is(err, readErr) || errors.Is(err, ErrNotWriter) {
+		t.Fatalf("读项目房间失败应原样上抛、不是 ErrNotWriter，得 %v", err)
+	}
+}
+
+// failingProjectRoomLC 在 ProjectRoom 读面注入错误（其余方法透传真 Facade）。
+type failingProjectRoomLC struct {
+	client.LedgerClient
+	err error
+}
+
+func (f failingProjectRoomLC) ProjectRoom(string) (string, bool, error) { return "", false, f.err }

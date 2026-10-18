@@ -281,6 +281,11 @@ func (f *Facade) SessionProject(sessionID string) (string, error) {
 	return f.st.SessionProject(sessionID)
 }
 
+// ProjectRoom 读项目的项目房间会话 id（直通 Store.ProjectRoom）；无项目房间 → ok=false、err=nil。
+func (f *Facade) ProjectRoom(project string) (string, bool, error) {
+	return f.st.ProjectRoom(project)
+}
+
 // translateResidentErr 把驻场者写面的账本哨兵翻成 collab/client 侧哨兵，保留原错误文案作上下文。
 func translateResidentErr(err error) error {
 	var sentinel error
