@@ -1,10 +1,12 @@
-// session_resident.go —— B435 房间驻场者登记的只读面（契约 b435-contract.md ②④；plan P2 甲 / P3 甲）。
+// session_resident.go —— B435 房间驻场者登记的读写面（契约 b435-contract.md ②④；plan P2 甲 / P3 甲；
+// R plan Q6–Q8）。
 //
-// 职责：按会话主键读 session_residents 一行。驻场者是会话房间无席位的默认收件人，
+// 职责：按会话主键读、登记、请下 session_residents 一行。驻场者是会话房间无席位的默认收件人，
 // 一房间至多一名（主键即约束，C-414）。
-// 边界：K0 只有读面，没有任何生产写入口——表恒空即真实的「无驻场者」；写面
-// （session sit/stand、身份校验）归后续子卡 R。本文件返回账本本地类型，wire 映射在
-// internal/ledger/api（避免新增 d_ledger→d_protocol 调用边）。
+// 边界：读面 K0 落地；写面（SitResident/StandResident）是 R 的 `session sit/stand` 账本半边，
+// 只管会话存在/归档与唯一性，身份记法校验在 collab.Service.SitResident（本包不调 proto 包级
+// 函数，避免推高 d_ledger→d_protocol 预算）。本文件返回账本本地类型，wire 映射在
+// internal/ledger/api。
 package ledger
 
 import (
@@ -48,4 +50,101 @@ func (s *Store) SessionResident(session string) (SessionResident, bool, error) {
 	r.SatAt = toTime(satAt)
 	log().Debug("读驻场者完成", "session", session, "identity", r.Identity, "has_desktop", r.DesktopSession != "")
 	return r, true, nil
+}
+
+// ErrResidentOccupied 表示会话已有驻场者（C-414：一房间至多一名，第二次 sit 一律拒绝）。
+var ErrResidentOccupied = errors.New("ledger: 会话已有驻场者")
+
+// ErrResidentNotSeated 表示要请下的身份不是该会话的现驻场者（含无人在座）。
+var ErrResidentNotSeated = errors.New("ledger: 该身份不是会话驻场者")
+
+// SitResident 登记会话驻场者（B435 R，`session sit` 的账本半边）。参数 r：Session、Identity
+// 必填；桌面端三列可空（空 = 无桌面端地址）；SatAt 由账本按本库时钟填写，入参值忽略。
+// 返回：写下的一行（含 SatAt）。错误：入参为空 → ErrBadState；会话不存在 → ErrNotFound；
+// 已归档 → ErrBadState；已有驻场者（不论身份，C-414 / Q8 甲）→ ErrResidentOccupied，原登记不变。
+//
+// 一房间至多一名由主键兑现：`INSERT … ON CONFLICT (session) DO NOTHING`，影响 0 行即被占。
+// INSERT 是事务的第一条语句——SQLite 下让事务一开始就取写锁（跨连接排队走 busy_timeout），
+// 而不是先读后升级写锁撞 SQLITE_BUSY；会话存在/归档判定在同一事务内随后执行，失败即回滚
+// 撤掉刚插的行（无 TOCTOU）。同事务递增席位状态版本（Q6 甲：驻场者是判定表输入，与换绑同样
+// 让在途候选页整页重读）。不落账本事件（`AddSessionMember` 先例）。注意：身份记法校验不在
+// 本层（d_ledger 不调 proto 包级函数），由 collab.Service.SitResident 唯一入口负责。
+func (s *Store) SitResident(r SessionResident) (SessionResident, error) {
+	if r.Session == "" || r.Identity == "" {
+		err := fmt.Errorf("登记驻场者：会话与身份必填（session=%q identity=%q）: %w", r.Session, r.Identity, ErrBadState)
+		log().Warn("登记驻场者被拒：入参为空", "cause", err)
+		return SessionResident{}, err
+	}
+	r.SatAt = s.timeNow()
+	err := s.mutate(func(tx *sql.Tx, _ *eventSink) error {
+		res, err := tx.Exec(s.q(`INSERT INTO session_residents
+			(session, identity, desktop_session, cli_session, machine, sat_at) VALUES (?, ?, ?, ?, ?, ?)
+			ON CONFLICT (session) DO NOTHING`),
+			r.Session, r.Identity, r.DesktopSession, r.CLISession, r.Machine, s.tval(r.SatAt))
+		if err != nil {
+			return fmt.Errorf("写驻场者 session=%s: %w", r.Session, err)
+		}
+		session, err := getSessionTx(s, tx, r.Session)
+		if err != nil {
+			return err
+		}
+		if session.Archived {
+			return fmt.Errorf("会话 %s 已归档，不能登记驻场者: %w", r.Session, ErrBadState)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("读驻场者写入影响行数: %w", err)
+		}
+		if n == 0 {
+			return fmt.Errorf("会话 %s: %w", r.Session, ErrResidentOccupied)
+		}
+		return s.bumpSeatRevisionTx(tx)
+	})
+	if err != nil {
+		if errors.Is(err, ErrResidentOccupied) || errors.Is(err, ErrNotFound) || errors.Is(err, ErrBadState) {
+			log().Info("登记驻场者被拒", "session", r.Session, "identity", r.Identity, "cause", err)
+		} else {
+			log().Warn("登记驻场者失败", "session", r.Session, "identity", r.Identity, "cause", err)
+		}
+		return SessionResident{}, err
+	}
+	log().Info("驻场者已登记", "session", r.Session, "identity", r.Identity, "has_desktop", r.DesktopSession != "")
+	return r, nil
+}
+
+// StandResident 请下会话驻场者（`session stand` 的账本半边，Q7 甲）：条件删除
+// `WHERE session=? AND identity=?`，只有现驻场者本人能被请下。参数 session、identity 必填。
+// 错误：入参为空 → ErrBadState；无人在座或身份不符 → ErrResidentNotSeated（登记不变）。
+// 成功时同事务递增席位状态版本（Q6 甲）。不动 session_delivery_cursors：同身份再 sit 时
+// 地址游标行续用（S8）。
+func (s *Store) StandResident(session, identity string) error {
+	if session == "" || identity == "" {
+		err := fmt.Errorf("请下驻场者：会话与身份必填（session=%q identity=%q）: %w", session, identity, ErrBadState)
+		log().Warn("请下驻场者被拒：入参为空", "cause", err)
+		return err
+	}
+	err := s.mutate(func(tx *sql.Tx, _ *eventSink) error {
+		res, err := tx.Exec(s.q(`DELETE FROM session_residents WHERE session = ? AND identity = ?`), session, identity)
+		if err != nil {
+			return fmt.Errorf("删驻场者 session=%s: %w", session, err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("读驻场者删除影响行数: %w", err)
+		}
+		if n == 0 {
+			return fmt.Errorf("会话 %s 的驻场者不是 %s: %w", session, identity, ErrResidentNotSeated)
+		}
+		return s.bumpSeatRevisionTx(tx)
+	})
+	if err != nil {
+		if errors.Is(err, ErrResidentNotSeated) {
+			log().Info("请下驻场者被拒", "session", session, "identity", identity, "cause", err)
+		} else {
+			log().Warn("请下驻场者失败", "session", session, "identity", identity, "cause", err)
+		}
+		return err
+	}
+	log().Info("驻场者已请下", "session", session, "identity", identity)
+	return nil
 }

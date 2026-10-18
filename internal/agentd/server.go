@@ -1535,14 +1535,17 @@ func (r coordinatorRunner) Resume(ref keysclient.SessionRef, prompt string) (key
 	if r.coord == nil {
 		return keysclient.TurnResult{}, executor.UnsupportedError(name, executor.CapCoordination)
 	}
+	// F-RM1（B435.2 R plan Q2 甲）：resume 回合注入本卡席位对，协调者按简报以席位身份回房间。
+	// launch 回合不注入（Q3 甲：会话 id 回合中才生成，半注入是 currentSeatIdentity 的硬错误）。
+	ref.Env = seatEnv(ref.CLI, ref.SessionID)
 	ctx, cancel := readyCtx()
 	defer cancel()
 	slog.Default().Log(ctx, wakeRoundLogLevel, "协调者回合开始", "cli", ref.CLI,
 		"mode", "resume", "session", ref.SessionID, "home_dir", ref.HomeDir,
-		"workdir", ref.Workdir, "timeout", coordWakeTurnTimeout.String())
+		"workdir", ref.Workdir, "seat_env", len(ref.Env) > 0, "timeout", coordWakeTurnTimeout.String())
 	got, err := r.coord.Resume(ctx, executor.CoordSessionRef{
 		CLI: ref.CLI, SessionID: ref.SessionID, HomeDir: ref.HomeDir,
-		Workdir: ref.Workdir, Model: ref.Model,
+		Workdir: ref.Workdir, Model: ref.Model, Env: ref.Env,
 	}, prompt)
 	if err != nil {
 		slog.Default().Log(ctx, wakeRoundLogLevel, "协调者回合失败", "cli", ref.CLI,
@@ -1578,20 +1581,16 @@ func NewCoordinatorRunner(coord executor.Coordinator, reg *executor.Registry,
 	return coordinatorRunner{coord: coord, reg: reg, prepareHome: prepareHome}
 }
 
-// resumeTurnRequest 把 SessionRef 上的续接环境映射进 RunTurn。HOME 空时
-// 子进程继承 agentd 默认 HOME，隔离会话必然找不到——调用方必须带上。
-func resumeTurnRequest(ref keysclient.SessionRef, prompt string) hostapi.TurnRequest {
-	if ref.HomeDir == "" {
-		slog.Default().Warn("协调者续接未带隔离 HOME，将继承 agentd 默认 HOME",
-			"component", "agentd", "has_cli", ref.CLI != "", "has_session", ref.SessionID != "")
+// seatEnv 拼 resume 回合注入子进程的 HANDOFF 席位对（B435.2 F-RM1，R plan Q2 甲；agentd 是
+// 该语义的唯一生产者，执行适配器只透传）。两值缺任一返回 nil：只给一半会被 CLI 侧
+// currentSeatIdentity 判为硬错误，宁可不注入（协调者命令显式失败）也不半注入。
+func seatEnv(cli, sessionID string) []string {
+	if cli == "" || sessionID == "" {
+		return nil
 	}
-	return hostapi.TurnRequest{
-		CLI: ref.CLI, SessionID: ref.SessionID, Prompt: prompt,
-		HomeDir: ref.HomeDir, Workdir: ref.Workdir, Model: ref.Model,
-		Env: []string{
-			"HANDOFF_SESSION_CLI=" + ref.CLI,
-			"HANDOFF_SESSION_ID=" + ref.SessionID,
-		},
+	return []string{
+		"HANDOFF_SESSION_CLI=" + cli,
+		"HANDOFF_SESSION_ID=" + sessionID,
 	}
 }
 

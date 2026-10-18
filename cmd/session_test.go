@@ -50,8 +50,19 @@ func mustWaitFixture(t *testing.T, dir string) (*collab.Service, *ledgerapi.Faca
 	if err := facade.AddSessionMember(session.ID, "user:sy", "user:tester"); err != nil {
 		t.Fatalf("加成员: %v", err)
 	}
+	// B435 R：session wait 按会话驻场者收件——夹具让原订阅成员 user:sy 驻场。
+	if _, err := svc.SitResident(proto.SessionResident{Session: session.ID, Identity: "user:sy"}); err != nil {
+		t.Fatalf("驻场: %v", err)
+	}
 	return svc, facade, st, session.ID
 }
+
+// syResident 是 mustWaitFixture 驻场者 user:sy 的地址；syCursorKey 是其持久游标键（C-135）。
+func syResident(sessionID string) proto.DeliveryAddress {
+	return proto.DeliveryAddress{Kind: proto.DeliveryResident, Session: sessionID, Identity: "user:sy"}
+}
+
+func syCursorKey(sessionID string) string { return proto.DeliveryCursorKey(syResident(sessionID)) }
 
 func decodeSessionWake(t *testing.T, out string) proto.SessionWake {
 	t.Helper()
@@ -74,7 +85,7 @@ func TestSessionWaitOutputsHitJSON(t *testing.T) {
 		t.Fatalf("夹具发言: %v", err)
 	}
 	// --since 0 = 从流头扫（夹具事件在前，逐值推进游标零输出），首个命中即出。
-	out, _, err := runLedgerCLI(t, dir, "session", "wait", "user:sy", "--since", "0")
+	out, _, err := runLedgerCLI(t, dir, "session", "wait", sessionID, "--since", "0")
 	if err != nil {
 		t.Fatalf("session wait: %v", err)
 	}
@@ -100,13 +111,15 @@ func TestSessionWaitReferencedAndUnread(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.Send(sessionID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "user:sy 的到场发言"}, "user:sy"); err != nil {
+	m2, err := svc.Send(sessionID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "user:sy 的到场发言"}, "user:sy")
+	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := svc.Send(sessionID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "@user:sy 请看上文", Mentions: []string{"user:sy"}, ReplyTo: m1}, "user:tester"); err != nil {
 		t.Fatal(err)
 	}
-	out, _, err := runLedgerCLI(t, dir, "session", "wait", "user:sy", "--since", "0")
+	// B435：m1/m2 人类无 @ 按默认收件人归驻场者 user:sy；从 m2 之后回放，首个命中仍是 m3。
+	out, _, err := runLedgerCLI(t, dir, "session", "wait", sessionID, "--since", fmt.Sprint(m2))
 	if err != nil {
 		t.Fatalf("session wait: %v", err)
 	}
@@ -133,7 +146,7 @@ func TestSessionWaitDefaultRecoversBacklogAndDoesNotRepeat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, _, err := runLedgerCLI(t, dir, "session", "wait", "user:sy", "--timeout", "300ms")
+	out, _, err := runLedgerCLI(t, dir, "session", "wait", sessionID, "--timeout", "300ms")
 	if err != nil {
 		t.Fatalf("积压应立即输出: %v", err)
 	}
@@ -144,11 +157,11 @@ func TestSessionWaitDefaultRecoversBacklogAndDoesNotRepeat(t *testing.T) {
 	if backlog.Type != "session_backlog" || backlog.Member != "user:sy" || backlog.ToSeq != second || len(backlog.Hits) != 2 || backlog.Hits[0].Hit.Seq != first {
 		t.Fatalf("积压摘要错: %+v", backlog)
 	}
-	seq, err := st.SessionDeliveryCursor("user:sy")
+	seq, err := st.SessionDeliveryCursor(syCursorKey(sessionID))
 	if err != nil || seq != second {
 		t.Fatalf("交付水位=%d err=%v", seq, err)
 	}
-	_, _, err = runLedgerCLI(t, dir, "session", "wait", "user:sy", "--timeout", "300ms")
+	_, _, err = runLedgerCLI(t, dir, "session", "wait", sessionID, "--timeout", "300ms")
 	codeErr := &exitCodeError{}
 	if !errors.As(err, &codeErr) || codeErr.code != ExitTimeout {
 		t.Fatalf("重挂无新消息应超时而非重复: %v", err)
@@ -156,7 +169,7 @@ func TestSessionWaitDefaultRecoversBacklogAndDoesNotRepeat(t *testing.T) {
 	if _, err := svc.Send(sessionID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "@user:sy 第三条", Mentions: []string{"user:sy"}}, "user:tester"); err != nil {
 		t.Fatal(err)
 	}
-	out, _, err = runLedgerCLI(t, dir, "session", "wait", "user:sy", "--timeout", "300ms")
+	out, _, err = runLedgerCLI(t, dir, "session", "wait", sessionID, "--timeout", "300ms")
 	if err != nil {
 		t.Fatalf("第三条应补收: %v", err)
 	}
@@ -178,10 +191,10 @@ func TestSessionWaitFailedOutputDoesNotAdvanceDelivery(t *testing.T) {
 	mustWaitConfig(t, dir)
 	c := &cobra.Command{Use: "wait"}
 	c.SetOut(sessionFailWriter{})
-	if err := runSessionWait(c, "user:sy", 0, false, 0, false); err == nil {
+	if err := runSessionWait(c, sessionID, 0, false, 0, false); err == nil {
 		t.Fatal("stdout 失败应返回错误")
 	}
-	seq, err := st.SessionDeliveryCursor("user:sy")
+	seq, err := st.SessionDeliveryCursor(syCursorKey(sessionID))
 	if err != nil || seq != 0 {
 		t.Fatalf("失败后水位=%d err=%v", seq, err)
 	}
@@ -193,10 +206,10 @@ func TestSessionWaitExplicitSinceDoesNotAdvanceDelivery(t *testing.T) {
 	if _, err := svc.Send(sessionID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "@user:sy", Mentions: []string{"user:sy"}}, "user:tester"); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := runLedgerCLI(t, dir, "session", "wait", "user:sy", "--since", "0"); err != nil {
+	if _, _, err := runLedgerCLI(t, dir, "session", "wait", sessionID, "--since", "0"); err != nil {
 		t.Fatal(err)
 	}
-	seq, err := st.SessionDeliveryCursor("user:sy")
+	seq, err := st.SessionDeliveryCursor(syCursorKey(sessionID))
 	if err != nil || seq != 0 {
 		t.Fatalf("手工回放不得推进水位: %d err=%v", seq, err)
 	}
@@ -218,7 +231,7 @@ func TestSessionWaitFollowBacklogThenRealtime(t *testing.T) {
 	c.SetOut(&out)
 	c.SetContext(context.Background())
 	errCh := make(chan error, 1)
-	go func() { errCh <- runSessionWait(c, "user:sy", 0, false, 300*time.Millisecond, true) }()
+	go func() { errCh <- runSessionWait(c, sessionID, 0, false, 300*time.Millisecond, true) }()
 	waitOutputLines(t, &out, 1, 5*time.Second)
 	second, err := svc.Send(sessionID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "@user:sy 实时", Mentions: []string{"user:sy"}}, "user:tester")
 	if err != nil {
@@ -237,7 +250,7 @@ func TestSessionWaitFollowBacklogThenRealtime(t *testing.T) {
 	if err := json.Unmarshal([]byte(lines[1]), &wake); err != nil || wake.Hit.Seq != second {
 		t.Fatalf("次行实时: %+v err=%v", wake, err)
 	}
-	seq, err := st.SessionDeliveryCursor("user:sy")
+	seq, err := st.SessionDeliveryCursor(syCursorKey(sessionID))
 	if err != nil || seq != second {
 		t.Fatalf("实时后水位=%d err=%v", seq, err)
 	}
@@ -251,7 +264,7 @@ func TestSessionWaitMemberExactMatch(t *testing.T) {
 	}
 	// --since 0 必须显式给：缺省 --since = 流尾不扫历史消息，夹具消息不可观测，
 	// 逐字相等（条 39）锁不住（plan 原夹具漏 --since，见台账偏差 2）。
-	_, _, err := runLedgerCLI(t, dir, "session", "wait", "user:sy", "--since", "0", "--timeout", "300ms")
+	_, _, err := runLedgerCLI(t, dir, "session", "wait", sessionID, "--since", "0", "--timeout", "300ms")
 	codeErr := &exitCodeError{}
 	if !errors.As(err, &codeErr) || codeErr.code != ExitTimeout {
 		t.Fatalf("member 与 target 必须逐字相等（条 39）: err=%v", err)
@@ -268,7 +281,7 @@ func TestSessionWaitIsReadOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := runLedgerCLI(t, dir, "session", "wait", "user:sy", "--since", "0"); err != nil {
+	if _, _, err := runLedgerCLI(t, dir, "session", "wait", sessionID, "--since", "0"); err != nil {
 		t.Fatalf("session wait: %v", err)
 	}
 	after, err := st.EventsFromAsc(nil, 0, 10000)
@@ -285,41 +298,64 @@ func TestSessionWaitIsReadOnly(t *testing.T) {
 
 func TestSessionWaitInvalidFlags(t *testing.T) {
 	dir := t.TempDir()
-	if _, _, err := runLedgerCLI(t, dir, "session", "wait", "user:sy", "--timeout", "-1s"); err == nil {
+	if _, _, err := runLedgerCLI(t, dir, "session", "wait", "session:1", "--timeout", "-1s"); err == nil {
 		t.Fatal("负 --timeout 必须拒绝")
 	}
-	if _, _, err := runLedgerCLI(t, dir, "session", "wait", "user:sy", "--since", "-5"); err == nil {
+	if _, _, err := runLedgerCLI(t, dir, "session", "wait", "session:1", "--since", "-5"); err == nil {
 		t.Fatal("负 --since 必须拒绝")
 	}
 }
 
-// TestSessionWaitSourceGuard 是 R1 通道的源码级守卫（契约条 42：命中判定
-// 唯一入口是 collab.Service.MessageWakeTargets；通道内不得出现第二份寻址
-// 判定，无成员集合形状）。B358.5 岔口 1 批准后收窄：kind 门控（RoomMsgUser）
-// 与 mentions 直读（.Mentions）两类禁令从文件级子串改为 wait 通道两函数
-// （runSessionWait/sessionWaitMatch/buildSessionWake）的 AST 级禁令——同文件续写的 session
-// send 合法引用 proto.RoomMsgUser 构造发言、不在 wait 路径；广播帮手名仍是
-// 文件级禁令。结构体字面量键（Mentions: …）不是 SelectorExpr，天然豁免。
+// TestSessionWaitSourceGuard 是 session wait 通道的源码级守卫（B435 C-145 session 半边、C-137；
+// 原 B358 契约条 42 的「唯一判定入口」由 MessageWakeTargets 换成匹配函数 Matches）：
+//   - 文件级：`cmd/session.go` 与 `cmd/session_resident.go` 全部非测试源码不调用
+//     MessageWakeTargets / AddressesCard / IsHumanAuthor，不出现 `.Mentions` 选择子——
+//     session send 的复合字面量键 `Mentions: …` 是 KeyValue 不是 SelectorExpr，天然豁免；
+//     广播帮手名仍是文件级子串禁令；
+//   - 通道级：委托链 runSessionWait → sessionWaitRun → sessionWaitPage → sessionWaitMatch 成立，
+//     wait 链上至少一处调用 Matches；wait 通道函数里不出现 kind 门控（RoomMsgUser）。
 func TestSessionWaitSourceGuard(t *testing.T) {
-	raw, err := os.ReadFile("session.go")
-	if err != nil {
-		t.Fatalf("读 session.go 源: %v", err)
-	}
-	src := string(raw)
-	for _, banned := range []string{
-		"broadcastToMembers", "fanOutToMembers", "notifyAllMembers", "wakeAllMembers",
-	} {
-		if strings.Contains(src, banned) {
-			t.Errorf("session.go 出现禁令形状 %q——通道内不得重造寻址判定（条 42）", banned)
-		}
-	}
 	fset := token.NewFileSet()
-	f, err := parser.ParseFile(fset, "session.go", src, 0)
-	if err != nil {
-		t.Fatalf("解析 session.go: %v", err)
+	var waitFile *ast.File
+	for _, name := range []string{"session.go", "session_resident.go"} {
+		raw, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatalf("读 %s 源: %v", name, err)
+		}
+		src := string(raw)
+		for _, banned := range []string{
+			"broadcastToMembers", "fanOutToMembers", "notifyAllMembers", "wakeAllMembers",
+		} {
+			if strings.Contains(src, banned) {
+				t.Errorf("%s 出现禁令形状 %q——通道内不得重造寻址判定（C-145）", name, banned)
+			}
+		}
+		f, err := parser.ParseFile(fset, name, src, 0)
+		if err != nil {
+			t.Fatalf("解析 %s: %v", name, err)
+		}
+		if name == "session.go" {
+			waitFile = f
+		}
+		ast.Inspect(f, func(n ast.Node) bool {
+			switch node := n.(type) {
+			case *ast.CallExpr:
+				if sel, ok := node.Fun.(*ast.SelectorExpr); ok {
+					switch sel.Sel.Name {
+					case "MessageWakeTargets", "AddressesCard", "IsHumanAuthor":
+						t.Errorf("%s 调用了 %s——命中判定只经 collab.Service.Matches（C-145）", name, sel.Sel.Name)
+					}
+				}
+			case *ast.SelectorExpr:
+				if node.Sel.Name == "Mentions" {
+					t.Errorf("%s:%d 读 .Mentions——CLI 不得自己解析寻址（C-145）", name, fset.Position(node.Pos()).Line)
+				}
+			}
+			return true
+		})
 	}
 	waitFuncs := map[string]*ast.FuncDecl{}
-	// 委托链：入口 → 核心循环 → 候选页 → 唯一判定（B409 U5 分层）。
+	// 委托链：入口 → 核心循环 → 候选页 → 唯一判定。
 	chain := []struct {
 		name      string
 		callsNext string
@@ -332,7 +368,7 @@ func TestSessionWaitSourceGuard(t *testing.T) {
 	}
 	for _, link := range chain {
 		name := link.name
-		ast.Inspect(f, func(n ast.Node) bool {
+		ast.Inspect(waitFile, func(n ast.Node) bool {
 			if d, ok := n.(*ast.FuncDecl); ok && d.Name.Name == name {
 				waitFuncs[name] = d
 			}
@@ -342,28 +378,28 @@ func TestSessionWaitSourceGuard(t *testing.T) {
 			t.Fatalf("%s 不存在——通道本体缺失", name)
 		}
 	}
-	callsAddressing := false
+	callsMatches := false
 	for i := range chain {
 		link := &chain[i]
 		ast.Inspect(waitFuncs[link.name], func(n ast.Node) bool {
 			switch node := n.(type) {
 			case *ast.CallExpr:
-				if sel, ok := node.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "MessageWakeTargets" {
-					callsAddressing = true
+				if sel, ok := node.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "Matches" {
+					callsMatches = true
 				}
 				if call, ok := node.Fun.(*ast.Ident); ok && link.callsNext != "" && call.Name == link.callsNext {
 					link.callsNext = "" // 标记：委托边成立
 				}
 			case *ast.SelectorExpr:
-				if node.Sel.Name == "RoomMsgUser" || node.Sel.Name == "Mentions" {
-					t.Errorf("%s 出现 kind 门控/mentions 直读形状 %q——通道内不得重造寻址判定（条 42）", link.name, node.Sel.Name)
+				if node.Sel.Name == "RoomMsgUser" {
+					t.Errorf("%s 出现 kind 门控形状 %q——通道内不得重造寻址判定（C-145）", link.name, node.Sel.Name)
 				}
 			}
 			return true
 		})
 	}
-	if !callsAddressing {
-		t.Fatalf("通道未经 MessageWakeTargets——命中判定唯一入口被绕过（条 42）")
+	if !callsMatches {
+		t.Fatalf("通道未经 Matches——命中判定唯一入口被绕过（C-137/C-145）")
 	}
 	for _, link := range chain {
 		if link.callsNext != "" {
@@ -411,7 +447,10 @@ func TestSessionMessageMentionsGoldens(t *testing.T) {
 
 func TestSessionSendBodyMentionWakesTarget(t *testing.T) {
 	dir := t.TempDir()
-	_, _, st, sessionID, _ := mustSendFixture(t, dir, "正文提及场")
+	svc, _, st, sessionID, _ := mustSendFixture(t, dir, "正文提及场")
+	if _, err := svc.SitResident(proto.SessionResident{Session: sessionID, Identity: "agent:main"}); err != nil {
+		t.Fatal(err)
+	}
 	before, err := st.MaxSeq()
 	if err != nil {
 		t.Fatal(err)
@@ -433,7 +472,7 @@ func TestSessionSendBodyMentionWakesTarget(t *testing.T) {
 	if fmt.Sprint(msg.Mentions) != "[agent:main]" {
 		t.Fatalf("正文 @ 未落 mentions: %v", msg.Mentions)
 	}
-	out, _, err := runLedgerCLI(t, dir, "session", "wait", "agent:main", "--since", fmt.Sprint(before))
+	out, _, err := runLedgerCLI(t, dir, "session", "wait", sessionID, "--since", fmt.Sprint(before))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -445,7 +484,10 @@ func TestSessionSendBodyMentionWakesTarget(t *testing.T) {
 
 func TestSessionSendExplicitDoubleAtDoesNotWakeTarget(t *testing.T) {
 	dir := t.TempDir()
-	_, _, st, sessionID, _ := mustSendFixture(t, dir, "显式双前缀")
+	svc, _, st, sessionID, _ := mustSendFixture(t, dir, "显式双前缀")
+	if _, err := svc.SitResident(proto.SessionResident{Session: sessionID, Identity: "agent:main"}); err != nil {
+		t.Fatal(err)
+	}
 	before, err := st.MaxSeq()
 	if err != nil {
 		t.Fatal(err)
@@ -464,7 +506,7 @@ func TestSessionSendExplicitDoubleAtDoesNotWakeTarget(t *testing.T) {
 	if fmt.Sprint(msg.Mentions) != "[@agent:main]" {
 		t.Fatalf("双前缀应只剥一次: %v", msg.Mentions)
 	}
-	_, _, err = runLedgerCLI(t, dir, "session", "wait", "agent:main", "--since", fmt.Sprint(before), "--timeout", "100ms")
+	_, _, err = runLedgerCLI(t, dir, "session", "wait", sessionID, "--since", fmt.Sprint(before), "--timeout", "100ms")
 	var timedOut *exitCodeError
 	if !errors.As(err, &timedOut) || timedOut.code != ExitTimeout {
 		t.Fatalf("双前缀不得唤醒主 agent: %v", err)
@@ -941,7 +983,7 @@ func TestSessionWaitFollowOutputsEachHit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, _, err := runLedgerCLI(t, dir, "session", "wait", "user:sy", "--follow", "--since", "0", "--timeout", "300ms")
+	out, _, err := runLedgerCLI(t, dir, "session", "wait", sessionID, "--follow", "--since", "0", "--timeout", "300ms")
 	codeErr := &exitCodeError{}
 	if !errors.As(err, &codeErr) || codeErr.code != ExitTimeout {
 		t.Fatalf("follow 空闲超时应 124: %v", err)
@@ -991,7 +1033,7 @@ func TestSessionWaitFollowTimeoutIsIdleNotTotal(t *testing.T) {
 	start := time.Now()
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- runSessionWait(c, "user:sy", 0, true, 600*time.Millisecond, true)
+		errCh <- runSessionWait(c, sessionID, 0, true, 600*time.Millisecond, true)
 	}()
 	// 第一条在 400ms 落账、下个 20ms tick 即见（< 600ms 总时长死线）——两种
 	// 语义下都输出，作为第二条的空闲窗锚点。
@@ -1037,7 +1079,7 @@ func TestSessionWaitFollowGracefulExitOnSignal(t *testing.T) {
 	c.SetContext(context.Background())
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- runSessionWait(c, "user:sy", 0, true, 10*time.Second, true)
+		errCh <- runSessionWait(c, sessionID, 0, true, 10*time.Second, true)
 	}()
 	waitOutputLines(t, &out, 1, 5*time.Second)
 	// os.Interrupt 走跨平台 API（syscall.Kill 无 Windows 面， vet 门红线）；
@@ -1069,6 +1111,9 @@ func TestSessionWaitFollowGracefulExitOnSignal(t *testing.T) {
 func TestSessionSendReplyToFlag(t *testing.T) {
 	dir := t.TempDir()
 	svc, _, st, sessionID, _ := mustSendFixture(t, dir, "回复锚场")
+	if _, err := svc.SitResident(proto.SessionResident{Session: sessionID, Identity: "user:tester"}); err != nil {
+		t.Fatal(err)
+	}
 	target, err := svc.Send(sessionID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "被回复的上下文"}, "user:tester")
 	if err != nil {
 		t.Fatal(err)
@@ -1128,7 +1173,8 @@ func TestSessionSendReplyToFlag(t *testing.T) {
 		}
 	}
 	// 端到端：原作者 user:tester 的 wait 命中回复消息，referenced 指回被回复 seq。
-	out, _, err = runLedgerCLI(t, dir, "session", "wait", "user:tester", "--since", "0")
+	// B435：target 本身是人类无 @，默认收件人判给驻场者 user:tester；从 target 之后回放。
+	out, _, err = runLedgerCLI(t, dir, "session", "wait", sessionID, "--since", fmt.Sprint(target))
 	if err != nil {
 		t.Fatalf("session wait 原作者: %v", err)
 	}
@@ -1307,14 +1353,22 @@ func TestSessionSendMentionAtPrefixWakesSeat(t *testing.T) {
 	if !found {
 		t.Fatal("消息未落账")
 	}
-	// 端到端：席位订阅收到命中（@卡号 → 当前席位）。
-	out, _, err = runLedgerCLI(t, dir, "session", "wait", seat, "--since", "0")
-	if err != nil {
-		t.Fatalf("session wait 席位: %v", err)
+	// 端到端：@卡号 命中该卡当前席位地址（B435：席位地址的收件归 card wait；此处经 CLI 组装点
+	// roomServiceFor 的匹配函数判定落账消息，coordinate 夹具保持不变）。
+	var landed *ledger.Event
+	for i := range events {
+		var msg proto.RoomMessage
+		if events[i].Type == ledger.EvRoomMessage && json.Unmarshal(events[i].Payload, &msg) == nil && msg.Body == body {
+			landed = &events[i]
+		}
 	}
-	wake := decodeSessionWake(t, out)
-	if wake.Session != sessionID || wake.Hit.Body != body {
-		t.Fatalf("@卡号 未唤醒该卡当前席位: %+v", wake)
+	var msg proto.RoomMessage
+	if err := json.Unmarshal(landed.Payload, &msg); err != nil {
+		t.Fatal(err)
+	}
+	addr := proto.DeliveryAddress{Kind: proto.DeliverySeat, Session: sessionID, Card: cardID, Identity: seat}
+	if hit, err := roomServiceFor(st).Matches(msg, landed.Actor, addr); err != nil || !hit || msg.Room != sessionID {
+		t.Fatalf("@卡号 未命中该卡当前席位: hit=%v err=%v msg=%+v", hit, err, msg)
 	}
 }
 
@@ -1337,23 +1391,9 @@ func TestSessionSendMentionHelpMatchesAcceptedForms(t *testing.T) {
 // 这些测试是有界候选读的回归护栏：席位换绑在确定性同步点注入（候选查询后、
 // 最终判定前；以及版本读取后、候选查询前——后者用于构造 A→member→A 的 ABA，
 // 使「只比较席位集合值」的实现逃过检测）。同步点由 session.go 的生产恒 nil
-// 测试缝提供。
-
-// mustSeatFixture 建卡并绑定到指定席位，返回卡号。
-func mustSeatFixture(t *testing.T, st *ledger.Store, seat string) string {
-	t.Helper()
-	if _, err := st.PutWorkflow("charter", ledger.WorkflowDef{States: []string{"待办", "完成"}}); err != nil {
-		t.Fatal(err)
-	}
-	card, err := st.CreateCard(ledger.NewCard{Title: "席位护栏卡", Project: "p", Actor: "test"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := st.BindSeat(card.ID, seat, proto.SeatSourceBind, ledger.SeatBearing{}); err != nil {
-		t.Fatalf("坐下 %s→%s: %v", card.ID, seat, err)
-	}
-	return card.ID
-}
+// 测试缝提供。B435 R（Q6 甲）起 session wait 的地址是驻场者，翻转改为驻场者
+// stand/sit（与换绑同样递增席位状态版本）；席位地址的同类护栏由 card wait 的
+// TestB435CardWaitRevisionGuard 承接。
 
 func resetWaitHooks(t *testing.T) {
 	t.Helper()
@@ -1364,42 +1404,43 @@ func resetWaitHooks(t *testing.T) {
 	})
 }
 
-// ABA 护栏：卡席位 A→member→A 的两次翻转跨过候选查询与最终判定——页前后席位
-// 集合值相等，只有单调 revision 能发现枚举与判定观察了不同状态。实现必须丢弃
-// 该页并从同一 seq 下界重读，最终把 @卡号 消息恰好交付一次。
+// ABA 护栏（B435 R Q6 甲改写：原「卡席位 A→member→A」换成驻场者翻转）：驻场者登记/请下与换绑
+// 同样递增席位状态版本。候选查询前把驻场者 user:sy 换成 user:x、判定前换回 user:sy——页前后驻场者
+// 值相等，只有单调 revision 能发现枚举与判定之间状态变过。实现必须丢弃该页、从同一 seq 下界重读，
+// 最终把 @user:sy 消息恰好交付一次。
 func TestSessionWaitABARebindDetectedAndRedelivered(t *testing.T) {
 	dir := t.TempDir()
 	svc, _, st, sessionID := mustWaitFixture(t, dir)
-	const member = "cli:member#m1"
-	const other = "cli:other#o1"
-	cardID := mustSeatFixture(t, st, other)
-	seq, err := svc.Send(sessionID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "@" + cardID + " 到 member", Mentions: []string{cardID}}, "user:tester")
+	seq, err := svc.Send(sessionID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "@user:sy 到驻场者", Mentions: []string{"user:sy"}}, "user:tester")
 	if err != nil {
 		t.Fatal(err)
 	}
 	resetWaitHooks(t)
+	swap := func(from, to string) {
+		t.Helper()
+		if err := svc.StandResident(sessionID, from); err != nil {
+			t.Errorf("请下 %s: %v", from, err)
+		}
+		if _, err := svc.SitResident(proto.SessionResident{Session: sessionID, Identity: to}); err != nil {
+			t.Errorf("驻场 %s: %v", to, err)
+		}
+	}
 	var queryFroms []int64
 	queryCount, judgeCount := 0, 0
 	sessionWaitBeforeQuery = func(from, to int64) {
 		queryCount++
 		queryFroms = append(queryFroms, from)
-		if queryCount <= 2 {
-			// 页 1/2 查询前：member 坐下（枚举在 member 状态下进行）。
-			if err := st.RebindSeat(cardID, member, proto.SeatSourceBind, other, ledger.SeatBearing{}); err != nil {
-				t.Errorf("ABA 换绑(member): %v", err)
-			}
+		if queryCount == 1 {
+			swap("user:sy", "user:x") // 枚举在 user:x 驻场时进行
 		}
 	}
 	sessionWaitBeforeJudge = func(from, to int64) {
 		judgeCount++
 		if judgeCount == 1 {
-			// 页 1 判定前：回绑 other——ABA 第二次翻转，页前后集合值相等。
-			if err := st.RebindSeat(cardID, other, proto.SeatSourceBind, member, ledger.SeatBearing{}); err != nil {
-				t.Errorf("ABA 换绑(other): %v", err)
-			}
+			swap("user:x", "user:sy") // ABA 第二次翻转：页前后驻场者值相等
 		}
 	}
-	out, _, err := runLedgerCLI(t, dir, "session", "wait", member, "--timeout", "2s")
+	out, _, err := runLedgerCLI(t, dir, "session", "wait", sessionID, "--timeout", "2s")
 	if err != nil {
 		t.Fatalf("ABA 后必须补收并交付: %v", err)
 	}
@@ -1410,12 +1451,12 @@ func TestSessionWaitABARebindDetectedAndRedelivered(t *testing.T) {
 	if len(backlog.Hits) != 1 || backlog.Hits[0].Hit.Seq != seq {
 		t.Fatalf("必须恰好交付一次且 seq 正确: %+v (want seq=%d)", backlog.Hits, seq)
 	}
-	if cursor, err := st.SessionDeliveryCursor(member); err != nil || cursor != seq {
+	if cursor, err := st.SessionDeliveryCursor(syCursorKey(sessionID)); err != nil || cursor != seq {
 		t.Fatalf("交付水位=%d err=%v want=%d", cursor, err, seq)
 	}
-	// 重读必须从同一未提交 seq 下界出发（契约第 13 条）。
-	if queryCount < 3 {
-		t.Fatalf("ABA 必须触发丢弃重读（query 次数=%d）", queryCount)
+	// 重读必须发生，且从同一未提交 seq 下界出发（契约第 13 条）。
+	if queryCount < 2 {
+		t.Fatalf("驻场者 ABA 必须触发丢弃重读（query 次数=%d）", queryCount)
 	}
 	for i, from := range queryFroms {
 		if from != queryFroms[0] {
@@ -1424,14 +1465,12 @@ func TestSessionWaitABARebindDetectedAndRedelivered(t *testing.T) {
 	}
 }
 
-// 单向换绑护栏：页内席位单向变化同样必须丢弃重读，交付恰好一次。
+// 单向护栏（Q6 甲改写）：页内驻场者被请下又以同一身份重新驻场（S8「stand 再 sit」），状态值不变、
+// 版本单向前进——同样必须丢弃重读，交付恰好一次。
 func TestSessionWaitOneWayRebindStillDeliversOnce(t *testing.T) {
 	dir := t.TempDir()
-	svc, _, st, sessionID := mustWaitFixture(t, dir)
-	const member = "cli:member#m1"
-	const other = "cli:other#o1"
-	cardID := mustSeatFixture(t, st, other)
-	seq, err := svc.Send(sessionID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "@" + cardID + " 单向", Mentions: []string{cardID}}, "user:tester")
+	svc, _, _, sessionID := mustWaitFixture(t, dir)
+	seq, err := svc.Send(sessionID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "@user:sy 单向", Mentions: []string{"user:sy"}}, "user:tester")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1440,14 +1479,17 @@ func TestSessionWaitOneWayRebindStillDeliversOnce(t *testing.T) {
 	sessionWaitBeforeQuery = func(from, to int64) {
 		queryCount++
 		if queryCount == 1 {
-			if err := st.RebindSeat(cardID, member, proto.SeatSourceBind, other, ledger.SeatBearing{}); err != nil {
-				t.Errorf("单向换绑: %v", err)
+			if err := svc.StandResident(sessionID, "user:sy"); err != nil {
+				t.Errorf("请下: %v", err)
+			}
+			if _, err := svc.SitResident(proto.SessionResident{Session: sessionID, Identity: "user:sy"}); err != nil {
+				t.Errorf("重新驻场: %v", err)
 			}
 		}
 	}
-	out, _, err := runLedgerCLI(t, dir, "session", "wait", member, "--timeout", "2s")
+	out, _, err := runLedgerCLI(t, dir, "session", "wait", sessionID, "--timeout", "2s")
 	if err != nil {
-		t.Fatalf("单向换绑后必须交付: %v", err)
+		t.Fatalf("页内重新驻场后必须交付: %v", err)
 	}
 	var backlog proto.SessionBacklog
 	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &backlog); err != nil {
@@ -1457,27 +1499,18 @@ func TestSessionWaitOneWayRebindStillDeliversOnce(t *testing.T) {
 		t.Fatalf("必须恰好交付一次: %+v", backlog.Hits)
 	}
 	if queryCount < 2 {
-		t.Fatalf("换绑页必须被丢弃重读（query 次数=%d）", queryCount)
+		t.Fatalf("驻场者变化页必须被丢弃重读（query 次数=%d）", queryCount)
 	}
 }
 
-// 空候选页也必须校验席位状态（契约第 7/11 条）：页查询时卡无席位，@卡号 寻址
-// 落空——候选为空页；空页内（BeforeJudge 缝）把卡绑给监听 member，复读席位
-// 版本必须发现变化：丢弃本页、从原下界重读，第二次查询该消息成为候选并交付。
-// 夹具预置 @无席位卡号 的房间消息，使「空页跳过复读」的变异无法靠无输出蒙混
-// ——没有这条消息时，空页复读与否行为全同，护栏咬不住（B409.5 review #1）。
-// 版本无变化的空页确认后仍无输出、不推进水位（阶段一）。
+// 空候选页也必须校验席位状态版本（契约第 7/11 条；Q6 甲改写）：阶段一无候选、版本不变——空页确认
+// 后无输出、不推进水位；阶段二在空页内（BeforeJudge 缝）请下并重新驻场同一身份，复读版本必须发现
+// 变化：丢弃本页、从原下界重读（judge 次数 ≥2）。「空页跳过复读」的变异在阶段二 judge 只 1 次而变红。
 func TestSessionWaitEmptyPageStillVerifiesSeat(t *testing.T) {
 	dir := t.TempDir()
 	svc, _, st, sessionID := mustWaitFixture(t, dir)
-	const member = "cli:member#m1"
-	cardID := mustSeatFixtureWithoutSeat(t, st)
-	seq, err := svc.Send(sessionID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "@" + cardID + " 空页换绑", Mentions: []string{cardID}}, "user:tester")
-	if err != nil {
-		t.Fatal(err)
-	}
 	resetWaitHooks(t)
-	bindArmed := false
+	resitArmed := false
 	judgeCount := 0
 	var queryFroms []int64
 	sessionWaitBeforeQuery = func(from, to int64) {
@@ -1485,16 +1518,19 @@ func TestSessionWaitEmptyPageStillVerifiesSeat(t *testing.T) {
 	}
 	sessionWaitBeforeJudge = func(from, to int64) {
 		judgeCount++
-		if bindArmed {
-			bindArmed = false
-			if err := st.BindSeat(cardID, member, proto.SeatSourceBind, ledger.SeatBearing{}); err != nil {
-				t.Errorf("空页坐下: %v", err)
+		if resitArmed {
+			resitArmed = false
+			if err := svc.StandResident(sessionID, "user:sy"); err != nil {
+				t.Errorf("空页请下: %v", err)
+			}
+			if _, err := svc.SitResident(proto.SessionResident{Session: sessionID, Identity: "user:sy"}); err != nil {
+				t.Errorf("空页重新驻场: %v", err)
 			}
 		}
 	}
 
-	// 阶段一：卡未绑定，候选为空页且版本无变化——空页确认后无输出、不推进水位。
-	_, _, err = runLedgerCLI(t, dir, "session", "wait", member, "--timeout", "300ms")
+	// 阶段一：无候选、版本无变化——空页确认后无输出、不推进水位。
+	_, _, err := runLedgerCLI(t, dir, "session", "wait", sessionID, "--timeout", "300ms")
 	codeErr := &exitCodeError{}
 	if !errors.As(err, &codeErr) || codeErr.code != ExitTimeout {
 		t.Fatalf("空积压应超时而非输出: %v", err)
@@ -1502,52 +1538,27 @@ func TestSessionWaitEmptyPageStillVerifiesSeat(t *testing.T) {
 	if judgeCount < 1 {
 		t.Fatal("判定同步点未触发——空页护栏失效")
 	}
-	if cursor, err := st.SessionDeliveryCursor(member); err != nil || cursor != 0 {
+	if cursor, err := st.SessionDeliveryCursor(syCursorKey(sessionID)); err != nil || cursor != 0 {
 		t.Fatalf("空页不得推进水位：%d err=%v", cursor, err)
 	}
 
-	// 阶段二（变异咬合点）：空页内把卡绑给监听 member。复读 revision 必须发现
-	// 变化——丢弃空页、从原下界重读，第二次查询该消息成为候选并交付；
-	// 「空页跳过复读」的变异在此不交付、超时 124 变红。
-	bindArmed = true
+	// 阶段二（变异咬合点）：空页内驻场者状态变化，复读 revision 必须发现并重读。
+	resitArmed = true
 	judgeCount = 0
 	queryFroms = nil
-	out, _, err := runLedgerCLI(t, dir, "session", "wait", member, "--timeout", "2s")
-	if err != nil {
-		t.Fatalf("空页复读 revision 后必须补收并交付: %v", err)
-	}
-	var backlog proto.SessionBacklog
-	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &backlog); err != nil {
-		t.Fatalf("积压解码: %v 原文=%s", err, out)
-	}
-	if len(backlog.Hits) != 1 || backlog.Hits[0].Hit.Seq != seq {
-		t.Fatalf("必须恰好交付一次且 seq 正确: %+v (want seq=%d)", backlog.Hits, seq)
-	}
-	if cursor, err := st.SessionDeliveryCursor(member); err != nil || cursor != seq {
-		t.Fatalf("交付水位=%d err=%v want=%d", cursor, err, seq)
+	out, _, err := runLedgerCLI(t, dir, "session", "wait", sessionID, "--timeout", "300ms")
+	if !errors.As(err, &codeErr) || codeErr.code != ExitTimeout || out != "" {
+		t.Fatalf("空页重读后仍无命中，应超时且无输出: out=%q err=%v", out, err)
 	}
 	if judgeCount < 2 {
 		t.Fatalf("空页必须触发复读重判（judge 次数=%d）", judgeCount)
 	}
-	// 重读必须从同一未提交 seq 下界出发（契约第 13 条）。
-	for i, from := range queryFroms {
-		if from != queryFroms[0] {
-			t.Fatalf("重读下界漂移 @%d：%v", i, queryFroms)
-		}
+	if len(queryFroms) < 2 || queryFroms[0] != queryFroms[1] {
+		t.Fatalf("重读下界漂移：%v", queryFroms)
 	}
-}
-
-// mustSeatFixtureWithoutSeat 建一张无席位卡（空页换绑护栏用）。
-func mustSeatFixtureWithoutSeat(t *testing.T, st *ledger.Store) string {
-	t.Helper()
-	if _, err := st.PutWorkflow("charter", ledger.WorkflowDef{States: []string{"待办", "完成"}}); err != nil {
-		t.Fatal(err)
+	if cursor, err := st.SessionDeliveryCursor(syCursorKey(sessionID)); err != nil || cursor != 0 {
+		t.Fatalf("空页不得推进水位：%d err=%v", cursor, err)
 	}
-	card, err := st.CreateCard(ledger.NewCard{Title: "空页护栏卡", Project: "p", Actor: "test"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return card.ID
 }
 
 // 游标写失败：stdout 已成功而游标写入失败必须可见报错，且允许下次重投
@@ -1555,9 +1566,9 @@ func mustSeatFixtureWithoutSeat(t *testing.T, st *ledger.Store) string {
 func TestSessionWaitCursorWriteFailureAllowsRepeat(t *testing.T) {
 	dir := t.TempDir()
 	svc, _, st, sessionID := mustWaitFixture(t, dir)
-	const member = "cli:member#m1"
-	cardID := mustSeatFixture(t, st, member)
-	seq, err := svc.Send(sessionID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "@" + cardID + " 写失败重投", Mentions: []string{cardID}}, "user:tester")
+	// B435：席位身份不能驻场（C-413），订阅者改为夹具驻场者 user:sy。
+	member := syResident(sessionID)
+	seq, err := svc.Send(sessionID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "@user:sy 写失败重投", Mentions: []string{"user:sy"}}, "user:tester")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1581,7 +1592,7 @@ func TestSessionWaitCursorWriteFailureAllowsRepeat(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = st2.Close() })
-	if cursor, err := st2.SessionDeliveryCursor(member); err != nil || cursor != 0 {
+	if cursor, err := st2.SessionDeliveryCursor(proto.DeliveryCursorKey(member)); err != nil || cursor != 0 {
 		t.Fatalf("写失败后水位必须保持 0：%d err=%v", cursor, err)
 	}
 	svc2 := collab.New(ledgerapi.New(st2))
@@ -1596,7 +1607,7 @@ func TestSessionWaitCursorWriteFailureAllowsRepeat(t *testing.T) {
 	if len(backlog.Hits) != 1 || backlog.Hits[0].Hit.Seq != seq {
 		t.Fatalf("重投必须再次交付同一命中: %+v", backlog.Hits)
 	}
-	if cursor, err := st2.SessionDeliveryCursor(member); err != nil || cursor != seq {
+	if cursor, err := st2.SessionDeliveryCursor(proto.DeliveryCursorKey(member)); err != nil || cursor != seq {
 		t.Fatalf("重投后水位=%d err=%v want=%d", cursor, err, seq)
 	}
 }
@@ -1605,12 +1616,12 @@ func TestSessionWaitCursorWriteFailureAllowsRepeat(t *testing.T) {
 // （契约第 10/43 条的反向读面）。
 func TestSessionWaitCursorReadErrorFailsExplicitly(t *testing.T) {
 	dir := t.TempDir()
-	svc, _, st, _ := mustWaitFixture(t, dir)
+	svc, _, st, sessionID := mustWaitFixture(t, dir)
 	if err := st.Close(); err != nil {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
-	err := sessionWaitRun(context.Background(), svc, st, &out, "user:sy", 0, false, 0, false)
+	err := sessionWaitRun(context.Background(), svc, st, &out, syResident(sessionID), 0, false, 0, false)
 	if err == nil || !strings.Contains(err.Error(), "交付水位") {
 		t.Fatalf("游标读错必须显式失败: %v", err)
 	}

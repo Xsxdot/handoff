@@ -17,9 +17,14 @@
 // ResolveDelivery 隐式寻址原作者已冻结）。
 // 2026-09-24 r2：CLI 正文有效 @ 自动寻址；默认 wait 使用共享账本交付水位，
 // 重挂时积压合成一行摘要；显式 --since 仍是只读手工回放。
+// B435.2：wait 改为 `session wait <session>`——收件地址是会话驻场者
+// （resident:<session>/<identity>，启动时一次定址，驻场者变更即非 0 退出），
+// 命中判定唯一入口由 MessageWakeTargets 换成 collab.Service.Matches（C-137/C-145）；
+// 驻场者由 session sit/stand（session_resident.go）写入。
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -64,8 +69,8 @@ var (
 var sessionWaitPollInterval = 2 * time.Second
 
 var sessionWaitCmd = &cobra.Command{
-	Use:   "wait <member>",
-	Short: "订阅会话寻址：续收积压摘要或实时 SessionWake（缺省一条即退 0；--follow 常驻）",
+	Use:   "wait <session>",
+	Short: "作为会话驻场者收件（先 handoff session sit）：续收积压摘要或实时 SessionWake（缺省一条即退 0；--follow 常驻）",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if sessionWaitTimeout < 0 {
@@ -101,7 +106,7 @@ const sessionWaitSeatRetries = 8
 var (
 	sessionWaitBeforeQuery   func(from, to int64)
 	sessionWaitBeforeJudge   func(from, to int64)
-	sessionWaitBeforeAdvance func(member string, seq int64)
+	sessionWaitBeforeAdvance func(cursorKey string, seq int64)
 )
 
 // sessionHit 一条已判定命中的候选：原事件与解码后的消息。
@@ -110,8 +115,9 @@ type sessionHit struct {
 	msg proto.RoomMessage
 }
 
-// sessionWaitPage 读一页有界候选，并在席位状态版本护栏内完成该页全部
-// MessageWakeTargets 判定。返回确认命中的行与推进后的进程内扫描水位 next。
+// sessionWaitPage 读一页驻场者地址的有界候选，并在席位状态版本护栏内完成该页全部
+// Matches 判定（B435 C-137：命中只经匹配函数；驻场者登记/请下与换绑同样递增版本，
+// R plan Q6 甲）。返回确认命中的行与推进后的进程内扫描水位 next。
 //
 // 席位一致性（契约第 6–17 条）的实现选择是 **revision 复读**而非页内锁：
 //   - 候选查询前读取席位版本（第 10 条）；
@@ -130,8 +136,9 @@ type sessionHit struct {
 // sessionWaitPage 读一页候选并在席位状态版本护栏内判定。B409.6：ctx 贯通到
 // 候选读与席位版本读（取消时 SQL 真正中断，不只在 select 处感知）；每页判定
 // 收口一行（候选数/命中数/重读次数/耗时）。
-func sessionWaitPage(ctx context.Context, svc *collab.Service, st *ledger.Store, member string, from, to int64) (hits []sessionHit, next int64, err error) {
+func sessionWaitPage(ctx context.Context, svc *collab.Service, st *ledger.Store, addr proto.DeliveryAddress, from, to int64) (hits []sessionHit, next int64, err error) {
 	started := time.Now()
+	member := addr.Identity
 	for attempt := 1; ; attempt++ {
 		revBefore, err := st.SeatRevisionContext(ctx)
 		if err != nil {
@@ -140,7 +147,7 @@ func sessionWaitPage(ctx context.Context, svc *collab.Service, st *ledger.Store,
 		if sessionWaitBeforeQuery != nil {
 			sessionWaitBeforeQuery(from, to)
 		}
-		candidates, err := st.SessionMessageCandidatesContext(ctx, member, from, to, sessionWaitPageLimit)
+		candidates, err := st.ResidentMessageCandidatesContext(ctx, addr.Identity, addr.Session, from, to, sessionWaitPageLimit)
 		if err != nil {
 			return nil, 0, fmt.Errorf("session wait 读候选页: %w", err)
 		}
@@ -150,7 +157,7 @@ func sessionWaitPage(ctx context.Context, svc *collab.Service, st *ledger.Store,
 		pageHits := make([]sessionHit, 0, len(candidates))
 		lastSeq := from
 		for _, ev := range candidates {
-			msg, hit, err := sessionWaitMatch(svc, ev, member)
+			msg, hit, err := sessionWaitMatch(svc, ev, addr)
 			if err != nil {
 				return nil, 0, err
 			}
@@ -200,8 +207,11 @@ func isWaitCancel(err error) bool {
 	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
-// runSessionWait 订阅会话定向消息。无 --since 时从共享交付水位补收；显式
-// --since 保持手工排他回放，不改变共享水位。寻址只经 MessageWakeTargets。
+// runSessionWait 作为会话驻场者收件（B435 R，契约 §4.2 C-131–C-144）。参数 session 是位置参数
+// 原值：须为会话房间号（C-132，旧 `session wait <成员身份>` 形态落此支拒绝）；会话须已有驻场者
+// （C-133，无驻场者立即非 0、不阻塞）。地址 = 启动时读到的驻场者（C-134），持久游标键 =
+// DeliveryCursorKey(驻场者地址)（C-135/C-136）。无 --since 时从共享交付水位补收；显式 --since
+// 保持手工排他回放，不改变共享水位。命中只经 collab.Service.Matches（C-137）。
 //
 // 双形态（B365）共用有界候选读循环；默认先扫描积压，单行摘要成功写出后
 // 推进共享交付水位。之后分叉点是「实时首个命中后是否退出」：
@@ -230,7 +240,7 @@ func (c *countingWriter) Write(p []byte) (int, error) {
 // 捕获 / 嵌入宿主自备 logger）时不覆盖，诊断日志走既有出口。
 var stockDefaultLogger = slog.Default()
 
-func runSessionWait(cmd *cobra.Command, member string, sinceFlag int64, sinceSet bool, timeout time.Duration, follow bool) error {
+func runSessionWait(cmd *cobra.Command, session string, sinceFlag int64, sinceSet bool, timeout time.Duration, follow bool) error {
 	started := time.Now()
 	opID := diag.NewOperationID()
 	baseCtx := cmd.Context()
@@ -242,29 +252,48 @@ func runSessionWait(cmd *cobra.Command, member string, sinceFlag int64, sinceSet
 	if slog.Default() == stockDefaultLogger {
 		slog.SetDefault(logx.Setup("cli", ""))
 	}
-	slog.Info("session wait 入口", append(diag.Attrs(ctx), "member", member, "since", sinceFlag,
+	slog.Info("session wait 入口", append(diag.Attrs(ctx), "session", session, "since", sinceFlag,
 		"since_set", sinceSet, "timeout", timeout.String(), "follow", follow)...)
 	if sinceSet && sinceFlag < 0 {
 		return fmt.Errorf("--since 必须为非负 seq（当前 %d）", sinceFlag)
+	}
+	if !room.IsSessionRoom(session) {
+		// C-132：旧 `session wait <成员身份>` 形态（及任何非会话号参数）在开账本前拒绝。
+		slog.Warn("session wait 参数不是会话号", append(diag.Attrs(ctx), "arg", session)...)
+		return fmt.Errorf("session wait 的参数须是会话号（形如 session:<n>），得 %q；"+
+			"旧 `session wait <成员身份>` 形态已删除——现在按会话收件，收件人是该会话的驻场者", session)
 	}
 	openStarted := time.Now()
 	svc, st, err := openRoomService()
 	openNs := time.Since(openStarted).Nanoseconds()
 	if err != nil {
 		slog.Error("session wait 打开会话服务失败", append(diag.Attrs(ctx),
-			"member", member, "open_ns", openNs, "cause", err)...)
+			"session", session, "open_ns", openNs, "cause", err)...)
 		slog.Warn("session wait 完成", append(diag.Attrs(ctx), "command", "session_wait",
-			"member", member, "outcome", "error", "error_class", "open_failed",
+			"session", session, "outcome", "error", "error_class", "open_failed",
 			"stdout_bytes", int64(0), "elapsed_ns", time.Since(started).Nanoseconds())...)
 		return fmt.Errorf("session wait 打开会话服务: %w", err)
 	}
 	defer st.Close()
+	resident, seated, err := st.SessionResident(session)
+	if err != nil {
+		slog.Error("session wait 读驻场者失败", append(diag.Attrs(ctx), "session", session, "cause", err)...)
+		return fmt.Errorf("session wait 读会话 %s 驻场者: %w", session, err)
+	}
+	if !seated {
+		// C-133：无驻场者立即失败（≠124），不挂到超时。
+		slog.Warn("session wait 会话无驻场者", append(diag.Attrs(ctx), "session", session)...)
+		return fmt.Errorf("会话 %s 无驻场者，session wait 无收件地址：先 handoff session sit %s --as <身份>", session, session)
+	}
+	addr := proto.DeliveryAddress{Kind: proto.DeliveryResident, Session: session, Identity: resident.Identity}
+	slog.Info("session wait 驻场者地址", append(diag.Attrs(ctx), "session", session,
+		"resident", resident.Identity, "cursor_key", proto.DeliveryCursorKey(addr))...)
 	counter := &countingWriter{w: cmd.OutOrStdout()}
-	runErr := sessionWaitRun(ctx, svc, st, counter, member, sinceFlag, sinceSet, timeout, follow)
+	runErr := sessionWaitRun(ctx, svc, st, counter, addr, sinceFlag, sinceSet, timeout, follow)
 
 	// B409.6 收口：结果分类 + stdout 字节 + 总耗时；诊断只写 stderr（slog
 	// 出口），stdout 的 JSON 行与退出码语义不变。
-	attrs := append(diag.Attrs(ctx), "command", "session_wait", "member", member,
+	attrs := append(diag.Attrs(ctx), "command", "session_wait", "session", session, "member", addr.Identity,
 		"follow", follow, "open_ns", openNs, "stdout_bytes", counter.n,
 		"elapsed_ns", time.Since(started).Nanoseconds())
 	var codeErr *exitCodeError
@@ -295,19 +324,26 @@ func runSessionWait(cmd *cobra.Command, member string, sinceFlag int64, sinceSet
 }
 
 // sessionWaitRun 是订阅通道的核心循环（runSessionWait 的依赖注入形态，测试
-// 用它注入假 writer / 已关闭账本 / 竞态钩子）。ctx 只用于退出信号；查询自身
+// 用它注入假 writer / 已关闭账本 / 竞态钩子）。addr 是启动时解析出的驻场者地址：
+// 游标键、积压 member、命中判定、未读投影全部从它取。ctx 只用于退出信号；查询自身
 // 按页有界，取消语义沿用既有 select 轮询（两方言一致，契约第 55 条）。
-func sessionWaitRun(ctx context.Context, svc *collab.Service, st *ledger.Store, out io.Writer, member string, sinceFlag int64, sinceSet bool, timeout time.Duration, follow bool) error {
+func sessionWaitRun(ctx context.Context, svc *collab.Service, st *ledger.Store, out io.Writer, addr proto.DeliveryAddress, sinceFlag int64, sinceSet bool, timeout time.Duration, follow bool) error {
 	runStarted := time.Now()
+	member := addr.Identity
+	key := proto.DeliveryCursorKey(addr)
+	if key == "" {
+		return fmt.Errorf("session wait 地址残缺（kind=%s session=%q identity=%q），拒绝读写交付游标", addr.Kind, addr.Session, addr.Identity)
+	}
 	if !sinceSet {
 		// 默认：读共享交付水位。读错必须显式失败——把读错当 0 会把停听期间
 		// 已交付的窗口当作未交付全量重放，反向会把未交付窗口当已交付丢掉
-		//（契约第 10/43/44 条的反向）。B409.6：点读随 ctx 取消。
+		//（契约第 10/43/44 条的反向）。B409.6：点读随 ctx 取消。地址键无行 = 0
+		//（契约 §6：B409r2 条 28 对驻场者地址不变——首次 wait 从房间头补收）。
 		var err error
-		sinceFlag, err = st.SessionDeliveryCursorContext(ctx, member)
+		sinceFlag, err = st.SessionDeliveryCursorContext(ctx, key)
 		if err != nil {
 			slog.Error("session wait 读取交付水位失败", append(diag.Attrs(ctx),
-				"member", member, "cause", err)...)
+				"member", member, "cursor_key", key, "cause", err)...)
 			return fmt.Errorf("session wait 读取交付水位: %w", err)
 		}
 	}
@@ -344,7 +380,7 @@ func sessionWaitRun(ctx context.Context, svc *collab.Service, st *ledger.Store, 
 		scan := cursor
 		backlog := proto.SessionBacklog{Type: "session_backlog", Member: member, FromSeq: from, Hits: []proto.SessionBacklogHit{}}
 		for scan < fence {
-			hits, next, err := sessionWaitPage(ctx, svc, st, member, scan, fence)
+			hits, next, err := sessionWaitPage(ctx, svc, st, addr, scan, fence)
 			if err != nil {
 				if isWaitCancel(err) {
 					// ctx 贯通后取消以查询错误冒出：follow 主动退 0，一次性按
@@ -384,13 +420,13 @@ func sessionWaitRun(ctx context.Context, svc *collab.Service, st *ledger.Store, 
 				return fmt.Errorf("session wait 输出积压摘要: %w", err)
 			}
 			if sessionWaitBeforeAdvance != nil {
-				sessionWaitBeforeAdvance(member, backlog.ToSeq)
+				sessionWaitBeforeAdvance(key, backlog.ToSeq)
 			}
-			if err := st.AdvanceSessionDeliveryCursor(member, backlog.ToSeq); err != nil {
-				slog.Warn("session wait 积压已输出但进度写入失败", "member", member, "seq", backlog.ToSeq, "cause", err)
+			if err := st.AdvanceSessionDeliveryCursor(key, backlog.ToSeq); err != nil {
+				slog.Warn("session wait 积压已输出但进度写入失败", "member", member, "cursor_key", key, "seq", backlog.ToSeq, "cause", err)
 				return fmt.Errorf("session wait 写交付水位: %w", err)
 			}
-			slog.Info("session wait 积压已交付", "member", member, "from_seq", from,
+			slog.Info("session wait 积压已交付", "member", member, "cursor_key", key, "from_seq", from,
 				"to_seq", backlog.ToSeq, "hits", len(backlog.Hits))
 			if !follow {
 				return nil
@@ -412,6 +448,11 @@ func sessionWaitRun(ctx context.Context, svc *collab.Service, st *ledger.Store, 
 	ticker := time.NewTicker(sessionWaitPollInterval)
 	defer ticker.Stop()
 	for {
+		// R plan Q10 乙：每拍复读驻场者，与启动地址不同即可行动报错退出（非 0、≠124，与 C-133
+		// 同档）——启动地址已不再是任何人的收件地址，挂到超时就是静默失败。不输出、不推进游标。
+		if err := sessionWaitResidentUnchanged(st, addr); err != nil {
+			return err
+		}
 		fence, err := st.MaxSeqContext(ctx)
 		if err != nil {
 			// ctx 到期/取消不会自愈：与页查询同款退出映射（follow 退 0 /
@@ -427,7 +468,7 @@ func sessionWaitRun(ctx context.Context, svc *collab.Service, st *ledger.Store, 
 			return fmt.Errorf("session wait 读取流边界: %w", err)
 		}
 		if fence > cursor {
-			hits, next, err := sessionWaitPage(ctx, svc, st, member, cursor, fence)
+			hits, next, err := sessionWaitPage(ctx, svc, st, addr, cursor, fence)
 			if err != nil {
 				if isWaitCancel(err) {
 					slog.Info("session wait 实时扫描被取消", append(diag.Attrs(ctx),
@@ -451,10 +492,10 @@ func sessionWaitRun(ctx context.Context, svc *collab.Service, st *ledger.Store, 
 				}
 				if !sinceSet {
 					if sessionWaitBeforeAdvance != nil {
-						sessionWaitBeforeAdvance(member, h.ev.Seq)
+						sessionWaitBeforeAdvance(key, h.ev.Seq)
 					}
-					if err := st.AdvanceSessionDeliveryCursor(member, h.ev.Seq); err != nil {
-						slog.Warn("session wait 唤醒已输出但进度写入失败", "member", member, "seq", h.ev.Seq, "cause", err)
+					if err := st.AdvanceSessionDeliveryCursor(key, h.ev.Seq); err != nil {
+						slog.Warn("session wait 唤醒已输出但进度写入失败", "member", member, "cursor_key", key, "seq", h.ev.Seq, "cause", err)
 						return fmt.Errorf("session wait 写交付水位: %w", err)
 					}
 				}
@@ -496,9 +537,31 @@ func sessionWaitRun(ctx context.Context, svc *collab.Service, st *ledger.Store, 
 	}
 }
 
-// sessionWaitMatch 仅在会话房间里调用协作域唯一寻址判据，防止 CLI 自己
-// 根据 mentions/成员列表发明第二套唤醒规则。
-func sessionWaitMatch(svc *collab.Service, ev ledger.Event, member string) (proto.RoomMessage, bool, error) {
+// sessionWaitResidentUnchanged 复读会话驻场者并与启动地址比较（R plan Q10 乙）。返回 nil = 仍是启动
+// 时的驻场者；否则返回可行动错误（读失败也返回错误——不得当「未变」继续挂着）。
+func sessionWaitResidentUnchanged(st *ledger.Store, addr proto.DeliveryAddress) error {
+	current, seated, err := st.SessionResident(addr.Session)
+	if err != nil {
+		slog.Error("session wait 复读驻场者失败", "session", addr.Session, "member", addr.Identity, "cause", err)
+		return fmt.Errorf("session wait 复读会话 %s 驻场者: %w", addr.Session, err)
+	}
+	if seated && current.Identity == addr.Identity {
+		return nil
+	}
+	now := "无驻场者"
+	if seated {
+		now = "现驻场者 " + current.Identity
+	}
+	slog.Warn("session wait 驻场者已变更，退出", "session", addr.Session, "started_as", addr.Identity, "now", now)
+	return fmt.Errorf("会话 %s 的驻场者已不是本进程启动时的 %s（%s），本进程不再收件；"+
+		"要继续收件先 handoff session sit %s --as <身份>，再重新 handoff session wait %s", addr.Session, addr.Identity, now, addr.Session, addr.Session)
+}
+
+// sessionWaitMatch 解码候选并经匹配函数判定是否命中驻场者地址（B435 C-137；与
+// card_wait.go#cardWaitRoomMatch 同构）：载荷 by_system:null 的旧边界按结构行跳过（Recipients
+// 收已解码消息，看不到 null）；解码失败或匹配读失败上抛（C-228：不得当未命中，否则持久水位会
+// 越过该消息）。CLI 不自己解析 mentions/作者——判定只在 collab。
+func sessionWaitMatch(svc *collab.Service, ev ledger.Event, addr proto.DeliveryAddress) (proto.RoomMessage, bool, error) {
 	if ev.Type != ledger.EvRoomMessage {
 		return proto.RoomMessage{}, false, nil
 	}
@@ -506,19 +569,19 @@ func sessionWaitMatch(svc *collab.Service, ev ledger.Event, member string) (prot
 	if err := json.Unmarshal(ev.Payload, &msg); err != nil {
 		return msg, false, fmt.Errorf("session wait 事件 %d 载荷解码失败: %w", ev.Seq, err)
 	}
-	if !room.IsSessionRoom(msg.Room) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(ev.Payload, &fields); err != nil {
+		return msg, false, fmt.Errorf("session wait 事件 %d 字段解码失败: %w", ev.Seq, err)
+	}
+	if raw, present := fields["by_system"]; present && bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
 		return msg, false, nil
 	}
-	targets, err := svc.MessageWakeTargets(msg)
+	hit, err := svc.Matches(msg, ev.Actor, addr)
 	if err != nil {
+		slog.Error("session wait 匹配函数判定失败", "session", addr.Session, "member", addr.Identity, "seq", ev.Seq, "cause", err)
 		return msg, false, fmt.Errorf("session wait 事件 %d 寻址判定失败: %w", ev.Seq, err)
 	}
-	for _, target := range targets {
-		if target == member {
-			return msg, true, nil
-		}
-	}
-	return msg, false, nil
+	return msg, hit, nil
 }
 
 // sessionWaitReference 只投影回复引用条；积压摘要不需要逐条重算未读列表。
@@ -528,7 +591,7 @@ func sessionWaitReference(svc *collab.Service, msg proto.RoomMessage) (*proto.Se
 
 // buildSessionWake 装配三件套（spec §4.3：命中条 + 引用条 + 未读数）。
 // referenced 取 ReplyTo 指向的同会话消息；无有效引用锚时省键。unread 与
-// ListSessions(member) 的 Unread 同一投影（条 44——同一游标介质，含命中条）。
+// ListSessions(驻场身份) 的 Unread 同一投影（C-141 / 条 44——同一游标介质，含命中条）。
 // ev 用 ledger.Event：CLI 读侧 Store.EventsFromAsc 的既有返回类型
 // （与 proto.LedgerEvent 同形；card_wait 同款）。
 func buildSessionWake(svc *collab.Service, ev ledger.Event, msg proto.RoomMessage, member string) (proto.SessionWake, error) {

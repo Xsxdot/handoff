@@ -10,6 +10,7 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/Xsxdot/handoff/internal/collab/client"
@@ -239,6 +240,47 @@ func (f *Facade) SessionResident(sessionID string) (proto.SessionResident, bool,
 		Machine:        r.Machine,
 		SatAt:          r.SatAt,
 	}, true, nil
+}
+
+// SitResident 登记会话驻场者（B435 R）：wire DTO 逐字段映射成账本本地行，写后把账本填写的
+// SatAt 随返回值带回。账本哨兵翻成使用方哨兵（translateResidentErr）；其余错误原样透传。
+func (f *Facade) SitResident(r proto.SessionResident) (proto.SessionResident, error) {
+	got, err := f.st.SitResident(ledger.SessionResident{
+		Session: r.Session, Identity: r.Identity, DesktopSession: r.DesktopSession,
+		CLISession: r.CLISession, Machine: r.Machine,
+	})
+	if err != nil {
+		return proto.SessionResident{}, translateResidentErr(err)
+	}
+	return proto.SessionResident{
+		Session: got.Session, Identity: got.Identity, DesktopSession: got.DesktopSession,
+		CLISession: got.CLISession, Machine: got.Machine, SatAt: got.SatAt,
+	}, nil
+}
+
+// StandResident 请下会话驻场者（条件删除，身份须等于现驻场者）。
+func (f *Facade) StandResident(sessionID, identity string) error {
+	return translateResidentErr(f.st.StandResident(sessionID, identity))
+}
+
+// translateResidentErr 把驻场者写面的账本哨兵翻成 collab/client 侧哨兵，保留原错误文案作上下文。
+func translateResidentErr(err error) error {
+	var sentinel error
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, ledger.ErrNotFound):
+		sentinel = client.ErrNotFound
+	case errors.Is(err, ledger.ErrResidentOccupied):
+		sentinel = client.ErrResidentOccupied
+	case errors.Is(err, ledger.ErrResidentNotSeated):
+		sentinel = client.ErrResidentNotSeated
+	case errors.Is(err, ledger.ErrBadState):
+		sentinel = client.ErrBadState
+	default:
+		return err
+	}
+	return fmt.Errorf("%w（%s）", sentinel, err.Error())
 }
 
 // translateNotFound 把账本 ErrNotFound 翻成使用方哨兵 client.ErrNotFound；

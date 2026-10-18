@@ -1,7 +1,7 @@
 {
   "view": "cards/B435-charter-1",
   "base": "7f860685752a5d4dea43d38b96441be9437a0565",
-  "summary": "B435 contract Ticket 0：席位驱动模式词表 SeatMode/ParseSeatMode 与 Card/CardView.driver_mode、SessionCard.seat_mode 投影键（③）；收件地址 DeliveryAddress/DeliveryAddressKind、游标键 DeliveryCursorKey、无收件人原因 NoRecipientReason、匹配结果 Delivery、人类作者判据 IsHumanAuthor（②）；匹配函数空壳 collab.Service.Recipients/Matches/defaultRecipient（恒报未实现）；驻场者 DTO SessionResident 与出站接口 LedgerClient.SessionResident（Facade 空壳恒报未实现）；驻场者来信正文 ResidentLetter/RenderResidentLetter（④，正文即 wire 定义）；r3 补签⑤投递投影：房间历史行 RoomHistoryItem（LedgerEvent 平铺 + no_recipient 可省略键）与 SessionSummary.project 可省略键。常量与哨兵不入图。 B435.1（K0）：席位模式列与显式写面 BindSeatMode/RebindSeatMode、迁移 migrateDriverMode；匹配函数落码（Recipients 直调 proto.IsHumanAuthor）；驻场者只读面 Store.SessionResident；agentd 房间唤醒改接 Recipients + seatAddressWake（删 room.IsSessionRoom / MessageWakeTargets 两条旧边）；card wait 房间命中段（SeatMessageCandidatesContext / 游标行 / 坐下下界 + Matches）；删 Service.AddressesCard。图覆盖债：Store.SeatRevisionContext、Store.AdvanceSessionDeliveryCursor 未入基线，相关边未登记。",
+  "summary": "B435 contract Ticket 0：席位驱动模式词表 SeatMode/ParseSeatMode 与 Card/CardView.driver_mode、SessionCard.seat_mode 投影键（③）；收件地址 DeliveryAddress/DeliveryAddressKind、游标键 DeliveryCursorKey、无收件人原因 NoRecipientReason、匹配结果 Delivery、人类作者判据 IsHumanAuthor（②）；匹配函数空壳 collab.Service.Recipients/Matches/defaultRecipient（恒报未实现）；驻场者 DTO SessionResident 与出站接口 LedgerClient.SessionResident（Facade 空壳恒报未实现）；驻场者来信正文 ResidentLetter/RenderResidentLetter（④，正文即 wire 定义）；r3 补签⑤投递投影：房间历史行 RoomHistoryItem（LedgerEvent 平铺 + no_recipient 可省略键）与 SessionSummary.project 可省略键。常量与哨兵不入图。 B435.1（K0）：席位模式列与显式写面 BindSeatMode/RebindSeatMode、迁移 migrateDriverMode；匹配函数落码（Recipients 直调 proto.IsHumanAuthor）；驻场者只读面 Store.SessionResident；agentd 房间唤醒改接 Recipients + seatAddressWake（删 room.IsSessionRoom / MessageWakeTargets 两条旧边）；card wait 房间命中段（SeatMessageCandidatesContext / 游标行 / 坐下下界 + Matches）；删 Service.AddressesCard。图覆盖债：Store.SeatRevisionContext、Store.AdvanceSessionDeliveryCursor 未入基线，相关边未登记。 B435.2（R）：驻场者写面 Store.SitResident/StandResident → Facade → collab.Service.SitResident/StandResident（mapResidentError、书写者集 sessionWriters ∪ 驻场者）；CLI session sit/stand 与 session wait <session>（runSessionWait → sessionWaitRun → sessionWaitPage → sessionWaitMatch → Matches，候选读 ResidentMessageCandidatesContext，与席位读共用 addressCandidatesSQL）；F-RM1：coordinatorRunner.Resume → seatEnv、CoordSessionRef/SessionRef.Env 对称字段、简报 briefingSessionSend/briefingRoomResume/briefingWakeEvents；删 resumeTurnRequest。MessageWakeTargets 保留（Q12 乙）。图覆盖债：session 命令族其余子命令与 buildSessionWake、Service.sendToSession、bumpSeatRevisionTx、rebuildAfterResumeFailure 未入基线，相关边未登记；collab → LedgerClient 接口方法调用不入图。",
   "nodesAdded": {
     "m_proto_SeatMode": {
       "kind": "model",
@@ -259,7 +259,7 @@
       "order": 23,
       "name": "Facade.SessionResident",
       "file": "internal/ledger/api/api.go",
-      "line": 232,
+      "line": 230,
       "signature": "func (f *Facade) SessionResident(sessionID string) (proto.SessionResident, bool, error)",
       "summary": "SessionResident 读会话房间的驻场者登记（B435）。Ticket 0：恒返回未实现错误。"
     },
@@ -319,7 +319,7 @@
       "order": 47,
       "name": "SessionResident",
       "file": "internal/ledger/session_resident.go",
-      "line": 18,
+      "line": 20,
       "signature": "type SessionResident struct",
       "summary": "SessionResident 是 session_residents 一行（会话房间驻场者登记）。",
       "modelKind": "entity"
@@ -330,7 +330,7 @@
       "order": 157,
       "name": "Store.SessionResident",
       "file": "internal/ledger/session_resident.go",
-      "line": 29,
+      "line": 31,
       "signature": "func (s *Store) SessionResident(session string) (SessionResident, bool, error)",
       "summary": "SessionResident 按会话主键读驻场者；无行 ok=false。"
     },
@@ -350,7 +350,7 @@
       "order": 159,
       "name": "Store.SeatMessageCandidatesContext",
       "file": "internal/ledger/session_candidates.go",
-      "line": 228,
+      "line": 296,
       "signature": "func (s *Store) SeatMessageCandidatesContext(ctx context.Context, identity, session string, fromSeq, toSeq int64, limit int) ([]Event, error)",
       "summary": "席位地址候选超集：mentions / reply / 未寻址三支 UNION，按 seq 分页（判定交 collab.Service.Matches）。"
     },
@@ -495,6 +495,339 @@
       "line": 503,
       "signature": "func cardWaitRoomMatch(svc *collab.Service, ev ledger.Event, addr proto.DeliveryAddress) (bool, error)",
       "summary": "解码候选并经 collab.Service.Matches 判定是否命中本卡席位地址。"
+    },
+    "n_ledger_Store_SitResident": {
+      "kind": "func",
+      "container": "k_ledger_Store",
+      "order": 162,
+      "name": "Store.SitResident",
+      "file": "internal/ledger/session_resident.go",
+      "line": 72,
+      "signature": "func (s *Store) SitResident(r SessionResident) (SessionResident, error)",
+      "summary": "SitResident 登记会话驻场者：同事务 INSERT ON CONFLICT DO NOTHING 先取写锁，再判会话存在/未归档，成功递增席位版本（C-414、Q6–Q8）。"
+    },
+    "n_ledger_Store_StandResident": {
+      "kind": "func",
+      "container": "k_ledger_Store",
+      "order": 163,
+      "name": "Store.StandResident",
+      "file": "internal/ledger/session_resident.go",
+      "line": 120,
+      "signature": "func (s *Store) StandResident(session, identity string) error",
+      "summary": "StandResident 条件删除驻场者（会话 + 身份须一致），成功递增席位版本；不碰交付游标（Q6/Q7）。"
+    },
+    "n_ledger_Store_addressCandidatesSQL": {
+      "kind": "func",
+      "container": "k_ledger_Store",
+      "order": 164,
+      "name": "Store.addressCandidatesSQL",
+      "file": "internal/ledger/session_candidates.go",
+      "line": 227,
+      "signature": "func (s *Store) addressCandidatesSQL(identity, session string, fromSeq, toSeq int64) (string, []any)",
+      "summary": "地址候选超集 SQL：@ / 回复 / 未寻址三支 UNION + ORDER BY seq LIMIT（席位与驻场者共用）。"
+    },
+    "n_ledger_Store_ResidentMessageCandidatesContext": {
+      "kind": "func",
+      "container": "k_ledger_Store",
+      "order": 165,
+      "name": "Store.ResidentMessageCandidatesContext",
+      "file": "internal/ledger/session_candidates.go",
+      "line": 247,
+      "signature": "func (s *Store) ResidentMessageCandidatesContext(ctx context.Context, identity, session string, fromSeq, toSeq int64, limit int) ([]Event, error)",
+      "summary": "驻场者地址候选超集分页读（判定交 collab.Service.Matches；C-149–C-151）。"
+    },
+    "n_ledger_api_Facade_SitResident": {
+      "kind": "func",
+      "container": "k_ledger_api_Facade",
+      "order": 24,
+      "name": "Facade.SitResident",
+      "file": "internal/ledger/api/api.go",
+      "line": 247,
+      "signature": "func (f *Facade) SitResident(r proto.SessionResident) (proto.SessionResident, error)",
+      "summary": "SitResident 出站门面：proto ↔ ledger 行转换并翻译账本哨兵。"
+    },
+    "n_ledger_api_Facade_StandResident": {
+      "kind": "func",
+      "container": "k_ledger_api_Facade",
+      "order": 25,
+      "name": "Facade.StandResident",
+      "file": "internal/ledger/api/api.go",
+      "line": 262,
+      "signature": "func (f *Facade) StandResident(sessionID, identity string) error",
+      "summary": "StandResident 出站门面：翻译账本哨兵。"
+    },
+    "n_ledger_api_translateResidentErr": {
+      "kind": "func",
+      "container": "k_ledger_api_fn",
+      "order": 8,
+      "name": "translateResidentErr",
+      "file": "internal/ledger/api/api.go",
+      "line": 267,
+      "signature": "func translateResidentErr(err error) error",
+      "summary": "账本驻场者哨兵 → collab/client 同名哨兵（%w 保留原文）。"
+    },
+    "n_collab_Service_SitResident": {
+      "kind": "func",
+      "container": "k_collab_Service",
+      "order": 34,
+      "name": "Service.SitResident",
+      "file": "internal/collab/sessions.go",
+      "line": 220,
+      "signature": "func (s *Service) SitResident(r proto.SessionResident) (proto.SessionResident, error)",
+      "summary": "SitResident：会话房间判定 → 统一记法校验 → 拒系统身份（Q14）→ 出站写 → 错误映射（C-413）。"
+    },
+    "n_collab_Service_StandResident": {
+      "kind": "func",
+      "container": "k_collab_Service",
+      "order": 35,
+      "name": "Service.StandResident",
+      "file": "internal/collab/sessions.go",
+      "line": 245,
+      "signature": "func (s *Service) StandResident(sessionID, identity string) error",
+      "summary": "StandResident：会话房间判定 → 出站条件删除 → 错误映射。"
+    },
+    "n_collab_mapResidentError": {
+      "kind": "func",
+      "container": "k_collab_fn",
+      "order": 11,
+      "name": "mapResidentError",
+      "file": "internal/collab/sessions.go",
+      "line": 260,
+      "signature": "func mapResidentError(err error) error",
+      "summary": "client 哨兵 → collab 语义（不存在 → ErrNoRoom，已归档 → ErrReadOnly）。"
+    },
+    "n_collab_Service_sessionWriters": {
+      "kind": "func",
+      "container": "k_collab_Service",
+      "order": 36,
+      "name": "Service.sessionWriters",
+      "file": "internal/collab/service.go",
+      "line": 228,
+      "signature": "func (s *Service) sessionWriters(session proto.Session) ([]string, error)",
+      "summary": "会话书写者集：显式成员 ∪ 驻场者 ∪ 会话内各卡当前席位（Q4 甲；读失败上抛）。"
+    },
+    "e_cli_session_sit": {
+      "kind": "entry",
+      "container": "c_cli",
+      "order": 109,
+      "name": "session sit",
+      "file": "cmd/session_resident.go",
+      "line": 35,
+      "channel": "cli"
+    },
+    "e_cli_session_stand": {
+      "kind": "entry",
+      "container": "c_cli",
+      "order": 110,
+      "name": "session stand",
+      "file": "cmd/session_resident.go",
+      "line": 78,
+      "channel": "cli"
+    },
+    "e_cli_session_wait": {
+      "kind": "entry",
+      "container": "c_cli",
+      "order": 111,
+      "name": "session wait",
+      "file": "cmd/session.go",
+      "line": 71,
+      "channel": "cli"
+    },
+    "n_cmd_sessionSitCmd_RunE": {
+      "kind": "func",
+      "container": "k_cmd_fn",
+      "order": 9130,
+      "name": "sessionSitCmd.RunE",
+      "file": "cmd/session_resident.go",
+      "line": 39,
+      "signature": "func(cmd *cobra.Command, args []string) error",
+      "params": [
+        [
+          "cmd",
+          "*cobra.Command",
+          ""
+        ],
+        [
+          "args",
+          "[]string",
+          ""
+        ]
+      ],
+      "returns": "error"
+    },
+    "n_cmd_sessionStandCmd_RunE": {
+      "kind": "func",
+      "container": "k_cmd_fn",
+      "order": 9131,
+      "name": "sessionStandCmd.RunE",
+      "file": "cmd/session_resident.go",
+      "line": 82,
+      "signature": "func(cmd *cobra.Command, args []string) error",
+      "params": [
+        [
+          "cmd",
+          "*cobra.Command",
+          ""
+        ],
+        [
+          "args",
+          "[]string",
+          ""
+        ]
+      ],
+      "returns": "error"
+    },
+    "n_cmd_sessionWaitCmd_RunE": {
+      "kind": "func",
+      "container": "k_cmd_fn",
+      "order": 9132,
+      "name": "sessionWaitCmd.RunE",
+      "file": "cmd/session.go",
+      "line": 75,
+      "signature": "func(cmd *cobra.Command, args []string) error",
+      "params": [
+        [
+          "cmd",
+          "*cobra.Command",
+          ""
+        ],
+        [
+          "args",
+          "[]string",
+          ""
+        ]
+      ],
+      "returns": "error"
+    },
+    "n_cmd_residentDesktopAddress": {
+      "kind": "func",
+      "container": "k_cmd_fn",
+      "order": 9133,
+      "name": "residentDesktopAddress",
+      "file": "cmd/session_resident.go",
+      "line": 115,
+      "signature": "func residentDesktopAddress(desktopSession string) (cliSession, machine string, err error)",
+      "summary": "--desktop-session 收件地址：校验 id → 当前 claude 会话身份 → 邮箱键 → 本机名（开账本前全部判完，Q9 甲）。"
+    },
+    "n_cmd_residentMailboxKeyOK": {
+      "kind": "func",
+      "container": "k_cmd_fn",
+      "order": 9134,
+      "name": "residentMailboxKeyOK",
+      "file": "cmd/session_resident.go",
+      "line": 142,
+      "signature": "func residentMailboxKeyOK(cliSession string) error",
+      "summary": "桌面端邮箱键形态校验。"
+    },
+    "n_cmd_residentIdentityOr": {
+      "kind": "func",
+      "container": "k_cmd_fn",
+      "order": 9135,
+      "name": "residentIdentityOr",
+      "file": "cmd/session_resident.go",
+      "line": 152,
+      "signature": "func residentIdentityOr(st *ledger.Store, session, fallback string) string",
+      "summary": "读现驻场者身份拼 stderr 提示（读失败 Warn 退回占位符）。"
+    },
+    "n_cmd_residentNameHint": {
+      "kind": "func",
+      "container": "k_cmd_fn",
+      "order": 9136,
+      "name": "residentNameHint",
+      "file": "cmd/session_resident.go",
+      "line": 165,
+      "signature": "func residentNameHint(st *ledger.Store, session string) string",
+      "summary": "「现驻场者 X」/「当前无驻场者」提示片段。"
+    },
+    "n_cmd_runSessionWait": {
+      "kind": "func",
+      "container": "k_cmd_fn",
+      "order": 9137,
+      "name": "runSessionWait",
+      "file": "cmd/session.go",
+      "line": 243,
+      "signature": "func runSessionWait(cmd *cobra.Command, session string, sinceFlag int64, sinceSet bool, timeout time.Duration, follow bool) error",
+      "summary": "session wait <session> 入口：C-132 参数形态 → 开账本 → C-133 读驻场者 → 定驻场者地址 → sessionWaitRun。"
+    },
+    "n_cmd_sessionWaitRun": {
+      "kind": "func",
+      "container": "k_cmd_fn",
+      "order": 9138,
+      "name": "sessionWaitRun",
+      "file": "cmd/session.go",
+      "line": 330,
+      "signature": "func sessionWaitRun(ctx context.Context, svc *collab.Service, st *ledger.Store, out io.Writer, addr proto.DeliveryAddress, sinceFlag int64, sinceSet bool, timeout time.Duration, follow bool) error",
+      "summary": "驻场者地址核心循环：游标键 DeliveryCursorKey(addr)、积压摘要、实时轮询；每轮核驻场者未变（Q10 乙）。"
+    },
+    "n_cmd_sessionWaitPage": {
+      "kind": "func",
+      "container": "k_cmd_fn",
+      "order": 9139,
+      "name": "sessionWaitPage",
+      "file": "cmd/session.go",
+      "line": 139,
+      "signature": "func sessionWaitPage(ctx context.Context, svc *collab.Service, st *ledger.Store, addr proto.DeliveryAddress, from, to int64) (hits []sessionHit, next int64, err error)",
+      "summary": "一页驻场者候选在席位版本护栏内判定（版本变化整页重读）。"
+    },
+    "n_cmd_sessionWaitMatch": {
+      "kind": "func",
+      "container": "k_cmd_fn",
+      "order": 9140,
+      "name": "sessionWaitMatch",
+      "file": "cmd/session.go",
+      "line": 564,
+      "signature": "func sessionWaitMatch(svc *collab.Service, ev ledger.Event, addr proto.DeliveryAddress) (proto.RoomMessage, bool, error)",
+      "summary": "解码候选并经 collab.Service.Matches 判定是否命中驻场者地址（与 cardWaitRoomMatch 同构，C-137/C-145）。"
+    },
+    "n_cmd_sessionWaitResidentUnchanged": {
+      "kind": "func",
+      "container": "k_cmd_fn",
+      "order": 9141,
+      "name": "sessionWaitResidentUnchanged",
+      "file": "cmd/session.go",
+      "line": 542,
+      "signature": "func sessionWaitResidentUnchanged(st *ledger.Store, addr proto.DeliveryAddress) error",
+      "summary": "复读驻场者并与启动地址比较；变更或读失败返回可行动错误（Q10 乙）。"
+    },
+    "n_agentd_seatEnv": {
+      "kind": "func",
+      "container": "k_agentd_fn",
+      "order": 197,
+      "name": "seatEnv",
+      "file": "internal/agentd/server.go",
+      "line": 1587,
+      "signature": "func seatEnv(cli, sessionID string) []string",
+      "summary": "resume 回合 HANDOFF 席位对（缺一不注入；agentd 唯一生产者，Q2 甲）。"
+    },
+    "n_keystone_briefingSessionSend": {
+      "kind": "func",
+      "container": "k_keystone_fn",
+      "order": 5,
+      "name": "briefingSessionSend",
+      "file": "internal/keystone/keystone.go",
+      "line": 357,
+      "signature": "func briefingSessionSend(cli, sessionID string) string",
+      "summary": "简报发言命令：字面 --cli/--session 成对出示席位，缺值退 HANDOFF 环境键形态（Q1 乙）。"
+    },
+    "n_keystone_briefingRoomResume": {
+      "kind": "func",
+      "container": "k_keystone_fn",
+      "order": 6,
+      "name": "briefingRoomResume",
+      "file": "internal/keystone/keystone.go",
+      "line": 368,
+      "signature": "func briefingRoomResume(cli, sessionID string) string",
+      "summary": "resume 回合简报房间句（带席位发言命令）。"
+    },
+    "n_keystone_briefingWakeEvents": {
+      "kind": "func",
+      "container": "k_keystone_fn",
+      "order": 7,
+      "name": "briefingWakeEvents",
+      "file": "internal/keystone/keystone.go",
+      "line": 375,
+      "signature": "func briefingWakeEvents(evs []WakeEvent) string",
+      "summary": "简报「本次唤醒事件」段；重建回合只带这一段（不带旧会话字面席位）。"
     }
   },
   "nodesModified": {
@@ -856,13 +1189,301 @@
       "order": 1,
       "name": "LedgerClient",
       "file": "internal/collab/client/client.go",
-      "line": 36,
-      "signature": "type LedgerClient interface {\n\t// GetCard 读卡（含 driver_session 绑定投影与终态判定所需字段）。\n\tGetCard(id string) (proto.Card, error)\n\t// ListActiveCards 列项目范围内「已开始未结束」的卡（成员派生规则的输入；\n\t// project 空 = 跨项目）。Status ∉ {已完成, 终止} 即在列。\n\tListActiveCards(project string) ([]proto.Card, error)\n\t// ListAllCards 列项目范围内全部卡（含终态与并入成员）：账本\n\t// ListCards{IncludeTerminal:true} 的直通镜像（B156.2 岔口一方案甲还债\n\t// 直通）。终态房间「沉底可列」与并入只读判定（Following 非空）的唯一\n\t// 枚举源。注意 Following 只在列表方法上有值：GetCard 走单卡读、不派生\n\t// 跟随态，恒为空串。\n\tListAllCards(project string) ([]proto.Card, error)\n\t// RecordRoomMessage 发布房间消息事件（卡房间 cardID=卡号；群级传空串）。\n\tRecordRoomMessage(cardID string, msg proto.RoomMessage, actor string) (int64, error)\n\t// RecordMessageConsumed 落恰好一次的消费标记（幂等由账本事务保证）。\n\tRecordMessageConsumed(cardID string, msgSeq int64, consumer string) error\n\t// EventsFromAsc 升序游标读事件（cardIDs 空 = 全流含群级无卡事件）。\n\tEventsFromAsc(cardIDs []string, fromSeq int64, limit int) ([]proto.LedgerEvent, error)\n\t// EventsFromAscContext 供 HTTP 会话读取在客户端断开时取消事件流查询。\n\tEventsFromAscContext(ctx context.Context, cardIDs []string, fromSeq int64, limit int) ([]proto.LedgerEvent, error)\n\t// RoomMessagesBeforeContext 只读指定房间最近消息；beforeSeq 为排他上界，limit 必须为正。\n\tRoomMessagesBeforeContext(ctx context.Context, roomID string, beforeSeq int64, limit int) ([]proto.LedgerEvent, error)\n\t// RoomMessageSnapshotsContext 批量返回目标 room 最新消息、最大 created_at 与给定 seq 水位之后的消息行数。\n\t// 房间身份按 RoomIDOf 语义解析：card_id 优先，无卡事件才取 payload.room；不解释 member/unread。\n\tRoomMessageSnapshotsContext(ctx context.Context, afterByRoom map[string]int64) ([]RoomMessageSnapshot, error)\n\t// SessionProjectionEventsContext 返回单会话结构事件及调用方给定当前成员卡上的投影事件。\n\tSessionProjectionEventsContext(ctx context.Context, sessionID string, cardIDs []string) ([]proto.LedgerEvent, error)\n\t// LatestNeedsEventsContext 返回每张指定卡最新一条 needs_human/needs_cleared 事实。\n\tLatestNeedsEventsContext(ctx context.Context, cardIDs []string) ([]proto.LedgerEvent, error)\n\t// --- B409 U5 收件箱限域读（recipient-address 候选；U4/U5 seam 清点见\n\t// internal/ledger/message_candidates.go 文件头——与 U4 的范围投影读无共同方法）---\n\t// MentionCandidatesContext 读一页 mentions 精确含 member 的 room_message 候选\n\t// 超集。roomID 非空时限房间（SameRoom 的 SQL 超集：挂卡行按 card_id、无卡行\n\t// 按 payload.room——SameRoom 权威判定仍由调用方执行）；cardlessOnly 只取无卡\n\t// 行（Pending 群级源）；afterSeq 排他；limit 必须 >0。kind/by_system 不在账本\n\t// 过滤——裁决在 collab。\n\tMentionCandidatesContext(ctx context.Context, member, roomID string, cardlessOnly bool, afterSeq int64, limit int) ([]proto.LedgerEvent, error)\n\t// CardRoomUserMessagesContext 读给定卡集合上 kind=user 的房间消息行（Pending\n\t// 第二源）。cardIDs 空返回空集；块间各自升序，跨源归并排序由调用方负责。\n\tCardRoomUserMessagesContext(ctx context.Context, cardIDs []string, afterSeq int64, limit int) ([]proto.LedgerEvent, error)\n\t// ConsumedMessageSeqsContext 读 consumer 已消费的 message_seq 集合（载荷\n\t// message_seq/consumer 精确匹配为权威）。afterSeq 是安全上界：标记事件 seq\n\t// 必大于被标记消息 seq，故不会漏掉 message_seq>afterSeq 的相关标记。\n\tConsumedMessageSeqsContext(ctx context.Context, consumer string, afterSeq int64) ([]int64, error)\n\t// EventBySeq 按全局 seq 点读单条事件（Consume 定位消息所属卡的限域替身）；\n\t// ok=false 表示 seq 不存在。\n\tEventBySeq(seq int64) (proto.LedgerEvent, bool, error)\n\t// --- B358 会话（群）域账本能力 ---\n\t// CreateSession 建一场会话（群），返回带分配 id 的会话本体。\n\tCreateSession(title, owner, actor string) (proto.Session, error)\n\t// GetSession 读单会话；不存在返回错误（由组装点翻译为 ErrNoRoom）。\n\tGetSession(id string) (proto.Session, error)\n\t// ListSessions 列全部会话（含归档），按创建序。\n\tListSessions() ([]proto.Session, error)\n\t// ArchiveSession 显式归档会话；归档后只读，幂等。\n\tArchiveSession(id, actor string) error\n\t// JoinCardToSession 把卡拉进会话；卡已属其它会话时返回错误。\n\tJoinCardToSession(sessionID, cardID, actor string) error\n\t// LeaveCardToSession 把卡移出会话；幂等。\n\tLeaveCardToSession(sessionID, cardID, actor string) error\n\t// SessionOfCard 返回该卡当前所属会话 id；不属于任何会话返回空串。\n\tSessionOfCard(cardID string) (string, error)\n\t// AddSessionMember 把一个显式成员（人或主 agent 外部会话身份）记入会话。\n\tAddSessionMember(sessionID, identity, actor string) error\n\t// SessionResident 读会话房间的驻场者登记（B435 D5，一房间至多一名）；ok=false 表示\n\t// 无驻场者（不是错误）。匹配函数的默认收件人与驻场者地址解析只经它读驻场者。\n\tSessionResident(sessionID string) (proto.SessionResident, bool, error)\n\t// BindDriver 绑定/换绑（expect=CAS 前值；实现侧落 EvDriverTakeover 审计）。\n\tBindDriver(id, session, carrier, expect string) error\n\t// DriverLease 读绑定者活性租约：过期时刻 + 行是否存在。不过滤过期，\n\t// 活性判定由调用方按同一时钟做。\n\tDriverLease(session string) (time.Time, bool, error)\n}",
+      "line": 46,
+      "signature": "type LedgerClient interface",
       "summary": "LedgerClient 会话子系统消费账本能力的唯一通道。方法集与契约文档 §3.4 一一对应；扩方法先回 contract 节点。",
       "modelKind": "dto"
+    },
+    "n_agentd_coordinatorRunner_Resume": {
+      "kind": "func",
+      "container": "k_agentd_coordinatorRunner",
+      "order": 2,
+      "name": "coordinatorRunner.Resume",
+      "file": "internal/agentd/server.go",
+      "line": 1515,
+      "signature": "func (r coordinatorRunner) Resume(ref keysclient.SessionRef, prompt string) (keysclient.TurnResult, error)",
+      "params": [
+        [
+          "ref",
+          "keysclient.SessionRef",
+          ""
+        ],
+        [
+          "prompt",
+          "string",
+          ""
+        ]
+      ],
+      "returns": "keysclient.TurnResult, error"
+    },
+    "n_agentd_coordinatorRunner_Launch": {
+      "kind": "func",
+      "container": "k_agentd_coordinatorRunner",
+      "order": 1,
+      "name": "coordinatorRunner.Launch",
+      "file": "internal/agentd/server.go",
+      "line": 1477,
+      "signature": "func (r coordinatorRunner) Launch(spec keysclient.SessionSpec, prompt string) (keysclient.TurnResult, error)",
+      "params": [
+        [
+          "spec",
+          "keysclient.SessionSpec",
+          ""
+        ],
+        [
+          "prompt",
+          "string",
+          ""
+        ]
+      ],
+      "returns": "keysclient.TurnResult, error"
+    },
+    "n_opencode_Coordinator_Resume": {
+      "kind": "func",
+      "container": "k_opencode_Coordinator",
+      "order": 2,
+      "name": "Coordinator.Resume",
+      "file": "internal/executor/opencode/coordinator.go",
+      "line": 41,
+      "signature": "func (c *Coordinator) Resume(ctx context.Context, ref executor.CoordSessionRef, prompt string) (executor.CoordTurnResult, error)",
+      "params": [
+        [
+          "ctx",
+          "context.Context",
+          ""
+        ],
+        [
+          "ref",
+          "executor.CoordSessionRef",
+          ""
+        ],
+        [
+          "prompt",
+          "string",
+          ""
+        ]
+      ],
+      "returns": "executor.CoordTurnResult, error"
+    },
+    "m_executor_CoordSessionRef": {
+      "kind": "model",
+      "container": "k_executor_model",
+      "order": 21,
+      "name": "CoordSessionRef",
+      "file": "internal/executor/coordinator.go",
+      "line": 39,
+      "signature": "type CoordSessionRef struct",
+      "summary": "CoordSessionRef 指向一个可 resume 的持久会话，字段与 keysclient.SessionRef 同形。",
+      "fields": [
+        [
+          "CLI",
+          "string",
+          ""
+        ],
+        [
+          "SessionID",
+          "string",
+          ""
+        ],
+        [
+          "Machine",
+          "string",
+          ""
+        ],
+        [
+          "HomeDir",
+          "string",
+          ""
+        ],
+        [
+          "Workdir",
+          "string",
+          ""
+        ],
+        [
+          "Model",
+          "string",
+          ""
+        ]
+      ],
+      "modelKind": "dto"
+    },
+    "m_keysclient_SessionRef": {
+      "kind": "model",
+      "container": "k_keysclient_model",
+      "order": 2,
+      "name": "SessionRef",
+      "file": "internal/keysclient/keysclient.go",
+      "line": 36,
+      "signature": "type SessionRef struct",
+      "summary": "SessionRef 指向一个可 resume 的持久会话。HomeDir/Workdir/Model 是续接环境： 会话文件落在隔离 HOME 里，丢掉它们 Resume 会在 agentd 默认 HOME 里找不到 session，每次唤醒都走重建（B299 真机）。",
+      "fields": [
+        [
+          "CLI",
+          "string",
+          ""
+        ],
+        [
+          "SessionID",
+          "string",
+          ""
+        ],
+        [
+          "Machine",
+          "string",
+          ""
+        ],
+        [
+          "HomeDir",
+          "string",
+          ""
+        ],
+        [
+          "Workdir",
+          "string",
+          ""
+        ],
+        [
+          "Model",
+          "string",
+          ""
+        ]
+      ],
+      "modelKind": "dto"
+    },
+    "n_keystone_Service_briefing": {
+      "kind": "func",
+      "container": "k_keystone_Service",
+      "order": 12,
+      "name": "Service.briefing",
+      "file": "internal/keystone/keystone.go",
+      "line": 391,
+      "signature": "func (s *Service) briefing(card string, evs []WakeEvent, room string) string",
+      "params": [
+        [
+          "card",
+          "string",
+          ""
+        ],
+        [
+          "evs",
+          "[]WakeEvent",
+          ""
+        ]
+      ],
+      "returns": "string",
+      "summary": "briefing 把开场评估要读的东西拼成回合简报：卡字段、基线新鲜度、本次积压 事件。以 ledger 为准不信记忆——每回合重读，天然幂等。"
+    },
+    "n_keystone_Service_Wake": {
+      "kind": "func",
+      "container": "k_keystone_Service",
+      "order": 2,
+      "name": "Service.Wake",
+      "file": "internal/keystone/keystone.go",
+      "line": 107,
+      "signature": "func (s *Service) Wake(ctx context.Context, card string, evs []WakeEvent, spec keysclient.SessionSpec) (RoundResult, error)",
+      "params": [
+        [
+          "ctx",
+          "context.Context",
+          ""
+        ],
+        [
+          "card",
+          "string",
+          ""
+        ],
+        [
+          "evs",
+          "[]WakeEvent",
+          ""
+        ],
+        [
+          "spec",
+          "keysclient.SessionSpec",
+          ""
+        ]
+      ],
+      "returns": "RoundResult, error",
+      "summary": "Wake 跑一个唤醒回合：同卡积压事件合并为一回合，先读账对齐现场（以 ledger 为准不信记忆），再为 coordinate 席位无头续会话送入开场简报。bind 席位属于 当前终端，不拥有可供 agentd 续接的会话，因此必须 no-op；空座和非法旧值也 不能被误判成可拉起的新机器人。resume 失败才进入重建四步，最终失败转等人。 spec 由组装点解析（小队 → LaunchAdmit → 载体）。它只补齐账本身份没有持久化 的承载环境，不决定席位来源。"
+    },
+    "n_keystone_Service_launchRound": {
+      "kind": "func",
+      "container": "k_keystone_Service",
+      "order": 11,
+      "name": "Service.launchRound",
+      "file": "internal/keystone/keystone.go",
+      "line": 307,
+      "signature": "func (s *Service) launchRound(card, extra string, spec keysclient.SessionSpec, rebuild bool) (RoundResult, error)",
+      "params": [
+        [
+          "card",
+          "string",
+          ""
+        ],
+        [
+          "extra",
+          "string",
+          ""
+        ],
+        [
+          "spec",
+          "keysclient.SessionSpec",
+          ""
+        ],
+        [
+          "rebuild",
+          "bool",
+          ""
+        ]
+      ],
+      "returns": "RoundResult, error",
+      "summary": "launchRound 用新载体承接同一协调者身份并绑定。spec 由组装点解析后传入 （协调者小队 → LaunchAdmit → Binding → Carrier 读 HomeDir，契约 §15 澄清 2）， 不再自造空 spec——骨架期忽略入参的欠账已补齐，防空 spec 回潮。重建四步的 输入由开场简报携带：读卡 → 会话史（账本事件流）→ timeline → 仓内文档指针。"
+    },
+    "n_collab_Service_sessionMembers": {
+      "kind": "func",
+      "container": "k_collab_Service",
+      "order": 26,
+      "name": "Service.sessionMembers",
+      "file": "internal/collab/sessions.go",
+      "line": 434,
+      "signature": "func (s *Service) sessionMembers(session proto.Session, byCard map[string]proto.Card) ([]proto.SessionMember, error)",
+      "params": [
+        [
+          "session",
+          "proto.Session",
+          ""
+        ],
+        [
+          "byCard",
+          "map[string]proto.Card",
+          ""
+        ]
+      ],
+      "returns": "[]proto.SessionMember",
+      "summary": "sessionMembers 派生会话成员：显式成员（人/主 agent）+ 会话内各卡的当前席位。 状态只报可证实的——有未过期租约报 working/listening，否则报 last_active； 空座报 empty。不报「在线」（外部会话随时可能被关掉）。"
+    },
+    "n_collab_Service_MessageWakeTargets": {
+      "kind": "func",
+      "container": "k_collab_Service",
+      "order": 21,
+      "name": "Service.MessageWakeTargets",
+      "file": "internal/collab/sessions.go",
+      "line": 290,
+      "signature": "func (s *Service) MessageWakeTargets(msg proto.RoomMessage) ([]string, error)",
+      "params": [
+        [
+          "msg",
+          "proto.RoomMessage",
+          ""
+        ]
+      ],
+      "returns": "[]string, error",
+      "summary": "MessageWakeTargets 是 WakeTargets 的消息级半边（已在手解析好 replyAuthor 的 调用方用它）。唤醒路径只认它——签名里没有成员集合，扇出形状写不出来。"
     }
   },
   "nodesDeleted": [
+    "n_agentd_resumeTurnRequest",
     "n_collab_Service_AddressesCard"
   ],
   "edgesAdded": [
@@ -901,10 +1522,6 @@
     [
       "n_ledger_Store_ensureSchema",
       "n_ledger_Store_migrateDriverMode"
-    ],
-    [
-      "n_ledger_Store_SeatMessageCandidatesContext",
-      "n_ledger_Store_seatCandidatesUnaddressedBranchSQL"
     ],
     [
       "n_ledger_Store_SessionResident",
@@ -1053,6 +1670,198 @@
     [
       "n_cmd_cardWaitRoomMatch",
       "n_collab_Service_Matches"
+    ],
+    [
+      "n_ledger_Store_SitResident",
+      "n_ledger_Store_mutate"
+    ],
+    [
+      "n_ledger_Store_SitResident",
+      "n_ledger_getSessionTx"
+    ],
+    [
+      "n_ledger_Store_SitResident",
+      "m_ledger_SessionResident"
+    ],
+    [
+      "n_ledger_Store_StandResident",
+      "n_ledger_Store_mutate"
+    ],
+    [
+      "n_ledger_Store_addressCandidatesSQL",
+      "n_ledger_Store_seatCandidatesUnaddressedBranchSQL"
+    ],
+    [
+      "n_ledger_Store_SeatMessageCandidatesContext",
+      "n_ledger_Store_addressCandidatesSQL"
+    ],
+    [
+      "n_ledger_Store_ResidentMessageCandidatesContext",
+      "n_ledger_Store_addressCandidatesSQL"
+    ],
+    [
+      "n_ledger_api_Facade_SitResident",
+      "n_ledger_Store_SitResident"
+    ],
+    [
+      "n_ledger_api_Facade_SitResident",
+      "n_ledger_api_translateResidentErr"
+    ],
+    [
+      "n_ledger_api_Facade_StandResident",
+      "n_ledger_Store_StandResident"
+    ],
+    [
+      "n_ledger_api_Facade_StandResident",
+      "n_ledger_api_translateResidentErr"
+    ],
+    [
+      "n_collab_Service_SitResident",
+      "n_collab_room_IsSessionRoom"
+    ],
+    [
+      "n_collab_Service_SitResident",
+      "n_proto_ValidateMemberIdentity"
+    ],
+    [
+      "n_collab_Service_SitResident",
+      "n_collab_mapResidentError"
+    ],
+    [
+      "n_collab_Service_StandResident",
+      "n_collab_room_IsSessionRoom"
+    ],
+    [
+      "n_collab_Service_StandResident",
+      "n_collab_mapResidentError"
+    ],
+    [
+      "e_cli_session_sit",
+      "n_cmd_sessionSitCmd_RunE"
+    ],
+    [
+      "e_cli_session_stand",
+      "n_cmd_sessionStandCmd_RunE"
+    ],
+    [
+      "e_cli_session_wait",
+      "n_cmd_sessionWaitCmd_RunE"
+    ],
+    [
+      "n_cmd_sessionSitCmd_RunE",
+      "n_cmd_residentDesktopAddress"
+    ],
+    [
+      "n_cmd_sessionSitCmd_RunE",
+      "n_cmd_openRoomService"
+    ],
+    [
+      "n_cmd_sessionSitCmd_RunE",
+      "n_collab_Service_SitResident"
+    ],
+    [
+      "n_cmd_sessionSitCmd_RunE",
+      "n_cmd_residentNameHint"
+    ],
+    [
+      "n_cmd_sessionStandCmd_RunE",
+      "n_cmd_openRoomService"
+    ],
+    [
+      "n_cmd_sessionStandCmd_RunE",
+      "n_collab_Service_StandResident"
+    ],
+    [
+      "n_cmd_sessionStandCmd_RunE",
+      "n_cmd_residentIdentityOr"
+    ],
+    [
+      "n_cmd_residentDesktopAddress",
+      "n_proto_ValidateDesktopSessionID"
+    ],
+    [
+      "n_cmd_residentDesktopAddress",
+      "n_cmd_currentSeatIdentity"
+    ],
+    [
+      "n_cmd_residentDesktopAddress",
+      "n_proto_ParseSeatIdentity"
+    ],
+    [
+      "n_cmd_residentDesktopAddress",
+      "n_cmd_residentMailboxKeyOK"
+    ],
+    [
+      "n_cmd_residentIdentityOr",
+      "n_ledger_Store_SessionResident"
+    ],
+    [
+      "n_cmd_residentNameHint",
+      "n_cmd_residentIdentityOr"
+    ],
+    [
+      "n_cmd_sessionWaitCmd_RunE",
+      "n_cmd_runSessionWait"
+    ],
+    [
+      "n_cmd_runSessionWait",
+      "n_cmd_openRoomService"
+    ],
+    [
+      "n_cmd_runSessionWait",
+      "n_ledger_Store_SessionResident"
+    ],
+    [
+      "n_cmd_runSessionWait",
+      "n_cmd_sessionWaitRun"
+    ],
+    [
+      "n_cmd_sessionWaitRun",
+      "n_proto_DeliveryCursorKey"
+    ],
+    [
+      "n_cmd_sessionWaitRun",
+      "n_cmd_sessionWaitPage"
+    ],
+    [
+      "n_cmd_sessionWaitRun",
+      "n_cmd_sessionWaitResidentUnchanged"
+    ],
+    [
+      "n_cmd_sessionWaitPage",
+      "n_ledger_Store_ResidentMessageCandidatesContext"
+    ],
+    [
+      "n_cmd_sessionWaitPage",
+      "n_cmd_sessionWaitMatch"
+    ],
+    [
+      "n_cmd_sessionWaitMatch",
+      "n_collab_Service_Matches"
+    ],
+    [
+      "n_cmd_sessionWaitResidentUnchanged",
+      "n_ledger_Store_SessionResident"
+    ],
+    [
+      "n_agentd_coordinatorRunner_Resume",
+      "n_agentd_seatEnv"
+    ],
+    [
+      "n_keystone_Service_Wake",
+      "n_keystone_briefingRoomResume"
+    ],
+    [
+      "n_keystone_Service_Wake",
+      "n_keystone_briefingWakeEvents"
+    ],
+    [
+      "n_keystone_briefingRoomResume",
+      "n_keystone_briefingSessionSend"
+    ],
+    [
+      "n_keystone_Service_briefing",
+      "n_keystone_briefingWakeEvents"
     ]
   ],
   "edgesDeleted": [

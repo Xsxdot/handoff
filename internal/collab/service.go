@@ -220,13 +220,22 @@ func (s *Service) Send(roomID string, msg proto.RoomMessage, actor string) (int6
 }
 
 // sessionWriters 组装会话房间的书写者集：显式成员（人与主 agent 的外部会话
-// 身份，P4 统一记法）∪ 会话内各卡的当前席位（席位权威在 cards.driver_session，
-// 换绑后随卡走——breakdown 缺陷族 8 的「换绑剥权」由集合重建天然获得）。空座
-// 卡不产生书写者。账本读失败向上传播（不伪装成 ErrNotWriter——一次读错不该
-// 被说成「你不是成员」，缺陷族 2）。
+// 身份，P4 统一记法）∪ 房间驻场者（B435 R Q4 甲，契约 §5 B358 条 14 修订：驻场者
+// 收到要能回复；stand 后集合重建即剥权）∪ 会话内各卡的当前席位（席位权威在
+// cards.driver_session，换绑后随卡走——breakdown 缺陷族 8 的「换绑剥权」由集合重建
+// 天然获得）。空座卡不产生书写者。账本读失败向上传播（不伪装成 ErrNotWriter——一次
+// 读错不该被说成「你不是成员」，缺陷族 2）。
 func (s *Service) sessionWriters(session proto.Session) ([]string, error) {
-	writers := make([]string, 0, len(session.Members)+len(session.Cards))
+	writers := make([]string, 0, len(session.Members)+len(session.Cards)+1)
 	writers = append(writers, session.Members...)
+	resident, seated, err := s.lc.SessionResident(session.ID)
+	if err != nil {
+		log().Warn("会话书写者集组装失败：读驻场者", "session", session.ID, "cause", err)
+		return nil, err
+	}
+	if seated {
+		writers = append(writers, resident.Identity)
+	}
 	if len(session.Cards) == 0 {
 		return writers, nil
 	}

@@ -219,6 +219,74 @@ func (s *Store) seatCandidatesUnaddressedBranchSQL(session string, fromSeq, toSe
 	return query, append(args, session)
 }
 
+// addressCandidatesSQL 组装地址候选读的三支 UNION 查询（含末尾 `ORDER BY seq ASC LIMIT ?`，
+// 返回的 args 不含 limit——调用方 append）：identity 身份 @ / identity 当前席位卡 @ /
+// reply→identity 作者 ∪ session 房间内无 @ 的无卡 room_message。席位地址（C-148）与驻场者地址
+// （C-149）共用同一份 SQL：对驻场者身份（user:/agent:）「当前席位卡 @」子支恒不命中（席位记法
+// 是 cli:<cli>#<sid>），三支恰为 C-149 的超集。单独抽出供执行计划测试取证。
+func (s *Store) addressCandidatesSQL(identity, session string, fromSeq, toSeq int64) (string, []any) {
+	mentionsQuery, mentionsArgs := s.sessionCandidatesBranchSQL(identity, fromSeq, toSeq, "mentions")
+	replyQuery, replyArgs := s.sessionCandidatesBranchSQL(identity, fromSeq, toSeq, "reply")
+	unaddressedQuery, unaddressedArgs := s.seatCandidatesUnaddressedBranchSQL(session, fromSeq, toSeq)
+	query := mentionsQuery + `
+		UNION
+		` + replyQuery + `
+		UNION
+		` + unaddressedQuery + `
+		ORDER BY seq ASC LIMIT ?`
+	return query, append(append(mentionsArgs, replyArgs...), unaddressedArgs...)
+}
+
+// ResidentMessageCandidatesContext 读一页驻场者地址的会话消息候选（B435 R，C-149–C-151）：
+// identity 身份 @ ∪ reply→identity 作者 ∪ session 房间内无 @ 的无卡 room_message，seq 升序、
+// UNION 去重。SQL 与 SeatMessageCandidatesContext 同一份（addressCandidatesSQL）；另立入口
+// 只为让 `session wait` 的候选读日志保持既有「会话候选读完成」口径（Info，带关联 id——
+// B409.6 诊断契约，TestSessionWaitDiagOperationIDCorrelatesToStore 锁），不与 card wait 的
+// 席位口径（Debug）混用。fromSeq 排他；toSeq 包含（<=0 无上界）；limit 须在
+// (0, sessionCandidatesLimitMax]。只枚举超集，命中只由 collab.Service.Matches 裁决。
+func (s *Store) ResidentMessageCandidatesContext(ctx context.Context, identity, session string, fromSeq, toSeq int64, limit int) ([]Event, error) {
+	if identity == "" || session == "" {
+		return nil, fmt.Errorf("会话候选读需要驻场者身份与会话（identity=%q session=%q）", identity, session)
+	}
+	if limit <= 0 || limit > sessionCandidatesLimitMax {
+		return nil, fmt.Errorf("会话候选读 limit 必须在 (0,%d]: %d", sessionCandidatesLimitMax, limit)
+	}
+	started := time.Now()
+	query, args := s.addressCandidatesSQL(identity, session, fromSeq, toSeq)
+	args = append(args, limit)
+	if err := ctx.Err(); err != nil {
+		log().Info("会话候选读已取消", append(diag.Attrs(ctx), "identity", identity, "session", session,
+			"from_seq", fromSeq, "to_seq", toSeq,
+			"failed_stage", stageFailedStart, "error_class", readErrorClass(err, stageFailedStart), "cause", err)...)
+		return nil, err
+	}
+	var out []Event
+	stage, err := s.timedReadQuery(ctx, query, args, func(rows *sql.Rows) (int, int64, error) {
+		events, scanErr := scanProjectionEvents(rows)
+		if scanErr != nil {
+			return 0, 0, scanErr
+		}
+		out = events
+		return len(events), payloadBytesOf(events), nil
+	})
+	if err != nil {
+		class := readErrorClass(err, stage.failedStage)
+		level := log().Warn
+		if class == "canceled" || class == "deadline_exceeded" {
+			level = log().Info
+		}
+		level("会话候选读 SQL 失败", append(diag.Attrs(ctx), "identity", identity, "session", session,
+			"from_seq", fromSeq, "to_seq", toSeq, "error_class", class, "failed_stage", stage.failedStage,
+			"pool_wait_ns", stage.poolWaitNs, "sql_call_ns", stage.sqlCallNs,
+			"elapsed_ns", time.Since(started).Nanoseconds(), "cause", err)...)
+		return nil, fmt.Errorf("读驻场者消息候选: %w", err)
+	}
+	log().Info("会话候选读完成", append(append(append(diag.Attrs(ctx), "identity", identity, "session", session,
+		"from_seq", fromSeq, "to_seq", toSeq, "rows_returned", len(out)), stage.logAttrs()...),
+		"elapsed_ns", time.Since(started).Nanoseconds())...)
+	return out, nil
+}
+
 // SeatMessageCandidatesContext 读一页席位地址的会话消息候选（B435 C-148/C-151）：既有两支
 // （identity 身份 @ / identity 当前席位卡 @ / reply→identity 作者）∪ session 房间内无 @ 的
 // 无卡 room_message，seq 升序、UNION 去重。fromSeq 排他；toSeq 包含（<=0 无上界）；limit
@@ -233,16 +301,8 @@ func (s *Store) SeatMessageCandidatesContext(ctx context.Context, identity, sess
 		return nil, fmt.Errorf("席位候选读 limit 必须在 (0,%d]: %d", sessionCandidatesLimitMax, limit)
 	}
 	started := time.Now()
-	mentionsQuery, mentionsArgs := s.sessionCandidatesBranchSQL(identity, fromSeq, toSeq, "mentions")
-	replyQuery, replyArgs := s.sessionCandidatesBranchSQL(identity, fromSeq, toSeq, "reply")
-	unaddressedQuery, unaddressedArgs := s.seatCandidatesUnaddressedBranchSQL(session, fromSeq, toSeq)
-	query := mentionsQuery + `
-		UNION
-		` + replyQuery + `
-		UNION
-		` + unaddressedQuery + `
-		ORDER BY seq ASC LIMIT ?`
-	args := append(append(append(mentionsArgs, replyArgs...), unaddressedArgs...), limit)
+	query, args := s.addressCandidatesSQL(identity, session, fromSeq, toSeq)
+	args = append(args, limit)
 	if err := ctx.Err(); err != nil {
 		log().Info("席位候选读已取消", append(diag.Attrs(ctx), "identity", identity, "session", session,
 			"from_seq", fromSeq, "to_seq", toSeq, "cause", err)...)
