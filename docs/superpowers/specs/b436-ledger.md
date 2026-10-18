@@ -47,3 +47,8 @@
 ### 提交
 
 - `git commit`（spec r0 + 台账）→ `d97af78e docs(b436): spec r0 删除代码图消费侧功能，待用户批准`
+
+### 批准
+
+- 2026-10-18 用户经主会话（local_4e712e78）回复「你推进吧，不用再问我了」：spec r0 与六项自主决定一并批准；授权 plan→implement→review→finish 一路推进、finish 本地 `--no-ff` 合 main；只有破坏性不可逆或超出 B436 范围的决定才回问。批准判决已回写 spec 头部状态行。
+- 账本流 v14 已缩为六列；B436 钉 v13，按 v13 列序走到底，不 migrate。
