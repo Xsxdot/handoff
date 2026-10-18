@@ -263,6 +263,24 @@ func (f *Facade) StandResident(sessionID, identity string) error {
 	return translateResidentErr(f.st.StandResident(sessionID, identity))
 }
 
+// EnsureProjectRoom 取项目的项目房间，不存在则创建（B435 O1）：直通 Store.EnsureProjectRoom 并映射
+// wire 会话。账本 ErrBadState（入参为空）翻成 client.ErrBadState；其余错误原样透传。
+func (f *Facade) EnsureProjectRoom(project, owner, actor string) (proto.Session, bool, error) {
+	session, created, err := f.st.EnsureProjectRoom(project, owner, actor)
+	if err != nil {
+		if errors.Is(err, ledger.ErrBadState) {
+			return proto.Session{}, false, fmt.Errorf("%w（%s）", client.ErrBadState, err.Error())
+		}
+		return proto.Session{}, false, err
+	}
+	return sessionWire(session), created, nil
+}
+
+// SessionProject 读会话绑定的项目名（直通 Store.SessionProject）；非项目房间返回空串。
+func (f *Facade) SessionProject(sessionID string) (string, error) {
+	return f.st.SessionProject(sessionID)
+}
+
 // translateResidentErr 把驻场者写面的账本哨兵翻成 collab/client 侧哨兵，保留原错误文案作上下文。
 func translateResidentErr(err error) error {
 	var sentinel error

@@ -223,8 +223,11 @@ func (s *Service) Send(roomID string, msg proto.RoomMessage, actor string) (int6
 // 身份，P4 统一记法）∪ 房间驻场者（B435 R Q4 甲，契约 §5 B358 条 14 修订：驻场者
 // 收到要能回复；stand 后集合重建即剥权）∪ 会话内各卡的当前席位（席位权威在
 // cards.driver_session，换绑后随卡走——breakdown 缺陷族 8 的「换绑剥权」由集合重建
-// 天然获得）。空座卡不产生书写者。账本读失败向上传播（不伪装成 ErrNotWriter——一次
-// 读错不该被说成「你不是成员」，缺陷族 2）。
+// 天然获得）。空座卡不产生书写者。项目房间（SessionProject 非空）另并入同项目各卡的
+// 当前席位（B435 拆解 §2.3 R-K1 追加裁决 (a′)）：一卡同时只属一个会话，协调者的卡挂在
+// 自己的工作房间、永远不在项目房间里，不扩集就无法兑现 spec D8「协调者自己 session send
+// 项目房间」；非项目房间不扩，他项目卡席位仍被拒。账本读失败向上传播（不伪装成
+// ErrNotWriter——一次读错不该被说成「你不是成员」，缺陷族 2）。
 func (s *Service) sessionWriters(session proto.Session) ([]string, error) {
 	writers := make([]string, 0, len(session.Members)+len(session.Cards)+1)
 	writers = append(writers, session.Members...)
@@ -236,7 +239,12 @@ func (s *Service) sessionWriters(session proto.Session) ([]string, error) {
 	if seated {
 		writers = append(writers, resident.Identity)
 	}
-	if len(session.Cards) == 0 {
+	project, err := s.lc.SessionProject(session.ID)
+	if err != nil {
+		log().Warn("会话书写者集组装失败：读项目绑定", "session", session.ID, "cause", err)
+		return nil, err
+	}
+	if len(session.Cards) == 0 && project == "" {
 		return writers, nil
 	}
 	cards, err := s.lc.ListAllCards("")
@@ -252,6 +260,17 @@ func (s *Service) sessionWriters(session proto.Session) ([]string, error) {
 		if c, ok := byID[cardID]; ok && c.DriverSession != "" {
 			writers = append(writers, c.DriverSession)
 		}
+	}
+	if project != "" {
+		projectSeats := 0
+		for _, c := range cards {
+			if c.Project == project && c.DriverSession != "" {
+				writers = append(writers, c.DriverSession)
+				projectSeats++
+			}
+		}
+		log().Debug("项目房间书写者集已并入同项目卡席位", "session", session.ID,
+			"project", project, "seats", projectSeats)
 	}
 	return writers, nil
 }

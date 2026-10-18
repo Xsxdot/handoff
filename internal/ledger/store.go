@@ -386,6 +386,12 @@ func ddlStatements(pg bool) []string {
 				cli_session TEXT NOT NULL DEFAULT '',
 				machine TEXT NOT NULL DEFAULT '',
 				sat_at TIMESTAMPTZ NOT NULL)`,
+			// B435 O1 项目房间绑定（D6）：project 主键兑现「每项目至多一场」，session 唯一兑现
+			// 「每场至多一个项目」（C-513）——库层兑现，无先查后写窗口。
+			`CREATE TABLE IF NOT EXISTS project_rooms (
+				project TEXT PRIMARY KEY,
+				session TEXT NOT NULL UNIQUE REFERENCES sessions(id),
+				created_at TIMESTAMPTZ NOT NULL)`,
 			`CREATE TABLE IF NOT EXISTS card_prefixes (
 				project TEXT PRIMARY KEY, prefix TEXT NOT NULL UNIQUE)`,
 			`CREATE TABLE IF NOT EXISTS registry (
@@ -571,6 +577,10 @@ func ddlStatements(pg bool) []string {
 				cli_session TEXT NOT NULL DEFAULT '',
 				machine TEXT NOT NULL DEFAULT '',
 				sat_at TEXT NOT NULL)`,
+			`CREATE TABLE IF NOT EXISTS project_rooms (
+				project TEXT PRIMARY KEY,
+				session TEXT NOT NULL UNIQUE REFERENCES sessions(id),
+				created_at TEXT NOT NULL)`,
 			`CREATE TABLE IF NOT EXISTS registry (
 				kind TEXT NOT NULL, id TEXT NOT NULL, version INTEGER NOT NULL,
 				seq INTEGER NOT NULL, body TEXT NOT NULL,
