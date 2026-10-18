@@ -1,12 +1,11 @@
-// desktop_coordinator.go —— B434 Claude 桌面端会话当协调者的跨进程 wire 词表与 DTO。
+// desktop_coordinator.go —— Claude 桌面端信箱与 continue 深链的跨进程 wire 词表（B434 引入）。
 //
-// 职责：集中定义控制面、CLI、控制台与 Claude Code mod 之间共用的字面量
-// （信箱目录、来信标记、深链形状、桌面端会话 id 前缀、拉起来源词表）与
-// 两个 HTTP DTO。契约见 docs/superpowers/specs/b434-contract.md §3。
+// 职责：集中定义控制面、CLI 与 Claude Code mod 之间共用的字面量（信箱目录、来信标记、
+// continue 深链前缀、桌面端会话 id 前缀与形状校验）。契约见 docs/superpowers/specs/b434-contract.md
+// §3 保留条；B435 X 已删 new 深链字面量、拉起来源词表与四个拉起器/材料 DTO（b435-contract.md §7）。
 //
-// 边界：本文件只有常量与类型；写信箱、发深链、拼简报等行为在
-// internal/agentd 与 cmd 落码。mod 是独立交付物，
-// 不 import 本包——两侧字面量一致性由金样本测试锁定。
+// 边界：本文件只有常量与校验函数；写信箱、发深链等行为在 internal/agentd 落码。mod 是独立
+// 交付物，不 import 本包——两侧字面量一致性由金样本测试锁定。
 package proto
 
 import (
@@ -14,8 +13,8 @@ import (
 	"strings"
 )
 
-// DesktopWakeMarker 是 handoff 发给桌面端会话的一切文本（深链 q 简报、信箱
-// 来信）的首个标记。mod 只对以它开头的预填草稿代按发送；项目 CLAUDE.md 的
+// DesktopWakeMarker 是 handoff 发给桌面端会话的一切文本（信箱来信）的
+// 首个标记。mod 只对以它开头的预填草稿代按发送；项目 CLAUDE.md 的
 // 常设授权文本也以它识别 handoff 来信。
 const DesktopWakeMarker = "[handoff]"
 
@@ -26,63 +25,9 @@ const DesktopWakeDirRel = ".handoff/desktop-wake"
 // 与 CLI 会话 id（CLAUDE_CODE_SESSION_ID）是两个不同的值。
 const DesktopSessionPrefix = "local_"
 
-// ClaudeNewSessionURLPrefix / ClaudeContinueURLPrefix 是 Claude 桌面端两条深链
-// 的固定前缀（外部现实，见 spec「深链 wire」）。new 带 folder 与 q 两个
-// encodeURIComponent 编码的参数；continue 只带 session。
-const (
-	ClaudeNewSessionURLPrefix = "claude://code/new?"
-	ClaudeContinueURLPrefix   = "claude://code/continue?session="
-)
-
-// ClaudeNewQMaxChars 是 new 深链 q 参数的上限（桌面端 app 包读数 14,336 字符）。
-// 超限拒绝，不截断。
-const ClaudeNewQMaxChars = 14336
-
-// SeatDesktopVia* 是桌面端席位的拉起来源词表，进 seat_desktop_set 事件载荷，
-// 供卡 timeline 区分「卡页拉起 / 拉起器代开 / 手填」。
-const (
-	SeatDesktopViaPage     = "page"
-	SeatDesktopViaLauncher = "launcher"
-	SeatDesktopViaManual   = "manual"
-)
-
-// DesktopLaunchMaterial 是「用 Claude Code 坐下」的拉起材料
-// （GET /api/cards/{id}/coordinator/desktop-launch 的 200 响应体）。同一份材料
-// 服务深链、复制兜底与拉起器来信，前端不得自行拼简报。
-type DesktopLaunchMaterial struct {
-	Card   string `json:"card"`   // 卡号
-	Folder string `json:"folder"` // 项目在本 agentd 登记的绝对根目录
-	Brief  string `json:"brief"`  // 人尺度简报正文，以 DesktopWakeMarker 开头
-	// Launcher 是卡所属项目已登记拉起器的桌面端会话 id（B434 P4）；空串 = 未登记，
-	// 控制台据此决定是否显示「让拉起器代开」。omitempty：未登记时不出键。
-	Launcher string `json:"launcher,omitempty"`
-}
-
-// DesktopLauncherOpenResp 是 POST /api/cards/{id}/coordinator/desktop-launch
-// （拉起器代开）的 200 响应体：信已投进拉起器信箱且 continue 深链已发出。
-type DesktopLauncherOpenResp struct {
-	Launcher  string `json:"launcher"`   // 拉起器的桌面端会话 id（local_…）
-	Machine   string `json:"machine"`    // 拉起器登记的机器；空串 = 本机
-	HandledBy string `json:"handled_by"` // 实际写信、发深链的机器名
-}
-
-// DesktopDeliverReq 是 agentd→agentd 的拉起器投递请求（POST /api/desktop/deliver，
-// P3=A）：收件机按 Card 用**自己登记的**项目位置解析 Folder、渲染拉起器来信，
-// 写进 CLISession 的信箱并对 DesktopSession 发 continue 深链（r5：发起端只搬运
-// 「哪张卡」，不搬运信的正文——与拍板 D3「信在桌面端所在机渲染」同一原则）。
-type DesktopDeliverReq struct {
-	CLISession     string `json:"cli_session"`
-	DesktopSession string `json:"desktop_session"`
-	Card           string `json:"card"` // 卡号；收件机经共享账本读卡得 project/标题/基线/会话
-}
-
-// DesktopDeliverResp 是投递回执：Written 表示信已原子落盘，Opened 表示 continue
-// 深链已成功交给本机 opener。Written=true 且 Opened=false 是「信留在信箱」态。
-type DesktopDeliverResp struct {
-	HandledBy string `json:"handled_by"`
-	Written   bool   `json:"written"`
-	Opened    bool   `json:"opened"`
-}
+// ClaudeContinueURLPrefix 是 Claude 桌面端 continue 深链的固定前缀（外部现实，见 spec
+// 「深链 wire」）；只带 session 一个参数。
+const ClaudeContinueURLPrefix = "claude://code/continue?session="
 
 // ValidateDesktopSessionID 校验桌面端会话 id 形状：DesktopSessionPrefix 开头，
 // 余部非空且只含 [A-Za-z0-9-]。
