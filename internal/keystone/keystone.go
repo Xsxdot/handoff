@@ -343,6 +343,12 @@ func overlayResumeRef(ref keysclient.SessionRef, spec keysclient.SessionSpec) ke
 // 简报文本，不是机制：只约束协调者在房间里怎么说话。
 const briefingRoomTone = "房间里只说重点与结果，同事口吻；思考与工具调用留在自己会话。"
 
+// briefingAskOrganizer 是 push 简报里「向组织者提问」的句子（B435 R-K1 (a)、spec r4 D8，O1 plan Q13 甲）：
+// 协调者（席位身份，非人类作者）无 @ 的发言按判定表不寄任何人，问组织者必须显式 @ 其驻场身份。
+// 简报文本，不是机制。
+const briefingAskOrganizer = "要问组织者（项目房间驻场者）：先 `handoff project room <项目>` 取驻场者身份" +
+	"（输出里 kind=resident 那一行的 identity），发言时显式 `@<身份>`；不带 @ 的提问叫不醒任何人。"
+
 // briefingFirstRound 是 launch 回合（含重建）的首轮句（B435.2 R plan Q3 甲）：会话 id 在回合中
 // 才生成、席位在回合结束后才落，本轮不注入 HANDOFF 席位环境键，`session send` 必然被拒——
 // 明说「下一轮再说」，不让协调者照旧命令撞墙后自造身份。
@@ -391,7 +397,8 @@ func briefingWakeEvents(evs []WakeEvent) string {
 func (s *Service) briefing(card string, evs []WakeEvent, room string) string {
 	b := "你是本卡的机器协调者。**你是一次性回合**：没有交互窗口，本轮跑完即结束；" +
 		"下一次有事会被再次唤醒（续跑同一会话）。\n" + room +
-		"不适合现在推就在房间说明原因并结束本轮。" + briefingRoomTone + "\n\n## 本卡上下文\n\n- 卡号：" + card + "\n"
+		"不适合现在推就在房间说明原因并结束本轮。" + briefingRoomTone + briefingAskOrganizer +
+		"\n\n## 本卡上下文\n\n- 卡号：" + card + "\n"
 	if c, err := s.ledger.GetCard(card); err == nil {
 		b += "- 标题：" + c.Title + "\n"
 	}
