@@ -1,6 +1,6 @@
 # 机器身份收口：自名 + 全队共享设备表
 
-- 状态：草稿 r1，待用户批准（2026-10-18；r1 吸收协调会话约束：身份键稳定、可扩展）
+- 状态：**r1 已批准**（用户 2026-10-18「批准 spec r1，建卡进 plan」；r1 吸收协调会话约束：身份键稳定、可扩展）
 - 级别：**L3**（跨 config / ledger / ledgerstep / ledgermirror / agentd / scheduling / cmd 七个子系统的契约面，并动账本 schema）
 - 来源：账本镜像静默失效排查（2026-10-18，linux-01 本机派发、租约在 MacBook-Pro.local 时零 task_mirrored）
 - 台账：`docs/superpowers/specs/machine-identity-ledger.md`
