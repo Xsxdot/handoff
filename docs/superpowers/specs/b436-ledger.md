@@ -63,7 +63,21 @@
 
 ### 偏离与自主决定
 
-（占位，随进度补全；交回前完整）
+1. **`permgate_test.go:40` 改值不删行**：plan 写「删 `:40`」，但该行 `{"which", "which codegraph"}` 是 `which` id 的唯一用例；改为 `{"which", "which gofmt"}` 保住覆盖、去掉字面量。plan 授权「helper 的具体重构方式」之内，偏离的是删/改之别。
+2. **`pointer_gate_test.go` keystone 白名单条 `why` 去掉「target.json assembly 登记点」**：plan 只点了文件头 6-10 行；该 `why` 指向已删对象，按纪律 6「不留指向已删对象的注释」顺手改，注释措辞授权内。
+3. **`internal/discipline/platform.go:3` 职责注释「两条底线」→「三条底线」**：plan 未列；原注释与条目数本就不符（原四条写「两条」），删第 2 条后余三条，顺手对齐。注释措辞授权内。
+4. **`ProjectTree.tsx` 用户可见文案 mobile-nav-note「流程与代码图暂未适配移动端」→「流程暂未适配移动端」**（连带注释 `:1421,:1514`、`Shell.tsx:1633` 注释、`GitBranch` 图标 import 随之无引用删除）：plan 只点注释 `:149,:924,:1463`。该文案 B369.7 写「措辞逐字定死」，但保留会让控制台解释一个已不存在的入口；spec「控制台不新增任何提示」约束的是新增，这里是删词。**请审查确认**。
+5. **`Shell.test.tsx` 另三处断言 plan 未列**（`:698` 账本关闭用例、`:2500-2502` compact 用例、`:2515-2523` 桌面零漂移用例）：同文件内对「代码图」钮/菜单项的在场/缺席断言，删代码图断言、肯定对照改为相邻入口（「编辑项目位置」/「流程」），用例名同步。属 S1 判据「文件内无 `代码图` 字样」的必要动作。
+6. **roadmap `## 代码图数据债` 节内第四条「被依赖子系统的实现迁进标准结构」保留**：plan 写「删整节」，但该条主语是实现迁移/直调债清理，全文不提代码图，来源是 B156.3 spec §7.0；按 spec 判据「主语非代码图 → 留」。删掉标题与前三条后它自然落在紧邻其上的 `## 来自 B156.3 spec 定稿` 节末（即它引用的来源节），未另加标题。**请审查确认**。
+7. **roadmap plan 表「B383 节里的 diff 烙基线指纹 / codegraph CLI 内建扫描命令 / 重扫扫描配方」三条实际位于 `## 来自 B379 spec（2026-10-02）` 节**：按首行关键词定位命中即删，该节随之只剩标题，标题一并删（plan 规则）。plan 节名笔误，条目处置一致。
+8. **`b23317_boundary_test.go` 新注释初稿含字面量 `codegraph/target.json`**，第 9 步 S5 grep 命中后改为「代码图 target.json」。注释措辞授权内。
+9. **`mobile/go.sum` 去掉 `charter/graph v0.10.0` 两行**（plan 未列；spec 面 A 只点了 `desktop/go.sum`）：S5 grep 命中后 `cd mobile && go mod tidy`，diff 恰为这两行、无其它连带。性质与 `desktop/go.sum` 同；plan 禁区写「`mobile/` 源码（只改 README 一行）」，go.sum 不是源码，且是 tidy 产物而非手改。**请审查确认**。
+10. **S5 grep 用 `/usr/bin/grep`（BSD）而非 shell 里的 `grep`**：本会话 shell 的 `grep` 是 Claude Code 注入的 ugrep 垫片（`ARGV0=ugrep claude -G --ignore-files --hidden -I …`，见 shell snapshot），`--ignore-files` 在本仓会**整个跳过 `prototypes/*`**（加 `--no-ignore-files` 即与 BSD 一致），且输出路径无 `./` 前缀，plan 的 `grep -v '^\./(docs/|CHANGELOG\.md)'` 过滤因此失效。spec/plan 阶段的 grep 读数同样经此垫片，故漏掉 `prototypes/*` 各 fork 副本（见「待裁决」1）。两种口径的结果都记在第 9 步。
+11. **CMD1 第二次用 `env -u CLAUDE_CODE_SESSION_ID` 跑**：字面第一跑 `TestSessionSendActorResolution` 红——`cmd/card_seat.go:68` 读环境变量 `CLAUDE_CODE_SESSION_ID`，本 subagent 运行在 Claude Code 会话内该变量恒在；单测 `env -u` 后 ok、不 `env -u` 必红；B436 未动 `cmd/session*.go` / `card_seat.go`。未改测试。按 plan 这是「非 0 且根因不在本卡范围」，列入「待裁决」4 而非静默放过。
+12. **第 9 步两次 CMD1 / CMD5 重跑**：首轮三条重命令并发（go test ./... + Windows 交叉编译 + vitest），vitest 两条超时/时序断言红（`Shell.test.tsx` 5187ms>5000ms、`FileTab.test.tsx`）；单独重跑 146/1943 全绿。首轮 CMD1 另因第 8 项注释与第 9 项 go.sum 在其启动后才改，重跑一次作权威读数。
+13. **曾清理 `prototypes/mobile-app/` 后回退**：S5 先命中该目录 6 文件，当作孤立遗漏清掉；随后 BSD grep 全仓分类发现是 8 个 fork 目录的一类问题，判断超出 plan 范围，`git checkout HEAD -- prototypes/mobile-app` 回退，净变化为零，整类列「待裁决」1。
+14. **遇「待裁决」未结束回合**：三项待裁决（roadmap 两条、prototypes 一类、env 敏感测试）均为纯文档/判据层面、不影响第 8、9 步机械执行，故记台账后继续到收口；所有待裁决对象原样未动。
+15. **提交粒度**：第 1-5 步合一提交（第 1、2 步单独不可编译/不过测），第 6、7、8 步各一，最后一提交收第 9 步修正（注释、mobile/go.sum）与台账。plan 允许合理归并。
 
 ### 第 1 步：拔依赖
 
@@ -129,3 +143,29 @@
 ### 第 8 步：依赖收口
 
 - `go mod tidy` → exit 0；`(cd desktop && go mod tidy)` → exit 0。`git diff --stat go.mod go.sum desktop/go.mod desktop/go.sum` → `desktop/go.sum | 2 --`、`go.sum | 2 --`，共 4 行删除：恰为两个文件里 `github.com/Xsxdot/charter/graph v0.10.2` 的 h1 与 go.mod 两行；`go.mod` / `desktop/go.mod` 无变化，无 indirect 连带。
+
+### 第 9 步：全量与取证
+
+- `npm --prefix web ci` 已在第 6 步完成。执行环境：macOS，Go 1.26.1，shell 内 `grep` 为 Claude Code ugrep 垫片（见偏离 10），`CLAUDE_CODE_SESSION_ID` 在环境中（见偏离 11）。
+- **CMD1** `go build ./... && go vet ./... && go test ./... -count=1`
+  - 字面第一跑（与 CMD3/CMD5 并发）→ **exit 1**；63 包 ok，唯一 FAIL：`--- FAIL: TestSessionSendActorResolution` / `session_test.go:1252: 席位形态: got="" err=当前会话出示失败：--cli/--session 与当前环境会话不一致，请使用当前会话的一对或去掉环境来源`（`FAIL github.com/Xsxdot/handoff/cmd 56.532s`）。
+  - 单测复现：`go test ./cmd/ -run TestSessionSendActorResolution -count=1` → FAIL 同上；`env -u CLAUDE_CODE_SESSION_ID go test ./cmd/ -run TestSessionSendActorResolution -count=1` → `ok 0.398s`。
+  - 权威重跑（无并发）`env -u CLAUDE_CODE_SESSION_ID sh -c 'go build ./... && go vet ./... && go test ./... -count=1'` → **exit 0**，64 包 ok、7 包 no test files、零 FAIL。原始输出 `$TMPDIR/b436-s9-cmd1.txt`、`b436-s9-cmd1-rerun.txt`。
+- **CMD2** `test -z "$(gofmt -l $(git ls-files '*.go'))"` → **exit 0**（第 8 项注释改后再跑一次仍 0）。
+- **CMD3** `GOOS=windows GOARCH=amd64 go build ./... && GOOS=windows GOARCH=arm64 go build ./... && GOOS=windows GOARCH=amd64 go vet ./...` → **exit 0**。
+- **CMD4** `(cd desktop && go mod tidy && git diff --exit-code -- go.mod go.sum)` → **exit 0**。
+- **CMD5** `npm --prefix web run typecheck && npm --prefix web test && npm --prefix web run build && test -f web/dist/index.html`
+  - 第一跑（与 CMD1/CMD3 并发）→ **exit 1**：`Test Files 2 failed | 144 passed`、`Tests 2 failed | 1941 passed`——`Shell.test.tsx > 仅新鲜完整 latest 过滤 task…` `Test timed out in 5000ms`（5187ms）、`FileTab.test.tsx > 冲突（保存 409）报 conflict…` 时序断言；build 未执行。
+  - 单独重跑 → **exit 0**：`Test Files 146 passed (146)`、`Tests 1943 passed (1943)`、`✓ built in 1.55s`、`web/dist/index.html` 1062 字节在场。原始输出 `$TMPDIR/b436-s9-cmd5.txt`、`b436-s9-cmd5-rerun.txt`。
+- **CMD6** `grep -rIn -E 'codegraph|charter/graph|图对账|\brecon\b' --exclude-dir=.git --exclude-dir=node_modules --exclude-dir=.claude --exclude-dir=dist . | grep -v -E '^\./(docs/|CHANGELOG\.md)'`
+  - 用 shell `grep`（ugrep 垫片）字面跑 → 输出非空，但全部是 `docs/**` 与 `CHANGELOG.md`（路径无 `./` 前缀致过滤失效）+ 两处真命中：`internal/agentd/b23317_boundary_test.go:115`（偏离 8，已改）、`mobile/go.sum:1-2`（偏离 9，已 tidy）。改后以 `grep -v -E '^(\./)?(docs/|CHANGELOG\.md)'` 过滤 → **零输出**（管道 exit 1）。
+  - 用 `/usr/bin/grep`（BSD）字面跑（plan 过滤正则按 `./` 前缀生效）→ **非空**：`docs/**`、`CHANGELOG.md` 之外剩 **24 个文件，全部在 `prototypes/` 八个 fork 目录**（见待裁决 1 清单）。`internal/`、`cmd/`、`web/`、`scripts/`、`deploy/`、`mobile/`、`desktop/`、`prototypes/base/` 零命中。
+- **S2 真机替代**：`go build -o "$TMPDIR/handoff" . && "$TMPDIR/handoff" agentd --help` → exit 0，打印「启动 agentd 服务（HTTP API + WS 事件流）」用法。`/api/projects/x/codegraph` 404 与启动日志归协调者最终验收。
+- **反例对照**（CMD1 权威跑内全绿）：`TestRootRejectsDeletedGraphCommand`、`TestB23317NestedInternalGuardHasTeeth`、`TestB23317HandlerGuardHasTeeth`、`TestPointerRouteAbsentFromSource`；`ProjectTree.test.tsx` cards/edit 菜单用例在 CMD5 权威跑内绿。
+
+### 待裁决（原样未动，交协调者）
+
+1. **`prototypes/` 八个 fork 目录的代码图残留（S5 判据未闭合）**：`b264-tab-groups`（README.md、index.html dock 钮、`pages/codegraph.html`）、`b275-frontend-proto`（README.md）、`b279-automation-proto`（README.md）、`b285-workbench-polish`（README.md、index.html、`pages/codegraph.html`）、`b288-workbench-ux`（index.html 两处、`pages/codegraph.html`）、`b292-squad-concurrency`（`data/graph.js`、`data/graph.json`、index.html、`pages/codegraph.html`）、`b358-session-groups`（README.md、index.html、`pages/sessions.html` 与 `sessions-v2.html` 里 mock 聊天文本提到 `internal/agentd/codegraph.go`）、`mobile-app`（README.md 表行与形态段、index.html dock 钮、`data/graph.js`、`data/graph.json`、`pages/codegraph.html`、`pages/mobile-task.html` mock 终端 `codegraph check` 与 `codegraph/target.json`）。其中 9 份是 base 代码图页/数据的拷贝，合计 4.3 MB。spec/plan 阶段的 grep 经 ugrep 垫片未见到这些目录。两条路：(a) 扩 B436 范围照 `prototypes/base` 同法清理（删拷贝页/数据、dock 钮、README 行段、mock 文本改词）；(b) 视为与 `docs/` 同类的历史形态权威副本，把 `prototypes/` 加进 S5 允许清单。按协调者本机 shell `grep` 跑 S5 会直接通过（垫片跳过 `prototypes/*`），按 `/usr/bin/grep` 跑则 24 文件命中。
+2. **`docs/roadmap.md:185`** `- **非 12–16 方向的老债配额**：d_gateway → d_ledger 17、d_cli → d_policy 32 等本卡不清零。棘轮只覆盖 12–16 交出的有门面方向。`——主语是 `target.json` legacyBudget 配额，与已删「预算棘轮」族同源；plan 表未点名，按表保留。
+3. **`docs/roadmap.md` `## 来自「修图」实测（2026-08-24，B233 前置排查）` 整节**（五条：容器粒度假读数 / 阴性结果一、二（`best.json 不该动`）/ 探测器不能当裁判 / …）——全节是代码图自身粒度与归属的读数；plan 表「保留」，且其结论「B232 是 B233 的前置」仍是架构排序依据。按表保留。
+4. **`TestSessionSendActorResolution` 对 `CLAUDE_CODE_SESSION_ID` 环境敏感**（`cmd/card_seat.go:68`）：在 Claude Code 会话内跑 `go test ./cmd/` 必红，CI 与裸 shell 不受影响。非 B436 引入、未改。是否记 roadmap「测试隔离」项、以及 CMD1 的权威读数是否以 `env -u` 跑为准，归协调者。

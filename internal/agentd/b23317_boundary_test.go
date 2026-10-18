@@ -112,7 +112,7 @@ func TestB23317NestedInternalGuardHasTeeth(t *testing.T) {
 // ---- B233.17 缝 1：handler 定义不得住在 assembly 名单文件里 ----
 
 // b23317AssemblyFiles 返回缝 1 的 assembly 名单（开机插线文件，免于 handler 定义
-// 检查）。名单自 B436 起由本测试持有：原先读自 codegraph/target.json 的 assembly
+// 检查）。名单自 B436 起由本测试持有：原先读自代码图 target.json 的 assembly
 // 字段，代码图消费侧随 B436 整体删除后，这里写死的即是删除时刻的现值；增减插线
 // 文件须在同一提交改这里并写明理由。
 func b23317AssemblyFiles(t *testing.T) (repo string, assembly []string) {
