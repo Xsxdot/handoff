@@ -170,6 +170,10 @@ type Service struct {
 	// selfName 是本机自名（B439 S6 门控）。空 = 未配自名，判据回退今天的本机
 	// 别名词表（S5）；非空 = 只有省略或 == 自名是本机，local/本机/hostname 拒收。
 	selfName string
+	// legacyAlias 报告一个已存机器值是否是「本机」旧别名（B439 S6）。组装点注入
+	// config.IsLegacyLocalAlias——判据唯一定义点在 config；nil = 未注入，派发
+	// 准入不做旧别名拒收（S5）。只在 selfName 非空（本机已配自名）时生效。
+	legacyAlias func(string) bool
 }
 
 // New 用组装点绑定的注册表端口构造服务。
@@ -180,6 +184,12 @@ func New(repo schedclient.Registry) *Service { return &Service{repo: repo} }
 // 不再是本机，登记时以 ErrInvalid 拒收并点名改成什么（S6）；未注入（无自名）
 // 保持今天词表（S5）。与 SetKnownMachines 一样只在组装点调用一次。
 func (s *Service) SetSelfName(name string) { s.selfName = name }
+
+// SetLegacyAlias 注入「一个已存机器值是否本机旧别名」的判据（B439 S6）。组装点
+// 从 config.IsLegacyLocalAlias 取——旧别名的词法（local/本机/hostname）只有
+// config 一处定义，本域不另立一份。与 SetSelfName 一样只在组装点调用一次；
+// nil（未注入）时派发准入不做旧别名拒收。
+func (s *Service) SetLegacyAlias(fn func(string) bool) { s.legacyAlias = fn }
 
 // isLocalMachine 是本机判据的编制域入口（B439 §4.1）：
 //   - 有自名：省略或 == 自名才是本机；local/本机/hostname 都否（S6 由
@@ -644,6 +654,29 @@ func (s *Service) Select(req IgnitionRequest) (Binding, error) {
 	return Binding{}, err
 }
 
+// rejectLegacyCarrierAlias 报告一次冻结派发准入是否撞上存量旧别名（B439 S6）。
+// 本机已配自名（selfName 非空）时，载体记录里的 machine 或冻结的 Binding.Target
+// 是 local/本机/hostname 即拒发，给可行动错误（点名 carrier、当前值与改成什么）。
+// 无自名或未注入判据时返回 nil（S5，沿今天行为）。
+//
+// 为什么必须在占用写入之前：旧别名经 samePhysicalMachine 的别名语义会被静默
+// 当本机放行（两值都是本机别名时判等为真），那正是本卡要杀的缺陷族；拒发若晚于
+// acquire，就已写下一份占用又回滚，留下状态迁移与日志噪声。
+func (s *Service) rejectLegacyCarrierAlias(binding Binding, registeredMachine string) error {
+	if s.selfName == "" || s.legacyAlias == nil {
+		return nil
+	}
+	if s.legacyAlias(registeredMachine) {
+		return fmt.Errorf("%w: 载体 %s 的 machine=%q 是本机旧别名（local/本机/hostname），不再按本机解释；请把 carrier %s 的 machine 从 %q 改成 %q",
+			ErrInvalid, binding.Carrier, registeredMachine, binding.Carrier, registeredMachine, s.selfName)
+	}
+	if s.legacyAlias(binding.Target) {
+		return fmt.Errorf("%w: 冻结绑定的 target=%q 是本机旧别名（local/本机/hostname），不再按本机解释；请把冻结绑定 target 从 %q 改成 %q（或把 carrier %s 的 machine 改成 %q）",
+			ErrInvalid, binding.Target, binding.Target, s.selfName, binding.Carrier, s.selfName)
+	}
+	return nil
+}
+
 // AdmitFrozen 按 Binding.Carrier 对冻结载体执行一次两级 CAS 准入，并核验绑定时
 // 的机器、CLI、HOME 与载体登记仍一致。它绝不按 Binding.Squad 重新选择成员；
 // Squad 为空时只占载体物理键，不产生成员键。
@@ -697,6 +730,14 @@ func (s *Service) AdmitFrozen(binding Binding) (Binding, error) {
 		}
 	}
 	identity := IdentityOf(carrier)
+	// B439 S6：有自名时，存量 carrier 的 machine（或冻结 Binding.Target）是本机
+	// 旧别名即拒发——必须在同一物理核验与 acquire 之前，避免经 samePhysicalMachine
+	// 的别名语义被静默当本机放行、并防止先占后滚留下状态迁移。
+	if aerr := s.rejectLegacyCarrierAlias(binding, identity.Machine); aerr != nil {
+		logger.Warn("冻结载体准入拒绝本机旧别名", "registered_target", identity.Machine,
+			"error_kind", "legacy_alias", "cause", aerr)
+		return Binding{}, aerr
+	}
 	if !samePhysicalMachine(binding.Target, identity.Machine) || binding.Executor != identity.CLI || binding.HomeDir != identity.HomeDir {
 		err := fmt.Errorf("%w: 冻结物理身份与载体登记不一致", ErrRoleMismatch)
 		logger.Warn("冻结物理身份不匹配", "registered_target", identity.Machine,
