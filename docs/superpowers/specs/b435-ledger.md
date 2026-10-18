@@ -387,3 +387,4 @@ WARN 原文 internal/collab/sessions.go:393-394：`log().Warn("会话成员身�
 - 合入：`git merge --no-ff cards/B435.1-charter-1` → 父分支 `cards/B435-charter-1` 合并提交 **`08c7a158`**；`git merge-base --is-ancestor 3edce8f2 cards/B435-charter-1` 成立。**该提交即其余子卡（R / O1 / O2 / X / W）的共同基线。**
 - 合入后复跑（父分支 `08c7a158`）：`go build ./...` 退出 0；`go test -count=1 -run B435 ./cmd/ ./internal/agentd/ ./internal/ledger/ ./internal/collab/... ./internal/keystone/ ./internal/proto/` 全 ok（cmd 21.9s）。
 - 卡：B435.1 `finish` → `已完成`（生产账本）；B435 note seq 25182 留痕；B435 仍停 `breakdown` 等聚合。
+- **F-RM1 裁决（2026-10-18，用户）**：随 R 批（B435.2）顺手修，不单开卡；拆解 §3.2 追加裁决一段（对 R 禁止清单开 `coordinatorRunner.Launch/Resume` 注入环境变量的例外）。B435.2 已挂拆解附件、移 `plan` 列，plan 由 opus subagent 出稿、协调者拍板。

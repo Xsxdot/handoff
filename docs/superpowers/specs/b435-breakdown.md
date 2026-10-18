@@ -231,6 +231,8 @@
 
 **⑤入口指针与有界文件集**：`cmd/session.go#runSessionWait`、`#sessionWaitRun`、`#sessionWaitMatch`（改为经 `Matches`）、`#sessionWaitPage`、新 `sit`/`stand` 子命令（同文件，按命令一文件惯例也可拆 `cmd/session_resident.go`，plan 定）；`internal/ledger/session_resident.go`（写面）；`internal/ledger/session_candidates.go`（驻场者支）；`internal/collab/sessions.go`（`sessionMembers` 追加 resident 行）；测试 `cmd/session_test.go`、`internal/ledger/*_test.go`、`internal/collab/sessions_test.go`；`skills/handoff/SKILL.md` 的 `session wait/sit/stand` 节。**禁止**：`internal/agentd/**`、`cmd/card_wait.go`、`internal/collab/recipients.go`（判定表已冻结并由 K0 落码；R 发现判定问题只许回报）。
 
+**追加裁决（2026-10-18，用户；K0 阶段验收发现 F-RM1）**：R 卡范围追加 **F-RM1 修复**——push 协调者的 launch 与 resume 回合都不注入 `HANDOFF_SESSION_CLI/ID`（`internal/agentd/server.go#resumeTurnRequest` 自 B299 起无生产调用方；`coordinatorRunner.Launch/Resume` 直走 `executor.Coordinator`），协调者裸 `session send` 的 actor 落 `cli:<user>@<host>`、不在成员集，被 `VerifyWriter` 拒，S1「协调者回房间」在真 opencode 上不成立。为此**对 R 的禁止清单开一条例外**：允许改 `internal/agentd/server.go` 的 `coordinatorRunner.Launch/Resume`（及其直接承载缝）只为注入席位环境变量 `HANDOFF_SESSION_CLI=<cli>`、`HANDOFF_SESSION_ID=<session_id>`（复用或接通 `resumeTurnRequest`），其余 `internal/agentd/**` 仍禁。验收：单测断言两种回合的 `TurnRequest.Env` 含两键；真机以 stub `opencode` 回合日志读到两键非空（K0 验收脚本 `oc.log` 形态），并以席位身份 `session send` 回房间成功。读数与复现见 `docs/superpowers/plans/b435.1-impl-ledger.md`「阶段验收：真机批 0」。
+
 ### 3.3 B435-O1：项目房间与系统通知（批 2）
 
 **①故事与契约引用**：S5（通知半边）；D6、D7（项目房间游标即驻场者游标）、D8；契约 C-243–245；§12 欠账 13；P6=甲 时补签的第 ⑤ 条缝生产方；P7；§2.4 第 1 条。
