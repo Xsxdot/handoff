@@ -867,3 +867,8 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 - **opencode review 裁决块形状漂移**：B439 五轮 review 有三轮「裁决解析失败」——结论 JSON 多出自造字段、或把 handoff-verdict 块经提问工单发出且收到答复后继续提问（只能 stop 收口）。宜在纪律块/runner 侧收紧：容忍多余键、或明文禁止经 ask 交裁决。来源：B439 协调者。
 - **卡派发起点取「上一轮任务分支」，非工作分支最新合入**：B439 父卡 review 首两派起点为 cards/B439-charter-2/-3@20dca87（缺 B439.4 合入，子卡合入的是 cards/B439-charter），且每次派发（含被 stop 的）都成为下一轮起点；协调者须手工快进才对上 62ed2a22。宜让父卡工作分支 = 子卡合入目标，并让被 stop 的零提交轮不改写工作分支。来源：B439 finish。
 - **`fake` 执行器无 Profile 能力，卡派发恒带纪律块 → fake 无法走卡派发**：真机/隔离验证想用零成本执行器验镜像链路时被拒（「没有 Profile 能力」），只得改用无凭据 codex 让回合 401 失败。宜给 fake 一个空实现 Profile，或允许纪律块对 fake 跳过。来源：B439 finish 真机。
+- **relay 服务端自托管 STUN**：B438 缺省用公网 STUN（会向 STUN 运营方暴露出口 IP），宜由 relay 服务端顺带提供 STUN 并作为缺省。来源：B438 spec OOS。
+- **控制台 / `handoff machines` 显示每台机器当前通道（直连 / 打洞 / relay）**：B438 期内路径只经日志可见。来源：B438 spec OOS。
+- **打洞直连死亡时在途流跨路径迁移**：B438 只切新流，直连断时其上在途流会断。来源：B438 spec OOS。
+- **TURN / 多 relay 区域选择**：B438 不做 TURN，兜底即 relay。来源：B438 spec OOS。
+- **真手机运营商 NAT 下的打洞实测**：B438.2 无真手机/运营商网络取证。来源：B438 spec OOS。
