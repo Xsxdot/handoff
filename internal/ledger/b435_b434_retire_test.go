@@ -305,11 +305,11 @@ func checkB435RetireCleared(t *testing.T, e *b435RetireEnv, fx b435RetireFixture
 	if _, err := time.Parse(time.RFC3339Nano, got[0].MigratedAt); err != nil || !strings.HasSuffix(got[0].MigratedAt, "Z") {
 		t.Fatalf("migrated_at 应是 UTC RFC3339Nano: %q (%v)", got[0].MigratedAt, err)
 	}
-	if !reflect.DeepEqual(got[0].SeatDesktops, fx.seats) {
-		t.Fatalf("seat_desktops 留痕与存量不逐字段相等:\n got=%+v\nwant=%+v", got[0].SeatDesktops, fx.seats)
+	if !reflect.DeepEqual(got[0].SeatRows, fx.seats) {
+		t.Fatalf("seat_desktops 留痕与存量不逐字段相等:\n got=%+v\nwant=%+v", got[0].SeatRows, fx.seats)
 	}
-	if !reflect.DeepEqual(got[0].DesktopLaunchers, fx.launchers) {
-		t.Fatalf("desktop_launchers 留痕与存量不逐字段相等:\n got=%+v\nwant=%+v", got[0].DesktopLaunchers, fx.launchers)
+	if !reflect.DeepEqual(got[0].LauncherRows, fx.launchers) {
+		t.Fatalf("desktop_launchers 留痕与存量不逐字段相等:\n got=%+v\nwant=%+v", got[0].LauncherRows, fx.launchers)
 	}
 	snap := e.cardSnapshot()
 	for _, want := range fx.cards {
@@ -422,14 +422,14 @@ func TestB435RetireMigrationRecreatedEmptyTables(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("新行应追加恰一批，got=%d: %+v", len(got), got)
 	}
-	if !reflect.DeepEqual(got[0].SeatDesktops, fx.seats) || !reflect.DeepEqual(got[0].DesktopLaunchers, fx.launchers) {
+	if !reflect.DeepEqual(got[0].SeatRows, fx.seats) || !reflect.DeepEqual(got[0].LauncherRows, fx.launchers) {
 		t.Fatalf("旧批必须不变: %+v", got[0])
 	}
-	if len(got[1].SeatDesktops) != 0 {
-		t.Fatalf("与已留痕行全字段相同的行必须去重: %+v", got[1].SeatDesktops)
+	if len(got[1].SeatRows) != 0 {
+		t.Fatalf("与已留痕行全字段相同的行必须去重: %+v", got[1].SeatRows)
 	}
-	if !reflect.DeepEqual(got[1].DesktopLaunchers, []retiredDesktopLauncherRow{newLaunch}) {
-		t.Fatalf("新批应只含新行: %+v", got[1].DesktopLaunchers)
+	if !reflect.DeepEqual(got[1].LauncherRows, []retiredDesktopLauncherRow{newLaunch}) {
+		t.Fatalf("新批应只含新行: %+v", got[1].LauncherRows)
 	}
 }
 

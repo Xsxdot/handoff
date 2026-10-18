@@ -59,9 +59,9 @@ type retiredDesktopLauncherRow struct {
 
 // retiredB434Batch 是一次真删到新行的迁移所追加的一批留痕。
 type retiredB434Batch struct {
-	MigratedAt       string                      `json:"migrated_at"`
-	SeatDesktops     []retiredSeatDesktopRow     `json:"seat_desktops"`
-	DesktopLaunchers []retiredDesktopLauncherRow `json:"desktop_launchers"`
+	MigratedAt   string                      `json:"migrated_at"`
+	SeatRows     []retiredSeatDesktopRow     `json:"seat_desktops"`
+	LauncherRows []retiredDesktopLauncherRow `json:"desktop_launchers"`
 }
 
 // normalizeRetiredTime 把两方言扫描出的时间列规范成 UTC RFC3339Nano；解析不了的
@@ -243,29 +243,29 @@ func (s *Store) migrateRetireB434Tables() error {
 	}
 	seen := map[string]bool{}
 	for _, b := range batches {
-		for _, r := range b.SeatDesktops {
+		for _, r := range b.SeatRows {
 			seen[retiredRowKey("seat_desktops", r)] = true
 		}
-		for _, r := range b.DesktopLaunchers {
+		for _, r := range b.LauncherRows {
 			seen[retiredRowKey("desktop_launchers", r)] = true
 		}
 	}
 	batch := retiredB434Batch{
-		MigratedAt:       s.timeNow().UTC().Format(time.RFC3339Nano),
-		SeatDesktops:     []retiredSeatDesktopRow{},
-		DesktopLaunchers: []retiredDesktopLauncherRow{},
+		MigratedAt:   s.timeNow().UTC().Format(time.RFC3339Nano),
+		SeatRows:     []retiredSeatDesktopRow{},
+		LauncherRows: []retiredDesktopLauncherRow{},
 	}
 	for _, r := range seats {
 		if !seen[retiredRowKey("seat_desktops", r)] {
-			batch.SeatDesktops = append(batch.SeatDesktops, r)
+			batch.SeatRows = append(batch.SeatRows, r)
 		}
 	}
 	for _, r := range launchers {
 		if !seen[retiredRowKey("desktop_launchers", r)] {
-			batch.DesktopLaunchers = append(batch.DesktopLaunchers, r)
+			batch.LauncherRows = append(batch.LauncherRows, r)
 		}
 	}
-	newRows := len(batch.SeatDesktops) + len(batch.DesktopLaunchers)
+	newRows := len(batch.SeatRows) + len(batch.LauncherRows)
 	if newRows > 0 {
 		value, err := json.Marshal(append(batches, batch))
 		if err != nil {
