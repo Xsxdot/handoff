@@ -375,6 +375,7 @@ Project string `json:"project,omitempty"`
 324. `card rebind --launch` 与 agentd 侧换绑/重建 → push。
 325. 迁移：存量非空座、`driver_mode` 为空的行按来源回填（bind → pull，coordinate → push）。
 326. 上条迁移幂等（二次执行零改动）；是全系统唯一以来源词决定模式之处。
+    （澄清 2026-10-18，K0 plan Q1 拍板：「全系统」指生产代码；`internal/ledger` 内供测试兼容的旧签名垫片可按来源词委托新写面，须有源码守卫禁止包外非测试代码调用旧名。不改变本条断言。）
 327. 会话详情 `SessionCard.seat_mode` = 该卡 `driver_mode`。
 328. 同一条命中消息：pull 席位 → keystone Wake 0 次且 `card wait` 输出 1 行；push 席位 → keystone Wake 1 次且 `card wait` 输出 0 行。
 
