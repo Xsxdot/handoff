@@ -108,3 +108,20 @@
 - `api/client.ts` 删 `fetchCodegraph`、`fetchCodegraphSource` 与两个类型 import；`api/types.ts` 删「代码图」整块（`CgTestRef`…`CgSourceResp`），`DesktopState` 注释块保留。
 - 测试：`Shell.test.tsx` 删「代码图 iframe 对项目名只做 query 编码」（it.each 三例）与「/codegraph 同时隐藏 Breadcrumb/FileTree」两条；plan 未列的另三处同文件断言一并处理（见「偏离与自主决定」）：`:698` 账本关闭用例的肯定对照从「项目代码图」菜单项改为「编辑项目位置」；`:2500-2502` compact 用例删「代码图」钮为 null 断言；`:2515-2523` 桌面零漂移用例删两条代码图在场断言并改名「流程钮在场」。`ProjectTree.test.tsx` 删 prop 透传与 `:1494-1503` 用例里的 graph 回调，用例改为只验 cards/edit。`CardsPage.test.tsx` `图对账`×6 → `最终验收`；`NodeEditor.purpose.test.tsx` `'recon'`×3 → `'audit'`。
 - `grep -rn -i 'codegraph\|代码图' web/src` → exit 1（零命中）。`npm --prefix web run typecheck` → exit 0。`npm --prefix web test` → exit 0，`Test Files 146 passed (146)`，`Tests 1943 passed (1943)`。
+
+### 第 7 步：文档、原型与 roadmap
+
+- `git rm docs/codegraph-scan-recipe.md && git rm -r deploy/workflows && git rm prototypes/base/pages/codegraph.html prototypes/base/data/graph.json prototypes/base/data/graph.js` → exit 0；`deploy/` 剩 `handoff-agentd.service`、`install-redirect/`。
+- `prototypes/base/index.html:280` 删 dock 钮一行；`README.md:26` 删表格 `pages/codegraph.html` 行，`:69-79` 删「代码图页的形态基准…」整段。`grep -n -i 'codegraph\|代码图\|graph\.js' prototypes/base/{README.md,index.html,design-qa.md}` → exit 1（零命中）。
+- `docs/roadmap.md` 按 plan 第 7 步表格逐条处置（以 main 现状行号为锚，脚本逐行 assert 首词后再删）：
+  - 删整节：`## 代码图数据债` 的标题与三条图数据项（`baseline.json 逐符号真重扫`、`真重扫的验收判据要逐容器点数`、`清掉陈旧域声明 d_orchestration.json`）；`## 来自 C1.7 finish 的基准回灌` 全节（两条）；`## 来自 B432 真机验收（图覆盖债）` 全节（两条）。
+  - 删单条 29 处：`mobilecore 图覆盖债`、`go run … codegraph 认成 codegraph 查询`、`图覆盖债：Store.OpenTickets`、`契约预算未棘轮`、`codegraph check 仍 6 红`、`codegraph validate ~130`、`其余入传输边的 entries 复核`、`d_workspace→d_orchestration 预算清零`、`5 条 over-budget 待棘轮`、`cards-B233.4 视图失效边`、`完整图重扫未做 / absorb 拒收`、`taskProfileHome 图覆盖债`、`TestRepoContractGate dead-interface`、B231 节四条（`符号级漏建残余 33 个`、`6 个零节点容器`、`6 个非 card 族 CLI 父入口仍标 unscanned`、`基线合并即滞后`；保留 `终态事件丢失第二次实测`）、C1.9 节 `原型基准站 codegraph 页…漂移`（该节只剩标题，标题一并删）、C1.11 节三条（`声明覆盖停在 2/23`、`d_workspace.json 职责句`、`前端消费 decls`）、B227 节 `执行机上装 codegraph`、B249 执行过程节 `contract 节点给 target.json 写 entries 用了函数符号名`、B282 finish 节 `best.json 未声明 k_web_api_scheduling`、B393/B395 节 `图视图命名与分支不一致`、`diff 烙基线指纹` / `codegraph CLI 内建扫描命令` / `重扫扫描配方的边提取保真度` 三条——plan 标为「B383 节」，实际位于 `## 来自 B379 spec（2026-10-02）` 节（按首行关键词定位命中，节随之只剩标题，标题一并删）。
+  - 改词 3 处：`推平 … 五份纪律块` → 去 `recon`、「五份」「这五份」→「四份」；`跨节点事实不继承` 条示例改为「本机工具链事实『某二进制在 PATH』」；C1.11 `两条真机项由 CI 结论兜底` 删 (a) 保留 (b)，标题去「两条」。
+  - 新增 `## 来自 B436 finish（2026-10-18，代码图消费侧删除）` 节于文末，首条 `charter-recon v3 / charter-story-recon v1 待下架`。
+  - 文件 988 行 → 878 行。空节检查（awk 扫 `##` 之间无非空行）→ 无。
+  - 残余命中（均属 plan「保留」：主语非代码图或代码图仅作佐证）：`:180,:186` `全仓 internal/ 按 best.json 重排`；`:188,:231` 验收节标题里的「合线 absorb」；`:762,:768` B395 条目里的「图对账轮」时点；`:863` 2026-10-15 条目尾句「代码图已回灌基线」。
+- **待裁决（plan 决策权限：上表没点名、但疑似应删的条目——列出来，不动）**：
+  1. `docs/roadmap.md:185` `- **非 12–16 方向的老债配额**：d_gateway → d_ledger 17、d_cli → d_policy 32 等本卡不清零。棘轮只覆盖 12–16 交出的有门面方向。`——主语是 `target.json` 的 legacyBudget 配额，与被删的「预算棘轮」族同源；plan 表未点名，按表保留。
+  2. `docs/roadmap.md` `## 来自「修图」实测（2026-08-24，B233 前置排查）` 整节（现 `:398-420` 一带，五条：容器粒度假读数 / 阴性结果一二 / 探测器不能当裁判 / …）——全节讨论的是代码图自身的粒度与归属读数（`best.json 不该动`），但 plan 表「保留」且其结论「B232 是 B233 的前置」仍是架构排序依据；按表保留。
+  以上两项不影响第 8、9 步（纯文档），故继续执行而非中断回合；交回报告中原文列出。
+- `CHANGELOG.md` `[Unreleased]` 在 `### 变更` 之后、`### 修复` 之前新增 `### 移除` 小节一条（plan 原文）。

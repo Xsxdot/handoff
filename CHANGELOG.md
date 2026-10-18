@@ -29,6 +29,10 @@
 - **OpenCode 普通派发改走审批 client 与 RespondAsk（B233.1）。** `permission_reuse` 不再唤醒 `handoff wait`。OpenCode 答问不再走无关联 `Send`。原生免审改为当前政策快照的精确子集（bash 默认 ask，范围内 edit 仍可原生 allow）。拒绝理由不再优先吞掉下一条提问。
 - **Stop/取消不再删除 managed 工作树（B233.4）。** `handoff stop` 与控制台「停止任务」只把任务落 failed，现场留到显式 `handoff reclaim` / `gc` 或归档 `handoff done`。CLI/Web 提示改为留存，不再把 `worktree_removed=false` 说成清理失败。
 
+### 移除
+
+- **代码图（codegraph）消费侧整体移除（B436）。** 控制台不再有「代码图」入口与 `/codegraph` 页；agentd 删除 `GET /api/projects/{name}/codegraph[/source]` 与 charter viewer 挂载；权限门不再静默放行 `codegraph` 命令，执行者纪律块不再要求本机装 codegraph 二进制；仓内 `codegraph/` 数据目录、契约闸 `TestRepoContractGate`、扫描脚本与配方一并删除，`go.mod` 去掉 `github.com/Xsxdot/charter/graph`。用户 2026-10-18 裁决：「直接把代码图彻底删除，handoff 里面的功能也删除」。
+
 ### 修复
 
 - **手机上点「在此打开终端」后页面冻在旧态（B413）。** 紧凑视口的下钻导航走 React Router 的 transition 渲染，而 usePoll 轮询续帧的 setData 是 sync 高优更新——存在慢轮询源（如一台离线机器把 `/api/pty/sessions?scope=all` 扇出拖到 ~3s）时，慢解析落在渲染让出窗口会反复打断 transition 提交，URL 前进了 UI 永不跟随（终端/任务现场路径确定性命中），只能整页刷新恢复。修复：usePoll 续帧的全部状态写入改包 `React.startTransition`（非紧急数据语义，与导航 transition 合并进同一次渲染提交），`refresh()` 等用户主动动作保持 sync；`PollState` 签名与轮询纪律零改动，桌面路径不回归。

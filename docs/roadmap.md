@@ -66,13 +66,11 @@
 
 ## 来自 B392 spec（2026-09-24）
 
-- **mobilecore 图覆盖债**：当前 baseline 未收录 `Core.Pair`、`Core.Activate`、`Core.Session` 等 S2 新符号；另走图债卡重扫或视图 absorb，不在 B392 偷带全图刷新。来源：`docs/superpowers/specs/b392.md` §11。
 - **切机时是否服务端吊销旧 session**：当前冻结语义只清核内单槽与 webview 旧 cookie；若产品/安全要把旧会话立即吊销，需另开卡定义跨端会话状态与失败补偿。来源：`docs/superpowers/specs/b392.md` Out of Scope。
 - **配对后的默认机器选择策略**：B392 不发明自动选择；壳仍显式选择目标机。若产品需要“默认激活第一台在线机器”或别的规则，另开卡定义多机选择、可发现性与失败反馈。来源：`docs/superpowers/specs/b392.md` 非目标。
 
 ## 来自 B376 spec（2026-09-17）
 
-- **`go run github.com/…/codegraph` 认成 codegraph 查询**：会编译，不是只读查询。来源：`docs/superpowers/specs/b376.md` Out of Scope。
 - **`handoff init` 多选审批者**：本期 init 仍问一个；多选用手改 yaml。来源：同上。
 - **每候选单独 `approver.model`**：本期共用一个 model。来源：同上。
 - **剥 `/bin/bash -lc` 再做静默匹配**：不改执行器上报形态。来源：同上。
@@ -83,7 +81,6 @@
 ## 来自 B356 spec（2026-09-11）
 
 - **card wait 持久 cursor / 逐条回放**：建连快照覆盖「挂 wait 前已镜像的子卡工单」；子树成员集动态时 cursor 回放未做。来源：`docs/superpowers/specs/b356.md` Out of Scope（与 B253 同口径）。
-- **图覆盖债**：新增导出 `Store.OpenTickets` / `Store.NeedsReasons` 未写入 `codegraph/baseline.json`（`OpenTicketCounts` 已在图中）。来源：B356 finish，本卡未出视图 diff。
 
 ## 来自 B272 spec（2026-09-04）
 
@@ -105,8 +102,8 @@
 
 ## 来自 B207 spec（2026-08-23）
 
-- **推平 breakdown / implement / integrate / contract / recon 五份纪律块的两机差异**。
-  本机这五份各只落后权威源 1 行（尾部空行），linux-01 更旧；不构成已知行为缺陷，
+- **推平 breakdown / implement / integrate / contract 四份纪律块的两机差异**。
+  本机这四份各只落后权威源 1 行（尾部空行），linux-01 更旧；不构成已知行为缺陷，
   但同一角色名在两机解析出两份正文，且无处可查。来源：B207 spec 的 Out of Scope。
   排在**工作流纪律块重构**之后——重构会决定纪律块是否还以「每机一份磁盘副本」的
   形态存在；现在手工推平只是把病往后拖一轮。
@@ -155,7 +152,6 @@
 
 ## 来自 B233.4 验收（2026-09-07）
 
-- **契约预算未棘轮**：图对账视图已补 Capability / gitCapability / MayRecycle 等符号与 implements；`codegraph check` 仍 5 红（cli→orchestration 15/13、cli→workspace 10/9、gateway→workspace 3/1、orchestration→workspace 41/19、off-interface Capability）。recon 无权改 `target.json`，合 main 时 contract/absorb 再抬。来源：B233.4 图对账-2 `79f9c438`。
 - **真机未在本 SHA**：对端 agentd 仍是线上 `86a08861`，Stop 留存 / reclaim 未对真任务验。合 main 部署后再验。来源：B233.4 acceptance。
 - **assembleResultRef 丢弃引用**：已由 B233.7 核销（`handleTaskDiff` 非空 `ResultRef.Commit` 作 DiffRange head）。来源：独立质量复审 R9；核销 DUT `1ee954d3`。
 - **web Composer.test 未跑**：本机未装 vitest / `@tailwindcss/vite`。来源：B233.4 review-2 minor。
@@ -192,35 +188,30 @@
 ## 来自 B233.17 验收（2026-09-13，DUT `53bbce50e`，合线 absorb 同提交）
 
 - **真机 OpenCode 会话未验**：结构闸，无用户可观察行为变更；acceptance 用既有 HTTP 级测试代替 live。来源：B233.17 plan §10；acceptance 口径。
-- **`codegraph check` 仍 6 红（P1-A）**：3 条 dead-entry（`orchestration.Manager` / 包级 / 实体 在 `d_orchestration` 找不到——`best.json` 仍把容器归 `d_coordination_task`）+ 3 条 over-budget（gateway→orchestration 296/0、orchestration→workspace 9/0、workspace→orchestration 3/0）。本卡不改 `best.json`/`baseline` 重扫。吸图后 dead-interface `OrchestrationClient` 消失（合前无视图 7 红 → 合后 6 红）。来源：finish 合线后 `codegraph check`。
-- **`codegraph validate` 完整性问题 ~130**：基线文件锚滞后（handler 仍有节点写 `server.go`）。视图 `nodesModified` 已吸进基线，未做全仓重扫。来源：图对账 minor；finish validate。
 - **合后全量测试存量红（非本卡引入）**：`TestRepoContractGate`、`TestLegacyNodeEventSequenceUnchanged`、`TestServePermissionHookDenyWithReasonAndStep0`、agy permission 族、`TestCoordinatorCancelTurnUsesSessionID`、hostapi wakehome 两条。与 B233.13/14 合线后分类一致。`TestB23317*` 与 `TestCLIExecutionSurfaceGuardHasTeeth` 绿。
 - **`d_policy` / `d_maintenance → d_transport`**：本卡复核，无新增执行面消费点，数字不动。来源：contract §6；B233.16 spec 交办。
 
 ## 来自 B233.16 spec（2026-09-11）
 
 - **非执行能力面的消费点收窄**：B233.16 只覆盖「一次任务/卡节点执行闭环」这条缝。仍持聚合 `*client.Client` 且无卡承接的：任务事件镜像（`internal/ledgermirror` 的 `Machines.For`/`Source` 做 `StreamEventsOnce`/`ListTasks`）、PTY（`internal/agentd` 的 coordinator PTY 路径）、预览、回收、项目、机器、会话、升级，以及纯查询命令（`tasks`/`show`/`diff`/`attach`/`frames`/`footprint` 等）。这些面要各自按使用方声明能力接口（如事件流需另立订阅缝），单独定性。来源：`docs/superpowers/specs/b233.16.md` Out of Scope。
-- **其余入传输边的 entries 复核**：~~`d_cli`/`d_gateway`/`d_ledger` → `d_transport` 三条边由 B233.16 按现实棘轮更新~~（**注**：原表述沿用了 spec 的错误，`d_ledger→d_transport` 在图中**不存在**，见「来自 B233.16 验收」段与 spec 勘误；B233.16 实际只动了 `d_gateway→d_transport` 的 entries）；仍有效的是后半：`d_policy`/`d_maintenance` → `d_transport` 两条边（预算 2/3）不在 B233.16 清单内，留 B233.17 棘轮时逐条复核是否也含执行面消费点。**B233.17 已复核：无新增执行面消费点，数字不动。** 来源：同上；`codegraph/target.json`；B233.16 验收校正；B233.17 contract。
 
 ## 来自 B233.16 验收（2026-09-12，DUT `3041605d`）
 
 - ~~**T3 守卫的包级漏判盲点**~~：**B233.17 已修**（`executionSurfaceViolations` 按花括号深度重置函数名；`TestCLIExecutionSurfaceGuardHasTeeth` 可变红）。原条见 B233.16 验收；正主收口在 B233.17 W3。
 - **本卡的「行为不变」未在部署环境验证**：B233.16 的生产改动（8 组合接口 + 9 具名入口 + `StepRunner.Clients` 收窄）全在类型/结构层、方法体逐字搬运（contract §2.1.3 逐文件复核），且分支未合入功能线 → agentd 二进制不含本卡代码，真机行为**不可得**。合并部署后应确认：`dispatch`/`card dispatch`/`reply`/`continue`/`stop`/`wait`（三形态）与 `card step` 的 stdout、退出码、HTTP 路径与今日逐字一致。来源：B233.16 breakdown §6；acceptance 判定。
 - **基线 flaky（非本卡引入，待登记观察）**：全量 `go test ./...` 两次跑出的失败集合不稳定——BASE（起点 `4bdd8bcd`）11 条 vs HEAD（`3041605d`）9 条，其中 `TestWakeHomeReadyRequiresTurnOutputNotCredFile`、`TestWakeHomeSuppliesMainCredentialBeforeTurn` 只在 BASE 红（HEAD 绿），另一次 HEAD 跑到 20 条（含 opencode/hostapi 的 permission 族）。判据：**只在 HEAD 红 = 空**（本卡零新增红）；但 flaky 本身值得单独定性（`internal/hostapi`、`internal/executor/opencode`、`internal/agentd` 的 wakehome 族）。来源：B233.16 acceptance 复跑对照。
-- **跨节点事实不继承（流程改进）**：`--deny --reason` 的理由只回到**当前任务**的 executor；每个节点是全新会话，同一事实（如「本机 `codegraph` 在 PATH，勿用 `go run`」）需要在每个节点重复驳回。B233.16 的 plan 与 review 两轮各被驳回一次。要根治需把这类「本机工具链事实」写进**纪律块或项目文档**（跨任务可见）。来源：B233.16 acceptance 观察。
+- **跨节点事实不继承（流程改进）**：`--deny --reason` 的理由只回到**当前任务**的 executor；每个节点是全新会话，同一事实（如本机工具链事实「某二进制在 PATH」）需要在每个节点重复驳回。B233.16 的 plan 与 review 两轮各被驳回一次。要根治需把这类「本机工具链事实」写进**纪律块或项目文档**（跨任务可见）。来源：B233.16 acceptance 观察。
 - **★ 测试必须串行跑（finish 阶段实测的环境判据）**：合并后在本机跑 `go test ./cmd/ ./internal/agentd/ ./internal/ledgerstep/`（**默认并行**）出现**上百条假红**（`TestStopCLIRetainCopy`、`TestStatusJSON`、`TestSquadListRendersTableAndJSON` 等大批本应绿的用例）；改 `-p 1` 串行后红集合立刻回落到与验收基线**逐名一致**的三条存量红。根因：本机 agentd 常驻 + 三包并发争抢同一批资源（HOME/端口/数据目录）。**判据：本仓跑多包测试一律加 `-p 1`**，否则绿红不可信。来源：B233.16 finish 合后全量对照。
 
 ## 来自 B233.15 spec（2026-09-11）
 
 - **工作区域剩余文件的迁包**：B233.15 只搬 git/工作区实现文件（`workspace.go`、`manualworktree.go`、`workspaceprobe.go`、`gitroot.go`、`gitignore.go`、procgroup），下列仍留在 `internal/agentd`，本卡只改它们的调用点：项目登记（`projectadmin.go`，best 已归 `k_agentd_projectIndex`→`d_workspace`）、镜像 bundle（`bundle.go`，已归 `k_agentd_Mirror`）、回收编排（`reclaim.go`）、预览仓主（`preview_owner.go`）。来源：`docs/superpowers/specs/b233.15.md` Out of Scope。
-- **`d_workspace→d_orchestration` 预算清零**：B233.15 把 `k_agentd_Mirror`/`k_agentd_projectIndex` 的消费点同域化后，该方向的两条边应消失；预算与 entries 的收尾（含 `.13` 迁包后的 `d_gateway→d_orchestration`）留 B233.17 一次棘轮到门面。**实况更正（finish）**：absorb 后该方向仍有 3 条直调边（3/2 超预算），未清零——spec 预期偏乐观，棘轮时需逐条看这 3 条是残留还是新形态。来源：同上；`codegraph/target.json`。
 
 ## 来自 B233.15 验收（2026-09-11，DUT `a1b59515`）
 
 - **diff 三连点语义无测试锁定**：`Diff`/`DiffRange` 用 `base...head`（只显示本分支改动），变异成 `base..head` 后 `TestDiffShowsCommits` 仍绿——该用例的 base 分支在分支后没动过，两种点法结果相同。真机取证：base 前进后两连点会把 base 的改动显示成本分支的删除。既有盲区（起点 `bdeda1e9` 同形态），非本卡引入；补一支「base 前进后 diff 不含 base 改动」的用例即可锁死。来源：B233.15 验收变异复验；file `internal/workspace/gitworkspace.go`。
 - **macOS 下 cmd 包既有红**：`TestServePermissionHookDenyWithReasonAndStep0` 在 `t.TempDir()` 下 bind unix socket 报 `invalid argument`（路径长度超限），起点 `bdeda1e9` 同样失败。来源：B233.15 验收复跑。
 - **plan §2.1 冻结签名表陈旧**：已由 B233.15 finish 核销（`224861e4` 同步签名表、改写表与实况注记，spec 现状锚一并改指迁移后位置，两文档锚点自检 exit 0）。来源：B233.15 review-2 minor。
-- **本卡带来的 5 条 over-budget 待棘轮（DUT `03005e58`）**：absorb 后 `codegraph check` fails=5，全部是预算未抬——`d_cli→d_workspace` 11/9、`d_gateway→d_workspace` 17/1、`d_orchestration→d_workspace` 49/19、`d_workspace→d_orchestration` 3/2、`d_workspace→d_protocol` 23/3。根因：符号随实现迁入 `d_workspace`，跨域边计数整体上移，而 `target.json` 预算未动（用户裁决跳过 contract，spec 明文「预算数字归 contract 落地」）。正主是 **B233.17**（卡名即「预算棘轮」）；absorb 前后 fails 逐项一致，非本卡新增违规。来源：B233.15 finish；`codegraph/target.json`。
 
 ## 来自 B233.11 spec（2026-09-10）
 
@@ -234,16 +225,12 @@
 
 ## 来自 B233.13 验收（2026-09-12，DUT `f74c347d`）
 
-- **cards-B233.4 视图失效边**：`codegraph validate` 2 红，`n_agentd_Manager_appendGCWorktreesExecute` 仍锚 `internal/agentd/gc.go`，实体已随本卡迁到 `internal/orchestration/gc.go`。本卡不 absorb 他卡图。来源：B233.13 review-3 major；acceptance 复跑 validate exit 1。
-- **完整图重扫未做 / absorb 拒收**：合进功能线后 `codegraph absorb cards-B233.13-charter` 拒收——视图仍引用 B233.15 已迁走的 `n_agentd_PrepareWorkspace` / `classifyWorktree` 等节点。`check` 仍有 `dead-interface OrchestrationClient`。正主是重扫或重写本卡视图后再 absorb，不在本卡造假基线。来源：B233.13 finish；DUT merge `78425778`。
 - **transitClaim 早幂等 / CAS-loser 重读无独立缝测**：handler `Claimed` 门变异已红（`TestB23313ConcurrentDoneReleasesOnce` before=v1 after=v3）。协调者把 CAS-loser `return true` 变异后 B23313ConcurrentDone 仍绿。来源：review-3 minor；acceptance 复验。
 - **真机 OpenCode 未验**：并发 Done 只核过夹具；未跑真实会话。来源：B233.13 acceptance；用户未要求 live OpenCode。
 
 ## 来自 B233.14 验收（2026-09-12，DUT `d8931e96`，合线 absorb `9d785ae5`）
 
 - **真机 OpenCode / 空 HOME 真机派发未验**：空 HOME×纪律只核过夹具。来源：B233.14 plan §6；acceptance 未跑 live。
-- **taskProfileHome 图覆盖债**：写入点助手在 `internal/orchestration`，B233.13 视图未 absorb，本卡 baseline-relative 视图不能重复声明 `k_orchestration_fn`。合线后 B233.14 absorb 已过（+2 节点）；orchestration 函数组仍靠 13 重扫。来源：B233.14 图对账。
-- **TestRepoContractGate dead-interface OrchestrationClient**：B233.13 absorb 拒收遗留。来源：B233.13 finish；B233.14 合后全量仍红。
 
 ## 来自 B353 spec（2026-09-09）
 
@@ -338,37 +325,6 @@
   成员健康位的形状。触发条件：小队真跑起来后第一次撞限额。来源：同上。
 - **多协调机下的拉起仲裁实测**：机制按镜像 lease 同模式设计；真出现第二台协调机
   指向同一账本库时再验，与上文「双协调机对等两条判据的复活条件」合流。来源：同上。
-## 代码图数据债（2026-08-26 B156.3 contract 轮实测）
-
-- **`baseline.json` 逐符号真重扫（合 main 前必做）**：现有 baseline 的所谓「重扫」实为
-  「已有全量扫描 + 机械视图 diff 合并 + 定向增量」，`meta.commit` 不是真审计锚点。
-  实测规模：带 `file`+`line` 的方法节点 1155 个中 **500 个行号对不上源码（43%）**，
-  漂移多在 16~43 行（`agentd/manager.go` 64/64、`client/client.go` 50/53、
-  `executor/opencode/adapter.go` 47/50、`agentd/server.go` 42/48、grok/codex/claudecode
-  三个 adapter 全中）。不影响闸门（check/validate 不看行号，`graph sym` 查询时再锚定），
-  影响的是把 `file#Symbol` 当定位证据用的人——契约与拆解文档正是这么用的。
-  **验收判据两条**：①行号比对脚本 mismatched 降到 0；②抽查若干新符号确实在图里
-  ——不能只看 `check` 的 exit code，空壳基线照样 exit 0。
-  来源：`specs/b156.3-contract-ledger.md`「图数据债」节。
-- **真重扫的验收判据要逐容器点数，不能抽查符号名**（2026-08-26 实测得出）：按「抽查
-  某个新符号在不在图里」验收会漏掉整张脸缺席的形态。实证：`internal/ledger/api` 包
-  `Facade` 的导出方法源码 **14 个**，图里 `n_ledger_api_Facade_*` 节点只有 **6 个**，
-  缺的 8 个正好是 B156.2 冻结的整张契约面（`GetCard`/`ListActiveCards`/`ListAllCards`/
-  `RecordRoomMessage`/`RecordMessageConsumed`/`EventsFromAsc`/`BindDriver`/`DriverLease`），
-  而 `graph check` 报 fails=0。行号错了还能靠 `graph sym` 再锚定；符号根本没进图就是
-  `sym` 查不到、`who-calls` 追不出。**判据两条**：①对新建容器逐个比对「源码该类型的
-  导出方法数 == 图里 `n_<容器>_*` 的节点数」；②接口节点比对「`m_*` 的 fields 长度 ==
-  源码 interface 的方法数」（接口方法在图里是 field，不是节点——按名字查必然落空）。
-  归属已查清：`125b5c360` 的 charter-2 视图里只声明了 `m_ledger_api_Facade` 类型节点与
-  `k_ledger_api_Facade` 容器，方法节点从未被声明，非某一轮 absorb 吞掉。
-  来源：`specs/b156.3-contract-ledger.md`，台账㊳。
-- **清掉陈旧域声明 `codegraph/domains/d_orchestration.json`**：它声明的域在图里不存在
-  （图里叫 `d_coordination`）。仓内 `go run . graph validate`（`charter/graph v0.8.0`，
-  `TestRepoContractGate` 用的那份）不报，较新的独立 `codegraph` 二进制会报
-  `[decl d_orchestration] 领域不在图 domains 段中`。**跨会话报图读数时要点名用的是哪份
-  工具**——两份严格度不同，读到的图却一致，最容易造出「他那边红我这边绿」的伪矛盾。
-  来源：同上。
-
 - **被依赖子系统的实现迁进标准结构**：B156.3 按用户 08-26 的架构硬约束只建薄 api
   门面（`d_execution_host` 进程承载、`d_sessions` PTY），包住既有实现不改内部；
   **实现本身的迁移是后续的活**（绞杀式还债、升格随卡走）。与 B156.2 同源条目合流：
@@ -437,39 +393,10 @@ review 对目标 75607559 的 1 major + 3 minor 全部作为后续核销项记�
   worktree 时顺手 `git branch -D`。
 ## 来自 B231 扫描补职责面（2026-08-24）
 
-- **符号级漏建残余 33 个**：`cmd/`+`internal/` 范围 1993 个函数/方法声明里 33 个不在图中
-  （1.7%），其中 6 个是导出符号：`internal/client/client.go#CardStep`、
-  `internal/ledgerstep/runner.go#ResolveNode`、`internal/executor/turn/text.go#FinalText`、
-  `internal/executor/turn/timing.go#PauseWaiting`/`Resume`、
-  `internal/config/config.go#PlatformInvariantsEnabled`。本轮只把判据写进配方
-  （「符号级完整性自检」），补建留给下一次重扫。来源：B231 协调者验收实测。
-- **6 个零节点容器**：`k_codegraph_Target`/`k_codegraph_fn`/`k_codegraph_model`/
-  `k_svc_Server`/`k_svc_model`/`k_web_model`，是 `internal/agentd/testdata/codegraph-repo`
-  被 target 排除后留下的残骸，B231 之前就存在。`check` 只统计有节点的容器
-  （`assignedContainers 233 = viewContainers 233`），所以它们对执法完全隐形。
-  配方已加「零节点容器不入图」，清理随下一次重扫。来源：同上。
-- **6 个非 card 族 CLI 父入口仍标 `unscanned`**：`e_cli_decision`/`graph`/`template`/
-  `workflow`/`project`/`service`。B231 的禁用兜底只覆盖 card 族，这几个按 plan 允许保留；
-  它们不参与预算重定标。来源：`plans/2026-08-24-b231-scan-plan.md` 本轮特别要求第 3 条。
 - **终态事件丢失第二次实测**（叠加到「来自 B185 spec」那条）：2026-08-24 B231-2 重扫
   的 codex 任务在最后一次提交获批后静默 **76 分钟**（与 2026-08-23 那次同样是 76 分钟），
   executor 进程仍存活、`resume` 报「当前 executor 不支持会话对账」，最终靠
   `resume --force` 收口。同一形态第二次出现，不再是偶发。
-- **基线合并即滞后（B228 的实测刻度）**：B231-2 扫描基准是 `4454c5cc`，合并进 main 的
-  同一刻，main 已比它多出 35 个源码文件的改动（B156.1 那批，+587/−846）。也就是说
-  「全量重扫」的新鲜度只在扫描那一刻成立，走完流程就已经旧了。这不是本刀的缺陷，
-  是 B228（基线滞后主线）的量化证据：靠人工整轮重扫追主线在结构上追不上，
-  出路是流程副产物保鲜（每张卡的视图 diff 随合并 absorb）而非周期性重扫。
-
-## 来自 C1.9 查看器二期收尾（2026-08-24）
-
-- **原型基准站 codegraph 页与真实前端在下钻形态上漂移**：二期形态确认走的是轻量 fork
-  `prototypes/codegraph-phase2/pages/codegraph2.html`（294 行，只演示嵌套递归），
-  而 `prototypes/base/pages/codegraph.html` 是 2916 行的一期真数据版。C1.9 合入后
-  真实前端已是嵌套同构下钻，base 那页没跟上。直接拿 294 行的 mock 覆盖 2916 行的
-  真数据页是降级，所以本次刻意不回灌，改记为债：下次动这页时按真实前端重镜像
-  （或反过来，承认 base 只镜像首层全景、下钻形态以真实页面为准）。来源：C1.9 收尾
-  基准回灌一步的裁决。
 
 ## 来自「修图」实测（2026-08-24，B233 前置排查）
 
@@ -523,17 +450,6 @@ review 对目标 75607559 的 1 major + 3 minor 全部作为后续核销项记�
 - **（已有卡，不重复取号）** 编排状态持久化可恢复 = **B225**；B239 已于 2026-08-25
   合入 main，它从「永久挡死」降级为「丢一轮」——但**各机 agentd 重新构建重启后才生效**。
 
-## 来自 C1.7 finish 的基准回灌（2026-08-25）
-
-- **两份已合分支的视图 diff 从没回灌**：`codegraph/diffs/cards-B192-charter.json` 与
-  `cards-B205-charter.json` 的分支都已是 main 的祖先，diff 却还留在盘上——说明这两张卡
-  的 finish 第 4 步（absorb）被跳过了。**不要顺手 absorb**：它们成文于 8-23，此后基线被
-  C1.7 的回灌改过，内容是否仍与主线一致要先核；核过再 absorb，核不上按 recon 判据裁 fail
-  查根因。来源：C1.7 finish 的基准回灌顺带发现。
-- **C1.7 自己的图对账被跳过了一次**：分支删了十份文件、留了 42 个悬空符号在基线里，一路
-  合进 main 没人拦。卡流的「图对账」列只在协调者记得点火时才走——**没有机械执法**。
-  下一步值得让 finish 前的门检查「本分支删改过的文件是否在图里还有符号」。
-
 ## 来自 B229 部署前置的实测（2026-08-25，协调者本机核过；同日更正，见下）
 
 > **更正（2026-08-25 晚）：本节原来的结论是错的，且错在最贵的方向——它会让人为升级去等一个根本不必等的窗口。**
@@ -576,10 +492,7 @@ review 对目标 75607559 的 1 major + 3 minor 全部作为后续核销项记�
 
 ## 来自 C1.11 finish 的残余（2026-08-25）
 
-- **声明覆盖停在 2/23**：迁移后 `codegraph/domains/` 仍只有 `d_orchestration` 与 `d_workspace` 两份声明，而 best 有 23 个域。这是本期的**诚实结论**不是缺口遗忘——spec 明确拒绝为凑覆盖率生成空承诺。补齐其余 21 个域的声明是**本期不做、后续要做**，每份都要有真实的职责句、带测试锚的不变式，写不出来就别写。
-- **`d_workspace.json` 的职责句可能有跨域残留**：键已是 best 顶层 id 所以本期零改动，但其职责文本里的「工作台启动项配置」一类表述可能实际属 `d_policy` / `d_web_workbench`。要动它得重走一次归属核对，不是文字润色。
-- **C1.11 的两条真机项由 CI 结论兜底，未单独验**：(a) Windows/macOS 文件系统对 `codegraph/domains/` 存在性、权限、大小写的差异——本次只在 macOS 上实测；(b) CI runner 上 desktop tidy 门通过后，其后的 Windows 交叉编译、Windows vet、install.sh 三步是否**真的执行而非 skipped**。两条都会在本次合并推上去后由 CI 自然给出结论，届时若为 skipped 需回头处理。
-- **前端消费 `decls` 未实现**：宿主已供上 wire，域页如何渲染声明归 C1.10 的后续，本卡不冒充完成。
+- **C1.11 的真机项由 CI 结论兜底，未单独验**：CI runner 上 desktop tidy 门通过后，其后的 Windows 交叉编译、Windows vet、install.sh 三步是否**真的执行而非 skipped**。会在本次合并推上去后由 CI 自然给出结论，届时若为 skipped 需回头处理。
 
 ## 来自 B227 spec 的残余（2026-08-25，协调者本机实测）
 
@@ -634,13 +547,6 @@ review 对目标 75607559 的 1 major + 3 minor 全部作为后续核销项记�
   真要做，形态是 agentd 启动时扫 `TMPDIR/handoff-empty-hooks-*` 并删掉，注意别误删同机
   另一个在跑的 agentd 实例的目录（判据得比前缀更强，比如带 pid 且校验该 pid 不存活）。
 
-- **执行机上装 codegraph（B227 图对账暴露）。**linux-01 没有 codegraph 二进制，
-  图对账节点跑到 `validate` / `sym` 时是 `command not found`，节点仍判 pass 并如实记了原始错误，
-  但**「视图与真代码对不对得上」这一步实际是空的**。B227 这轮由协调者本机补跑（六个节点
-  anchor 全 ok、check 零新增违规），但下一张卡不会自动有人补。
-  形态有两条：给执行机装 codegraph，或让 recon 纪律块在工具缺失时判 `needs_human` 而不是 pass
-  ——后者更稳，因为前者会随新执行机接入反复失效（参见 opencode 不在非登录 shell PATH 的旧坑）。
-
 ## 来自 B249 spec（2026-08-25，权限判据降噪）
 
 - **评估下线廉价模型审批者**：B249 的白名单只吃掉可枚举的安全形态，长尾仍交给 approver。
@@ -667,13 +573,6 @@ review 对目标 75607559 的 1 major + 3 minor 全部作为后续核销项记�
   `git merge-base --is-ancestor` 才查出来，本地合并后重做验收（21/21 行为判据绿）。
   **可做的**：`card dispatch` 或 finish 阶段对「卡 spec 里点名的前置卡」做一次祖先检查。
   尚未取号，需要时 `handoff card add`。
-- **contract 节点给 `codegraph/target.json` 写 entries 时用了函数符号名**
-  （`executor.TaskTmpDir`），而该字段的语义是**容器 Label**（判定见 charter
-  `graph/codegraph/check.go`：逐条比对 `Container.Label`，无跳过分支）。后果是必然在
-  review 阶段撞 dead-entry、多烧一整轮 implement + review。基线里其余 9 条 entries
-  全是容器级形态（`ledger.Store`、`proto 实体`、`ptyhost 实体` 等），无一函数符号。
-  **归属 charter 仓 = C13**（2026-08-25 建卡，待办）：contract 节点 skill 该给出这条判据，
-  改完跑 `scripts/regen_discipline.py` 同步纪律块。不是 handoff 仓的改动。
 - **（已有卡，不重复取号）** 审批者对沙箱层级完全失明 = **B252**；`card --attach`
   按 path 去重忽略 kind = **B250，已于 2026-08-25 合入 main**（附件身份改 (kind, path)）；
   执行者隔离层 = **B247**。
@@ -716,7 +615,6 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 
 - **顺序拉起填不满 `launch_queue`**：协调者小队 `max_concurrency=1` 时，第一次 `POST coordinator/launch` 200 后立即第二次仍 200 新 session，`GET /api/queue` 空。名额在 launch HTTP 返回时就归还（K5 `releaseSchedulingBinding` 与 implement 无 Verdict 同款）。排队 UI 能呈现快照，但顺序满员不会入队。要验「横带有行」得并发双发或改占用寿命。来源：B282 acceptance 真机。
 - **`TestWriteTaskEnvOmitsModelSectionWhenEmpty` 吃本机 grok 配置**：host grok 的 `[models] default=grok-4.6` / `default_reasoning_effort` 漏进任务级 config.toml（日志 `default_from=authority`）。acc 基线同红，linux-01 无此配置故绿。不是 B282 引入，测试未隔离权威 grok 配置。
-- **`best.json` 未声明 `k_web_api_scheduling` / `k_web_api_scheduling_model`**：B282 视图 absorb 后 `check` fails 仍空，多 2 条 `container-unplaced`。L3 轻档零新增契约，不改 best.json；归属下次 contract/best 标定。
 
 ## 来自 B292 spec（2026-08-29）——本期不做、后续要做
 
@@ -868,7 +766,6 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 - **B393 · plan 口径未同步**：`plans/b393-plan.md` §5/T2.3 仍写「同卡同一 IgnitionRequest 的 2s 重试共享同一 roundID」，未同步 spec r2 的「同卡换节点=新请求、新开一轮」边界。来源：B393 review-5 minor。
 - **唤醒假失败标记**：17:29:53 落 `needs_human`『协调者唤醒失败：resume 与重建均不可用』，与 17:29:54 起成功收口的唤醒半回合并存（本机 agentd 17:30:15『自动化事件消费轮完成 processed=1, escalated=false』）。疑为并行消费者/认领路径的假失败标记，归 B389 面。来源：B393 验收真机。
 - **载体/模型可靠性（本轮实测）**：runner 小队缺省模型 `commandcode/xiaomi/mimo-v2.6-flash` 两次事故——B393 implement 第 4 轮『回合结束但零文本产出』、B395 图对账首轮 `ContentFilterErr` 连拒两次；`opencode-go/*` 前缀在本机凭据下 403（『An active OpenCode Go subscription is required to use Go models』）。跨机复用模型名前须核对本机订阅，缺省载体模型需评估稳定性。来源：B395 图对账三次重派记录（卡 B395）。
-- **图视图命名与分支不一致**：B395 视图落在 `codegraph/diffs/cards-B395-charter-5.json`（执行者所选名），其所在分支为 `cards/B395-charter-6`。absorb 前建议核对命名与分支的对应关系。来源：B395 图对账节点产出（`4c874ca0`）。
 
 ## 来自 B382 spec（2026-09-22，本期不做、后续要做）
 
@@ -942,11 +839,6 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 - **Android 壳深色模式主题支持**：B419 止血方案为钉死 Light；真正的 dark 主题（values-night 变体 + 动态背景色）留后续期。来源：B419 根因注记。
 - **移动端 bundle 服务的凭据卫生**：验收期间为免扫码配对在局域网明文 HTTP 提供 bundle（60s 票据窗口 + 验收后即停），如后续复用该形态需改为一次性 token 取票或走既有 QR 通道。来源：B417 真机验收执行备注。
 
-## 来自 B379 spec（2026-10-02，本期不做、后续要做）
-
-- **diff 烙基线指纹**：视图 diff 生成时记录基线 scannedAt/commit，absorb 时对不上即拒——把「diff 挂在已漂移基线上」从吸收期显式拒绝提前到生成期。触发条件：守卫拒绝率显示对账成本失控时提前。来源：B379 spec 弃选。
-- **codegraph CLI 内建扫描命令**：分支视图产出收进工具（现在由执行侧扫描纪律手工产出），与基线指纹配套。来源：B379 spec 弃选。
-- **重扫扫描配方的边提取保真度**：取代组 33 条分支时态边未被 09-14 重扫复现（B233.1–.5），且 internal/agentd/sessionsapi.go 等 B358 特性文件在基线 0 节点（台账 §6.3 覆盖债）——同族缺口，修复途径是对 main 的新鲜全量扫描并核对配方；B379 收口时 validate --stale 存量 1165 条亦归此修复（预 1215，本卡对账净减 50）。来源：B379 spec OOS / plan 节点台账 §6.3 / §7.13。
 ## 来自 B383 spec（2026-09-28，本期不做、后续要做）
 
 - **跨任务同类指纹记忆**：拍板 B 选 a（静态判据扩容承接）后被否决的 b 案——动 schema/新事件、TTL 与快照版本语义、deny 不可记忆；若静态扩容落地后同类重复升级仍痛，从本条重走 spec。来源：`docs/superpowers/specs/b383.md` §3 WP3。
@@ -956,12 +848,6 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 ## 来自 B383 acceptance（2026-10-05，本期不做、后续要做）
 
 - **带文本拒绝终局的兜底提问**：模型在被拒前输出过文字时，回合以文本终结走 git 兜底提问——一次拒绝仍产生第二次人工往返（两次探针实证）。v6 §S3 的收口范围是「空回合」；带文本形态若要收口（如「回合因被拒终结即转 result，不管文本」），需重走 spec 定语义（文本内容会丢给谁、与 B21 零文本报告的边界）。来源：`docs/superpowers/ledgers/ledger-b383-spec.md` #70。
-
-
-## 来自 B432 真机验收（2026-10-11，图覆盖债）
-
-- **iOS 原生壳图覆盖**：当前 codegraph 未命中 PushRegistrar，Swift 壳的机器选择、通知授权/呈现与点击路由仍靠真码、XCTest 和真机轨迹核对。本轮未将 Swift 纳入图扫描，不以 Go 图闸冒充原生调用关系已覆盖。来源：docs/superpowers/ledgers/b432-acceptance-ledger.md「图覆盖债」。
-- **APNs Go 路径图覆盖**：实现轮已记录 `PushFanout`、`PushSender`、`APNsSender`、`registerPushRoutes`、`pushBadgeCount`、`collectInboxItems`、`RegisterPush` 未入图，且 baseline 的 `handleInbox` 读数陈旧。本卡没有产出图视图 diff，收尾不作空 absorb；后续按真实调用关系补覆盖。来源：docs/superpowers/ledgers/b432-implement-ledger.md「图覆盖债」。
 
 ## 来自 B433 真机复验（2026-10-11，公共发布缺口）
 
@@ -986,3 +872,7 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 - **给 claude 开无头协调能力（`coordination` 能力位 + Launch/Resume）或用 `claude --bg` 后台会话当协调者**：用户 2026-10-16 两次弃选（只要桌面端会话形态）；`--bg` 本机已验可无人值守拉起（台账 `6184b87b`），若将来要不依赖桌面端的协调者再重走 spec。来源：同上弃选。
 - **handoff 移动壳内查看/进入桌面端协调者会话**：今天靠 Claude 手机端 Remote Control；要 handoff 自己的面需先有会话 id 映射。来源：同上 Out of Scope。
 - **定时巡场兜底**：桌面端本地定时任务每 N 分钟开一场新会话扫账本，作拉起器缺席时的无人值守兜底；B434 r2 弃选为主路径，保留为可选。来源：`docs/superpowers/specs/b434.md` 弃选。
+
+## 来自 B436 finish（2026-10-18，代码图消费侧删除）
+
+- **账本纪律块 `charter-recon v3` / `charter-story-recon v1` 待下架**：`handoff discipline` 只有 `get / list / put`，没有删除或下架命令；流 v14 已不引用它们，但 `discipline list` 仍列出。需要给 `discipline` 加下架能力后再清。来源：B436 spec Out of Scope。
