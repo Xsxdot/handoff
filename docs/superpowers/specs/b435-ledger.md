@@ -281,3 +281,63 @@ WARN 原文 internal/collab/sessions.go:393-394：`log().Warn("会话成员身�
 - `gofmt -l internal/proto` 空；`go build ./...` 无输出；`go test -count=1 ./internal/proto/ ./internal/collab/...` → `ok internal/proto 1.291s`、`ok internal/collab 1.730s`、`ok internal/collab/room 1.082s`；`go test -count=1 -run TestB435IsHumanAuthor -v ./internal/proto/` → PASS。
 - 视图 diff 重生成：`mkdiff.py` 加 `n_proto_isCLIHumanActor` 与边 → `16 added; 4 modified; 2 edges`；`codegraph validate` → `issues: null`；`resolve --doc b435-contract.md` → 12 锚，0 坏锚。
 - 补签提交：`git commit -q -m "docs(B435): contract r2 补签…"` → `git log --oneline -1` = `4d5bc514 docs(B435): contract r2 补签——按 spec r3 裁决补 R1–R3 与 D-B 条目`（历史读数；amend 一次收进本行，hash 会变，不回写）。未 push。
+
+## 七、breakdown 节点台账（2026-10-18，breakdown 出稿者 subagent；工作树 `cards+B435-charter-1` @ `0004b815`）
+
+边干边记：命令、原始读数、放弃的尝试、判断。出稿不提交（拍板即提交归协调者）。
+
+### 七.1 入口核对
+- Skill 工具加载 `charter:breakdown` 失败（`Unknown skill: charter:breakdown`）；`~/.claude/skills/charter/skills/` 与 `~/workspace/charter/skills/` 均无 `breakdown/`。改读 charter 仓 worktree 副本 `~/workspace/charter/.claude/worktrees/competent-lalande-a0570f/skills/breakdown/SKILL.md`（三个 worktree 副本 md5 同为 `e334eb40210e2b1af2ca49e7ad7f9fdb`，含 r4 2026-10-17「首故事子卡」口径）。`charter:architecture-law`、`charter:defect-families` 经 Skill 工具正常加载。**发现**：已装 charter 套件缺 breakdown 节点 skill（安装漂移，非本卡问题，记此备查）。
+- `git log --oneline -1` → `0004b815 docs(B435): contract r2 补签——按 spec r3 裁决补 R1–R3 与 D-B 条目`；`git status --short` 空。
+- 状态可查：spec 头「上游状态：r3 已批准范围内修订（r2 用户 2026-10-18 批准）」；contract 头「上游状态：已批准」「冻结状态：本提交冻结…冻结条目 137 → 145」。
+- 已读：`b435.md` 全文、`b435-contract.md` 全文（535 行）、本台账 §一–§六。
+
+### 七.2 规模读数（架构法第三条判据；scratchpad `pkgstat.py`，只计非测试 .go）
+- `internal/agentd` files=64 lines=20511 无子包（信号 2 命中；信号 3 处于 2 万下沿——B434 拆解时 19,037，本卡前已 +1.5k）；`cmd` files=61 lines=12286 无子包（信号 2），`card*` 前缀 13（信号 1）；`internal/ledger` 33（<40）；`internal/collab` 3 + 子包 room/cursor/client；`internal/keystone` 2；`internal/proto` 30（<40）；`internal/skill` 5。
+- 关键文件行数：`desktopwake.go` 1518、`wakeconsumer.go` 954、`scheddrain.go` 702、`coordapi.go` 470、`server.go` 1631、`roomsapi.go` 716、`keystone.go` 353、`collab/sessions.go` 643、`collab/service.go` 980、`collab/recipients.go` 50（T0 空壳）、`ledger/binding.go` 428、`ledger/seat_desktop.go` 297、`ledger/sessions.go` 381、`session_candidates.go` 184、`session_delivery_cursor.go` 52、`ledger/store.go` 622、`cmd/card_wait.go` 401、`cmd/session.go` 915、`cmd/card_driver.go` 211、`cmd/card.go` 608、`cmd/card_seat_desktop.go` 216、`cmd/launcher.go` 302、`cmd/project.go` 398、`ledger/api/api.go` 336。
+
+### 七.3 图
+- `go run …codegraph` 带 `github.com` 串被会话 git 守卫拒（同 §五.3 先例）；改为不带 cd 的 `go build -o <scratchpad>/codegraph github.com/Xsxdot/charter/graph/cmd/codegraph`（退出 0，无输出）后直调。
+- `codegraph --repo . validate` → containers 354 / domains 26 / edges 7037 / nodes 5625 / issues null / views [cards-B383-charter, cards-B435-charter-1]。
+- `best.json` 顶层域类型实读：logic = d_orchestration、d_protocol、d_ledger、d_collab、d_cli、d_web、d_policy、d_scheduling、d_keystone；boundary = d_gateway、d_workspace、d_execution、d_sessions、d_transport、d_maintenance。子域 d_execution_host（`k_hostapi_*`）、d_web_contract（`k_web_api_*`）、d_web_cards（`k_web_app_cards`）、d_web_command（`k_web_app_rooms`）、d_web_shell（`k_web_app_lib`）。`k_skill_*` 归 d_maintenance；`k_agentd_*` 归 d_gateway；`k_scheduling_*` 归 d_scheduling。
+- `codegraph --view cards-B435-charter-1 who-calls Service.MessageWakeTargets` → 只回 d_gateway 两个（`roomMessageWakeEvents` :337、`automationWakeEvents`），**仍漏** `cmd/session.go#sessionWaitMatch`（契约 §12 第 12 条图覆盖债复现）。`who-calls Server.resolveWakeCard` → `automationWakeEvents` :301、`desktopNeedsHumanWakes` :1043 等。
+
+### 七.4 代码读数（grep/sed，本树行号）
+- `desktopwake.go` 函数全集 `grep -n '^func '`：保留候选 = `writeDesktopLetter` :437、`writeDesktopLetterOnce` :471、`sweepDesktopLetterTmp` :512、`desktopClock` :542、`claudeContinueURL` :551、`PlatformDesktopOpener` :571、`SetDesktopOpener` :581、`openDesktopDeepLinkDarwin` :590、`desktopMailboxHome` :976、失败段 `desktopWakeRetryDelay`/`desktopWakeRound`/`recordDesktopWakeFailure`/`clearDesktopWakeStall` :1126-1199（卡键，驻场者侧无现成语义——契约欠账 9）；其余（材料/简报/卡级来信/围栏层/拉起器代开/deliver/needs_human 例外/`wakeDesktopSeat`/`wakeRemoteDesktopSeat`/`renderLauncherLetter`）为退役面。
+- 账本事件常量 `internal/ledger/types.go:49-110`：`card_created` :49、`status_moved` :50、`needs_human` :68、`driver_takeover` :77、`driver_seat_bound` :83、`seat_desktop_set` :88、`room_message` :93、`session_*` :104-110。D8 通知事件表三类有现成事件。
+- DDL：`internal/ledger/store.go` 两方言副本（SQLite :206 起 / PG :396 起），`sessions` :369 无 project 列；加列迁移样式 `ALTER TABLE cards ADD COLUMN driver_source` :608；`seat_desktops` :340、`desktop_launchers` :348（PK=project）。
+- PG 测试默认 skip：`internal/ledger/store_pg_test.go:1-26`「未设 LEDGER_TEST_PG_DSN，跳过 PG 冒烟」；已有 `seat_desktop_pg_test.go`、`registry_pg_test.go`、`mirror_pg_test.go`。→ PG 方言迁移机内默认不验，进真机清单。
+- `BindSeat(`/`RebindSeat(` 调用点（非 binding.go）：约 130 处、30 个文件，其中生产 5 处（`cmd/card_driver.go` 2、`scheddrain.go` 3），其余全是测试 → 若改签名加 mode 参数，扩散到 25+ 测试文件。判断：plan 须选不扩散签名的形状（归 K0 plan，非岔口）。
+- 命令面：`cmd/session.go` `Use: "wait <member>"` :67、`create` :578、`list` :612、`detail` :661、`send` :789、`sessionWaitMatch` :501、`sessionSendActor` :881；`cmd/project.go` `project` :81（add/ls/rm/edit，无 room）；`cmd/launcher.go`、`cmd/card_seat_desktop.go` 整文件退役；`cmd/status.go:87-105` 拉起器段。
+- `internal/client/coordinator.go:81` `DesktopLauncherOpen`、`:113` `DesktopDeliver`；路由 `coordapi.go:52/:55`、`server.go:929`；`server.go:217-250` 桌面端字段（`desktopWakeStall`、`desktopOpen`、`desktopHome`；`desktopState` :236 是薄壳状态，**非** B434 退役面）。
+- `SessionBacklog` 键 `type/member/from_seq/to_seq/hits`（`internal/proto/sessions.go:189-195`）——S8「游标丢失标回放」可由读者按 `from_seq` 判，不需新键（判断，见拆解稿 P8）。
+- web 触点（`grep -rln`）：`web/src/api/{ledger.ts,rooms.ts,scheduling.ts,contract.test.ts,testdata/CardView.json}`、`web/src/app/cards/{CoordinatorPanel.tsx,desktopSeatCopy.ts,CardDrawer.tsx,ListView.tsx}`、`web/src/app/lib/{claudeDeepLink.ts,desktopShell.ts}`、`web/src/app/rooms/{SessionTab.tsx,SessionChat.tsx}`；`ls web/node_modules | wc -l` → 0（本机 tsc/vitest 跑不了，同 §五.4）。
+- skill 文本：`skills/handoff/SKILL.md`；锁文本测试 `internal/skill/skill_text_b434_test.go`、`desktop_rule.go`/`desktop_rule_test.go`。
+
+### 七.5 判断（按出现顺序）
+- **载体缺口**：spec §9 文案「无收件人（@ 指定）」「需 @」「项目无组织者」——契约只冻结了 `NoRecipientReason` 词表（C-209），**没有**把它投影到房间消息视图（d_gateway→d_web）或 `card show` 的载体。查是否为已批准边界内的实现缺口：房间消息视图由 d_gateway 产出、d_web 消费，按本稿切法分属两张卡 → 是独立共享接缝 → 列待拍板 P5（含「退回 contract 补冻结」选项）。
+- **spec D8 与 C-218 冲突**：D8 写「协调者提问（协调者自己 `session send` 项目房间，无 @ 时按 D4 落驻场者）」，但协调者作者身份是席位 `cli:<cli>#<sid>`（非人类，C-201），无寻址 → `non_human_unaddressed`（C-218）→ 驻场者收不到。S6 的触发因此不成立。→ 退回项 R-K1（不是偏好岔口）。
+- **系统通知的惰性创建是死路径**：C-245「无驻场者不发通知」而驻场者必须先有房间，故系统通知永远不会是项目房间的首个写入方；首个写入方只能是 `session sit --project` / `project room`。不改可观察行为（S5 前置就要求组织者已坐下），记边界澄清，不退回。
+- **系统通知恰一次 × 每机一个消费循环**：`scheddrain.go:54-66` 每台 agentd 跑自动化循环；契约 C-243–245 没写哪台发。S5/§10 要求「恰一条」→ 去重机制是岔口（P6）。
+- **Wave 0 与驻场者表**：`Recipients` 判定表第 5 行要读 `SessionResident`；T0 `Facade.SessionResident` 恒报未实现，且契约 C-228 要求错误不得当未命中 → Wave 0 若不落驻场者读路径，匹配函数对一切无寻址人类消息都报错。不能用「恒无驻场者」常量顶替（T0 明令「不报『无驻场者』冒充成功」）。→ P2。
+- **B434 桌面端席位在 Wave 0 后的过渡态**：K0 把 `resolveWakeCard`/`wakeCoordinatorRoundID` 改按 mode 判后，桌面端 bind 席位（= pull）在 S7 落地前要么立刻变暗、要么保留桌面端记录分支到 X 卡一起删。→ P3。
+- **迁移身份缺口**：`seat_desktops` 行的 identity 是席位身份 `cli:claude#<sid>`，`desktop_launchers` 行无身份；C-413 要求驻场者身份为 `user:/agent:` 统一记法 → 存量行无法无损映射为驻场者。→ P4。
+- `cmd/card_wait_test.go#TestB353CardWaitFollowFiltersAndContinues`（:128）的期望序列含 `ledger.EvRoomMessage`（:217，旧卡房间 `Room: cardID` 的 user 消息，:159-163）——C-111 删 room_message 分支后此期望必改（K0 改写清单）。旧卡房间 B358 已只读（`collab/service.go:189` ErrReadOnly），生产上不再产生此类事件，改写不丢行为。
+- `AddressesCard` 引用只剩定义 `collab/sessions.go:256-258` 与 `wakeconsumer.go:336` 一处注释；**无测试引用**（`grep -rln AddressesCard --include=*_test.go` 空）→ C-240 删除无测试连带。
+- `internal/skill/skill_text_b434_test.go`：`TestB434SkillSeatHasAuthorizationRule` :87、`…ClaudeMDSnippetHasAuthorizationRule` :95、`…MainAgentDesktopCoordinate` :113、`…SeatDesktopCommands` :122——前两支随授权规则改写（O2），后两支随 D10 退役（X）。
+- 薄壳：`desktop/internal/shell/external_deeplink.go` + `_test.go`（契约 §7：`/new` 改为被拒）。
+- driver_mode 投影点（照 `DriverSource` 的现有投影点 grep）：`internal/ledger/types.go:157`（Card 字段）、`internal/ledger/cards.go:366`（scan）、`internal/ledger/api/api.go:296`（Facade → proto.Card，keystone 经 `s.ledger.GetCard` 读的就是它）、`internal/agentd/ledgerapi.go:120/:176`（CardView）、`cmd/card.go:562`（`out["driver_source"]` 手搭 map——序列化边界，须同加 `driver_mode`）。
+- **契约 §1.1「四处」之外的来源判定**：`keystone.go:119` `seat.DriverSession == "" && seat.DriverSource == ""`、`keystone.go:251` `Locate` 的 `seat.DriverSource != coordinate`——都落在 C-318 源码守卫的禁令面内（守卫按文件扫 `DriverSource ==`/`!=`）。判断：不是契约缺条（C-318 已覆盖整文件），是 K0 的改写清单必须多列两处；`Locate` 改为「mode=push 才可 attach」，与迁移映射（coordinate→push）等价。记 §2.4 边界澄清。`scheddrain.go:492`、`wakeconsumer.go:541`、`coordapi.go:405` 以 `proto.SeatSource(card.DriverSource)` 作 `ValidateSeat` 实参——传参不在禁令内。
+
+### 七.6 出稿与自检
+- 落盘 `docs/superpowers/specs/b435-breakdown.md`（状态「待拍板」）：待拍板 P1–P12；退回 R-K1（spec D8 × C-201/C-218）；子卡 K0（首故事，Wave 0）/ R / O1 / O2 / X / W / I；S1、S10 指向 K0 不另立卡；行为闭环 17 行；真机清单 20 条；契约 145 条与欠账 13 条逐条归属。
+- `codegraph --view cards-B435-charter-1 resolve --doc docs/superpowers/specs/b435-breakdown.md` 首跑 21 锚，2 个 `file_missing`（`keystone.go#Service.briefing`、`delivery_gate_test.go#TestResolveDeliveryShapeHasNoMemberSet`——写成了短路径）；改为全路径后复跑 → `ok 8 / moved 13`，0 坏锚。
+- 未提交（拍板即提交归协调者）；未建卡、未派发、未跑 `handoff card`；未改任何代码文件。
+
+## 八、协调者拍板：breakdown（2026-10-18）
+
+- 出稿者报 `charter:breakdown` 在 subagent 内 Skill 加载失败、改读 charter 仓副本（md5 一致）；协调者在主会话加载同 skill 成功，内容一致，采信。
+- 裁决：P1 甲 / P2 甲 / P3 甲 / P4 乙 / P5 甲 / P6 甲 / P7 乙 / P8 甲 / P9 甲 / P10 乙优先甲兜底 / P11 甲 / P12 甲；R-K1 → spec r4 勘误（协调者提问显式 @ 组织者），不动 C-201/C-218。
+- P6 理由：`no_recipient` 投影由 d_gateway 产、d_web 消费，是两个工作单元共同依赖的跨进程 wire，按 contract 判据冻结；只补这一条缝，K0 不等补签。
+- P7 理由：甲会让无 agentd 机器上的纯 CLI 驻场者永远收不到通知；乙复用消费循环既有恰一次机制。
+- spec r4：D6/D8/D10 勘误 + §2 增第 ⑤ 缝。拆解稿状态行改「已拍板（2026-10-18）」。
