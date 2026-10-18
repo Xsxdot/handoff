@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/Xsxdot/handoff/internal/client"
 	"github.com/Xsxdot/handoff/internal/config"
@@ -30,9 +31,35 @@ import (
 // 不变式在扇出侧的落点——扇出侧过去从没问过它。
 var ErrNoEndpoint = errors.New("target 既没有 addr 也没有 relay")
 
+// P2P 描述 relay 形态 target 的打洞方式（B438）。零值 = 不打洞。
+// 直连形态（addr）target 完全不读它（spec S4）。
+type P2P struct {
+	// Options 原样交给 relay.WithP2P。
+	Options relay.P2POptions
+	// StartDelay > 0 时 relay 隧道建好后延迟起跳（CLI 一次性进程用，plan P2）。
+	StartDelay time.Duration
+	// ProxyNotice 为真时，真正构造出 relay 形态 Dialer 的那一刻打一次代理绕行
+	// INFO（spec S8，CLI 路径；agentd 在启动时打，不经这里）。
+	ProxyNotice bool
+}
+
+// cliP2PStartDelay：CLI 短命令（status/dispatch）通常几百毫秒内退出，等 5 s 再
+// 起跳就完全不碰 STUN/信令；跑得久的命令（wait --follow）照样升级。
+const cliP2PStartDelay = 5 * time.Second
+
+// P2PFromConfig 是「配置 → relay 打洞选项」的唯一翻译处（CLI 与池共用）。
+func P2PFromConfig(cfg *config.Config) relay.P2POptions {
+	return relay.P2POptions{Enabled: cfg.P2PEnabled(), STUN: cfg.P2PSTUN()}
+}
+
+// CLIP2P 返回 CLI 一次性客户端的打洞方式：延迟起跳 + 代理绕行提示。
+func CLIP2P(cfg *config.Config) P2P {
+	return P2P{Options: P2PFromConfig(cfg), StartDelay: cliP2PStartDelay, ProxyNotice: cfg.P2PProxyNotice()}
+}
+
 // newWithDialer 与 New 同源，额外把 relay Dialer 交给调用方（池要用它预热）。
 // New 是它的薄壳：外部调用方不该拿到 Dialer，那是池的内部事务。
-func newWithDialer(name string, t config.Target, log *slog.Logger) (*client.Client, *relay.Dialer, func(), error) {
+func newWithDialer(name string, t config.Target, pp P2P, log *slog.Logger) (*client.Client, *relay.Dialer, func(), error) {
 	if log == nil {
 		log = slog.Default()
 	}
@@ -42,8 +69,15 @@ func newWithDialer(name string, t config.Target, log *slog.Logger) (*client.Clie
 			log.Error("relay target 的 token 熵不足，拒绝构造", "target", name, "node", t.Node)
 			return nil, nil, noop, fmt.Errorf("target %s: %w", name, err)
 		}
-		d := relay.NewDialer(t.Relay, t.Credential, t.Node, t.Token, "", log)
-		log.Info("target 走 relay 传输", "target", name, "node", t.Node, "relay_url", t.Relay)
+		var opts []relay.DialerOption
+		if pp.Options.Enabled {
+			opts = append(opts, relay.WithP2P(pp.Options), relay.WithP2PStartDelay(pp.StartDelay))
+			if pp.ProxyNotice {
+				log.Info(config.P2PProxyNoticeMessage, "target", name)
+			}
+		}
+		d := relay.NewDialer(t.Relay, t.Credential, t.Node, t.Token, "", log, opts...)
+		log.Info("target 走 relay 传输", "target", name, "node", t.Node, "relay_url", t.Relay, "p2p", pp.Options.Enabled)
 		return client.NewRelay(d, t.Token), d, func() { _ = d.Close() }, nil
 	}
 	if t.Addr == "" {
@@ -59,6 +93,7 @@ func newWithDialer(name string, t config.Target, log *slog.Logger) (*client.Clie
 // 参数：
 //   - name: target 名，只用于日志与错误文案（会原样显示给用户）
 //   - t: target 配置；t.IsRelay() 为真走 relay 隧道，否则直连 t.Addr
+//   - pp: relay 形态的打洞方式（CLI 用 CLIP2P(cfg)；一次性管理调用传零值 = 不打洞）
 //   - log: 日志器；nil 时用 slog.Default()
 //
 // 返回：
@@ -69,7 +104,7 @@ func newWithDialer(name string, t config.Target, log *slog.Logger) (*client.Clie
 // 注意：
 //   - 不发任何网络请求；relay 隧道由 Dialer 首次用到时惰性建立
 //   - 常驻场景不要用它——每次调用都会新建一条 relay 隧道，用 Pool
-func New(name string, t config.Target, log *slog.Logger) (*client.Client, func(), error) {
-	c, _, cleanup, err := newWithDialer(name, t, log)
+func New(name string, t config.Target, pp P2P, log *slog.Logger) (*client.Client, func(), error) {
+	c, _, cleanup, err := newWithDialer(name, t, pp, log)
 	return c, cleanup, err
 }

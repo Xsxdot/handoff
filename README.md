@@ -348,6 +348,28 @@ targets:
     token: "<executor token>"
 ```
 
+**Direct path first, relay as fallback.** A relay target is usable through the relay
+immediately; in the background handoff then tries NAT hole punching (pion/ice; candidates
+are exchanged inside the E2E-encrypted relay session, the relay server needs nothing new).
+If it succeeds, new requests go peer-to-peer (log `p2p 直连已建立`); if the direct path
+dies, new requests fall back to the relay and punching is retried with backoff. Targets
+configured with `addr:` are never affected. Configure it on both sides:
+
+```yaml
+p2p:
+  enabled: true      # default true; false = relay only (executor also declines punching)
+  stun:              # default list below; [] = host candidates only, no STUN queries
+    - stun:stun.miwifi.com:3478
+    - stun:stun.cloudflare.com:3478
+    - stun:stun.l.google.com:19302
+```
+
+STUN/ICE is UDP and does **not** go through `proxy` or `HTTPS_PROXY`: on a machine with a
+proxy configured, agentd logs an INFO line saying so at startup. Set `p2p.enabled: false`
+if everything must stay behind the proxy. **Rolling-upgrade note**: only new agentd builds
+know the `p2p:` key — an older agentd refuses to start on an unknown key. The default is on
+and the key is never written by `Save`, so only add it after the machine runs a new binary.
+
 `relay` and `addr` are mutually exclusive. Relay mode requires a high-entropy token (the
 normal `handoff init` token qualifies), and `handoff pull` uses the Bundle HTTP endpoint
 through the tunnel instead of git-over-SSH. `ws://` is supported only for a local relay test.

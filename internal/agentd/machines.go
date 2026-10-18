@@ -224,7 +224,7 @@ func (s *Server) handleAddMachine(w http.ResponseWriter, r *http.Request) {
 		// 一个没有 Host 的 URL。控制台目前只能新增直连机器（AddMachineReq 没有
 		// relay 字段），relay 形态的新增是另一张单。
 		probeClient, cleanup, newErr := targetclient.New(req.Name,
-			config.Target{Addr: req.Addr, Token: req.Token}, s.log)
+			config.Target{Addr: req.Addr, Token: req.Token}, targetclient.P2P{}, s.log)
 		if newErr != nil {
 			s.log.Warn("新增开发机：无法构造探测客户端", "name", req.Name, "cause", newErr)
 			writeJSON(w, http.StatusBadRequest, map[string]string{
