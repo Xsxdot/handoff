@@ -31,14 +31,14 @@ describe('NodeEditor 用途与验收判据', () => {
   it('已有用户自建用途时保留它并并入候选', () => {
     render(
       <NodeEditor
-        node={{ name: '待审阅', dispatch: true, override: { purpose: 'recon' } }}
+        node={{ name: '待审阅', dispatch: true, override: { purpose: 'audit' } }}
         {...props}
         onChange={() => {}}
       />,
     )
     const purpose = screen.getByLabelText('用途') as HTMLSelectElement
-    expect(purpose.value).toBe('recon')
-    expect([...purpose.options].map((option) => option.value)).toEqual(['', 'recon', 'implement', 'review'])
+    expect(purpose.value).toBe('audit')
+    expect([...purpose.options].map((option) => option.value)).toEqual(['', 'audit', 'implement', 'review'])
   })
 
   it('勾选与取消不注入验收判据分别写 true 与 undefined', () => {

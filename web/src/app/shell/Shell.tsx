@@ -61,7 +61,6 @@ import { TicketsOverlay } from '../overlay/TicketsOverlay'
 import { useGlobalTickets } from '../overlay/useGlobalTickets'
 import { SettingsPage } from '../settings/SettingsPage'
 import { useWebPrefs } from '../settings/useWebPrefs'
-import { CodegraphFrame } from '../codegraph/CodegraphFrame'
 import { CardsPage } from '../cards/CardsPage'
 import { isRunningRow } from '../cards/taskRun'
 import { FlowsPage } from '../flows/FlowsPage'
@@ -896,7 +895,7 @@ export function Shell() {
   // 紧凑视口没有「整页路由」形态：底栏 tab 就是整页的移动对应物。加 !compact
   // 前缀后，移动下 /cards?card=X 这类深链不再触发整页分支，而是由 S9 的
   // CardsPage 覆盖层消费 query（同一组件、同一 useSearchParams）。
-  const fullPageRoute = !compact && ['/cards', '/flows', '/settings', '/machines', '/codegraph']
+  const fullPageRoute = !compact && ['/cards', '/flows', '/settings', '/machines']
     .some((path) => location.pathname.startsWith(path))
   // B369.8（T7）覆盖层 a11y 硬闸的覆盖判据：compact 首页/目录覆盖层盖住工作台
   //（未下钻），或桌面整页路由盖上（fullPageRoute 恒 desktop）。下钻态工作台是
@@ -1031,12 +1030,6 @@ export function Shell() {
     selectProject(project)
     navigate(`/cards?project=${encodeURIComponent(project.name)}`)
     console.debug('shell.project_route', { project: project.name, route: 'cards' })
-  }
-
-  const openProjectCodegraph = (project: ProjectNode) => {
-    selectProject(project)
-    navigate(`/codegraph?project=${encodeURIComponent(project.name)}`)
-    console.debug('shell.project_route', { project: project.name, route: 'codegraph' })
   }
 
   const openedItems = useMemo(() => wb.openedItems.map((item) => {
@@ -1271,7 +1264,7 @@ export function Shell() {
       // B369.10 T3：compact 项目行的主点击落点 = 移动项目详情面（nav 的 project
       // 参数，岔口 1）。桌面不传：行点击维持折叠 toggle，nav.projectId 桌面恒 null。
       onOpenProjectDetail={compact ? (p) => nav.setProject(p.project_id) : undefined}
-      // B369.7 死入口处置：/flows、/codegraph 整页路由只在桌面注册，紧凑下不注入
+      // B369.7 死入口处置：/flows 整页路由只在桌面注册，紧凑下不注入
       // 回调（ProjectTree 据此隐藏按钮并渲染解释文案）；桌面分支原样。
       onOpenFlows={compact ? undefined : () => navigate('/flows')}
       ledgerEnabled={ledgerEnabled}
@@ -1279,8 +1272,6 @@ export function Shell() {
       unlinkedCount={unlinkedTaskIds?.size ?? 0}
       onOpenTickets={() => setOverlay('tickets')}
       onOpenSettings={openSettingsSurface}
-      onOpenCodegraph={compact ? undefined : () => navigate('/codegraph')}
-      onOpenProjectCodegraph={compact ? undefined : openProjectCodegraph}
       compact={compact}
       onAddProject={() => setWizardOpen(true)}
       onEdit={(p) => setEditProject(p)}
@@ -1573,13 +1564,6 @@ export function Shell() {
                 element={<FullPageCover><SettingsPage onClose={() => navigate('/')} /></FullPageCover>}
               />
             )}
-            {/* /codegraph 的 viewer 唯一来源是同源 iframe；它不在 Shell 内复制取数或凭据。 */}
-            {!compact && (
-              <Route
-                path="/codegraph"
-                element={<FullPageCover><CodegraphFrame project={routeParams.get('project') ?? wb.base?.projectName ?? ''} /></FullPageCover>}
-              />
-            )}
             <Route path="/machines" element={<Navigate to="/settings" replace />} />
             <Route path="/tasks/:id" element={<FullPageCover><TaskDeepLink tree={treeState.data} tasks={tasks} onOpen={openTaskTui} compact={compact} /></FullPageCover>} />
           </Routes>
@@ -1630,7 +1614,7 @@ export function Shell() {
                 {nav.tab === 'projects' && (
                   // S2（B426）：compact 项目 tab 换原型卡流 MobileProjectList——
                   // 桌面 ProjectTree 的 compact 复用退役（⌘K 搜索框/树轨/worktree
-                  // 计数/「流程与代码图暂未适配移动端」页脚不再出现在移动端）。
+                  // 计数/「流程暂未适配移动端」页脚不再出现在移动端）。
                   // 数据全部 Shell 已持有（treeState + tasks），零新端点。
                   // relative 容器与 MobileProjectDetail 覆盖层保留（B369.10 的保
                   // 挂载手法不动）：点卡 nav.setProject 下钻、＋添加项目走既有

@@ -98,3 +98,13 @@
 - `internal/client/execution_test.go:135` 「B380 recon 补记」→「B380 对账补记」；`internal/executor/opencode/adapter_test.go:1452` `task-recon-0001` → `task-audit-0001`；`internal/executor/turn/protocol_test.go:86` 删 `|| strings.Contains(lower, "recon")`，review 半句保留。
 - `.gitignore:24`、`.zcodeignore:24` 删 `prototypes/codegraph/`；`mobile/android/README.md:24` 排除清单删 `codegraph/**`。
 - `go vet ./...` → exit 0；`gofmt -l $(git ls-files '*.go')` → 空，exit 0。
+
+### 第 6 步：控制台前端
+
+- `npm --prefix web ci` → exit 0（后台跑，输出 `$TMPDIR/b436-npm-ci.txt`）。
+- `git rm web/src/app/codegraph/CodegraphFrame.tsx` → exit 0。
+- `Shell.tsx`：删 import、`fullPageRoute` 的 `'/codegraph'`、`openProjectCodegraph`、两个传参、`/codegraph` Route 与注释；B369.7 注释（`:1274`）与 B426 注释（`:1633`）去掉代码图字样。
+- `ProjectTree.tsx`：删两个 prop（类型、解构）、项目行「代码图」子钮、dock「代码图」钮、右键「项目代码图」；`rowActionZone`、`onContextMenu`/`onKeyDown` 守卫、compact 行簇条件去掉对应项；注释 `:149,:924,:1421,:1463,:1514` 去掉代码图提法；`GitBranch` 图标 import 随之无引用，删除。mobile-nav-note 文案「流程与代码图暂未适配移动端」→「流程暂未适配移动端」（见「偏离与自主决定」）。
+- `api/client.ts` 删 `fetchCodegraph`、`fetchCodegraphSource` 与两个类型 import；`api/types.ts` 删「代码图」整块（`CgTestRef`…`CgSourceResp`），`DesktopState` 注释块保留。
+- 测试：`Shell.test.tsx` 删「代码图 iframe 对项目名只做 query 编码」（it.each 三例）与「/codegraph 同时隐藏 Breadcrumb/FileTree」两条；plan 未列的另三处同文件断言一并处理（见「偏离与自主决定」）：`:698` 账本关闭用例的肯定对照从「项目代码图」菜单项改为「编辑项目位置」；`:2500-2502` compact 用例删「代码图」钮为 null 断言；`:2515-2523` 桌面零漂移用例删两条代码图在场断言并改名「流程钮在场」。`ProjectTree.test.tsx` 删 prop 透传与 `:1494-1503` 用例里的 graph 回调，用例改为只验 cards/edit。`CardsPage.test.tsx` `图对账`×6 → `最终验收`；`NodeEditor.purpose.test.tsx` `'recon'`×3 → `'audit'`。
+- `grep -rn -i 'codegraph\|代码图' web/src` → exit 1（零命中）。`npm --prefix web run typecheck` → exit 0。`npm --prefix web test` → exit 0，`Test Files 146 passed (146)`，`Tests 1943 passed (1943)`。

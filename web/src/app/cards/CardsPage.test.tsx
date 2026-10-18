@@ -553,12 +553,12 @@ describe('S3 状态 chip 归看板五列（B426，双端）', () => {
     workflows: [{
       name: 'charter', version: 12,
       def: {
-        states: ['待办', 'spec', 'plan', 'implement', 'review', 'acceptance', 'integrate', '图对账', 'finish'],
+        states: ['待办', 'spec', 'plan', 'implement', 'review', 'acceptance', 'integrate', '最终验收', 'finish'],
         board: {
           columns: ['代办', '沟通中', '进行中', '审核中', '结束'],
           state_to_column: {
             spec: '沟通中', review: '审核中', acceptance: '审核中', integrate: '审核中',
-            图对账: '审核中', finish: '结束', 待办: '代办', plan: '进行中', implement: '进行中',
+            最终验收: '审核中', finish: '结束', 待办: '代办', plan: '进行中', implement: '进行中',
           },
           fallback: '进行中',
         },
@@ -652,12 +652,12 @@ describe('B412 合并视图按各流当前版本看板配置归列', () => {
     workflows: [{
       name: 'charter', version: 12,
       def: {
-        states: ['待办', 'spec', 'plan', 'implement', 'review', 'acceptance', 'integrate', '图对账', 'finish'],
+        states: ['待办', 'spec', 'plan', 'implement', 'review', 'acceptance', 'integrate', '最终验收', 'finish'],
         board: {
           columns: ['代办', '沟通中', '进行中', '审核中', '结束'],
           state_to_column: {
             spec: '沟通中', review: '审核中', acceptance: '审核中', integrate: '审核中',
-            图对账: '审核中', finish: '结束', 待办: '代办', plan: '进行中', implement: '进行中',
+            最终验收: '审核中', finish: '结束', 待办: '代办', plan: '进行中', implement: '进行中',
           },
           fallback: '进行中',
         },
@@ -679,8 +679,8 @@ describe('B412 合并视图按各流当前版本看板配置归列', () => {
     // 避免 fetchFlow 解析到 undefined 触发未处理拒绝。
     vi.mocked(ledger.fetchFlow).mockResolvedValue({
       name: 'charter', version: 9,
-      states: ['待办', 'spec', 'plan', 'implement', 'review', 'acceptance', 'integrate', '图对账', 'finish'],
-      nodes: ['待办', 'spec', 'plan', 'implement', 'review', 'acceptance', 'integrate', '图对账', 'finish']
+      states: ['待办', 'spec', 'plan', 'implement', 'review', 'acceptance', 'integrate', '最终验收', 'finish'],
+      nodes: ['待办', 'spec', 'plan', 'implement', 'review', 'acceptance', 'integrate', '最终验收', 'finish']
         .map((name) => ({ name })),
     })
     vi.mocked(ledger.fetchFlows).mockResolvedValue(charterFlows)
