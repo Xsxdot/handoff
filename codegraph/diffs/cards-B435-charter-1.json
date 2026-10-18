@@ -1,7 +1,7 @@
 {
   "view": "cards/B435-charter-1",
   "base": "7f860685752a5d4dea43d38b96441be9437a0565",
-  "summary": "B435 contract Ticket 0：席位驱动模式词表 SeatMode/ParseSeatMode 与 Card/CardView.driver_mode、SessionCard.seat_mode 投影键（③）；收件地址 DeliveryAddress/DeliveryAddressKind、游标键 DeliveryCursorKey、无收件人原因 NoRecipientReason、匹配结果 Delivery、人类作者判据 IsHumanAuthor（②）；匹配函数空壳 collab.Service.Recipients/Matches/defaultRecipient（恒报未实现）；驻场者 DTO SessionResident 与出站接口 LedgerClient.SessionResident（Facade 空壳恒报未实现）；驻场者来信正文 ResidentLetter/RenderResidentLetter（④，正文即 wire 定义）；r3 补签⑤投递投影：房间历史行 RoomHistoryItem（LedgerEvent 平铺 + no_recipient 可省略键）与 SessionSummary.project 可省略键。常量与哨兵不入图。",
+  "summary": "B435 contract Ticket 0：席位驱动模式词表 SeatMode/ParseSeatMode 与 Card/CardView.driver_mode、SessionCard.seat_mode 投影键（③）；收件地址 DeliveryAddress/DeliveryAddressKind、游标键 DeliveryCursorKey、无收件人原因 NoRecipientReason、匹配结果 Delivery、人类作者判据 IsHumanAuthor（②）；匹配函数空壳 collab.Service.Recipients/Matches/defaultRecipient（恒报未实现）；驻场者 DTO SessionResident 与出站接口 LedgerClient.SessionResident（Facade 空壳恒报未实现）；驻场者来信正文 ResidentLetter/RenderResidentLetter（④，正文即 wire 定义）；r3 补签⑤投递投影：房间历史行 RoomHistoryItem（LedgerEvent 平铺 + no_recipient 可省略键）与 SessionSummary.project 可省略键。常量与哨兵不入图。 B435.1（K0）：席位模式列与显式写面 BindSeatMode/RebindSeatMode、迁移 migrateDriverMode；匹配函数落码（Recipients 直调 proto.IsHumanAuthor）；驻场者只读面 Store.SessionResident；agentd 房间唤醒改接 Recipients + seatAddressWake（删 room.IsSessionRoom / MessageWakeTargets 两条旧边）；card wait 房间命中段（SeatMessageCandidatesContext / 游标行 / 坐下下界 + Matches）；删 Service.AddressesCard。图覆盖债：Store.SeatRevisionContext、Store.AdvanceSessionDeliveryCursor 未入基线，相关边未登记。",
   "nodesAdded": {
     "m_proto_SeatMode": {
       "kind": "model",
@@ -262,6 +262,239 @@
       "line": 232,
       "signature": "func (f *Facade) SessionResident(sessionID string) (proto.SessionResident, bool, error)",
       "summary": "SessionResident 读会话房间的驻场者登记（B435）。Ticket 0：恒返回未实现错误。"
+    },
+    "n_ledger_Store_BindSeatMode": {
+      "kind": "func",
+      "container": "k_ledger_Store",
+      "order": 154,
+      "name": "Store.BindSeatMode",
+      "file": "internal/ledger/binding.go",
+      "line": 75,
+      "signature": "func (s *Store) BindSeatMode(id, identity string, source proto.SeatSource, mode proto.SeatMode, bearing SeatBearing) error",
+      "summary": "BindSeatMode 空座原子坐下，同事务写 driver_session/driver_source/driver_mode 三列与坐下事件（B435 Q1 甲显式写面）。"
+    },
+    "n_ledger_Store_RebindSeatMode": {
+      "kind": "func",
+      "container": "k_ledger_Store",
+      "order": 155,
+      "name": "Store.RebindSeatMode",
+      "file": "internal/ledger/binding.go",
+      "line": 135,
+      "signature": "func (s *Store) RebindSeatMode(id, identity string, source proto.SeatSource, mode proto.SeatMode, expect string, bearing SeatBearing) error",
+      "summary": "RebindSeatMode CAS 换绑，同事务写席位三列与换绑事件（B435 Q1 甲显式写面）。"
+    },
+    "n_ledger_validateSeatMode": {
+      "kind": "func",
+      "container": "k_ledger_fn",
+      "order": 31,
+      "name": "validateSeatMode",
+      "file": "internal/ledger/binding.go",
+      "line": 59,
+      "signature": "func validateSeatMode(source proto.SeatSource, mode proto.SeatMode) error",
+      "summary": "validateSeatMode 写面防御：mode 只认 push/pull 两常量，bind 来源不得写 push。"
+    },
+    "n_ledger_legacySeatMode": {
+      "kind": "func",
+      "container": "k_ledger_fn",
+      "order": 32,
+      "name": "legacySeatMode",
+      "file": "internal/ledger/binding.go",
+      "line": 33,
+      "signature": "func legacySeatMode(source proto.SeatSource) proto.SeatMode",
+      "summary": "legacySeatMode 旧名垫片的来源→模式映射（仅测试垫片 BindSeat/RebindSeat 使用）。"
+    },
+    "n_ledger_Store_migrateDriverMode": {
+      "kind": "func",
+      "container": "k_ledger_Store",
+      "order": 156,
+      "name": "Store.migrateDriverMode",
+      "file": "internal/ledger/store.go",
+      "line": 598,
+      "signature": "func (s *Store) migrateDriverMode() error",
+      "summary": "migrateDriverMode 加 cards.driver_mode 列并按来源回填（bind→pull、coordinate→push）。"
+    },
+    "m_ledger_SessionResident": {
+      "kind": "model",
+      "container": "k_ledger_model",
+      "order": 47,
+      "name": "SessionResident",
+      "file": "internal/ledger/session_resident.go",
+      "line": 18,
+      "signature": "type SessionResident struct",
+      "summary": "SessionResident 是 session_residents 一行（会话房间驻场者登记）。",
+      "modelKind": "entity"
+    },
+    "n_ledger_Store_SessionResident": {
+      "kind": "func",
+      "container": "k_ledger_Store",
+      "order": 157,
+      "name": "Store.SessionResident",
+      "file": "internal/ledger/session_resident.go",
+      "line": 29,
+      "signature": "func (s *Store) SessionResident(session string) (SessionResident, bool, error)",
+      "summary": "SessionResident 按会话主键读驻场者；无行 ok=false。"
+    },
+    "n_ledger_Store_seatCandidatesUnaddressedBranchSQL": {
+      "kind": "func",
+      "container": "k_ledger_Store",
+      "order": 158,
+      "name": "Store.seatCandidatesUnaddressedBranchSQL",
+      "file": "internal/ledger/session_candidates.go",
+      "line": 202,
+      "signature": "func (s *Store) seatCandidatesUnaddressedBranchSQL(session string, fromSeq, toSeq int64) (string, []any)",
+      "summary": "席位地址候选的未寻址支（无 mentions 无 reply_to 的会话房间消息）。"
+    },
+    "n_ledger_Store_SeatMessageCandidatesContext": {
+      "kind": "func",
+      "container": "k_ledger_Store",
+      "order": 159,
+      "name": "Store.SeatMessageCandidatesContext",
+      "file": "internal/ledger/session_candidates.go",
+      "line": 228,
+      "signature": "func (s *Store) SeatMessageCandidatesContext(ctx context.Context, identity, session string, fromSeq, toSeq int64, limit int) ([]Event, error)",
+      "summary": "席位地址候选超集：mentions / reply / 未寻址三支 UNION，按 seq 分页（判定交 collab.Service.Matches）。"
+    },
+    "n_ledger_Store_SessionDeliveryCursorRowContext": {
+      "kind": "func",
+      "container": "k_ledger_Store",
+      "order": 160,
+      "name": "Store.SessionDeliveryCursorRowContext",
+      "file": "internal/ledger/session_delivery_cursor.go",
+      "line": 58,
+      "signature": "func (s *Store) SessionDeliveryCursorRowContext(ctx context.Context, key string) (int64, bool, error)",
+      "summary": "读持久交付游标行并区分「无行」。"
+    },
+    "n_ledger_Store_SeatBoundSeqContext": {
+      "kind": "func",
+      "container": "k_ledger_Store",
+      "order": 161,
+      "name": "Store.SeatBoundSeqContext",
+      "file": "internal/ledger/session_delivery_cursor.go",
+      "line": 78,
+      "signature": "func (s *Store) SeatBoundSeqContext(ctx context.Context, cardID, identity string) (int64, bool, error)",
+      "summary": "本卡该身份最近一条坐下/换绑事件 seq（card wait 积压下界，Q2 甲）。"
+    },
+    "n_collab_Service_explicitRecipients": {
+      "kind": "func",
+      "container": "k_collab_Service",
+      "order": 31,
+      "name": "Service.explicitRecipients",
+      "file": "internal/collab/recipients.go",
+      "line": 129,
+      "signature": "func (s *Service) explicitRecipients(msg proto.RoomMessage, replyAuthor string) ([]proto.DeliveryAddress, error)",
+      "summary": "显式寻址（@ / reply_to）解析为席位地址集。"
+    },
+    "n_collab_Service_sessionCardSnapshot": {
+      "kind": "func",
+      "container": "k_collab_Service",
+      "order": 32,
+      "name": "Service.sessionCardSnapshot",
+      "file": "internal/collab/recipients.go",
+      "line": 186,
+      "signature": "func (s *Service) sessionCardSnapshot(sessionID string) ([]proto.Card, error)",
+      "summary": "读会话卡快照（登记了但账本无卡跳过并 Warn）。"
+    },
+    "n_collab_Service_noRecipient": {
+      "kind": "func",
+      "container": "k_collab_Service",
+      "order": 33,
+      "name": "Service.noRecipient",
+      "file": "internal/collab/recipients.go",
+      "line": 209,
+      "signature": "func (s *Service) noRecipient(msg proto.RoomMessage, reason proto.NoRecipientReason) proto.Delivery",
+      "summary": "空收件人结果与 Debug 日志。"
+    },
+    "n_agentd_Server_seatAddressWake": {
+      "kind": "func",
+      "container": "k_agentd_Server",
+      "order": 1930,
+      "name": "Server.seatAddressWake",
+      "file": "internal/agentd/wakeconsumer.go",
+      "line": 382,
+      "signature": "func (s *Server) seatAddressWake(ev proto.LedgerEvent, msg proto.RoomMessage, addr proto.DeliveryAddress) (keystone.WakeEvent, bool, error)",
+      "summary": "按席位模式分流房间命中：push → WakeMessage；pull 有桌面端记录 → WakeMessage；pull 无记录 → 零。"
+    },
+    "m_cmd_cardWaitRoom": {
+      "kind": "model",
+      "container": "k_cmd_model",
+      "order": 25,
+      "name": "cardWaitRoom",
+      "file": "cmd/card_wait.go",
+      "line": 102,
+      "signature": "type cardWaitRoom struct",
+      "summary": "card wait 房间命中段启动时状态（地址、游标键、扫描水位）。",
+      "modelKind": "dto"
+    },
+    "m_cmd_cardWaitItem": {
+      "kind": "model",
+      "container": "k_cmd_model",
+      "order": 26,
+      "name": "cardWaitItem",
+      "file": "cmd/card_wait.go",
+      "line": 109,
+      "signature": "type cardWaitItem struct",
+      "summary": "card wait 合并输出序列的一项。",
+      "modelKind": "dto"
+    },
+    "n_cmd_cardWaitRoomSegment": {
+      "kind": "func",
+      "container": "k_cmd_fn",
+      "order": 9124,
+      "name": "cardWaitRoomSegment",
+      "file": "cmd/card_wait.go",
+      "line": 316,
+      "signature": "func cardWaitRoomSegment(ctx context.Context, st *ledger.Store, card ledger.Card, start, since int64, sinceSet bool) (*cardWaitRoom, error)",
+      "summary": "房间命中段开关与起点（pull 席位 + 卡属会话；since / 游标行 / 坐下事件 / 启动 MaxSeq）。"
+    },
+    "n_cmd_cardWaitLoop": {
+      "kind": "func",
+      "container": "k_cmd_fn",
+      "order": 9125,
+      "name": "cardWaitLoop",
+      "file": "cmd/card_wait.go",
+      "line": 371,
+      "signature": "func cardWaitLoop(ctx context.Context, st *ledger.Store, svc *collab.Service, room *cardWaitRoom,",
+      "summary": "单 fence 轮询循环：卡事件段与房间命中段同 fence 合并、按 seq 输出。"
+    },
+    "n_cmd_cardWaitCardEvents": {
+      "kind": "func",
+      "container": "k_cmd_fn",
+      "order": 9126,
+      "name": "cardWaitCardEvents",
+      "file": "cmd/card_wait.go",
+      "line": 410,
+      "signature": "func cardWaitCardEvents(st *ledger.Store, members func() ([]string, error), from, fence int64) ([]cardWaitItem, error)",
+      "summary": "成员卡 (from, fence] 事件分页读取。"
+    },
+    "n_cmd_cardWaitRoomHits": {
+      "kind": "func",
+      "container": "k_cmd_fn",
+      "order": 9127,
+      "name": "cardWaitRoomHits",
+      "file": "cmd/card_wait.go",
+      "line": 439,
+      "signature": "func cardWaitRoomHits(ctx context.Context, svc *collab.Service, st *ledger.Store, room *cardWaitRoom, fence int64) ([]cardWaitItem, error)",
+      "summary": "房间命中段 (scan, fence] 分页推进。"
+    },
+    "n_cmd_cardWaitRoomPage": {
+      "kind": "func",
+      "container": "k_cmd_fn",
+      "order": 9128,
+      "name": "cardWaitRoomPage",
+      "file": "cmd/card_wait.go",
+      "line": 452,
+      "signature": "func cardWaitRoomPage(ctx context.Context, svc *collab.Service, st *ledger.Store, room *cardWaitRoom, from, to int64) ([]cardWaitItem, int64, error)",
+      "summary": "一页候选在席位状态版本护栏内判定，版本变化整页重读。"
+    },
+    "n_cmd_cardWaitRoomMatch": {
+      "kind": "func",
+      "container": "k_cmd_fn",
+      "order": 9129,
+      "name": "cardWaitRoomMatch",
+      "file": "cmd/card_wait.go",
+      "line": 503,
+      "signature": "func cardWaitRoomMatch(svc *collab.Service, ev ledger.Event, addr proto.DeliveryAddress) (bool, error)",
+      "summary": "解码候选并经 collab.Service.Matches 判定是否命中本卡席位地址。"
     }
   },
   "nodesModified": {
@@ -629,7 +862,9 @@
       "modelKind": "dto"
     }
   },
-  "nodesDeleted": [],
+  "nodesDeleted": [
+    "n_collab_Service_AddressesCard"
+  ],
   "edgesAdded": [
     [
       "n_proto_IsHumanAuthor",
@@ -638,9 +873,222 @@
     [
       "n_proto_IsHumanAuthor",
       "n_proto_ParseMemberIdentity"
+    ],
+    [
+      "n_ledger_Store_BindSeat",
+      "n_ledger_Store_BindSeatMode"
+    ],
+    [
+      "n_ledger_Store_RebindSeat",
+      "n_ledger_Store_RebindSeatMode"
+    ],
+    [
+      "n_ledger_Store_BindSeat",
+      "n_ledger_legacySeatMode"
+    ],
+    [
+      "n_ledger_Store_RebindSeat",
+      "n_ledger_legacySeatMode"
+    ],
+    [
+      "n_ledger_Store_BindSeatMode",
+      "n_ledger_validateSeatMode"
+    ],
+    [
+      "n_ledger_Store_RebindSeatMode",
+      "n_ledger_validateSeatMode"
+    ],
+    [
+      "n_ledger_Store_ensureSchema",
+      "n_ledger_Store_migrateDriverMode"
+    ],
+    [
+      "n_ledger_Store_SeatMessageCandidatesContext",
+      "n_ledger_Store_seatCandidatesUnaddressedBranchSQL"
+    ],
+    [
+      "n_ledger_Store_SessionResident",
+      "m_ledger_SessionResident"
+    ],
+    [
+      "n_ledger_api_Facade_SessionResident",
+      "n_ledger_Store_SessionResident"
+    ],
+    [
+      "n_collab_Service_Recipients",
+      "n_proto_IsHumanAuthor"
+    ],
+    [
+      "n_collab_Service_Recipients",
+      "n_collab_room_IsSessionRoom"
+    ],
+    [
+      "n_collab_Service_Recipients",
+      "n_collab_Service_replyAuthorOf"
+    ],
+    [
+      "n_collab_Service_Recipients",
+      "n_collab_Service_explicitRecipients"
+    ],
+    [
+      "n_collab_Service_Recipients",
+      "n_collab_Service_defaultRecipient"
+    ],
+    [
+      "n_collab_Service_Recipients",
+      "n_collab_Service_noRecipient"
+    ],
+    [
+      "n_collab_Service_Matches",
+      "n_collab_Service_Recipients"
+    ],
+    [
+      "n_collab_Service_explicitRecipients",
+      "n_collab_Service_resolveMessageTargets"
+    ],
+    [
+      "n_collab_Service_explicitRecipients",
+      "n_collab_Service_sessionCardSnapshot"
+    ],
+    [
+      "n_collab_Service_defaultRecipient",
+      "n_collab_Service_sessionCardSnapshot"
+    ],
+    [
+      "n_agentd_Server_roomMessageWakeEvents",
+      "n_collab_Service_Recipients"
+    ],
+    [
+      "n_agentd_Server_roomMessageWakeEvents",
+      "n_agentd_Server_seatAddressWake"
+    ],
+    [
+      "n_agentd_Server_seatAddressWake",
+      "n_ledger_Store_SeatDesktopOf"
+    ],
+    [
+      "n_agentd_Server_wakeCoordinatorRoundID",
+      "n_ledger_Store_RebindSeatMode"
+    ],
+    [
+      "n_agentd_Server_launchCoordinatorRoundWithExpect",
+      "n_ledger_Store_BindSeatMode"
+    ],
+    [
+      "n_agentd_Server_launchCoordinatorRoundWithExpect",
+      "n_ledger_Store_RebindSeatMode"
+    ],
+    [
+      "n_cmd_cardBindCmd_RunE",
+      "n_ledger_Store_BindSeatMode"
+    ],
+    [
+      "n_cmd_cardBindCmd_RunE",
+      "n_proto_ParseSeatMode"
+    ],
+    [
+      "n_cmd_cardRebindCmd_RunE",
+      "n_ledger_Store_RebindSeatMode"
+    ],
+    [
+      "n_cmd_runCardWait",
+      "n_cmd_cardWaitRoomSegment"
+    ],
+    [
+      "n_cmd_runCardWait",
+      "n_cmd_cardWaitLoop"
+    ],
+    [
+      "n_cmd_runCardWait",
+      "n_cmd_roomServiceFor"
+    ],
+    [
+      "n_cmd_cardWaitRoomSegment",
+      "n_ledger_Store_SessionOfCard"
+    ],
+    [
+      "n_cmd_cardWaitRoomSegment",
+      "n_proto_DeliveryCursorKey"
+    ],
+    [
+      "n_cmd_cardWaitRoomSegment",
+      "n_ledger_Store_SessionDeliveryCursorRowContext"
+    ],
+    [
+      "n_cmd_cardWaitRoomSegment",
+      "n_ledger_Store_SeatBoundSeqContext"
+    ],
+    [
+      "n_cmd_cardWaitRoomSegment",
+      "m_cmd_cardWaitRoom"
+    ],
+    [
+      "n_cmd_cardWaitLoop",
+      "n_ledger_Store_MaxSeq"
+    ],
+    [
+      "n_cmd_cardWaitLoop",
+      "n_cmd_cardWaitCardEvents"
+    ],
+    [
+      "n_cmd_cardWaitLoop",
+      "n_cmd_cardWaitRoomHits"
+    ],
+    [
+      "n_cmd_cardWaitCardEvents",
+      "n_ledger_Store_EventsFromAsc"
+    ],
+    [
+      "n_cmd_cardWaitRoomHits",
+      "n_cmd_cardWaitRoomPage"
+    ],
+    [
+      "n_cmd_cardWaitRoomPage",
+      "n_ledger_Store_SeatMessageCandidatesContext"
+    ],
+    [
+      "n_cmd_cardWaitRoomPage",
+      "n_cmd_cardWaitRoomMatch"
+    ],
+    [
+      "n_cmd_cardWaitRoomMatch",
+      "n_collab_Service_Matches"
     ]
   ],
-  "edgesDeleted": [],
+  "edgesDeleted": [
+    [
+      "n_agentd_Server_roomMessageWakeEvents",
+      "n_collab_room_IsSessionRoom"
+    ],
+    [
+      "n_agentd_Server_roomMessageWakeEvents",
+      "n_collab_Service_MessageWakeTargets"
+    ],
+    [
+      "n_agentd_Server_roomMessageWakeEvents",
+      "n_ledger_api_Facade_GetSession"
+    ],
+    [
+      "n_agentd_Server_wakeCoordinatorRound",
+      "n_ledger_Store_RebindSeat"
+    ],
+    [
+      "n_agentd_Server_wakeCoordinatorRoundID",
+      "n_ledger_Store_RebindSeat"
+    ],
+    [
+      "n_cmd_cardBindCmd_RunE",
+      "n_ledger_Store_BindSeat"
+    ],
+    [
+      "n_cmd_cardRebindCmd_RunE",
+      "n_ledger_Store_RebindSeat"
+    ],
+    [
+      "n_cmd_runCardWait",
+      "n_ledger_Store_Follow"
+    ]
+  ],
   "projectionsAdded": [],
   "lifecycleAdded": []
 }
