@@ -7,6 +7,7 @@ import { ApiError } from '../../api/client'
 import { addSessionMember, fetchIdentity, sendRoomMessage } from '../../api/rooms'
 import type { RoomHistoryItem, SessionSummary } from '../../api/rooms'
 import { SessionChat } from './SessionChat'
+import { DELIVERY_READ_TIME_HINT, NEEDS_MENTION_COPY, NO_RECIPIENT_COPY } from './deliveryCopy'
 
 vi.mock('../../api/rooms', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../api/rooms')>()),
@@ -352,5 +353,72 @@ describe('B369.10 compact 会话卡横排', () => {
     expect(archived.container.querySelector('[data-testid="session-card-chips"]')).toBeNull()
     const desktop = render(<SessionChat sessionId="session:1" summary={summary()} events={[]} historyExpired={false} historyError="" onSent={() => {}} onOpenCard={() => {}} />)
     expect(desktop.container.querySelector('[data-testid="session-card-chips"]')).toBeNull()
+  })
+})
+
+// B435 ⑤（C-503/504/506、契约 §3.5、D-E；W plan Q8/Q10）：房间页无收件人标注只读服务端
+// no_recipient 键，不按 mentions 自算；读时求值——同一 seq 下一轮不带键即消失。
+describe('B435 无收件人标注', () => {
+  const human = (seq: number, body: string, over: Partial<RoomHistoryItem> = {}) =>
+    event(seq, body, { actor: 'user:sy', ...over })
+  const render6 = (compact = false) => render(
+    <SessionChat sessionId="session:1" summary={summary()} historyExpired={false} historyError="" onSent={() => {}} compact={compact}
+      events={[
+        human(1, '在吗', { no_recipient: 'root_no_seat' }),
+        human(2, '@B1 看看', { no_recipient: 'addressed_unresolved' }),
+        human(3, '谁来', { no_recipient: 'needs_mention' }),
+        event(4, '结构行', { no_recipient: 'structural' }),
+        event(5, '旧房间', { no_recipient: 'not_session_room' }),
+        event(6, 'agent 自言自语', { actor: 'agent:x', no_recipient: 'non_human_unaddressed' }),
+        human(7, '无 @ 也无键的人类消息'),
+      ]} />,
+  )
+
+  it('root_no_seat / addressed_unresolved 标 NO_RECIPIENT_COPY，needs_mention 标 NEEDS_MENTION_COPY（文案取常量）', () => {
+    render6()
+    expect(screen.getByTestId('no-recipient-1')).toHaveTextContent(NO_RECIPIENT_COPY)
+    expect(screen.getByTestId('no-recipient-2')).toHaveTextContent(NO_RECIPIENT_COPY)
+    expect(screen.getByTestId('no-recipient-3')).toHaveTextContent(NEEDS_MENTION_COPY)
+  })
+
+  it('structural / not_session_room / non_human_unaddressed 与缺键行查询不到标注（不自算）', () => {
+    render6()
+    for (const seq of [4, 5, 6, 7]) {
+      expect(screen.queryByTestId(`no-recipient-${seq}`), `seq ${seq}`).toBeNull()
+    }
+  })
+
+  it('标注带读时语义悬停说明（D-E）', () => {
+    render6()
+    expect(screen.getByTestId('no-recipient-1')).toHaveAttribute('title', DELIVERY_READ_TIME_HINT)
+    expect(screen.getByTestId('no-recipient-3')).toHaveAttribute('title', DELIVERY_READ_TIME_HINT)
+  })
+
+  it('compact 布局同样标注', () => {
+    render6(true)
+    expect(screen.getByTestId('no-recipient-2')).toHaveTextContent(NO_RECIPIENT_COPY)
+    expect(screen.getByTestId('no-recipient-3')).toHaveTextContent(NEEDS_MENTION_COPY)
+  })
+
+  it('自方消息同样标注', async () => {
+    render(<SessionChat sessionId="session:1" summary={summary()} historyExpired={false} historyError="" onSent={() => {}}
+      events={[event(1, '@B1 继续', { actor: 'user:sycm', no_recipient: 'addressed_unresolved' })]} />)
+    await waitFor(() => expect(screen.getByTestId('msg-1').className).toContain('items-end'))
+    expect(screen.getByTestId('no-recipient-1')).toHaveTextContent(NO_RECIPIENT_COPY)
+  })
+
+  it('读时求值：同一 seq 下一轮轮询不带键 → 标注消失', () => {
+    const props = { sessionId: 'session:1', summary: summary(), historyExpired: false, historyError: '', onSent: () => {} }
+    const view = render(<SessionChat {...props} events={[human(9, '@B1 看看', { no_recipient: 'addressed_unresolved' })]} />)
+    expect(screen.getByTestId('no-recipient-9')).toBeInTheDocument()
+    view.rerender(<SessionChat {...props} events={[human(9, '@B1 看看')]} />)
+    expect(screen.queryByTestId('no-recipient-9')).toBeNull()
+  })
+
+  it('占位文案不再声称「不唤醒任何人」（Q10 乙：只留「发消息…」）', () => {
+    render(<SessionChat sessionId="session:1" summary={summary()} events={[]} historyExpired={false} historyError="" onSent={() => {}} />)
+    const input = screen.getByRole('textbox', { name: '发送消息' })
+    expect(input.getAttribute('placeholder')).not.toContain('不唤醒任何人')
+    expect(input).toHaveAttribute('placeholder', '发消息…')
   })
 })

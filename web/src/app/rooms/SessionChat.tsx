@@ -8,6 +8,8 @@
 // B358.8 #3：群主与卡列表迁详情抽屉（SessionDetail），拉卡入口在输入框左下工具钮。
 // B406：历史流 401 是终止态（usePoll 停表、data 恒 null）——消息区渲染过期横幅；
 // 「还没有消息」只属于正常拉到的空会话，否则 401 会把空态挂成永久假读数。
+// B435 ⑤：消息下一行按服务端 no_recipient 出投递标注（文案常量与映射归 deliveryCopy.ts），
+// 读时求值——下一轮轮询不带键即消失；占位文案不再陈述唤醒规则。
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { CornerUpLeft, ListPlus } from 'lucide-react'
 import type { KeyboardEvent } from 'react'
@@ -18,6 +20,7 @@ import { errorMessage } from '../lib/format'
 import { cn } from '@/lib/utils'
 import { SessionExpiredBanner } from '../lib/Banners'
 import { logRoom } from './roomLog'
+import { DELIVERY_READ_TIME_HINT, noRecipientLabel } from './deliveryCopy'
 import { applyMention, extractSessionMentions, isSelfActor, memberKindLabel, mentionCandidates, segmentBody, signatureText } from './sessionModel'
 
 export interface SessionChatProps {
@@ -52,6 +55,8 @@ function MessageRow({ event, referenced, highlight, archived, selfMember, onJump
   const self = isSelfActor(event.actor, selfMember)
   const body = typeof payload.body === 'string' ? payload.body : ''
   const replyTo = typeof payload.reply_to === 'number' && payload.reply_to > 0 ? payload.reply_to : null
+  // B435 ⑤：只读服务端读时投影的 no_recipient（D-E），不按 mentions 自算。
+  const deliveryLabel = noRecipientLabel(event.no_recipient)
   return (
     <div data-msg-seq={event.seq} data-testid={`msg-${event.seq}`}
       className={`group flex flex-col rounded-lg p-1 ${compact ? 'mobile-session-message' : ''} ${self ? 'items-end' : 'items-start'} ${highlight ? 'highlight bg-amber-50' : ''}`}>
@@ -87,6 +92,12 @@ function MessageRow({ event, referenced, highlight, archived, selfMember, onJump
           </button>
         )}
       </div>
+      {deliveryLabel !== null && (
+        <span data-testid={`no-recipient-${event.seq}`} title={DELIVERY_READ_TIME_HINT}
+          className="mt-0.5 max-w-full break-words px-1 text-[10px] text-amber-700">
+          {deliveryLabel}
+        </span>
+      )}
     </div>
   )
 }
@@ -306,7 +317,7 @@ export function SessionChat({ sessionId, summary, events, historyError, historyL
           <textarea ref={textareaRef} aria-label="发送消息" value={draft} onChange={(event) => setDraft(event.target.value)}
             onKeyDown={mentionKeyDown} disabled={archived} rows={2}
             className={cn('min-w-0 flex-1 resize-none border-0 bg-transparent px-1.5 py-1 outline-none', compact ? 'text-base' : 'text-sm')}
-            placeholder={archived ? '' : '发消息…（要谁办就 @ 谁；没 @ 的发言不唤醒任何人）'} />
+            placeholder={archived ? '' : '发消息…'} />
           <button type="button" aria-label="发送" onClick={() => void send()} disabled={archived || sending || draft.trim() === ''}
             className={cn('rounded-xl bg-slate-900 px-3 py-1.5 text-xs text-white disabled:opacity-50', compact && 'min-h-11')}>发送</button>
         </div>
