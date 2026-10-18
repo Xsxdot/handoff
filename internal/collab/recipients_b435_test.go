@@ -1,11 +1,11 @@
 // recipients_b435_test.go —— B435 匹配函数接缝的消费方契约断言（契约 b435-contract.md ②）。
 //
-// 锁三件事：导出签名（四个消费方据此独立编译）、默认收件人「≤1」由返回类型保证、
-// Ticket 0 空壳不得返回成功。实现节点落码后删除「空壳」一支，其余保留。
+// 锁两件事：导出签名（四个消费方据此独立编译）、默认收件人「≤1」由返回类型保证。
+// Ticket 0 的「空壳不得成功」一支已随 K0 落码删除（契约 §12 欠账 4）；判定表行为见
+// recipients_decision_b435_test.go。
 package collab
 
 import (
-	"errors"
 	"reflect"
 	"testing"
 
@@ -33,20 +33,5 @@ func TestB435DefaultRecipientReturnsSingleAddress(t *testing.T) {
 		case reflect.Slice, reflect.Map, reflect.Array, reflect.Chan:
 			t.Fatalf("defaultRecipient 第 %d 个返回值是集合类型 %v——默认收件人 ≤1 的形状被破坏", i, ft.Out(i))
 		}
-	}
-}
-
-// Ticket 0 空壳：三个函数都必须报未实现，不得返回任何「成功」形状。实现节点删本测试。
-func TestB435RecipientsShellNeverSucceeds(t *testing.T) {
-	s := &Service{}
-	msg := proto.RoomMessage{Room: "session:1", Kind: proto.RoomMsgUser, Body: "hi"}
-	if d, err := s.Recipients(msg, "user:sy"); !errors.Is(err, errRecipientsNotImplemented) || len(d.Addresses) != 0 {
-		t.Fatalf("Recipients 空壳应报未实现且无地址: %+v, %v", d, err)
-	}
-	if ok, err := s.Matches(msg, "user:sy", proto.DeliveryAddress{Kind: proto.DeliveryResident, Session: "session:1", Identity: "user:sy"}); ok || !errors.Is(err, errRecipientsNotImplemented) {
-		t.Fatalf("Matches 空壳应报未实现且不命中: %v, %v", ok, err)
-	}
-	if _, _, ok, err := s.defaultRecipient("session:1"); ok || !errors.Is(err, errRecipientsNotImplemented) {
-		t.Fatalf("defaultRecipient 空壳应报未实现: %v, %v", ok, err)
 	}
 }
