@@ -886,3 +886,5 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 - **B437 真机残余**：plan §9-6 relay 冷隧道环在连接时限（10s）内能否成功——未验（无授权在 relay 部署、隔离实例占不到 relay 节点名）；§9-7 真实负载下每请求读注册表与对端并发 OneShot 量级——未验；S6「运行中账本不可达 → last-good」只有单测（TestSharedChainReadTimeoutUsesLastGood），隔离实例无法单独掐断到测试库的连接。来源：B437 finish。
 - **协调者 handoff stop 卡派发轮被标成「裁决解析失败」**：B437 两次主动 stop 零提交的 implement 轮，卡上落 comment「裁决解析失败，报文原文：协调者主动中止（handoff stop）」+ needs_human(裁决解析失败)，需手工 needs --clear；应识别主动中止、给独立 reason。来源：B437 协调者。
 - **Mac mini 的 claude CLI 未登录**：`claude -p` → Not logged in，该机 claude 不能当任务执行者或审批环；B437 真机改由 macbook-pro 的 codex 承担他机正面裁决。来源：B437 finish 真机（环境事实，非代码缺陷）。
+- **桌面打洞组装点补测试锁**：`targetclient/pool.go` 的 `P2P{Options: P2PFromConfig(...)}` 换成 `P2P{}`，或 `cmd/agentd.go` 去掉 `relay.WithListenerP2P`，现有测试都不会红（行为只由真机 R1/R5/R6 证实；退化方向是安全的，悄悄全走 relay）。改进：补 Pool 级与 agentd 组装级断言，例如出现第二条 CONNECT（信令），口径同 mobilecore 的 `TestDefaultDialStartsUpgrade`。来源：B438 父卡 review Minor-1。
+- **B437 远程裁决 × 打洞直连的组合覆盖**：长挂的 ApproverDecide 若跑在直连上，直连判死时会断开、被归为「不可达」，链条转到下一环（与「在途流失败同 relay 断线」同形态）。此组合尚无测试或真机覆盖。来源：B438 父卡 review Minor-2。
