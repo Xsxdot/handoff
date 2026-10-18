@@ -22,6 +22,16 @@ import (
 // 在使用方一侧——否则把账本错误类型泄进接口。
 var ErrNotFound = errors.New("collab: 账本对象不存在")
 
+// ErrBadState 是「账本对象状态不允许该写入」（如会话已归档）的会话侧哨兵；实现侧把
+// 账本 ErrBadState 翻译成它（同 ErrNotFound 的归属理由）。B435 R 驻场者写面用。
+var ErrBadState = errors.New("collab: 账本对象状态不允许该写入")
+
+// ErrResidentOccupied 表示会话房间已有驻场者（C-414：一房间至多一名，第二次 sit 被拒）。
+var ErrResidentOccupied = errors.New("collab: 会话已有驻场者")
+
+// ErrResidentNotSeated 表示要请下的身份不是该会话的现驻场者（含无人在座）。
+var ErrResidentNotSeated = errors.New("collab: 该身份不是会话驻场者")
+
 // RoomMessageSnapshot 是账本按 room 与调用方 seq 水位汇总后的消息事实。
 // MessagesAfter 仅表示 seq > caller watermark 的行数，不代表授权或 member unread。
 type RoomMessageSnapshot struct {
@@ -100,6 +110,13 @@ type LedgerClient interface {
 	// SessionResident 读会话房间的驻场者登记（B435 D5，一房间至多一名）；ok=false 表示
 	// 无驻场者（不是错误）。匹配函数的默认收件人与驻场者地址解析只经它读驻场者。
 	SessionResident(sessionID string) (proto.SessionResident, bool, error)
+	// SitResident 登记会话房间驻场者（B435 R `session sit`）：SatAt 由账本填写并随返回值带回。
+	// 会话不存在 → ErrNotFound；已归档 → ErrBadState；已有驻场者 → ErrResidentOccupied（原登记不变）。
+	// 记法校验不在实现侧——调用方（collab.Service.SitResident）是唯一入口。
+	SitResident(r proto.SessionResident) (proto.SessionResident, error)
+	// StandResident 请下会话驻场者（`session stand`）：identity 须等于现驻场者，否则
+	// ErrResidentNotSeated（登记不变）。
+	StandResident(sessionID, identity string) error
 	// BindDriver 绑定/换绑（expect=CAS 前值；实现侧落 EvDriverTakeover 审计）。
 	BindDriver(id, session, carrier, expect string) error
 	// DriverLease 读绑定者活性租约：过期时刻 + 行是否存在。不过滤过期，

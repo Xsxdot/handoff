@@ -42,6 +42,9 @@ type fakeLC struct {
 	errGetSession error
 	errResident   error
 	errEvents     error
+	// B435 R 驻场者写面：记录写调用（校验被拒时必须零写）。
+	sitCalls   []proto.SessionResident
+	standCalls [][2]string
 }
 
 func (f *fakeLC) GetCard(id string) (proto.Card, error) {
@@ -115,6 +118,14 @@ func (f *fakeLC) SessionResident(sessionID string) (proto.SessionResident, bool,
 		return r, true, nil
 	}
 	return proto.SessionResident{}, false, nil
+}
+func (f *fakeLC) SitResident(r proto.SessionResident) (proto.SessionResident, error) {
+	f.sitCalls = append(f.sitCalls, r)
+	return r, nil
+}
+func (f *fakeLC) StandResident(sessionID, identity string) error {
+	f.standCalls = append(f.standCalls, [2]string{sessionID, identity})
+	return nil
 }
 func (f *fakeLC) EventsFromAsc(cardIDs []string, fromSeq int64, limit int) ([]proto.LedgerEvent, error) {
 	f.eventReads++
