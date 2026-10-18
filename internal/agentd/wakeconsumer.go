@@ -705,6 +705,8 @@ func (s *Server) consumeAutomationEventsOnce(ctx context.Context) (processed int
 				"card", ev.CardID, "type", ev.Type, "cursor", from)
 			continue
 		}
+		// B435 O1 旁路（Q6 甲）：项目房间系统通知，在 seen 去重之前；自持 handled 集，无返回值。
+		s.notifyProjectRoom(ctx, ev)
 		s.automationMu.Lock()
 		_, duplicate := s.automationSeen[ev.Seq]
 		s.automationMu.Unlock()
