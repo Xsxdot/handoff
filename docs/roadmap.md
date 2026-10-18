@@ -857,3 +857,5 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 - **账本纪律块 `charter-recon v3` / `charter-story-recon v1` 待下架**：`handoff discipline` 只有 `get / list / put`，没有删除或下架命令；流 v14 已不引用它们，但 `discipline list` 仍列出。需要给 `discipline` 加下架能力后再清。来源：B436 spec Out of Scope。
 - **`cmd` 包 `TestSessionSendActorResolution` 在 Claude Code 会话内（环境有 `CLAUDE_CODE_SESSION_ID`）必红**，`cmd/card_seat.go:68` 读该环境变量；main 上同样复现。需让测试隔离环境变量（t.Setenv 清空）。来源：B436 implement 第 9 步 CMD1 字面首跑。
 - **`internal/client` 的 `TestProductionHTTPClientCallersAreGatewayOnly` 会把嵌套 worktree 扫进来**：它从仓根 WalkDir 找自取 `HTTPClient` 的生产文件，不跳过 `.claude/worktrees/`，主工作树下挂着别的卡的 worktree 时同一文件以不同前缀出现即红（B436 finish 合并后在主工作树实测：列出的全是 `cards+B435/B436` 副本；分支 tip 与纯 `origin/main` 上同测均绿，detach 的干净树见台账）。与 `ci.yml` gofmt 步骤已注明的同一坑。修法：WalkDir 跳过 `.claude/`（或任何含 `.git` 文件的嵌套目录）。来源：B436 finish 合并后全量。
+- **存量 `''` 挂账归属回填**：机器身份收口本期不迁移历史 `''`（用户裁决）；若将来要做，走「属主认领」——各机认领本机 store 里有的 task，同事务改 card_tasks.target、镜像 cursor 与 source_target。来源：machine-identity spec Out of Scope。
+- **设备表凭据轮换 / 吊销流程**：共享设备表存各机连接凭据后，缺换 token、下线机器吊销凭据的流程。来源：machine-identity spec Out of Scope。
