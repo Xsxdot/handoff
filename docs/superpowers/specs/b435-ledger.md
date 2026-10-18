@@ -378,3 +378,12 @@ WARN 原文 internal/collab/sessions.go:393-394：`log().Warn("会话成员身�
 - 出稿核出的上游少算：C-318 守卫面 8 处（契约写 4 处 + 拆解澄清 2 处）；`driver_mode` 投影 6 处 + scan 1 处（拆解 §2.4 第 3 条写 3 处，漏 `internal/ledger/api/api.go#cardWire`，是 keystone 读席位必经路径）；P4 乙过渡分支还须覆盖 `roomMessageWakeEvents`。三项均已进计划，不改上游文档（计划以实数为准，review 按计划核）。
 - C-112 共享游标知悉，落 roadmap。
 - 拟新增 51 支测试、改写 3 支、删 1 支；真机 8 条由协调者执行。
+
+## 九、K0（B435.1）阶段验收与合入（2026-10-18）
+
+- review（独立 opus subagent）pass；Important-1/Minor-3 修复提交 `9c732dc1`、`50cc6694`。
+- 阶段验收真机批 0 由协调者本机执行（plan §7），读数全文在 `docs/superpowers/plans/b435.1-impl-ledger.md`「阶段验收：真机批 0」：K0-1 push 恰一轮续同 session 通过；K0-2 pull `card wait` 一行、零回合通过；K0-4 一根一子 / 两根 `needs_mention` / @子卡 / reply_to 四态通过，`session detail` 与根卡判定一致；K0-5 共享游标顺序不丢、反序丢 B（C-112 知悉项，roadmap「席位地址游标键含卡号」）；K0-PG linux-01 PG 18.6 `handoff_b409_test` 三支 PASS。K0-3 / K0-R / K0-D 未验（需真实 agent 会话 / R 合入后回归 / B434 用户机）。
+- `card accept B435.1 --evidence …` 已落账（生产账本，已验）；发现 **F-RM1** 落 B435.1 note：push 协调者 launch/resume 回合不注入 `HANDOFF_SESSION_CLI/ID`（`resumeTurnRequest` 自 B299 起无生产调用方），协调者无法以席位身份 `session send` 回房间——存量缺陷，非 K0 改动面，S1「协调者回房间」在真 opencode 上会失败。**待协调者/用户裁决**：随 R 批（B435.2）顺手修（注入席位环境变量 + 真机），或单开修复卡。
+- 合入：`git merge --no-ff cards/B435.1-charter-1` → 父分支 `cards/B435-charter-1` 合并提交 **`08c7a158`**；`git merge-base --is-ancestor 3edce8f2 cards/B435-charter-1` 成立。**该提交即其余子卡（R / O1 / O2 / X / W）的共同基线。**
+- 合入后复跑（父分支 `08c7a158`）：`go build ./...` 退出 0；`go test -count=1 -run B435 ./cmd/ ./internal/agentd/ ./internal/ledger/ ./internal/collab/... ./internal/keystone/ ./internal/proto/` 全 ok（cmd 21.9s）。
+- 卡：B435.1 `finish` → `已完成`（生产账本）；B435 note seq 25182 留痕；B435 仍停 `breakdown` 等聚合。
