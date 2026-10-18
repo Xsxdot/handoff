@@ -42,33 +42,42 @@ func (s *Store) CreateSession(title, owner, actor string) (Session, error) {
 	}
 	var session Session
 	err := s.mutate(func(tx *sql.Tx, sink *eventSink) error {
-		next, err := s.nextSessionSeqTx(tx)
-		if err != nil {
-			return err
-		}
-		now := s.timeNow()
-		session = Session{
-			ID: "session:" + strconv.FormatInt(next, 10), Title: title, Owner: owner,
-			Members:   []string{owner},
-			CreatedAt: now, UpdatedAt: now,
-		}
-		members, err := encodeMembers(session.Members)
-		if err != nil {
-			return err
-		}
-		if _, err := tx.Exec(s.q(`INSERT INTO sessions (id, title, owner, archived, members, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?)`),
-			session.ID, session.Title, session.Owner, false, members,
-			s.tval(session.CreatedAt), s.tval(session.UpdatedAt)); err != nil {
-			return fmt.Errorf("写会话 %s: %w", session.ID, err)
-		}
-		payload := map[string]any{"id": session.ID, "title": session.Title, "owner": session.Owner}
-		if _, err := s.appendEvent(tx, sink, "", EvSessionCreated, actor, payload); err != nil {
-			return err
-		}
-		return nil
+		var err error
+		session, err = s.createSessionTx(tx, sink, title, owner, actor)
+		return err
 	})
 	if err != nil {
+		return Session{}, err
+	}
+	return session, nil
+}
+
+// createSessionTx 是 CreateSession 的事务内半边（B435 O1 抽出，供 EnsureProjectRoom 在同一事务里
+// 建会话 + 写绑定复用）：分配会话号、写 sessions 行、落 EvSessionCreated。owner 记为首个显式成员。
+// 调用方负责 owner 非空与事务提交。
+func (s *Store) createSessionTx(tx *sql.Tx, sink *eventSink, title, owner, actor string) (Session, error) {
+	next, err := s.nextSessionSeqTx(tx)
+	if err != nil {
+		return Session{}, err
+	}
+	now := s.timeNow()
+	session := Session{
+		ID: "session:" + strconv.FormatInt(next, 10), Title: title, Owner: owner,
+		Members:   []string{owner},
+		CreatedAt: now, UpdatedAt: now,
+	}
+	members, err := encodeMembers(session.Members)
+	if err != nil {
+		return Session{}, err
+	}
+	if _, err := tx.Exec(s.q(`INSERT INTO sessions (id, title, owner, archived, members, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`),
+		session.ID, session.Title, session.Owner, false, members,
+		s.tval(session.CreatedAt), s.tval(session.UpdatedAt)); err != nil {
+		return Session{}, fmt.Errorf("写会话 %s: %w", session.ID, err)
+	}
+	payload := map[string]any{"id": session.ID, "title": session.Title, "owner": session.Owner}
+	if _, err := s.appendEvent(tx, sink, "", EvSessionCreated, actor, payload); err != nil {
 		return Session{}, err
 	}
 	return session, nil
