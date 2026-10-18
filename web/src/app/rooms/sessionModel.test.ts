@@ -4,7 +4,7 @@
 import { describe, expect, it } from 'vitest'
 import { SESSION_MEMBER_KINDS, type SessionMember, type SessionSummary } from '../../api/rooms'
 import {
-  MEMBER_KIND_LABEL, MEMBER_STATUS_LABEL, RESIDENT_ORGANIZER_LABEL, TIMELINE_KIND_LABEL, memberRoleLabel,
+  MEMBER_KIND_LABEL, MEMBER_STATUS_LABEL, PROJECT_ROOM_BADGE, RESIDENT_ORGANIZER_LABEL, TIMELINE_KIND_LABEL, memberRoleLabel, sessionProjects,
   applyMention, extractSessionMentions, filterSessionsByProject, isSelfActor, memberKindLabel, memberStatusLabel, memberStatusText,
   mentionCandidates, segmentBody, signatureText, timelineKindLabel, totalUnread,
 } from './sessionModel'
@@ -109,6 +109,32 @@ describe('项目筛选（B358.8 #6 纯函数缝）', () => {
   it('无卡会话与映射缺失的卡只归「全部」', () => {
     expect(filterSessionsByProject(sessions, projectOfCard, 'handoff')).not.toContain(sessions[2])
     expect(filterSessionsByProject(sessions, projectOfCard, 'aim')).not.toContain(sessions[3])
+  })
+
+  // B435 Q7（C-510）：会话 → 所属项目名集合 = summary.project ∪ 卡项目；项目房间零卡也归属其项目。
+  describe('sessionProjects 规则表', () => {
+    const room = (id: string, cardIds: string[], project?: string): SessionSummary => ({ ...summaryOf(id, cardIds), project })
+    it.each([
+      ['零卡 + project=p → {p}', room('r1', [], 'handoff'), ['handoff'], false],
+      ['有卡无 project → 卡项目（不回归）', room('r2', ['B1']), ['handoff'], false],
+      ['project=p 且含他项目卡 → 并集', room('r3', ['B2'], 'handoff'), ['handoff', 'aim'], false],
+      ['project=p 且含同项目卡 → 去重', room('r4', ['B1'], 'handoff'), ['handoff'], false],
+      ['零卡无 project → 空', room('r5', []), [], false],
+      ['映射缺失的卡 → 标未知（不编造项目）', room('r6', ['B9'], 'handoff'), ['handoff'], true],
+    ] as const)('%s', (_name, session, names, unknown) => {
+      expect(sessionProjects(session, projectOfCard)).toEqual({ names: [...names], hasUnknownCard: unknown })
+    })
+
+    it('filterSessionsByProject 命中项目房间；非项目房间结果逐例不变', () => {
+      const projectRoom = room('pr', [], 'handoff')
+      const all = [...sessions, projectRoom]
+      expect(filterSessionsByProject(all, projectOfCard, 'handoff').map((s) => s.id)).toEqual(['s1', 's2', 'pr'])
+      expect(filterSessionsByProject(all, projectOfCard, 'aim').map((s) => s.id)).toEqual(['s2'])
+    })
+
+    it('「项目房间」徽章文案（Q7 裁定稿）逐字', () => {
+      expect(PROJECT_ROOM_BADGE).toBe('项目房间')
+    })
   })
 })
 

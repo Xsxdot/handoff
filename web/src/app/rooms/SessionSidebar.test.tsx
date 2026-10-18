@@ -1,11 +1,12 @@
 // SessionSidebar.test.tsx —— 列表行（未读角标/需要你标签/预览）、筛选与拖拽源。
 import { describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import fixture from '../../api/testdata/RoomsFixture.json'
 import type { SessionMember, SessionSummary } from '../../api/rooms'
 import { DRAG_SESSION_MIME } from '../workbench/paneDrop'
 import { SessionSidebar } from './SessionSidebar'
+import { PROJECT_ROOM_BADGE } from './sessionModel'
 
 const cases = fixture as { case: string; summary?: SessionSummary }[]
 
@@ -182,5 +183,25 @@ describe('B369.10 compact 会话首页', () => {
     expect(screen.queryByTestId('session-filter-chips')).toBeNull()
     expect(screen.queryByTestId('session-members')).toBeNull()
     expect(screen.queryByTestId('session-owner')).toBeNull()
+  })
+})
+
+// B435 Q7（C-510/511）：项目房间行带「项目房间」徽章；按项目筛选命中零卡的项目房间。
+describe('B435 项目房间入口', () => {
+  const golden = cases.find((c) => c.case === 'session-summary-golden')!.summary!
+  const projectRoom: SessionSummary = { ...golden, id: 'session:5', title: 'handoff 项目房间', project: 'handoff', cards: undefined, needs_human: false, unread: 0 }
+  const plain: SessionSummary = { ...golden, id: 'session:3', title: '普通会话', cards: undefined, needs_human: false, unread: 0 }
+
+  it('徽章只在 project 非空的行出现', () => {
+    render(<SessionSidebar sessions={[projectRoom, plain]} {...defaultProps} />)
+    const [roomRow, plainRow] = screen.getAllByTestId('session-row')
+    expect(within(roomRow).getByTestId('session-project-room')).toHaveTextContent(PROJECT_ROOM_BADGE)
+    expect(within(plainRow).queryByTestId('session-project-room')).toBeNull()
+  })
+
+  it('按项目筛选命中零卡的项目房间，非项目房间仍只归「全部」', () => {
+    render(<SessionSidebar sessions={[projectRoom, plain]} {...defaultProps} projectFilter="handoff" projectOptions={['handoff']} />)
+    expect(screen.getByText('handoff 项目房间')).toBeInTheDocument()
+    expect(screen.queryByText('普通会话')).not.toBeInTheDocument()
   })
 })

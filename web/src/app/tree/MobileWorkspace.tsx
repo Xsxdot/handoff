@@ -9,6 +9,7 @@ import { locationProblem, machineLabel, workspaceBase } from './ProjectTree'
 import { useTreePrefs } from './useTreePrefs'
 import { sortProjects } from './treePrefs'
 import { formatRelative } from '../lib/format'
+import { sessionProjects } from '../rooms/sessionModel'
 
 interface Props {
   projects: ProjectNode[]; machines: MachineStatus[] | undefined; tasks: Task[]
@@ -67,8 +68,8 @@ export function MobileWorkspace(props: Props) {
   },prefs.projectSort)
   const activeSessions = props.sessions.filter(s => !s.archived)
   const associations = useMemo(() => new Map(activeSessions.map(session => {
-    const names = [...new Set((session.cards ?? []).map(card=>props.projectOfCard(card.card_id)).filter(Boolean))]
-    const unknown = (session.cards ?? []).some(card=>!props.projectOfCard(card.card_id))
+    // B435 Q7：归属规则归 sessionModel.sessionProjects（项目房间标记 ∪ 卡项目）。
+    const { names, hasUnknownCard: unknown } = sessionProjects(session, props.projectOfCard)
     // An unresolved link must not make a partially-known cross-project session look exclusive.
     const owners = names.flatMap(name => props.projects.filter(p => p.name === name || p.locations.some(l => l.name === name)).map(p => p.project_id))
     const ids = [...new Set(owners)]

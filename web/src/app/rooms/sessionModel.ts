@@ -126,15 +126,35 @@ export function applyMention(draft: string, identity: string): string {
   return draft.replace(MENTION_TOKEN_RE, `@${identity} `)
 }
 
+// PROJECT_ROOM_BADGE 会话列表行上项目房间的徽章（W plan Q7 裁定稿）。
+export const PROJECT_ROOM_BADGE = '项目房间'
+
+// SessionProjects 会话的项目归属读数：names 去重保序（项目房间标记在前，卡项目随后）；
+// hasUnknownCard = 有卡在 projectOfCard 里查不到项目（归属不可证实，调用方不得编造项目）。
+export interface SessionProjects { names: string[]; hasUnknownCard: boolean }
+
+// sessionProjects 会话 → 所属项目名集合（B435 Q7，C-510）= summary.project ∪ 卡项目。
+// 这是「会话属于哪个项目」的唯一规则：桌面项目树（Shell）、移动工作台（MobileWorkspace）
+// 与侧栏筛选（filterSessionsByProject）共用；项目房间零卡也归属其项目。
+export function sessionProjects(
+  session: Pick<SessionSummary, 'project' | 'cards'>,
+  projectOfCard: (cardId: string) => string,
+): SessionProjects {
+  const cardProjects = (session.cards ?? []).map((card) => projectOfCard(card.card_id))
+  const names = [...new Set([session.project ?? '', ...cardProjects].filter(Boolean))]
+  return { names, hasUnknownCard: cardProjects.some((name) => !name) }
+}
+
 // filterSessionsByProject 按项目筛选会话列表（B358.8 #6）：project='' 为「全部」
-// 缺省全显；选中项目时会话任一锚定卡的 project 命中才显示；无卡会话只归「全部」。
+// 缺省全显；选中项目时会话所属项目集合（sessionProjects：项目房间标记 ∪ 锚定卡项目）
+// 命中才显示；无卡且非项目房间的会话只归「全部」。
 export function filterSessionsByProject(
   sessions: SessionSummary[],
   projectOfCard: (cardId: string) => string,
   project: string,
 ): SessionSummary[] {
   if (project === '') return sessions
-  return sessions.filter((session) => (session.cards ?? []).some((card) => projectOfCard(card.card_id) === project))
+  return sessions.filter((session) => sessionProjects(session, projectOfCard).names.includes(project))
 }
 
 // totalUnread 会话 tab 徽章的聚合读数（Σ unread）。
