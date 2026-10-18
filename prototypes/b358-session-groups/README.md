@@ -12,8 +12,8 @@
 | `pages/sessions.html` | **形态**：会话列表（家）/ 群聊 / 会话详情三态 | 产品最终形态的基准；真实前端对照它验收 |
 | `pages/flow.html` | **过程**：会话生命线 / 消息投递 / 升级三档 / 席位与换绑 四张图 | 运转过程的基准；contract 与 breakdown 对照它冻结契约与拆解 |
 
-其余页面（`index.html` 工作台、`pages/board.html` 工作项、`pages/flows.html`、`pages/settings.html`、
-`pages/codegraph.html`）是 base 的镜像，本轮**未改**，只在本副本里作为「融入效果」的上下文。
+其余页面（`index.html` 工作台、`pages/board.html` 工作项、`pages/flows.html`、`pages/settings.html`）
+是 base 的镜像，本轮**未改**，只在本副本里作为「融入效果」的上下文。
 `index.html` 的底部图标区加了一枚「会话（家）」入口指向 `pages/sessions.html`。
 
 ## 形态摘要（与 B156.2 房间制的差别）
@@ -55,7 +55,6 @@
 - 确认状态：**确认中**（2026-09-12 用户走查定稿「我觉得可以，就这么定吧」），已登记进 `prototypes/base/README.md` 的路由表；
   真实前端落地并对照验收通过后推进为「已确认」，回流在 finish 做。
 - 入库方式：`git add -f prototypes/b358-session-groups`（`prototypes/.gitignore` 默认只放行 `base/`，B275 有先例）。
-  **未复制** `data/`（1.7MB 的 codegraph 演示数据）与 `pages/codegraph.html`——与 base 重复且与本轮形态无关。
 
 ## IA 变体（B361）
 

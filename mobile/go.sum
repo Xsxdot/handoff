@@ -1,5 +1,3 @@
-github.com/Xsxdot/charter/graph v0.10.0 h1:FAVeyNGPNv1EgDNnpFn2iS2gRgqwWyl9g5MH2Ff3iOU=
-github.com/Xsxdot/charter/graph v0.10.0/go.mod h1:Tk9+SdktmKHL9nCFQnbwsEzs6jxZ8Vd4H/K4mJfWEg4=
 github.com/coder/websocket v1.8.15 h1:6B2JPeOGlpff2Uz6vOEH1Vzpi0iUz20A+lPVhPHtNUA=
 github.com/coder/websocket v1.8.15/go.mod h1:NX3SzP+inril6yawo5CQXx8+fk145lPDC6pumgx0mVg=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=

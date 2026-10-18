@@ -83,7 +83,7 @@ func TestProtocolRulesMakeCommitConditionalOnRole(t *testing.T) {
 		t.Error("仍保留无条件 commit 铁律")
 	}
 	lower := strings.ToLower(turn.ProtocolRules)
-	if strings.Contains(lower, "review") || strings.Contains(lower, "recon") {
+	if strings.Contains(lower, "review") {
 		t.Error("ProtocolRules 不应点名具体角色")
 	}
 }

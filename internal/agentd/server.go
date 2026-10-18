@@ -35,8 +35,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	charterwebui "github.com/Xsxdot/charter/graph/webui"
-
 	"github.com/Xsxdot/handoff/internal/client"
 	"github.com/Xsxdot/handoff/internal/collab"
 	"github.com/Xsxdot/handoff/internal/config"
@@ -896,8 +894,6 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("DELETE /api/projects/{name}", s.handleProjectRemove)
 	api.HandleFunc("PATCH /api/projects/{name}", s.handleProjectPatch)
 	api.HandleFunc("GET /api/projects/{name}/branches", s.handleProjectBranches)
-	api.HandleFunc("GET /api/projects/{name}/codegraph", s.handleProjectCodegraph)
-	api.HandleFunc("GET /api/projects/{name}/codegraph/source", s.handleProjectCodegraphSource)
 	api.HandleFunc("POST /api/projects/{name}/worktrees", s.handleProjectWorktreeCreate)
 	api.HandleFunc("GET /api/pty/sessions", s.handleListPtySessions)
 	api.HandleFunc("POST /api/pty/sessions", s.handleCreatePtySession)
@@ -946,16 +942,7 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("/api/", api)
 	mux.Handle("/ws/", api)
-	mux.Handle(
-		"/codegraph/app/",
-		http.StripPrefix("/codegraph/app", newSPAHandler(charterwebui.FS(), s.log)),
-	)
 	mux.Handle("/", newSPAHandler(webui.FS(), s.log))
-
-	// charter viewer 与 handoff 自有 console 是两棵 FS；专属前缀必须先注册，
-	// 且仍在 auth 内，避免深路径错误回落到另一棵 index 或绕过会话鉴权。
-	s.log.Info("代码图 viewer 静态资源已挂载",
-		"path", "/codegraph/app/", "source", "charter/graph/webui")
 
 	// /console 是唯一不经主令牌/cookie 的路由——ticket 本身就是它的凭据，
 	// 因此它挂在 auth 之外、hostGuard 之内。Go 1.22 的 mux 按精确度选择，

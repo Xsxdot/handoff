@@ -21,7 +21,7 @@ gomobile 生成面 `bind.Bind` 的七个静态方法调用。
 | UI | `ui/PairingActivity.kt`、`ui/MachineListActivity.kt`、`ui/WebviewActivity.kt` | 两屏 + webview 容器；扫码与粘贴两入口都归一 `PairEntry.pair` |
 
 **边界（红线）**：不得改 `mobile/bind/**`、`mobile/build.sh`、`internal/**`、`cmd/**`、
-`web/**`、`codegraph/**`。壳不提交核心产物（`dist/mobile/` gitignored）；不解析 bundle
+`web/**`。壳不提交核心产物（`dist/mobile/` gitignored）；不解析 bundle
 JSON、不自建 HTTP 客户端、不暴露 JS 桥、凭据不落日志；明文仅对回环 `127.0.0.1` 放行。
 
 ## 依赖：核心 AAR 必须先构建

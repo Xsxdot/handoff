@@ -67,7 +67,6 @@ function props(over: {
   onOpenSettings?: () => void
   onOpenFlows?: () => void
   onOpenProjectCards?: (project: ProjectNode) => void
-  onOpenProjectCodegraph?: (project: ProjectNode) => void
   onAddProject?: () => void
   onUnregister?: (name: string, machine: string) => Promise<void> | void
   onEdit?: (project: ProjectNode) => void
@@ -115,7 +114,6 @@ function props(over: {
     onOpenSettings: over.onOpenSettings ?? vi.fn(),
     onOpenFlows: over.onOpenFlows ?? vi.fn(),
     onOpenProjectCards: over.onOpenProjectCards,
-    onOpenProjectCodegraph: over.onOpenProjectCodegraph,
     onAddProject: over.onAddProject ?? vi.fn(),
     // 「显式传 undefined」与「没传」要区分开：右键菜单测试需要 onUnregister
     // 真的是 undefined，`?? vi.fn()` 会把显式 undefined 兜底成 mock
@@ -1491,16 +1489,13 @@ describe('desktop idle project disclosure', () => {
 })
 
 describe('desktop project secondary actions', () => {
-  it('retains project cards/codegraph/edit in a keyboard-accessible menu without covering creation controls', () => {
-    const cards = vi.fn(), graph = vi.fn(), edit = vi.fn()
-    renderRaw(<ProjectTree {...props({ onOpenProjectCards: cards, onOpenProjectCodegraph: graph, onEdit: edit })} />)
+  it('retains project cards/edit in a keyboard-accessible menu without covering creation controls', () => {
+    const cards = vi.fn(), edit = vi.fn()
+    renderRaw(<ProjectTree {...props({ onOpenProjectCards: cards, onEdit: edit })} />)
     const row = screen.getByText('handoff').closest('button')!
     fireEvent.keyDown(row, { key: 'F10', shiftKey: true })
     fireEvent.click(screen.getByRole('menuitem', { name: '项目工作项' }))
     expect(cards).toHaveBeenCalledWith(expect.objectContaining({ project_id: 'p1' }))
-    fireEvent.contextMenu(row)
-    fireEvent.click(screen.getByRole('menuitem', { name: '项目代码图' }))
-    expect(graph).toHaveBeenCalledWith(expect.objectContaining({ project_id: 'p1' }))
     fireEvent.contextMenu(row)
     fireEvent.click(screen.getByRole('menuitem', { name: '编辑项目位置' }))
     expect(edit).toHaveBeenCalledWith(expect.objectContaining({ project_id: 'p1' }))

@@ -695,7 +695,7 @@ describe('Shell 三栏外框', () => {
     renderShell()
     const project = await screen.findByTestId('project-node-p1')
     fireEvent.contextMenu(within(project).getByTitle(/右键打开项目操作/))
-    expect(await screen.findByRole('menuitem', { name: '项目代码图' })).toBeInTheDocument()
+    expect(await screen.findByRole('menuitem', { name: '编辑项目位置' })).toBeInTheDocument()
     expect(screen.queryByRole('menuitem', { name: '项目工作项' })).toBeNull()
   })
 
@@ -982,29 +982,6 @@ describe('Shell 三栏外框', () => {
     await waitFor(() => expect(screen.queryByLabelText('home 基准终端')).toBeNull())
   })
 
-  it.each([
-    ['空格', 'project name'],
-    ['斜杠', 'project/name'],
-    ['中文', '项目/中文'],
-  ])('代码图 iframe 对项目名（%s）只做 query 编码', async (_kind, projectName) => {
-    const specialTree: ProjectTreeResp = {
-      ...tree,
-      projects: tree.projects.map((project) => ({ ...project, name: projectName })),
-    }
-    vi.mocked(fetchProjectTree).mockResolvedValue(specialTree)
-
-    renderShell()
-    await openBranch()
-    await waitFor(() => expect(screen.getByText('文件')).toBeInTheDocument())
-    fireEvent.click(screen.getByRole('button', { name: '代码图' }))
-
-    await waitFor(() => expect(document.querySelector('iframe[title="代码图"]')).not.toBeNull())
-    const frame = document.querySelector('iframe[title="代码图"]')
-    expect(frame?.getAttribute('src')).toBe(
-      `/codegraph/app/?project=${encodeURIComponent(projectName)}`,
-    )
-  })
-
   it('openItems 顺序固定：按打开顺序排列，不随当前基准重排（2026-08-29）；点已打开行 focusTab 切基准并激活', async () => {
     renderShell()
     await openBranch()
@@ -1060,22 +1037,6 @@ describe('Shell 三栏外框', () => {
     await waitFor(() => expect(screen.getByLabelText('当前位置')).toHaveTextContent('bash · integration/b2-b3'))
   })
 
-  it('/codegraph 同时隐藏 Breadcrumb/FileTree，回到工作台后恢复', async () => {
-    renderShell()
-    await openBranch()
-    fireEvent.click(await screen.findByText('重构工单通道'))
-    await waitFor(() => expect(screen.getByText('文件')).toBeInTheDocument())
-    expect(screen.getByLabelText('当前位置')).toBeInTheDocument()
-
-    fireEvent.click(screen.getByRole('button', { name: '代码图' }))
-    await waitFor(() => expect(document.querySelector('iframe[title="代码图"]')).not.toBeNull())
-    expect(screen.queryByText('文件')).not.toBeInTheDocument()
-    expect(screen.queryByLabelText('当前位置')).not.toBeInTheDocument()
-
-    await openBranch()
-    await waitFor(() => expect(screen.getByText('文件')).toBeInTheDocument())
-    expect(screen.getByLabelText('当前位置')).toBeInTheDocument()
-  })
 })
 
 describe('关闭带草稿的文件 tab 要二次确认', () => {
@@ -2497,9 +2458,8 @@ describe('B369.7 紧凑导航统一', () => {
     expect(screen.queryByTestId('project-count')).toBeNull()
     expect(screen.queryByTestId('mobile-nav-note')).toBeNull()
     expect(screen.queryByPlaceholderText('搜索项目、机器或任务')).toBeNull()
-    // 流程/代码图死按钮随 ProjectTree 复用一并退役（原属其行簇）
+    // 流程死按钮随 ProjectTree 复用一并退役（原属其行簇）
     expect(screen.queryByRole('button', { name: '流程' })).toBeNull()
-    expect(screen.queryByRole('button', { name: '代码图' })).toBeNull()
   })
 
   it('S2 形态裁定：compact 项目 tab 无「工作项」行钮（能力随树复用退役，卡页走底栏 tab）', async () => {
@@ -2512,15 +2472,13 @@ describe('B369.7 紧凑导航统一', () => {
     expect(screen.queryByRole('button', { name: '打开 handoff 工作项' })).toBeNull()
   })
 
-  it('桌面视口零漂移：行钮仍 hover-only，流程/代码图钮在场', async () => {
+  it('桌面视口零漂移：行钮仍 hover-only，流程钮在场', async () => {
     renderShell()
     const project = await screen.findByTestId('project-node-p1')
     fireEvent.contextMenu(within(project).getByTitle(/右键打开项目操作/))
     expect(await screen.findByRole('menuitem', { name: '项目工作项' })).toBeInTheDocument()
-    expect(screen.getByRole('menuitem', { name: '项目代码图' })).toBeInTheDocument()
     fireEvent.keyDown(screen.getByRole('menuitem', { name: '项目工作项' }), { key: 'Escape' })
     expect(screen.getByRole('button', { name: '流程' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '代码图' })).toBeInTheDocument()
   })
 
   it('北极星全链：会话→卡详情→任务现场→返回会话→返回列表（URL 轨迹+状态集）', async () => {

@@ -20,7 +20,7 @@ import (
 func TestB23328GatewayNoDirectStoreTaskProjectCalls(t *testing.T) {
 	files := []string{
 		"handlers.go", "tasksfanout.go", "taskroute.go", "taskplan.go",
-		"roomsapi.go", "update.go", "projectadmin.go", "codegraph.go",
+		"roomsapi.go", "update.go", "projectadmin.go",
 		"coordapi.go", "workspacefiles.go",
 	}
 	// 本卡收口面：这些方法在 gateway 生产文件里必须只经 s.mgr

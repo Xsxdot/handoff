@@ -327,69 +327,11 @@ func SafeCommandIDs() []string {
 		"git-ledger-amend", "go-build", "go-test", "go-vet", "gofmt",
 		"npm-test", "npm-run", "make",
 		"ls", "cat", "grep", "rg", "which", "pwd", "head", "tail", "wc",
-		"echo", "printf", "cd", "sed-n", "codegraph",
+		"echo", "printf", "cd", "sed-n",
 		"git-status", "git-diff", "git-log", "git-grep", "git-show",
 		"git-blame", "git-cat-file", "git-rev-parse", "git-ls-files",
 		"git-branch", "git-merge-base", "git-ls-tree", "git-rev-list",
 	}
-}
-
-// codegraphReadSubcommands 是 codegraph 的只读子命令闭集（B376）。
-//
-// 闭集之外的任何子命令都判 Consult：codegraph absorb 这类会改写视图目录，
-// 不在静默面里。
-var codegraphReadSubcommands = map[string]bool{
-	"sym": true, "who-calls": true, "chain": true, "flow": true,
-	"tree": true, "context": true, "entity": true, "domains": true,
-	"check": true, "validate": true, "summary": true,
-}
-
-// codegraphValueFlags 是 codegraph 全局旗标里「吃一个值」的那些。
-//
-// why 需要它：子命令是「第一个不以 - 开头」的词元，而 --repo/--view/--base
-// 的**值**（如 `.`）同样不以 - 开头。不跳过值就会把 `.` 当成子命令。
-var codegraphValueFlags = map[string]bool{
-	"--repo": true, "--view": true, "--base": true,
-}
-
-// codegraphReadSubcommand 从子命令之前的参数里找出 codegraph 子命令。
-//
-// 返回 (子命令名, ok)：ok=false 表示子命令不在只读闭集（或未知），不得静默；
-// 命中 --help/--version 且无子命令时返回 ("", true)。
-//
-// 边界：全局旗标可出现在子命令之前（`codegraph --repo . sym X`），判定按
-// 「第一个非旗标词元」而不是固定 fields[1]；值旗标的下一词元按值跳过。
-func codegraphReadSubcommand(args []string) (string, bool) {
-	if len(args) == 0 {
-		return "", true // 裸 codegraph 只打印帮助
-	}
-	sawHelp := false
-	for i := 0; i < len(args); i++ {
-		a := args[i]
-		if strings.HasPrefix(a, "--") {
-			name := a
-			if eq := strings.IndexByte(a, '='); eq >= 0 {
-				name = a[:eq]
-			} else if codegraphValueFlags[name] && i+1 < len(args) {
-				i++ // 跳过值
-			}
-			if name == "--help" || name == "--version" {
-				sawHelp = true
-			}
-			continue
-		}
-		if strings.HasPrefix(a, "-") && a != "-" {
-			continue
-		}
-		if codegraphReadSubcommands[a] {
-			return a, true
-		}
-		return "", false
-	}
-	if sawHelp {
-		return "", true
-	}
-	return "", false
 }
 
 // safeCommandID matches a complete, positive command shape and returns its
@@ -479,19 +421,6 @@ func matchSilentFields(fields []string, command string) (id string, ok bool) {
 	}
 	if fields[0] == "cd" && len(fields) <= 2 {
 		return "cd", true
-	}
-	if fields[0] == "codegraph" {
-		// B376 复审：codegraph 的全局旗标（--repo/--view/--base/--stale）可出现在
-		// 子命令之前，白名单要按「子命令闭集」判，而不是把 fields[1] 当子命令。
-		// 未知子命令仍 Consult（absorb 会改写视图目录）。
-		sub, ok := codegraphReadSubcommand(fields[1:])
-		if !ok {
-			return "", false
-		}
-		if sub == "" {
-			return "codegraph", true
-		}
-		return "codegraph-" + sub, true
 	}
 	if fields[0] == "sed" {
 		// B376：sed 只有 -n 只读形态才静默；-i/--in-place 会改源文件。
