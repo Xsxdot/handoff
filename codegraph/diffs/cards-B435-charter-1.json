@@ -1,7 +1,7 @@
 {
   "view": "cards/B435-charter-1",
   "base": "7f860685752a5d4dea43d38b96441be9437a0565",
-  "summary": "B435 contract Ticket 0：席位驱动模式词表 SeatMode/ParseSeatMode 与 Card/CardView.driver_mode、SessionCard.seat_mode 投影键（③）；收件地址 DeliveryAddress/DeliveryAddressKind、游标键 DeliveryCursorKey、无收件人原因 NoRecipientReason、匹配结果 Delivery、人类作者判据 IsHumanAuthor（②）；匹配函数空壳 collab.Service.Recipients/Matches/defaultRecipient（恒报未实现）；驻场者 DTO SessionResident 与出站接口 LedgerClient.SessionResident（Facade 空壳恒报未实现）；驻场者来信正文 ResidentLetter/RenderResidentLetter（④，正文即 wire 定义）；r3 补签⑤投递投影：房间历史行 RoomHistoryItem（LedgerEvent 平铺 + no_recipient 可省略键）与 SessionSummary.project 可省略键。常量与哨兵不入图。 B435.1（K0）：席位模式列与显式写面 BindSeatMode/RebindSeatMode、迁移 migrateDriverMode；匹配函数落码（Recipients 直调 proto.IsHumanAuthor）；驻场者只读面 Store.SessionResident；agentd 房间唤醒改接 Recipients + seatAddressWake（删 room.IsSessionRoom / MessageWakeTargets 两条旧边）；card wait 房间命中段（SeatMessageCandidatesContext / 游标行 / 坐下下界 + Matches）；删 Service.AddressesCard。图覆盖债：Store.SeatRevisionContext、Store.AdvanceSessionDeliveryCursor 未入基线，相关边未登记。 B435.2（R）：驻场者写面 Store.SitResident/StandResident → Facade → collab.Service.SitResident/StandResident（mapResidentError、书写者集 sessionWriters ∪ 驻场者）；CLI session sit/stand 与 session wait <session>（runSessionWait → sessionWaitRun → sessionWaitPage → sessionWaitMatch → Matches，候选读 ResidentMessageCandidatesContext，与席位读共用 addressCandidatesSQL）；F-RM1：coordinatorRunner.Resume → seatEnv、CoordSessionRef/SessionRef.Env 对称字段、简报 briefingSessionSend/briefingRoomResume/briefingWakeEvents；删 resumeTurnRequest。MessageWakeTargets 保留（Q12 乙）。图覆盖债：session 命令族其余子命令与 buildSessionWake、Service.sendToSession、bumpSeatRevisionTx、rebuildAfterResumeFailure 未入基线，相关边未登记；collab → LedgerClient 接口方法调用不入图。 B435.3（O1）：项目房间 Store.EnsureProjectRoom（首句无操作写取写锁 claimProjectRoomWriteLockTx，与 CreateSession 共用 createSessionTx）/ProjectRoom/SessionProject → Facade → collab.Service.EnsureProjectRoom；agentd 消费循环 → notifyProjectRoom（projectNoticeTargetOf/projectNoticeAlreadySent/finishProjectNotice/holdProjectNotifyClaim/settleInapplicableNotice）→ collab.Service.Send；handleRoomMessages 读时经 Recipients 投影 no_recipient（roomHistoryBySystemNull）；CLI project room、session sit --project、card show 无组织者提示（cardShowOrganizerHint）。图覆盖债：Store.ClaimWake/CompleteWake/CursorWatermark/MentionCandidatesContext 与 Service.HistoryContext 未入基线，相关边未登记；summarizeSession → LedgerClient.SessionProject 为接口方法调用不入图。",
+  "summary": "B435 contract Ticket 0：席位驱动模式词表 SeatMode/ParseSeatMode 与 Card/CardView.driver_mode、SessionCard.seat_mode 投影键（③）；收件地址 DeliveryAddress/DeliveryAddressKind、游标键 DeliveryCursorKey、无收件人原因 NoRecipientReason、匹配结果 Delivery、人类作者判据 IsHumanAuthor（②）；匹配函数空壳 collab.Service.Recipients/Matches/defaultRecipient（恒报未实现）；驻场者 DTO SessionResident 与出站接口 LedgerClient.SessionResident（Facade 空壳恒报未实现）；驻场者来信正文 ResidentLetter/RenderResidentLetter（④，正文即 wire 定义）；r3 补签⑤投递投影：房间历史行 RoomHistoryItem（LedgerEvent 平铺 + no_recipient 可省略键）与 SessionSummary.project 可省略键。常量与哨兵不入图。 B435.1（K0）：席位模式列与显式写面 BindSeatMode/RebindSeatMode、迁移 migrateDriverMode；匹配函数落码（Recipients 直调 proto.IsHumanAuthor）；驻场者只读面 Store.SessionResident；agentd 房间唤醒改接 Recipients + seatAddressWake（删 room.IsSessionRoom / MessageWakeTargets 两条旧边）；card wait 房间命中段（SeatMessageCandidatesContext / 游标行 / 坐下下界 + Matches）；删 Service.AddressesCard。图覆盖债：Store.SeatRevisionContext、Store.AdvanceSessionDeliveryCursor 未入基线，相关边未登记。 B435.2（R）：驻场者写面 Store.SitResident/StandResident → Facade → collab.Service.SitResident/StandResident（mapResidentError、书写者集 sessionWriters ∪ 驻场者）；CLI session sit/stand 与 session wait <session>（runSessionWait → sessionWaitRun → sessionWaitPage → sessionWaitMatch → Matches，候选读 ResidentMessageCandidatesContext，与席位读共用 addressCandidatesSQL）；F-RM1：coordinatorRunner.Resume → seatEnv、CoordSessionRef/SessionRef.Env 对称字段、简报 briefingSessionSend/briefingRoomResume/briefingWakeEvents；删 resumeTurnRequest。MessageWakeTargets 保留（Q12 乙）。图覆盖债：session 命令族其余子命令与 buildSessionWake、Service.sendToSession、bumpSeatRevisionTx、rebuildAfterResumeFailure 未入基线，相关边未登记；collab → LedgerClient 接口方法调用不入图。 B435.3（O1）：项目房间 Store.EnsureProjectRoom（首句无操作写取写锁 claimProjectRoomWriteLockTx，与 CreateSession 共用 createSessionTx）/ProjectRoom/SessionProject → Facade → collab.Service.EnsureProjectRoom；agentd 消费循环 → notifyProjectRoom（projectNoticeTargetOf/projectNoticeAlreadySent/finishProjectNotice/holdProjectNotifyClaim/settleInapplicableNotice）→ collab.Service.Send；handleRoomMessages 读时经 Recipients 投影 no_recipient（roomHistoryBySystemNull）；CLI project room、session sit --project、card show 无组织者提示（cardShowOrganizerHint）。图覆盖债：Store.ClaimWake/CompleteWake/CursorWatermark/MentionCandidatesContext 与 Service.HistoryContext 未入基线，相关边未登记；summarizeSession → LedgerClient.SessionProject 为接口方法调用不入图。 B435.4（O2）：消费循环 consumeAutomationEventsOnce → ringResidentDoorbells（residentDoorbellIneligible / residentDoorbellAttempt / residentDoorbellUndelivered）→ collab.Service.Recipients、ledger api Facade.SessionResident、scheduling.IsLocalMachine、Server.IsSelfTarget、proto.RenderResidentLetter/DeliveryCursorKey 与 desktopwake.go 保留六组（writeDesktopLetter、claudeContinueURL、desktopMailboxHome、sweepDesktopLetterTmp、desktopClock、opener 字段调用不入图）。图覆盖债：门铃状态类型 residentWakeState / residentDoorbellBatch / residentDoorbellRound 及其方法（isRung、markRung、pruneUpTo、takeRetry、putRetry、retryKeys、add、merge、skip）未入图（视图 diff 无容器新增面，与 O1 projectNotifyHandled 同处置）；Server.desktopOpen 为函数字段调用不入图。",
   "nodesAdded": {
     "m_proto_SeatMode": {
       "kind": "model",
@@ -1029,6 +1029,46 @@
       "line": 156,
       "signature": "func cardShowOrganizerHint(cmd *cobra.Command, st *ledger.Store, cardID, project string)",
       "summary": "card show 无组织者 stderr 提示：读项目房间与驻场者，读失败 Warn 静默。"
+    },
+    "n_agentd_Server_ringResidentDoorbells": {
+      "kind": "func",
+      "container": "k_agentd_Server",
+      "order": 9144,
+      "name": "Server.ringResidentDoorbells",
+      "file": "internal/agentd/residentwake.go",
+      "line": 177,
+      "signature": "func (s *Server) ringResidentDoorbells(from int64, events []proto.LedgerEvent) error",
+      "summary": "驻场者门铃入口（消费循环逐事件之后、卡批之前）：新 room_message 经 Recipients 取驻场者地址 → 按地址聚合 → 读驻场者行 → 本机判据 → 写两行门铃信 + continue 深链；只在判定读失败时报错（C-228），写信失败进有界重试不挡水位（Q1 甲）。"
+    },
+    "n_agentd_Server_residentDoorbellIneligible": {
+      "kind": "func",
+      "container": "k_agentd_Server",
+      "order": 9145,
+      "name": "Server.residentDoorbellIneligible",
+      "file": "internal/agentd/residentwake.go",
+      "line": 309,
+      "signature": "func (s *Server) residentDoorbellIneligible(addr proto.DeliveryAddress, r proto.SessionResident, ok bool) (string, bool)",
+      "summary": "门铃跳过判据：无驻场者 / 身份已换 / 无 cli_session（C-409）/ machine 非本机（C-415/C-416）。"
+    },
+    "n_agentd_Server_residentDoorbellAttempt": {
+      "kind": "func",
+      "container": "k_agentd_Server",
+      "order": 9146,
+      "name": "Server.residentDoorbellAttempt",
+      "file": "internal/agentd/residentwake.go",
+      "line": 330,
+      "signature": "func (s *Server) residentDoorbellAttempt(key string, b *residentDoorbellBatch, r proto.SessionResident, now time.Time, round *residentDoorbellRound)",
+      "summary": "写一封门铃信（RenderResidentLetter → writeDesktopLetter → sweepDesktopLetterTmp）并发 continue 深链；信未落盘转 residentDoorbellUndelivered，信已落盘未打开只记 Error 不重写。"
+    },
+    "n_agentd_Server_residentDoorbellUndelivered": {
+      "kind": "func",
+      "container": "k_agentd_Server",
+      "order": 9147,
+      "name": "Server.residentDoorbellUndelivered",
+      "file": "internal/agentd/residentwake.go",
+      "line": 374,
+      "signature": "func (s *Server) residentDoorbellUndelivered(key string, b *residentDoorbellBatch, now time.Time, stage string, cause error, round *residentDoorbellRound)",
+      "summary": "信未落盘处置：计一次失败；键不安全或到 residentWakeMaxAttempts 即放弃，否则倍增退避登记在途重试（不挡水位）。"
     }
   },
   "nodesModified": {
@@ -2331,6 +2371,78 @@
     [
       "n_cmd_sessionSitCmd_RunE",
       "n_collab_Service_EnsureProjectRoom"
+    ],
+    [
+      "n_agentd_Server_consumeAutomationEventsOnce",
+      "n_agentd_Server_ringResidentDoorbells"
+    ],
+    [
+      "n_agentd_Server_ringResidentDoorbells",
+      "n_agentd_decodeRoomMessageForWake"
+    ],
+    [
+      "n_agentd_Server_ringResidentDoorbells",
+      "n_collab_Service_Recipients"
+    ],
+    [
+      "n_agentd_Server_ringResidentDoorbells",
+      "n_proto_DeliveryCursorKey"
+    ],
+    [
+      "n_agentd_Server_ringResidentDoorbells",
+      "n_ledger_api_Facade_SessionResident"
+    ],
+    [
+      "n_agentd_Server_ringResidentDoorbells",
+      "n_agentd_Server_desktopClock"
+    ],
+    [
+      "n_agentd_Server_ringResidentDoorbells",
+      "n_agentd_Server_residentDoorbellIneligible"
+    ],
+    [
+      "n_agentd_Server_ringResidentDoorbells",
+      "n_agentd_Server_residentDoorbellAttempt"
+    ],
+    [
+      "n_agentd_Server_ringResidentDoorbells",
+      "n_agentd_Server_residentDoorbellUndelivered"
+    ],
+    [
+      "n_agentd_Server_residentDoorbellIneligible",
+      "n_scheduling_IsLocalMachine"
+    ],
+    [
+      "n_agentd_Server_residentDoorbellIneligible",
+      "n_agentd_Server_IsSelfTarget"
+    ],
+    [
+      "n_agentd_Server_residentDoorbellAttempt",
+      "n_proto_RenderResidentLetter"
+    ],
+    [
+      "n_agentd_Server_residentDoorbellAttempt",
+      "n_agentd_Server_desktopMailboxHome"
+    ],
+    [
+      "n_agentd_Server_residentDoorbellAttempt",
+      "n_agentd_writeDesktopLetter"
+    ],
+    [
+      "n_agentd_Server_residentDoorbellAttempt",
+      "n_agentd_Server_desktopClock"
+    ],
+    [
+      "n_agentd_Server_residentDoorbellAttempt",
+      "n_agentd_Server_sweepDesktopLetterTmp"
+    ],
+    [
+      "n_agentd_Server_residentDoorbellAttempt",
+      "n_agentd_claudeContinueURL"
+    ],
+    [
+      "n_agentd_Server_residentDoorbellAttempt",
+      "n_agentd_Server_residentDoorbellUndelivered"
     ]
   ],
   "edgesDeleted": [
