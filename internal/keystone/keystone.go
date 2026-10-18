@@ -341,12 +341,16 @@ func overlayResumeRef(ref keysclient.SessionRef, spec keysclient.SessionSpec) ke
 // 本次唤醒事件。会话里已有的上下文留在会话里，账本只补充增量——不再指示模型
 // 「先读卡」（B399 spec r2 §5：是否读卡由协调者自己判断）。以 ledger 为准不信
 // 记忆——每回合重读，天然幂等。
+// briefingRoomTone 是 push 简报的房间口吻句（B435 D11，措辞以 spec D11 为准）。
+// 简报文本，不是机制：只约束协调者在房间里怎么说话。
+const briefingRoomTone = "房间里只说重点与结果，同事口吻；思考与工具调用留在自己会话。"
+
 func (s *Service) briefing(card string, evs []WakeEvent) string {
 	b := "你是本卡的机器协调者。**你是一次性回合**：没有交互窗口，本轮跑完即结束；" +
 		"下一次有事会被再次唤醒（续跑同一会话）。\n" +
 		"需要人知道的事**发到 IM 房间**：`handoff session send <会话> <正文>`" +
 		"（本卡所在会话可用 `handoff session list` 找到，会话条目里列着本卡）。" +
-		"不适合现在推就在房间说明原因并结束本轮。\n\n## 本卡上下文\n\n- 卡号：" + card + "\n"
+		"不适合现在推就在房间说明原因并结束本轮。" + briefingRoomTone + "\n\n## 本卡上下文\n\n- 卡号：" + card + "\n"
 	if c, err := s.ledger.GetCard(card); err == nil {
 		b += "- 标题：" + c.Title + "\n"
 	}
