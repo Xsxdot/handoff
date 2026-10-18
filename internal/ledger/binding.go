@@ -180,11 +180,6 @@ func (s *Store) RebindSeatMode(id, identity string, source proto.SeatSource, mod
 		if err := s.writeSeatBearing(tx, id, identity, bearing); err != nil {
 			return err
 		}
-		// B434：旧席位的桌面端记录随换绑同事务失效（契约 §3.3 生命周期联动、条 62）。
-		// 新席位若也是桌面端会话，由调用方随后经 SetSeatDesktop 重新写入（两步提交，D2）。
-		if err := s.deleteSeatDesktopTx(tx, id); err != nil {
-			return err
-		}
 		if _, err := s.appendEvent(tx, sink, id, EvDriverTakeover, identity,
 			map[string]string{"from": card.DriverSession, "to": identity}); err != nil {
 			return fmt.Errorf("换绑落事件 %s: %w", id, err)
@@ -337,11 +332,7 @@ func (s *Store) clearSeatTx(tx *sql.Tx, card string) error {
 	if err := s.bumpSeatRevisionTx(tx); err != nil {
 		return err
 	}
-	if err := s.deleteSeatBearing(tx, card); err != nil {
-		return err
-	}
-	// B434：桌面端记录随清座同事务删除（契约 §3.3、条 63）；终态关单与人工清座共用本函数。
-	return s.deleteSeatDesktopTx(tx, card)
+	return s.deleteSeatBearing(tx, card)
 }
 
 // ClearSeat 显式清空席位与承载记录（同事务，幂等）：终态卡与人工修复路径共用。

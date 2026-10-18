@@ -127,8 +127,9 @@ func b435Seat(t *testing.T, s *Store, id string) b435SeatRow {
 	t.Helper()
 	var r b435SeatRow
 	r.ID = id
-	if err := s.db.QueryRow(`SELECT COALESCE(driver_session,''), COALESCE(driver_source,''),
-		COALESCE(driver_mode,'') FROM cards WHERE id = ?`, id).Scan(&r.Session, &r.Source, &r.Mode); err != nil {
+	// 占位符走 s.q()：X 的 PG 孪生复用本帮手，裸 `?` 在 pgx 下是 SQLSTATE 42601（B435.5 F1）。
+	if err := s.db.QueryRow(s.q(`SELECT COALESCE(driver_session,''), COALESCE(driver_source,''),
+		COALESCE(driver_mode,'') FROM cards WHERE id = ?`), id).Scan(&r.Session, &r.Source, &r.Mode); err != nil {
 		t.Fatal(err)
 	}
 	return r

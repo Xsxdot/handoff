@@ -7,11 +7,41 @@
 package cmd
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/Xsxdot/handoff/internal/ledger"
 )
+
+// b434Ledger 打开 dir 下的测试账本（调用方负责 Close）。B435 X 自已删的
+// card_desktop_seat_b434_test.go 迁入（本文件是唯一留存的使用者）。
+func b434Ledger(t *testing.T, dir string) *ledger.Store {
+	t.Helper()
+	st, err := ledger.Open(filepath.Join(dir, "ledger.db"))
+	if err != nil {
+		t.Fatalf("打开测试账本: %v", err)
+	}
+	return st
+}
+
+// b434Events 返回该卡指定类型的事件（seq 升序）。
+func b434Events(t *testing.T, dir, id, typ string) []ledger.Event {
+	t.Helper()
+	st := b434Ledger(t, dir)
+	defer st.Close()
+	evs, err := st.EventsFromAsc([]string{id}, 0, 1000)
+	if err != nil {
+		t.Fatalf("读事件 %s: %v", id, err)
+	}
+	var out []ledger.Event
+	for _, ev := range evs {
+		if ev.Type == typ {
+			out = append(out, ev)
+		}
+	}
+	return out
+}
 
 // 条 189：能出示席位身份时，落账 actor 等于 currentSeatIdentity 的返回值；不打回落提示。
 func TestB434CardNeedsUsesSeatIdentityAsActor(t *testing.T) {

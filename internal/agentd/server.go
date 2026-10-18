@@ -220,11 +220,6 @@ type Server struct {
 	// 不标 seen）；这里只数连续失败次数，用于恰一次落 needs_human 的去重阈值。
 	// 成功或遇非准入错误即清。进程内存：重启后重新计数，安全方向。
 	automationStall map[string]int
-	// desktopWakeStall 是每张卡当前的桌面端失败段（B434 契约 §3.7）：连续失败次数（0→1
-	// 落一条 needs_human）、未落盘重试的退避截止与段内复用的 wake_round 轮次。与
-	// automationStall 独立（不经 recordAdmissionStall）。受 automationMu 保护；成功即删。
-	// 进程内存：重启清零，同段最多多落一条 needs_human（契约写明可接受）。
-	desktopWakeStall map[string]desktopWakeStallEntry
 	// wakeQueueRounds 锁定「一轮」的队列路径身份：IgnitionRequest 身份键
 	// （wakeQueueRoundKey）→ 未收尾的 wake roundID。契约是「同一 IgnitionRequest
 	// 为一轮」（plan r2），不是「同一卡为一轮」——同卡换节点是新请求、新开一轮
@@ -247,8 +242,8 @@ type Server struct {
 	// NewServer 不装配（测试进程永远拿不到真实 opener）；生产由 cmd/agentd.go 组装点经
 	// SetDesktopOpener(PlatformDesktopOpener(runtime.GOOS)) 装配（darwin `open`、其它平台报
 	// 「本平台不支持 Claude 桌面端深链」，契约 r12 第 3 条）；同包测试直接赋 spy。
-	// nil = 本机不能发深链：wakeDesktopSeat 按「信已落盘、continue 未发出」返回
-	// desktopUnopenedError。只在装配期写、运行期只读，不加锁。
+	// nil = 本机不能发深链：驻场者门铃按「信已落盘、continue 未发出」处置（residentwake.go）。
+	// 只在装配期写、运行期只读，不加锁。
 	desktopOpen desktopOpener
 	// desktopHome 是桌面端信箱的根目录（信箱 = <desktopHome>/.handoff/desktop-wake，
 	// 契约 r10 第 11 条）。空 = os.UserHomeDir()（信箱属写信进程用户）；测试注入
@@ -342,7 +337,6 @@ func NewServer(cfg *config.Config, st *store.Store, log *slog.Logger) *Server {
 		automationKick:          make(chan struct{}, 1),
 		automationSeen:          make(map[int64]struct{}),
 		automationStall:         make(map[string]int),
-		desktopWakeStall:        make(map[string]desktopWakeStallEntry),
 		wakeQueueRounds:         make(map[string]string),
 	}
 	s.pty = ptyhost.New(s.ptyRootPath, exe, log)
@@ -929,10 +923,6 @@ func (s *Server) Handler() http.Handler {
 	s.registerLedgerRoutes(api)
 	s.registerSchedulingRoutes(api)
 	s.registerCoordRoutes(api)
-	// B434 G3：agentd→agentd 拉起器投递（契约 §3.9 P3=A、r6）。挂在 api mux 内即在 auth
-	// token 中间件之内（401 最外层，条 246）；只套 withLedger（未配账本 503 先于体校验，
-	// 条 243/245），不套 withCoordinator——收件机按卡读共享账本渲染，不依赖自动化层。
-	api.HandleFunc("POST /api/desktop/deliver", s.withLedger(s.handleDesktopDeliver))
 	// B432：iOS 推送设备登记（spec §契约面 1）。独立注册函数与 ledger/scheduling
 	// 同款，避免 Handler() 主表继续膨胀。
 	s.registerPushRoutes(api)

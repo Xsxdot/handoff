@@ -2,13 +2,13 @@
 //
 // 职责：识别 handoff:open-deeplink: 协议；校验来源 frame 是带 host 的 http(s) 页面；
 //
-//	只放行 claude://code/new 与 claude://code/continue 两种深链，再把原始 URL 逐字交给
-//	注入的 opener。
+//	只放行 claude://code/continue 深链，再把原始 URL 逐字交给注入的 opener（B434 的 new-session
+//	形态随 B435 X 退役：契约 b435-contract.md §7，b434 条 31 改为被拒）。
 //
 // 边界：不 import Wails、不导航 webview；main.go 只负责把 OriginInfo 与 opener
 //
 //	（app.Browser.OpenURL）接进来。白名单只有 claude 这一个 scheme、code 这一个 host、
-//	/new 与 /continue 两个 path（spec：薄壳不放行任意 scheme）。与系统浏览器、剪贴板
+//	/continue 这一个 path（spec：薄壳不放行任意 scheme）。与系统浏览器、剪贴板
 //	通道是三道独立的门，只共用同包谓词 isHTTPURL 判来源。
 //
 // 已知限制：生产 opener 在 darwin 上是 `open <url>` 的 Start()，不回报 open 的退出码
@@ -36,7 +36,6 @@ const (
 )
 
 var claudeDeepLinkPaths = map[string]bool{
-	"/new":      true,
 	"/continue": true,
 }
 
@@ -51,7 +50,7 @@ var claudeDeepLinkPaths = map[string]bool{
 //
 // 返回：非本协议消息为 false；本协议消息无论校验拒绝、opener 未配置或 opener 失败
 // 均为 true（已处理，调用方不得再交给下一个处理器）。
-// 注意：深链 q 内含简报全文，完整 URL、query、来源 URL 与 opener 错误文本都不写日志；
+// 注意：完整 URL、query、来源 URL 与 opener 错误文本都不写日志（query 可能带会话标识）；
 // 日志只记字节数、path 与 query 字节数。
 func HandleExternalDeepLinkMessage(
 	log *slog.Logger,
@@ -118,13 +117,13 @@ func validateDeepLinkSource(sourceFrameURL string) error {
 }
 
 // validateClaudeDeepLink 校验深链：scheme 恰为 claude（字面小写）、host 恰为 code、
-// path 恰为 /new 或 /continue（不接受百分号变体与尾斜杠）、无 userinfo/fragment、
+// path 恰为 /continue（不接受百分号变体与尾斜杠）、无 userinfo/fragment、
 // 原始字符串不含控制字符（< 0x20 或 0x7f）。
 //
 // 返回：通过校验的解析结果，供调用方取 path 写日志；错误文案固定，不回显 URL
 // （url.Parse 的原始错误含完整 URL，不得透传）。
-// 注意：控制字符只查原始字符串。q 里百分号编码的换行（%0A）是简报正文的合法内容
-// （契约 §4.2 条 19），不在拒绝之列；query 的键与值不在本卡白名单内校验。
+// 注意：控制字符只查原始字符串；百分号编码的换行（%0A）不在拒绝之列；query 的键与值
+// 不在本白名单内校验。
 func validateClaudeDeepLink(raw string) (*url.URL, error) {
 	if raw == "" {
 		return nil, errors.New("深链为空")
@@ -152,7 +151,7 @@ func validateClaudeDeepLink(raw string) (*url.URL, error) {
 		return nil, errors.New("深链 host 必须是 code")
 	}
 	if !claudeDeepLinkPaths[target.Path] || target.EscapedPath() != target.Path {
-		return nil, errors.New("深链 path 必须是 /new 或 /continue")
+		return nil, errors.New("深链 path 必须是 /continue")
 	}
 	if target.Fragment != "" || strings.Contains(raw, "#") {
 		return nil, errors.New("深链不允许 fragment")

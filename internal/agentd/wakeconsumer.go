@@ -294,8 +294,8 @@ func decodeRoomMessageForWake(ev proto.LedgerEvent) (proto.RoomMessage, bool, er
 
 // automationWakeEvents 是消费循环的统一映射入口（B358.3 改接寻址后）。
 // 会话消息（无卡事件）不再被首行卡闸一刀切拦下——改走 roomMessageWakeEvents
-// 寻址分流（条 29/30）；needs_human 先经 desktopNeedsHumanWakes（B434 P5=B：只叫醒
-// 桌面端 bind 席位）；其余事件类型的映射沿用 automationWakeEvent，其中
+// 寻址分流（条 29/30）；其余事件类型（含 needs_human：C-238 对任何席位零唤醒，
+// 由纯函数的 EvNeedsHuman 分支落空）的映射沿用 automationWakeEvent，其中
 // 无卡事件是结构事实（session_*/driver_* 等），条 31 不唤醒任何人。
 func (s *Server) automationWakeEvents(ev proto.LedgerEvent) ([]keystone.WakeEvent, error) {
 	if ev.Type == ledger.EvRoomMessage {
@@ -304,12 +304,6 @@ func (s *Server) automationWakeEvents(ev proto.LedgerEvent) ([]keystone.WakeEven
 	if ev.CardID == "" {
 		s.log.Debug("无卡结构事件不唤醒", "seq", ev.Seq, "type", ev.Type)
 		return nil, nil
-	}
-	if ev.Type == ledger.EvNeedsHuman {
-		// B434 P5=B（契约 §3.8.1）：needs_human 先于纯函数分流——桌面端 bind 席位按排除规则
-		// 唤醒；coordinate 与无记录 bind 由 desktopNeedsHumanWakes 返回空、维持 B394。纯函数
-		// automationWakeEvent 不改（条 192）。消费循环与转交收件 handleCoordWake 同经本入口。
-		return s.desktopNeedsHumanWakes(ev)
 	}
 	wake, yes, err := automationWakeEvent(ev)
 	if err != nil {
@@ -325,10 +319,8 @@ func (s *Server) automationWakeEvents(ev proto.LedgerEvent) ([]keystone.WakeEven
 // C-229–C-233；B358 条 47 修订）。判定唯一入口 collab.Service.Recipients（agentd 不解析
 // mentions、不自带默认收件人规则）。分流：
 //   - 席位地址且该卡 mode=push → 恰一次 WakeMessage{Card:该卡}（同卡去重）；
-//   - 席位地址且 mode=pull → 零 keystone Wake（由 card wait 交付）；P4 乙过渡：该卡仍有
-//     B434 桌面端记录时照旧产出 WakeMessage，交给 wakeCoordinatorRoundID 的 pull 分支
-//     走既有信箱（读记录不读来源词），退役归 X 子卡；
-//   - 驻场者地址 → 零 keystone Wake（门铃信桥归 O2 子卡），Info 可查。
+//   - 席位地址且 mode=pull → 零 keystone Wake（由 card wait 交付）；
+//   - 驻场者地址 → 零 keystone Wake（门铃信由 ringResidentDoorbells 另路处理），Info 可查。
 //
 // 房间消息唤醒不沿 parent 上走（C-232）：产出的唤醒卡即命中地址的卡，消费循环对
 // WakeMessage 不调 resolveWakeCard。by_system:null 旧边界在解码层按结构行跳过
@@ -377,7 +369,7 @@ func (s *Server) roomMessageWakeEvents(ev proto.LedgerEvent) ([]keystone.WakeEve
 }
 
 // seatAddressWake 按席位地址所在卡的当前模式决定是否产出 keystone 唤醒（见
-// roomMessageWakeEvents 分流表）。读卡或读桌面端记录失败上抛：判定读失败不得被当作
+// roomMessageWakeEvents 分流表）。读卡失败上抛：判定读失败不得被当作
 // 「不唤醒」吞掉，否则水位越过该消息。
 func (s *Server) seatAddressWake(ev proto.LedgerEvent, msg proto.RoomMessage, addr proto.DeliveryAddress) (keystone.WakeEvent, bool, error) {
 	card, err := s.autoLedger.GetCard(addr.Card)
@@ -395,15 +387,6 @@ func (s *Server) seatAddressWake(ev proto.LedgerEvent, msg proto.RoomMessage, ad
 		s.log.Debug("会话消息命中 push 席位", "seq", ev.Seq, "card", addr.Card)
 		return wake, true, nil
 	case proto.SeatModePull:
-		_, hasDesktop, derr := s.ledger.SeatDesktopOf(addr.Card)
-		if derr != nil {
-			s.log.Warn("pull 席位读桌面端记录失败，本轮不越过该消息", "seq", ev.Seq, "card", addr.Card, "cause", derr)
-			return keystone.WakeEvent{}, false, fmt.Errorf("事件 %d 读卡 %s 桌面端记录: %w", ev.Seq, addr.Card, derr)
-		}
-		if hasDesktop {
-			s.log.Info("pull 席位有 B434 桌面端记录：过渡分支沿用信箱", "seq", ev.Seq, "card", addr.Card)
-			return wake, true, nil
-		}
 		s.log.Info("会话消息命中 pull 席位：零回合，由 card wait 交付", "seq", ev.Seq, "card", addr.Card)
 		return keystone.WakeEvent{}, false, nil
 	default:
@@ -507,11 +490,9 @@ func (s *Server) writeWakeRoundFail(card, roundID, class, reason string) {
 
 // resolveWakeCard 把卡自动化事件的唤醒目标从事件卡收到真正能被叫醒的席位卡
 // （B435 C-235–C-237：按席位模式判，来源词只作 ValidateSeat 实参）。
-// 事件卡自己是 push 席位 → 自己；事件卡是 pull：有 B434 桌面端记录（P4 乙过渡）→ 自己，
-// 无记录 → 空（不起回合、不上走，pull 靠 card wait）；空座沿 parent_id 上走，无记录的
-// pull 祖先跳过，push 祖先与有桌面端记录的 pull 祖先接手。非空座而模式非法、或 push
-// 席位身份非法 → 按非法席位继续上走（Warn）。读桌面端记录失败：起始卡 Warn + 空（同读卡
-// 失败）；祖先 Warn 后按无记录继续上走。不改账本 card_id。房间消息唤醒不经本函数（C-232）。
+// 事件卡自己是 push 席位 → 自己；事件卡是 pull → 空（不起回合、不上走，pull 靠 card wait）；
+// 空座沿 parent_id 上走，pull 祖先跳过，push 祖先接手。非空座而模式非法、或 push
+// 席位身份非法 → 按非法席位继续上走（Warn）。不改账本 card_id。房间消息唤醒不经本函数（C-232）。
 func (s *Server) resolveWakeCard(cardID string) string {
 	if s.ledger == nil || cardID == "" {
 		return ""
@@ -531,19 +512,6 @@ func (s *Server) resolveWakeCard(cardID string) string {
 		}
 		switch proto.SeatMode(card.DriverMode) {
 		case proto.SeatModePull:
-			_, hasDesktop, derr := s.ledger.SeatDesktopOf(cardID)
-			if derr != nil {
-				s.log.Warn("自动化唤醒读桌面端席位记录失败", "origin", origin, "card", cardID, "cause", derr)
-				if cardID == origin {
-					return ""
-				}
-				// 祖先 pull 读失败：按无记录处理继续上走，保留「找更上层 push 祖先」语义。
-				cardID = card.ParentID
-				continue
-			}
-			if hasDesktop {
-				return cardID
-			}
 			if cardID == origin {
 				return ""
 			}
@@ -743,14 +711,6 @@ func (s *Server) consumeAutomationEventsOnce(ctx context.Context) (processed int
 				"type", ev.Type, "cause", mapErr)
 			return processed, escalated, mapErr
 		}
-		// B434 契约 r12 第 4 条末句：席位换绑（driver_takeover / driver_seat_bound）或桌面端记录
-		// 重写（seat_desktop_set）意味着该卡的唤醒去向变了——旧桌面端失败段（退避窗、已落标计数、
-		// 段轮次）不得被新席位继承，在此清掉。三者都是不唤醒的结构事件，下面照常标 seen。
-		switch {
-		case ev.Type == ledger.EvSeatDesktopSet, ev.Type == ledger.EvDriverSeatBound,
-			ev.Type == ledger.EvDriverTakeover && s.driverTakeoverChangedSeat(ev):
-			s.clearDesktopWakeStall(ev.CardID, "席位换绑或桌面端记录重写（"+ev.Type+"）")
-		}
 		// B432 旁路（plan 决策 D1）：在唤醒分类与 seen 判定之外喂扇出——
 		// needs_human 这类不唤醒协调者的事件也要推。只入队不阻塞，唤醒路径
 		// 完全不感知它的存在（队满即丢，见 PushFanout.Notify）。
@@ -852,13 +812,6 @@ func (s *Server) consumeAutomationEventsOnce(ctx context.Context) (processed int
 			raws = append(raws, item.raw)
 			claimedSeqs = append(claimedSeqs, item.seq)
 		}
-		// B434 桌面端失败段退避窗（契约 §3.7、§11.3）：上次「信未落盘」后窗口未到——**不**
-		// complete、**不**标 seen，认领留在飞（本轮 claimWakeBatch 已续租），窗口过后再试。
-		if until, pending := s.desktopWakeRetryPending(card); pending {
-			s.log.Debug("桌面端唤醒退避窗内，保留认领下轮再试", "card", card,
-				"retry_at", until, "event_count", len(claimedSeqs))
-			continue
-		}
 		// 退避闸（§3.5.4）：同卡同 seq 在退避窗内不重复试跑，认领照常收尾。
 		if s.shouldSkipByBackoff(card, maxSeqOf(claimedSeqs)) {
 			s.log.Info("唤醒退避窗内，跳过同 seq 重复试跑", "card", card)
@@ -879,13 +832,8 @@ func (s *Server) consumeAutomationEventsOnce(ctx context.Context) (processed int
 			}
 			return processed, escalated, nil
 		}
-		// 轮次标识由本循环给出：桌面端失败段内的重试复用段轮次（B393「同一逻辑唤醒的重试
-		// 共享 roundID」），转交失败的 wake_round fail 行一段一行而不是每次重试一行；不在
-		// 失败段则每批新开一轮（与原 wakeCoordinatorRoundRaw 同义）。
-		roundID := s.desktopWakeRound(card)
-		if roundID == "" {
-			roundID = nextWakeRoundID()
-		}
+		// 轮次标识由本循环给出：每批新开一轮（与 wakeCoordinatorRoundRaw 同义）。
+		roundID := nextWakeRoundID()
 		stopRenew := s.startWakeClaimRenewal(card, claimedSeqs)
 		result, wakeErr := s.wakeCoordinatorRoundID(ctx, card, evs, raws, roundID)
 		stopRenew()
@@ -900,34 +848,6 @@ func (s *Server) consumeAutomationEventsOnce(ctx context.Context) (processed int
 				s.recordAdmissionStall(card)
 				if result.Escalated {
 					escalated = true
-				}
-				if firstWakeErr == nil {
-					firstWakeErr = wakeErr
-				}
-				continue
-			}
-			if desktopUndelivered(wakeErr) {
-				// B434 D5「信未落盘」（本机写信/渲染失败、转交失败、一跳封顶）：与准入满员同为
-				// 可恢复排队态——**不** completeWakeBatch、**不**标 seen、**不**记 automationBackoff
-				// （它的跳过分支会 complete），认领留在飞挡水位，退避窗过后重试；计入独立的桌面端
-				// 失败段（段内首次落 needs_human），**不**调 recordAdmissionStall（条 173/174）。
-				// 设 firstWakeErr：本轮对调用方报错（竖切「信箱键不安全」子例依赖它）。
-				s.recordDesktopWakeFailure(card, roundID, wakeErr)
-				if firstWakeErr == nil {
-					firstWakeErr = wakeErr
-				}
-				continue
-			}
-			if desktopUnopened(wakeErr) {
-				// B434 D5「信已落盘、continue 未发出」：信已保住事件，重试只会多一封同批信——终局
-				// 收尾（complete + 标 seen），不记 automationBackoff、不碰 automationStall；计入桌面端
-				// 失败段（段内首次落 needs_human，条 109–111、169/170）。
-				s.recordDesktopWakeFailure(card, roundID, wakeErr)
-				s.completeWakeBatch(card, claimedSeqs)
-				for _, seq := range claimedSeqs {
-					s.automationMu.Lock()
-					s.automationSeen[seq] = struct{}{}
-					s.automationMu.Unlock()
 				}
 				if firstWakeErr == nil {
 					firstWakeErr = wakeErr
@@ -954,7 +874,6 @@ func (s *Server) consumeAutomationEventsOnce(ctx context.Context) (processed int
 			continue
 		}
 		s.clearWakeStall(card)
-		s.clearDesktopWakeStall(card, "唤醒成功")
 		s.completeWakeBatch(card, claimedSeqs)
 		if s.automationRoundHook != nil {
 			s.automationRoundHook(card, result)

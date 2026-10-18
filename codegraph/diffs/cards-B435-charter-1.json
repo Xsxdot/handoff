@@ -1,7 +1,7 @@
 {
   "view": "cards/B435-charter-1",
   "base": "7f860685752a5d4dea43d38b96441be9437a0565",
-  "summary": "B435 contract Ticket 0：席位驱动模式词表 SeatMode/ParseSeatMode 与 Card/CardView.driver_mode、SessionCard.seat_mode 投影键（③）；收件地址 DeliveryAddress/DeliveryAddressKind、游标键 DeliveryCursorKey、无收件人原因 NoRecipientReason、匹配结果 Delivery、人类作者判据 IsHumanAuthor（②）；匹配函数空壳 collab.Service.Recipients/Matches/defaultRecipient（恒报未实现）；驻场者 DTO SessionResident 与出站接口 LedgerClient.SessionResident（Facade 空壳恒报未实现）；驻场者来信正文 ResidentLetter/RenderResidentLetter（④，正文即 wire 定义）；r3 补签⑤投递投影：房间历史行 RoomHistoryItem（LedgerEvent 平铺 + no_recipient 可省略键）与 SessionSummary.project 可省略键。常量与哨兵不入图。 B435.1（K0）：席位模式列与显式写面 BindSeatMode/RebindSeatMode、迁移 migrateDriverMode；匹配函数落码（Recipients 直调 proto.IsHumanAuthor）；驻场者只读面 Store.SessionResident；agentd 房间唤醒改接 Recipients + seatAddressWake（删 room.IsSessionRoom / MessageWakeTargets 两条旧边）；card wait 房间命中段（SeatMessageCandidatesContext / 游标行 / 坐下下界 + Matches）；删 Service.AddressesCard。图覆盖债：Store.SeatRevisionContext、Store.AdvanceSessionDeliveryCursor 未入基线，相关边未登记。 B435.2（R）：驻场者写面 Store.SitResident/StandResident → Facade → collab.Service.SitResident/StandResident（mapResidentError、书写者集 sessionWriters ∪ 驻场者）；CLI session sit/stand 与 session wait <session>（runSessionWait → sessionWaitRun → sessionWaitPage → sessionWaitMatch → Matches，候选读 ResidentMessageCandidatesContext，与席位读共用 addressCandidatesSQL）；F-RM1：coordinatorRunner.Resume → seatEnv、CoordSessionRef/SessionRef.Env 对称字段、简报 briefingSessionSend/briefingRoomResume/briefingWakeEvents；删 resumeTurnRequest。MessageWakeTargets 保留（Q12 乙）。图覆盖债：session 命令族其余子命令与 buildSessionWake、Service.sendToSession、bumpSeatRevisionTx、rebuildAfterResumeFailure 未入基线，相关边未登记；collab → LedgerClient 接口方法调用不入图。 B435.3（O1）：项目房间 Store.EnsureProjectRoom（首句无操作写取写锁 claimProjectRoomWriteLockTx，与 CreateSession 共用 createSessionTx）/ProjectRoom/SessionProject → Facade → collab.Service.EnsureProjectRoom；agentd 消费循环 → notifyProjectRoom（projectNoticeTargetOf/projectNoticeAlreadySent/finishProjectNotice/holdProjectNotifyClaim/settleInapplicableNotice）→ collab.Service.Send；handleRoomMessages 读时经 Recipients 投影 no_recipient（roomHistoryBySystemNull）；CLI project room、session sit --project、card show 无组织者提示（cardShowOrganizerHint）。图覆盖债：Store.ClaimWake/CompleteWake/CursorWatermark/MentionCandidatesContext 与 Service.HistoryContext 未入基线，相关边未登记；summarizeSession → LedgerClient.SessionProject 为接口方法调用不入图。 B435.4（O2）：消费循环 consumeAutomationEventsOnce → ringResidentDoorbells（residentDoorbellIneligible / residentDoorbellAttempt / residentDoorbellUndelivered）→ collab.Service.Recipients、ledger api Facade.SessionResident、scheduling.IsLocalMachine、Server.IsSelfTarget、proto.RenderResidentLetter/DeliveryCursorKey 与 desktopwake.go 保留六组（writeDesktopLetter、claudeContinueURL、desktopMailboxHome、sweepDesktopLetterTmp、desktopClock、opener 字段调用不入图）。图覆盖债：门铃状态类型 residentWakeState / residentDoorbellBatch / residentDoorbellRound 及其方法（isRung、markRung、pruneUpTo、takeRetry、putRetry、retryKeys、add、merge、skip）未入图（视图 diff 无容器新增面，与 O1 projectNotifyHandled 同处置）；Server.desktopOpen 为函数字段调用不入图。 B435.6（W）：控制台退役 B434 坐席入口——删 claudeDeepLink.ts / desktopSeatCopy.ts 全部节点、CoordinatorPanel 的坐席状态与三个处理函数、scheduling 拉起器两函数与两 DTO、desktopShell.requestOpenDeepLink；RoomHistoryItem TS 孪生改为 interface（+no_recipient）。图覆盖债：新符号 deliveryCopy.ts（NO_RECIPIENT_COPY / NEEDS_MENTION_COPY / DELIVERY_READ_TIME_HINT / noRecipientLabel）、ledger.ts（SeatMode / SEAT_MODES / isSeatMode / SEAT_MODE_HINT / SEAT_MODE_UNKNOWN_LABEL / seatModeView）、rooms.ts（NoRecipientReason / NO_RECIPIENT_REASONS / isNoRecipientReason / SESSION_MEMBER_KINDS / isSessionMemberKind）、sessionModel.ts（sessionProjects / memberRoleLabel / RESIDENT_ORGANIZER_LABEL / PROJECT_ROOM_BADGE）未入图（web 会话侧本不在基线，plan §10 R #27 记法，不补扫）。",
+  "summary": "B435 contract Ticket 0：席位驱动模式词表 SeatMode/ParseSeatMode 与 Card/CardView.driver_mode、SessionCard.seat_mode 投影键（③）；收件地址 DeliveryAddress/DeliveryAddressKind、游标键 DeliveryCursorKey、无收件人原因 NoRecipientReason、匹配结果 Delivery、人类作者判据 IsHumanAuthor（②）；匹配函数空壳 collab.Service.Recipients/Matches/defaultRecipient（恒报未实现）；驻场者 DTO SessionResident 与出站接口 LedgerClient.SessionResident（Facade 空壳恒报未实现）；驻场者来信正文 ResidentLetter/RenderResidentLetter（④，正文即 wire 定义）；r3 补签⑤投递投影：房间历史行 RoomHistoryItem（LedgerEvent 平铺 + no_recipient 可省略键）与 SessionSummary.project 可省略键。常量与哨兵不入图。 B435.1（K0）：席位模式列与显式写面 BindSeatMode/RebindSeatMode、迁移 migrateDriverMode；匹配函数落码（Recipients 直调 proto.IsHumanAuthor）；驻场者只读面 Store.SessionResident；agentd 房间唤醒改接 Recipients + seatAddressWake（删 room.IsSessionRoom / MessageWakeTargets 两条旧边）；card wait 房间命中段（SeatMessageCandidatesContext / 游标行 / 坐下下界 + Matches）；删 Service.AddressesCard。图覆盖债：Store.SeatRevisionContext、Store.AdvanceSessionDeliveryCursor 未入基线，相关边未登记。 B435.2（R）：驻场者写面 Store.SitResident/StandResident → Facade → collab.Service.SitResident/StandResident（mapResidentError、书写者集 sessionWriters ∪ 驻场者）；CLI session sit/stand 与 session wait <session>（runSessionWait → sessionWaitRun → sessionWaitPage → sessionWaitMatch → Matches，候选读 ResidentMessageCandidatesContext，与席位读共用 addressCandidatesSQL）；F-RM1：coordinatorRunner.Resume → seatEnv、CoordSessionRef/SessionRef.Env 对称字段、简报 briefingSessionSend/briefingRoomResume/briefingWakeEvents；删 resumeTurnRequest。MessageWakeTargets 保留（Q12 乙）。图覆盖债：session 命令族其余子命令与 buildSessionWake、Service.sendToSession、bumpSeatRevisionTx、rebuildAfterResumeFailure 未入基线，相关边未登记；collab → LedgerClient 接口方法调用不入图。 B435.3（O1）：项目房间 Store.EnsureProjectRoom（首句无操作写取写锁 claimProjectRoomWriteLockTx，与 CreateSession 共用 createSessionTx）/ProjectRoom/SessionProject → Facade → collab.Service.EnsureProjectRoom；agentd 消费循环 → notifyProjectRoom（projectNoticeTargetOf/projectNoticeAlreadySent/finishProjectNotice/holdProjectNotifyClaim/settleInapplicableNotice）→ collab.Service.Send；handleRoomMessages 读时经 Recipients 投影 no_recipient（roomHistoryBySystemNull）；CLI project room、session sit --project、card show 无组织者提示（cardShowOrganizerHint）。图覆盖债：Store.ClaimWake/CompleteWake/CursorWatermark/MentionCandidatesContext 与 Service.HistoryContext 未入基线，相关边未登记；summarizeSession → LedgerClient.SessionProject 为接口方法调用不入图。 B435.4（O2）：消费循环 consumeAutomationEventsOnce → ringResidentDoorbells（residentDoorbellIneligible / residentDoorbellAttempt / residentDoorbellUndelivered）→ collab.Service.Recipients、ledger api Facade.SessionResident、scheduling.IsLocalMachine、Server.IsSelfTarget、proto.RenderResidentLetter/DeliveryCursorKey 与 desktopwake.go 保留六组（writeDesktopLetter、claudeContinueURL、desktopMailboxHome、sweepDesktopLetterTmp、desktopClock、opener 字段调用不入图）。图覆盖债：门铃状态类型 residentWakeState / residentDoorbellBatch / residentDoorbellRound 及其方法（isRung、markRung、pruneUpTo、takeRetry、putRetry、retryKeys、add、merge、skip）未入图（视图 diff 无容器新增面，与 O1 projectNotifyHandled 同处置）；Server.desktopOpen 为函数字段调用不入图。 B435.6（W）：控制台退役 B434 坐席入口——删 claudeDeepLink.ts / desktopSeatCopy.ts 全部节点、CoordinatorPanel 的坐席状态与三个处理函数、scheduling 拉起器两函数与两 DTO、desktopShell.requestOpenDeepLink；RoomHistoryItem TS 孪生改为 interface（+no_recipient）。图覆盖债：新符号 deliveryCopy.ts（NO_RECIPIENT_COPY / NEEDS_MENTION_COPY / DELIVERY_READ_TIME_HINT / noRecipientLabel）、ledger.ts（SeatMode / SEAT_MODES / isSeatMode / SEAT_MODE_HINT / SEAT_MODE_UNKNOWN_LABEL / seatModeView）、rooms.ts（NoRecipientReason / NO_RECIPIENT_REASONS / isNoRecipientReason / SESSION_MEMBER_KINDS / isSessionMemberKind）、sessionModel.ts（sessionProjects / memberRoleLabel / RESIDENT_ORGANIZER_LABEL / PROJECT_ROOM_BADGE）未入图（web 会话侧本不在基线，plan §10 R #27 记法，不补扫）。 B435.5（X）：退役 B434 卡级桌面端坐席与拉起器——删 desktopwake.go 退役族（保留 O2 用到的信箱/continue 六组）、cmd launcher.go / card_seat_desktop.go 全部节点与 4 个 CLI entry、desktop-launch 两条与 /api/desktop/deliver 三个 HTTP entry、ledger seat_desktop.go、client 两方法、proto 四 DTO、runCardCoordinateDesktop；改唤醒分流（automationWakeEvents / resolveWakeCard / wakeCoordinatorRoundID / transferCoordinatorWake / handleCoordWake，Q2 甲）、clearSeatTx、ensureSchema/ddlStatements；新增退役迁移 Store.migrateRetireB434Tables 一族与墓碑 retiredB434Error。图覆盖债：墓碑 init 与其闭包、留痕 DTO/常量不入图；seatAddressWake、RebindSeatMode 的 B434 分支删除未改其 nodesAdded 条目（只追加）；consumeAutomationEventsOnce 已在 nodesModified（O2）。",
   "nodesAdded": {
     "m_proto_SeatMode": {
       "kind": "model",
@@ -1079,6 +1079,96 @@
       "line": 374,
       "signature": "func (s *Server) residentDoorbellUndelivered(key string, b *residentDoorbellBatch, now time.Time, stage string, cause error, round *residentDoorbellRound)",
       "summary": "信未落盘处置：计一次失败；键不安全或到 residentWakeMaxAttempts 即放弃，否则倍增退避登记在途重试（不挡水位）。"
+    },
+    "n_ledger_Store_migrateRetireB434Tables": {
+      "kind": "func",
+      "container": "k_ledger_Store",
+      "order": 9148,
+      "name": "Store.migrateRetireB434Tables",
+      "file": "internal/ledger/b434_retire_migrate.go",
+      "line": 174,
+      "signature": "func (s *Store) migrateRetireB434Tables() error",
+      "summary": "B435 X 退役迁移：单事务（首句取写锁）探测 seat_desktops / desktop_launchers → 读行 → DROP → 按行去重追加留痕批次到 ledger_meta[b435.retired_b434_rows]；提交后每张受影响卡一条 Warn。"
+    },
+    "n_ledger_Store_retiredB434Batches": {
+      "kind": "func",
+      "container": "k_ledger_Store",
+      "order": 9149,
+      "name": "Store.retiredB434Batches",
+      "file": "internal/ledger/b434_retire_migrate.go",
+      "line": 297,
+      "signature": "func (s *Store) retiredB434Batches() ([]retiredB434Batch, error)",
+      "summary": "读回 B434 退役留痕全部批次（无键返回空）。"
+    },
+    "n_ledger_Store_retiredTableExistsTx": {
+      "kind": "func",
+      "container": "k_ledger_Store",
+      "order": 9150,
+      "name": "Store.retiredTableExistsTx",
+      "file": "internal/ledger/b434_retire_migrate.go",
+      "line": 88,
+      "signature": "func (s *Store) retiredTableExistsTx(tx *sql.Tx, name string) (bool, error)",
+      "summary": "迁移事务内探测退役表是否存在（PG information_schema + current_schema()，SQLite sqlite_master）。"
+    },
+    "n_ledger_readRetiredSeatDesktopsTx": {
+      "kind": "func",
+      "container": "k_ledger_fn",
+      "order": 9151,
+      "name": "readRetiredSeatDesktopsTx",
+      "file": "internal/ledger/b434_retire_migrate.go",
+      "line": 103,
+      "signature": "func readRetiredSeatDesktopsTx(tx *sql.Tx) ([]retiredSeatDesktopRow, error)",
+      "summary": "事务内读 seat_desktops 全部行（时间列规范化，按 card_id 排序）。"
+    },
+    "n_ledger_readRetiredDesktopLaunchersTx": {
+      "kind": "func",
+      "container": "k_ledger_fn",
+      "order": 9152,
+      "name": "readRetiredDesktopLaunchersTx",
+      "file": "internal/ledger/b434_retire_migrate.go",
+      "line": 127,
+      "signature": "func readRetiredDesktopLaunchersTx(tx *sql.Tx) ([]retiredDesktopLauncherRow, error)",
+      "summary": "事务内读 desktop_launchers 全部行（时间列规范化，按 project 排序）。"
+    },
+    "n_ledger_decodeRetiredB434Batches": {
+      "kind": "func",
+      "container": "k_ledger_fn",
+      "order": 9153,
+      "name": "decodeRetiredB434Batches",
+      "file": "internal/ledger/b434_retire_migrate.go",
+      "line": 151,
+      "signature": "func decodeRetiredB434Batches(value string) ([]retiredB434Batch, error)",
+      "summary": "解码留痕键的 JSON 批次数组（空串为零批）。"
+    },
+    "n_ledger_retiredRowKey": {
+      "kind": "func",
+      "container": "k_ledger_fn",
+      "order": 9154,
+      "name": "retiredRowKey",
+      "file": "internal/ledger/b434_retire_migrate.go",
+      "line": 163,
+      "signature": "func retiredRowKey(table string, row any) string",
+      "summary": "按全部字段生成一行的去重键（表名 + 行 JSON）。"
+    },
+    "n_ledger_normalizeRetiredTime": {
+      "kind": "func",
+      "container": "k_ledger_fn",
+      "order": 9155,
+      "name": "normalizeRetiredTime",
+      "file": "internal/ledger/b434_retire_migrate.go",
+      "line": 69,
+      "signature": "func normalizeRetiredTime(v any) string",
+      "summary": "两方言时间列规范成 UTC RFC3339Nano；解析不了的文本原样返回，NULL 为空串。"
+    },
+    "n_cmd_retiredB434Error": {
+      "kind": "func",
+      "container": "k_cmd_fn",
+      "order": 9156,
+      "name": "retiredB434Error",
+      "file": "cmd/retired_b434.go",
+      "line": 52,
+      "signature": "func retiredB434Error(what string) error",
+      "summary": "B434 墓碑错误：Debug 一行 + 「<入口> 已退役（B435）…session sit --desktop-session…」提示（plan Q3 甲）。"
     }
   },
   "nodesModified": {
@@ -1842,6 +1932,880 @@
       "signature": "export interface RoomHistoryItem extends LedgerEvent {",
       "modelKind": "dto",
       "summary": "房间历史视图一行：账本事件平铺 + 可省略的 no_recipient（B435 ⑤ C-509）。"
+    },
+    "n_cmd_init_3": {
+      "kind": "func",
+      "container": "k_cmd_fn",
+      "order": 43,
+      "name": "init",
+      "file": "cmd/card.go",
+      "line": 571,
+      "signature": "func init()"
+    },
+    "n_cmd_init_5": {
+      "kind": "func",
+      "container": "k_cmd_fn",
+      "order": 61,
+      "name": "init",
+      "file": "cmd/card_driver.go",
+      "line": 182,
+      "signature": "func init()"
+    },
+    "n_cmd_cardBindCmd_RunE": {
+      "kind": "func",
+      "container": "k_cmd_fn",
+      "order": 57,
+      "name": "cardBindCmd.RunE",
+      "file": "cmd/card_driver.go",
+      "line": 28,
+      "signature": "func(cmd *cobra.Command, args []string) error",
+      "params": [
+        [
+          "cmd",
+          "*cobra.Command",
+          ""
+        ],
+        [
+          "args",
+          "[]string",
+          ""
+        ]
+      ],
+      "returns": "error"
+    },
+    "n_cmd_cardCoordinateCmd_RunE": {
+      "kind": "func",
+      "container": "k_cmd_fn",
+      "order": 39,
+      "name": "cardCoordinateCmd.RunE",
+      "file": "cmd/card.go",
+      "line": 497,
+      "signature": "func(cmd *cobra.Command, args []string) error",
+      "params": [
+        [
+          "cmd",
+          "*cobra.Command",
+          ""
+        ],
+        [
+          "args",
+          "[]string",
+          ""
+        ]
+      ],
+      "returns": "error"
+    },
+    "n_cmd_statusCmd_RunE": {
+      "kind": "func",
+      "container": "k_cmd_fn",
+      "order": 257,
+      "name": "statusCmd.RunE",
+      "file": "cmd/status.go",
+      "line": 50,
+      "signature": "func(cmd *cobra.Command, args []string) error",
+      "params": [
+        [
+          "cmd",
+          "*cobra.Command",
+          ""
+        ],
+        [
+          "args",
+          "[]string",
+          ""
+        ]
+      ],
+      "returns": "error"
+    },
+    "n_agentd_Server_registerCoordRoutes": {
+      "kind": "func",
+      "container": "k_agentd_Server",
+      "order": 25,
+      "name": "Server.registerCoordRoutes",
+      "file": "internal/agentd/coordapi.go",
+      "line": 43,
+      "signature": "func (s *Server) registerCoordRoutes(api *http.ServeMux)",
+      "params": [
+        [
+          "api",
+          "*http.ServeMux",
+          ""
+        ]
+      ],
+      "summary": "registerCoordRoutes 挂协调者 HTTP 路由（launch/attach/status/forget/rebind/wake）；B435 X 删 desktop-launch 两条。"
+    },
+    "n_agentd_Server_handleCoordWake": {
+      "kind": "func",
+      "container": "k_agentd_Server",
+      "order": 1881,
+      "name": "Server.handleCoordWake",
+      "file": "internal/agentd/coordapi.go",
+      "line": 172,
+      "signature": "func (s *Server) handleCoordWake(w http.ResponseWriter, r *http.Request)",
+      "params": [
+        [
+          "w",
+          "http.ResponseWriter",
+          ""
+        ],
+        [
+          "r",
+          "*http.Request",
+          ""
+        ]
+      ],
+      "summary": "handleCoordWake 接收另一台 agentd 转交的协调者唤醒请求（契约 §3.3）：CAS 校验席位，不符 409；相符按本机执行分支跑一轮，只回执。B435 X 删 desktopUnopened 分支（plan Q2 甲）。"
+    },
+    "n_agentd_Server_transferCoordinatorWake": {
+      "kind": "func",
+      "container": "k_agentd_Server",
+      "order": 1907,
+      "name": "Server.transferCoordinatorWake",
+      "file": "internal/agentd/scheddrain.go",
+      "line": 361,
+      "signature": "func (s *Server) transferCoordinatorWake(ctx context.Context, card, seat, machine string,",
+      "params": [
+        [
+          "ctx",
+          "context.Context",
+          ""
+        ],
+        [
+          "card",
+          "string",
+          ""
+        ],
+        [
+          "seat",
+          "string",
+          ""
+        ],
+        [
+          "machine",
+          "string",
+          ""
+        ],
+        [
+          "raws",
+          "[]proto.LedgerEvent",
+          ""
+        ],
+        [
+          "holder",
+          "string",
+          ""
+        ],
+        [
+          "roundID",
+          "string",
+          ""
+        ]
+      ],
+      "returns": "(keystone.RoundResult, error)",
+      "summary": "transferCoordinatorWake 把唤醒请求转交给承载席位所在机器的 agentd（契约 §3.3）；失败出口本机落 wake_round fail。B435 X 不再读 resp.LetterUnopened（plan Q2 甲，wire 字段保留）。"
+    },
+    "n_agentd_Server_wakeCoordinatorRoundID": {
+      "kind": "func",
+      "container": "k_agentd_Server",
+      "order": 1910,
+      "name": "Server.wakeCoordinatorRoundID",
+      "file": "internal/agentd/scheddrain.go",
+      "line": 439,
+      "signature": "func (s *Server) wakeCoordinatorRoundID(ctx context.Context, card string,",
+      "params": [
+        [
+          "ctx",
+          "context.Context",
+          ""
+        ],
+        [
+          "card",
+          "string",
+          ""
+        ],
+        [
+          "evs",
+          "[]keystone.WakeEvent",
+          ""
+        ],
+        [
+          "raws",
+          "[]proto.LedgerEvent",
+          ""
+        ],
+        [
+          "roundID",
+          "string",
+          ""
+        ]
+      ],
+      "returns": "(keystone.RoundResult, error)",
+      "summary": "wakeCoordinatorRoundID 是唤醒回合的现行实现：roundID 非空沿用、空串新开；pull 席位零回合（只 Forget + Info，B435 X 删 B434 桌面端信箱分支）；失败出口尽量本机落 wake_round fail。"
+    },
+    "n_agentd_Server_automationWakeEvents": {
+      "kind": "func",
+      "container": "k_agentd_Server",
+      "order": 1921,
+      "name": "Server.automationWakeEvents",
+      "file": "internal/agentd/wakeconsumer.go",
+      "line": 300,
+      "signature": "func (s *Server) automationWakeEvents(ev proto.LedgerEvent) ([]keystone.WakeEvent, error)",
+      "params": [
+        [
+          "ev",
+          "proto.LedgerEvent",
+          ""
+        ]
+      ],
+      "returns": "([]keystone.WakeEvent, error)",
+      "summary": "automationWakeEvents 是消费循环的统一映射入口：会话消息走 roomMessageWakeEvents 寻址分流；其余事件（含 needs_human，C-238 零唤醒）沿用 automationWakeEvent。B435 X 删 desktopNeedsHumanWakes 分支。"
+    },
+    "n_agentd_Server_resolveWakeCard": {
+      "kind": "func",
+      "container": "k_agentd_Server",
+      "order": 1924,
+      "name": "Server.resolveWakeCard",
+      "file": "internal/agentd/wakeconsumer.go",
+      "line": 496,
+      "signature": "func (s *Server) resolveWakeCard(cardID string) string",
+      "params": [
+        [
+          "cardID",
+          "string",
+          ""
+        ]
+      ],
+      "returns": "string",
+      "summary": "resolveWakeCard 把卡自动化事件的唤醒目标收到能被叫醒的席位卡：push → 自己；pull → 空（card wait 交付）；空座沿 parent_id 上走找 push 祖先。B435 X 删 B434 桌面端记录分支。"
+    },
+    "n_agentd_Server_roomMessageWakeEvents": {
+      "kind": "func",
+      "container": "k_agentd_Server",
+      "order": 1922,
+      "name": "Server.roomMessageWakeEvents",
+      "file": "internal/agentd/wakeconsumer.go",
+      "line": 328,
+      "signature": "func (s *Server) roomMessageWakeEvents(ev proto.LedgerEvent) ([]keystone.WakeEvent, error)",
+      "params": [
+        [
+          "ev",
+          "proto.LedgerEvent",
+          ""
+        ]
+      ],
+      "returns": "([]keystone.WakeEvent, error)",
+      "summary": "roomMessageWakeEvents 是会话消息的寻址分流（契约 §3.8、条 47/48/50）。只对会话房间（room.IsSessionRoom）的人类形状消息做寻址判定；判定唯一入口collab.Service.MessageWakeTargets（agentd 不解析 mentions，不建外部身份注册表）。分流：- target = 会话内某卡当前 driver_session → WakeMessage{Card:该卡} 恰一次（同卡多命中去重）；- 其余 target（外部身份/非成员/旧席位/不存在的卡）→ 零 keystone Wake，Info 日志可查，未读由事件+游标天然承载（推醒走 session wait 订阅通道）。"
+    },
+    "m_agentd_Server": {
+      "kind": "model",
+      "container": "k_agentd_model",
+      "order": 45,
+      "name": "Server",
+      "file": "internal/agentd/server.go",
+      "line": 101,
+      "signature": "type Server struct",
+      "summary": "Server 是 agentd 的 HTTP/WS 服务端，持有配置、存储与进程内实时路由 hub。",
+      "fields": [
+        [
+          "cfg",
+          "atomic.Pointer[config.Config]",
+          ""
+        ],
+        [
+          "cfgMu",
+          "sync.Mutex",
+          ""
+        ],
+        [
+          "cfgPath",
+          "string",
+          ""
+        ],
+        [
+          "st",
+          "*store.Store",
+          ""
+        ],
+        [
+          "ledger",
+          "*ledger.Store",
+          ""
+        ],
+        [
+          "unlinkedMu",
+          "sync.Mutex",
+          ""
+        ],
+        [
+          "unlinkedCache",
+          "*unlinkedSummarySnapshot",
+          ""
+        ],
+        [
+          "unlinkedRefreshing",
+          "bool",
+          ""
+        ],
+        [
+          "unlinkedStopped",
+          "bool",
+          ""
+        ],
+        [
+          "unlinkedLastAttemptAt",
+          "time.Time",
+          ""
+        ],
+        [
+          "unlinkedLastAttemptFor",
+          "map[string]config.Target",
+          ""
+        ],
+        [
+          "unlinkedLastAttemptCfg",
+          "*config.Config",
+          ""
+        ],
+        [
+          "unlinkedRefreshCtx",
+          "context.Context",
+          ""
+        ],
+        [
+          "unlinkedRefreshCancel",
+          "context.CancelFunc",
+          ""
+        ],
+        [
+          "unlinkedRefreshWG",
+          "sync.WaitGroup",
+          ""
+        ],
+        [
+          "unlinkedCloseOnce",
+          "sync.Once",
+          ""
+        ],
+        [
+          "unlinkedCloseErr",
+          "error",
+          ""
+        ],
+        [
+          "roomAttachMu",
+          "sync.RWMutex",
+          ""
+        ],
+        [
+          "roomAttachCache",
+          "map[string]roomAttachCacheEntry",
+          ""
+        ],
+        [
+          "roomAttachRefreshing",
+          "bool",
+          ""
+        ],
+        [
+          "roomAttachLastRefresh",
+          "time.Time",
+          ""
+        ],
+        [
+          "hub",
+          "*orchestration.Hub",
+          ""
+        ],
+        [
+          "log",
+          "*slog.Logger",
+          ""
+        ],
+        [
+          "mgr",
+          "orchestration.OrchestrationClient",
+          ""
+        ],
+        [
+          "providers",
+          "*executor.Registry",
+          ""
+        ],
+        [
+          "ruleLoader",
+          "func(mainHome, cli string) ([]executor.ProfileFile, []executor.ProfileFile, error)",
+          ""
+        ],
+        [
+          "startedAt",
+          "time.Time",
+          ""
+        ],
+        [
+          "replayLimit",
+          "int",
+          ""
+        ],
+        [
+          "liveLimit",
+          "int",
+          ""
+        ],
+        [
+          "sessionRecheck",
+          "time.Duration",
+          ""
+        ],
+        [
+          "onTruncationDiagnosed",
+          "func(verdict string)",
+          ""
+        ],
+        [
+          "upd",
+          "UpdateDeps",
+          ""
+        ],
+        [
+          "latestFetch",
+          "func(context.Context) (release.Release, error)",
+          ""
+        ],
+        [
+          "downloadMu",
+          "sync.Mutex",
+          ""
+        ],
+        [
+          "downloadState",
+          "*proto.DownloadState",
+          ""
+        ],
+        [
+          "downloadChecksum",
+          "func(context.Context, string, string) (string, error)",
+          ""
+        ],
+        [
+          "downloadFetch",
+          "func(context.Context, string, string) ([]byte, string, error)",
+          ""
+        ],
+        [
+          "downloadOpen",
+          "func(string) error",
+          ""
+        ],
+        [
+          "downloadPlatform",
+          "func() (string, string)",
+          ""
+        ],
+        [
+          "pull",
+          "*orchestration.PullTracker",
+          ""
+        ],
+        [
+          "pullBaseCtx",
+          "context.Context",
+          ""
+        ],
+        [
+          "restart",
+          "func(reason string) bool",
+          ""
+        ],
+        [
+          "pty",
+          "*ptyhost.Host",
+          ""
+        ],
+        [
+          "ptyRootPath",
+          "string",
+          ""
+        ],
+        [
+          "scheduling",
+          "SchedulingClient",
+          ""
+        ],
+        [
+          "keystone",
+          "*keystone.Service",
+          ""
+        ],
+        [
+          "autoLedger",
+          "*ledgerapi.Facade",
+          ""
+        ],
+        [
+          "ptyGate",
+          "*ptyapi.Host",
+          ""
+        ],
+        [
+          "hostAPI",
+          "*hostapi.Host",
+          ""
+        ],
+        [
+          "pushFanout",
+          "*PushFanout",
+          ""
+        ],
+        [
+          "rooms",
+          "*collab.Service",
+          ""
+        ],
+        [
+          "coordLocksMu",
+          "sync.Mutex",
+          ""
+        ],
+        [
+          "coordLocks",
+          "map[string]*sync.Mutex",
+          ""
+        ],
+        [
+          "automationStartOnce",
+          "sync.Once",
+          ""
+        ],
+        [
+          "automationKick",
+          "chan struct{}",
+          ""
+        ],
+        [
+          "automationMu",
+          "sync.Mutex",
+          ""
+        ],
+        [
+          "automationCursor",
+          "int64",
+          ""
+        ],
+        [
+          "automationCursorStore",
+          "*automationCursorStore",
+          ""
+        ],
+        [
+          "automationSeen",
+          "map[int64]struct{}",
+          ""
+        ],
+        [
+          "automationBackoff",
+          "map[string]wakeBackoff",
+          ""
+        ],
+        [
+          "automationStall",
+          "map[string]int",
+          ""
+        ],
+        [
+          "desktopWakeStall",
+          "map[string]desktopWakeStallEntry",
+          ""
+        ],
+        [
+          "wakeQueueRoundsMu",
+          "sync.Mutex",
+          ""
+        ],
+        [
+          "wakeQueueRounds",
+          "map[string]string",
+          ""
+        ],
+        [
+          "automationRoundHook",
+          "func(card string, result keystone.RoundResult)",
+          ""
+        ],
+        [
+          "desktopMu",
+          "sync.Mutex",
+          ""
+        ],
+        [
+          "desktopState",
+          "*proto.DesktopState",
+          ""
+        ],
+        [
+          "desktopAt",
+          "time.Time",
+          ""
+        ],
+        [
+          "desktopNow",
+          "func() time.Time",
+          ""
+        ],
+        [
+          "desktopOpen",
+          "desktopOpener",
+          ""
+        ],
+        [
+          "desktopHome",
+          "string",
+          ""
+        ],
+        [
+          "upgradeMu",
+          "sync.Mutex",
+          ""
+        ],
+        [
+          "machineUpgrades",
+          "map[string]*proto.MachineUpgrade",
+          ""
+        ],
+        [
+          "machineUpgradeInstaller",
+          "*release.Installer",
+          ""
+        ],
+        [
+          "machineUpgradeRunner",
+          "machineUpgradeRunner",
+          ""
+        ],
+        [
+          "pool",
+          "*targetclient.Pool",
+          ""
+        ],
+        [
+          "previewOwner",
+          "*workspace.PreviewOwner",
+          ""
+        ],
+        [
+          "previewOpener",
+          "PreviewOpener",
+          ""
+        ],
+        [
+          "previewMirror",
+          "*PreviewMirror",
+          ""
+        ],
+        [
+          "cardStepMu",
+          "sync.Mutex",
+          ""
+        ],
+        [
+          "cardStepFlight",
+          "map[string]bool",
+          ""
+        ],
+        [
+          "runStepFn",
+          "func(ctx context.Context, runner *ledgerstep.StepRunner, cardID, step string)",
+          ""
+        ]
+      ],
+      "modelKind": "dto"
+    },
+    "n_agentd_NewServer": {
+      "kind": "func",
+      "container": "k_agentd_fn",
+      "order": 100,
+      "name": "NewServer",
+      "file": "internal/agentd/server.go",
+      "line": 289,
+      "signature": "func NewServer(cfg *config.Config, st *store.Store, log *slog.Logger) *Server",
+      "params": [
+        [
+          "cfg",
+          "*config.Config",
+          ""
+        ],
+        [
+          "st",
+          "*store.Store",
+          ""
+        ],
+        [
+          "log",
+          "*slog.Logger",
+          ""
+        ]
+      ],
+      "returns": "*Server",
+      "summary": "NewServer 创建 agentd 服务端。 参数： - cfg: 配置，鉴权使用 cfg.Token - st: 持久化存储 - log: 本服务日志入口 注意： - hub 在内部创建，构造时捕获 slog.Default()；如需统一日志格式，调用方应先在 slog.SetDefault(logx.Setup(...)) 之后再调用 NewServer"
+    },
+    "n_agentd_Server_Handler": {
+      "kind": "func",
+      "container": "k_agentd_Server",
+      "order": 245,
+      "name": "Server.Handler",
+      "file": "internal/agentd/server.go",
+      "line": 817,
+      "signature": "func (s *Server) Handler() http.Handler",
+      "returns": "http.Handler",
+      "summary": "Handler 返回带 Host 白名单 + 鉴权两层中间件的完整路由，便于 httptest 直接挂载。 路由（Go 1.22+ 方法路由）： - GET  /api/status                    agentd 可用性与身份 - GET  /api/footprint                 全任务进程足迹体检 - GET  /api/reclaim                    终态任务 managed worktree 残留体检 - GET/POST /api/gc                    终态缓存与残留 managed worktree 预览/执行 - GET  /api/tasks                   任务列表 - POST /api/tasks                   派发新任务（dispatch） - GET  /api/tasks/{id}              任务详情（attach 数据源） - POST /api/tasks/{id}/reply        回答工单 - POST /api/tasks/{id}/continue     续发修改指令 - POST /api/tasks/{id}/done         归档任务 - POST /api/tasks/{id}/reclaim       回收单个终态任务的 managed worktree - GET  /api/tasks/{id}/diff         任务分支相对基准分支的审阅素材（diff + 提交列表） - GET  /api/tasks/{id}/render       任务实况（render.log）流式读取（attach 数据源） - GET  /api/tasks/{id}/frames      结构化回合帧（frames.jsonl）流式读取（W4b/TUI 数据源） - GET  /api/tasks/{id}/file         读任务仓库内文件（审阅上下文） - GET  /api/tasks/{id}/bundle       任务分支的 git bundle（回程 pull，不经 ssh） - POST /api/tasks/{id}/run          在任务仓库执行审阅命令（跑测试/lint） - POST /api/projects               登记项目（必要时先克隆） - GET  /api/projects               列出项目位置（含现场实际状态） - GET  /api/discipline             空清单（B229 目录退役）+ executor 档位 - GET  /api/discipline/file        拒服务（410，纪律块已入账本） - PUT  /api/discipline/file        拒服务（410，纪律块已入账本） - PUT  /api/discipline/mapping     整段替换机器级 discipline 映射段 - GET  /api/env                    env 文件列表与 executor 档位 - GET  /api/env/file/keys          env 文件的变量清单（不含值） - GET  /api/env/file                读 env 文件正文（仅编辑时） - PUT  /api/env/file                写 env 文件（写前解析校验） - PUT  /api/env/mapping             整段替换 executor→env 文件映射 - GET  /api/launchers               工作台自定义启动项列表 - PUT  /api/launchers               整段替换启动项列表 - GET  /api/executor/default       查询机器级缺省执行者、它的默认模型与可选名单 - PUT  /api/executor/default       整体替换机器级缺省执行者与它的默认模型 - GET  /api/workspaces/dir          列举工作树内一层目录（白名单：仅已探测到的工作树） - GET  /api/workspaces/file         读工作树内单个文件（同上白名单） - PUT  /api/workspaces/file         写工作树内单个文件（同上白名单，带哈希前置条件） - POST /api/workspaces/entry        工作树内新建条目（同上白名单，请求体含 name/kind） - POST /api/workspaces/entry/copy   复制工作树内条目（副本计数命名，目录递归） - PATCH /api/workspaces/entry       改名工作树内条目（请求体含 new_name） - DELETE /api/workspaces/entry      删除工作树内条目（目录连同内容一并删） - GET  /api/workspaces/search       工作树内按关键词搜索命中行（含 limit/超时/跳过生成物护栏） - POST /api/workspaces/reveal       在本机访达中显示工作树内条目（不支持 ?machine= 转发） - DELETE /api/projects/{name}      注销项目位置（只删登记，不动磁盘） - PATCH /api/projects/{name}       改项目位置的引用名与/或路径（本机或 ?machine= 指定机器） - GET  /ws/events                   事件流（补发 + 实时） - GET  /ws/pty                      PTY 会话双向字节通道（binary=数据，text=控制） - POST /api/auth/tickets            主令牌签发一次性 ticket，返回 /console 兑换 URL - GET  /api/auth/sessions           列出会话（含已吊销） - DELETE /api/auth/sessions/{id}    吊销指定会话 - POST /api/auth/logout             吊销当前 cookie 会话并清除 cookie - GET  /console                     兑换 ticket → Set-Cookie → 302 到 /（无主令牌/cookie 凭据） - GET/HEAD /（含深链接）             控制台 SPA 兜底：命中文件发文件，否则回落 index.html （/api、/ws 的未命中经前缀分派保持原生 404/405，不被 SPA 吞掉，见下方注册处）"
+    },
+    "n_agentd_Server_resolveLocalProjectRoot": {
+      "kind": "func",
+      "container": "k_agentd_Server",
+      "order": 1882,
+      "name": "Server.resolveLocalProjectRoot",
+      "file": "internal/agentd/coordapi.go",
+      "line": 359,
+      "signature": "func (s *Server) resolveLocalProjectRoot(card ledger.Card) (string, error)",
+      "params": [
+        [
+          "card",
+          "ledger.Card",
+          ""
+        ]
+      ],
+      "returns": "(string, error)",
+      "summary": "resolveLocalProjectRoot 解析卡所属项目在本 agentd 登记的绝对根目录，是协调者工作目录（resolveCoordWorkdir）的唯一解析点（B435 X 退役拉起材料后只剩这一个调用方）。"
+    },
+    "n_agentd_Server_SetDesktopOpener": {
+      "kind": "func",
+      "container": "k_agentd_Server",
+      "order": 1888,
+      "name": "Server.SetDesktopOpener",
+      "file": "internal/agentd/desktopwake.go",
+      "line": 206,
+      "signature": "func (s *Server) SetDesktopOpener(open func(string) error)",
+      "params": [
+        [
+          "open",
+          "func(string) error",
+          ""
+        ]
+      ],
+      "summary": "SetDesktopOpener 装配 continue 深链 opener：只在组装期调用一次，运行期只读不加锁；open 为 nil 等价于未装配（O2 门铃按「信已落盘、continue 未发出」处置）。"
+    },
+    "n_agentd_Server_desktopMailboxHome": {
+      "kind": "func",
+      "container": "k_agentd_Server",
+      "order": 1895,
+      "name": "Server.desktopMailboxHome",
+      "file": "internal/agentd/desktopwake.go",
+      "line": 232,
+      "signature": "func (s *Server) desktopMailboxHome() (string, error)",
+      "returns": "(string, error)",
+      "summary": "desktopMailboxHome 是信箱根目录规则的唯一定义：Server.desktopHome 非空原样返回，否则取写信进程用户的 os.UserHomeDir()；O2 门铃只经它取信箱根。"
+    },
+    "n_agentd_openDesktopDeepLinkDarwin": {
+      "kind": "func",
+      "container": "k_agentd_fn",
+      "order": 170,
+      "name": "openDesktopDeepLinkDarwin",
+      "file": "internal/agentd/desktopwake.go",
+      "line": 215,
+      "signature": "func openDesktopDeepLinkDarwin(link string) error",
+      "params": [
+        [
+          "link",
+          "string",
+          ""
+        ]
+      ],
+      "returns": "error",
+      "summary": "openDesktopDeepLinkDarwin 以 `open <link>` 把 continue 深链交给 Claude 桌面端：只放行 proto.ClaudeContinueURLPrefix 开头的链接，子进程带 desktopOpenTimeout 上限，失败带合并输出。"
+    },
+    "n_agentd_writeDesktopLetter": {
+      "kind": "func",
+      "container": "k_agentd_fn",
+      "order": 166,
+      "name": "writeDesktopLetter",
+      "file": "internal/agentd/desktopwake.go",
+      "line": 62,
+      "signature": "func writeDesktopLetter(home, cliSession, letter string, now time.Time) (string, error)",
+      "params": [
+        [
+          "home",
+          "string",
+          ""
+        ],
+        [
+          "cliSession",
+          "string",
+          ""
+        ],
+        [
+          "letter",
+          "string",
+          ""
+        ],
+        [
+          "now",
+          "time.Time",
+          ""
+        ]
+      ],
+      "returns": "(string, error)",
+      "summary": "writeDesktopLetter 把 letter 原子写进 home 下的信箱（契约 §3.6，P1=A）。"
+    },
+    "n_ledger_Store_clearSeatTx": {
+      "kind": "func",
+      "container": "k_ledger_Store",
+      "order": 145,
+      "name": "Store.clearSeatTx",
+      "file": "internal/ledger/binding.go",
+      "line": 327,
+      "signature": "func (s *Store) clearSeatTx(tx *sql.Tx, card string) error",
+      "params": [
+        [
+          "tx",
+          "*sql.Tx",
+          ""
+        ],
+        [
+          "card",
+          "string",
+          ""
+        ]
+      ],
+      "returns": "error",
+      "summary": "clearSeatTx 在调用方事务内清空席位三列并删除承载行（幂等）；终态转移与人工清座共用（B435 X：桌面端记录表已退役）。"
+    },
+    "n_ledger_Store_ensureSchema": {
+      "kind": "func",
+      "container": "k_ledger_Store",
+      "order": 119,
+      "name": "Store.ensureSchema",
+      "file": "internal/ledger/store.go",
+      "line": 617,
+      "signature": "func (s *Store) ensureSchema() error",
+      "returns": "error",
+      "summary": "ensureSchema 幂等建表（CREATE IF NOT EXISTS 顺序执行，无版本号）；DDL 循环后跑各迁移，含 B435 X 的 migrateRetireB434Tables。"
+    },
+    "n_ledger_ddlStatements": {
+      "kind": "func",
+      "container": "k_ledger_fn",
+      "order": 18,
+      "name": "ddlStatements",
+      "file": "internal/ledger/store.go",
+      "line": 202,
+      "signature": "func ddlStatements(pg bool) []string",
+      "params": [
+        [
+          "pg",
+          "bool",
+          ""
+        ]
+      ],
+      "returns": "[]string",
+      "summary": "ddlStatements 返回指定方言的建库 DDL 语句表；两支须登记同一集合的表（TestDDLDialectParity）。B435 X 删 seat_desktops / desktop_launchers。"
     }
   },
   "nodesDeleted": [
@@ -1870,7 +2834,118 @@
     "n_web_api_scheduling_openViaDesktopLauncher",
     "n_web_app_lib_requestOpenDeepLink",
     "m_web_api_scheduling_DesktopLaunchMaterial",
-    "m_web_api_scheduling_DesktopLauncherOpenResp"
+    "m_web_api_scheduling_DesktopLauncherOpenResp",
+    "n_cmd_runCardCoordinateDesktop",
+    "m_cmd_desktopSeatInput",
+    "n_cmd_cardSeatDesktopSetCmd_RunE",
+    "n_cmd_checkMailboxKey",
+    "n_cmd_prepareSeatDesktop",
+    "n_cmd_resolveDesktopMachine",
+    "n_cmd_seatDesktopSetRemedy",
+    "n_cmd_validSeatDesktopViaFlag",
+    "m_cmd_launcherProbe",
+    "m_cmd_launcherWire",
+    "n_cmd_agentdReach",
+    "n_cmd_launcherRegisterCmd_RunE",
+    "n_cmd_launcherShowCmd_RunE",
+    "n_cmd_launcherUnregisterCmd_RunE",
+    "n_cmd_probeLauncherMachine",
+    "n_cmd_probeLaunchers",
+    "n_cmd_renderLauncherSection",
+    "n_cmd_toLauncherWire",
+    "e_cli_card_seat_desktop_set",
+    "e_cli_launcher_register",
+    "e_cli_launcher_show",
+    "e_cli_launcher_unregister",
+    "e_http_get_api_cards_id_coordinator_desktop_launch",
+    "e_http_post_api_cards_id_coordinator_desktop_launch",
+    "e_http_post_api_desktop_deliver",
+    "m_agentd_desktopBriefInput",
+    "m_agentd_desktopDeliveryUnknownError",
+    "m_agentd_desktopLaunchFailedError",
+    "m_agentd_desktopLaunchInternalError",
+    "m_agentd_desktopLetterAssembler",
+    "m_agentd_desktopLetterPart",
+    "m_agentd_desktopLetterSection",
+    "m_agentd_desktopQuote",
+    "m_agentd_desktopRemoteNoLocalProjectError",
+    "m_agentd_desktopSeatOccupiedError",
+    "m_agentd_desktopUndeliveredError",
+    "m_agentd_desktopUnopenedError",
+    "m_agentd_desktopWakeStallEntry",
+    "m_agentd_forwardedWakeKey",
+    "n_agentd_Server_clearDesktopWakeStall",
+    "n_agentd_Server_deliverDesktopLetter",
+    "n_agentd_Server_deliverLauncherLetterLocal",
+    "n_agentd_Server_desktopLaunchMaterial",
+    "n_agentd_Server_desktopLetter",
+    "n_agentd_Server_desktopNeedsHumanWakes",
+    "n_agentd_Server_desktopWakeRetryPending",
+    "n_agentd_Server_desktopWakeRound",
+    "n_agentd_Server_driverTakeoverChangedSeat",
+    "n_agentd_Server_forwardLauncherLetter",
+    "n_agentd_Server_handleDesktopDeliver",
+    "n_agentd_Server_handleDesktopLaunchMaterial",
+    "n_agentd_Server_handleDesktopLauncherOpen",
+    "n_agentd_Server_launcherDeliveryFailed",
+    "n_agentd_Server_openViaDesktopLauncher",
+    "n_agentd_Server_recordDesktopWakeFailure",
+    "n_agentd_Server_renderLauncherLetter",
+    "n_agentd_Server_wakeDesktopSeat",
+    "n_agentd_Server_wakeRemoteDesktopSeat",
+    "n_agentd_desktopBrief",
+    "n_agentd_desktopDeliveryUnknownError_Error",
+    "n_agentd_desktopDeliveryUnknownError_Unwrap",
+    "n_agentd_desktopLaunchFailedError_Error",
+    "n_agentd_desktopLaunchFailedError_Unwrap",
+    "n_agentd_desktopLaunchInternalError_Error",
+    "n_agentd_desktopLaunchInternalError_Unwrap",
+    "n_agentd_desktopLetterAssembler_heading",
+    "n_agentd_desktopLetterAssembler_needsHuman",
+    "n_agentd_desktopLetterAssembler_other",
+    "n_agentd_desktopLetterAssembler_roomMessage",
+    "n_agentd_desktopLetterAssembler_section",
+    "n_agentd_desktopLetterAssembler_taskMirrored",
+    "n_agentd_desktopLetterAssembler_unreadOf",
+    "n_agentd_desktopLetterTail",
+    "n_agentd_desktopNeedsHumanReason",
+    "n_agentd_desktopQuoteBlock",
+    "n_agentd_desktopRemoteNoLocalProjectError_Error",
+    "n_agentd_desktopRemoteNoLocalProjectError_Unwrap",
+    "n_agentd_desktopSeatOccupiedError_Error",
+    "n_agentd_desktopUndelivered",
+    "n_agentd_desktopUndeliveredError_Error",
+    "n_agentd_desktopUndeliveredError_Unwrap",
+    "n_agentd_desktopUnopened",
+    "n_agentd_desktopUnopenedError_Error",
+    "n_agentd_desktopUnopenedError_Unwrap",
+    "n_agentd_desktopWakeRetryDelay",
+    "n_agentd_escapeDesktopQuoteBody",
+    "n_agentd_isForwardedWake",
+    "n_agentd_isSystemNeedsHumanActor",
+    "n_agentd_launcherDeliveryOutcomeUnknown",
+    "n_agentd_launcherFailureCauseText",
+    "n_agentd_renderDesktopLetter",
+    "n_agentd_sanitizeDesktopQuoteAuthor",
+    "n_agentd_validateDesktopDeliverReq",
+    "n_agentd_withForwardedWake",
+    "n_client_Client_DesktopDeliver",
+    "n_client_Client_DesktopLauncherOpen",
+    "m_ledger_DesktopLauncher",
+    "m_ledger_SeatDesktop",
+    "n_ledger_Store_DesktopLauncherOf",
+    "n_ledger_Store_ListDesktopLaunchers",
+    "n_ledger_Store_RegisterDesktopLauncher",
+    "n_ledger_Store_SeatDesktopOf",
+    "n_ledger_Store_SetSeatDesktop",
+    "n_ledger_Store_UnregisterDesktopLauncher",
+    "n_ledger_Store_deleteSeatDesktopTx",
+    "n_ledger_validSeatDesktopVia",
+    "n_ledger_validateDesktopLauncher",
+    "m_proto_DesktopDeliverReq",
+    "m_proto_DesktopDeliverResp",
+    "m_proto_DesktopLaunchMaterial",
+    "m_proto_DesktopLauncherOpenResp"
   ],
   "edgesAdded": [
     [
@@ -2492,6 +3567,54 @@
     [
       "n_agentd_Server_residentDoorbellAttempt",
       "n_agentd_Server_residentDoorbellUndelivered"
+    ],
+    [
+      "n_ledger_Store_ensureSchema",
+      "n_ledger_Store_migrateRetireB434Tables"
+    ],
+    [
+      "n_ledger_Store_migrateRetireB434Tables",
+      "n_ledger_Store_retiredTableExistsTx"
+    ],
+    [
+      "n_ledger_Store_migrateRetireB434Tables",
+      "n_ledger_readRetiredSeatDesktopsTx"
+    ],
+    [
+      "n_ledger_Store_migrateRetireB434Tables",
+      "n_ledger_readRetiredDesktopLaunchersTx"
+    ],
+    [
+      "n_ledger_Store_migrateRetireB434Tables",
+      "n_ledger_decodeRetiredB434Batches"
+    ],
+    [
+      "n_ledger_Store_migrateRetireB434Tables",
+      "n_ledger_retiredRowKey"
+    ],
+    [
+      "n_ledger_Store_migrateRetireB434Tables",
+      "n_ledger_Store_q"
+    ],
+    [
+      "n_ledger_Store_migrateRetireB434Tables",
+      "n_ledger_Store_timeNow"
+    ],
+    [
+      "n_ledger_readRetiredSeatDesktopsTx",
+      "n_ledger_normalizeRetiredTime"
+    ],
+    [
+      "n_ledger_readRetiredDesktopLaunchersTx",
+      "n_ledger_normalizeRetiredTime"
+    ],
+    [
+      "n_ledger_Store_retiredB434Batches",
+      "n_ledger_Store_q"
+    ],
+    [
+      "n_ledger_Store_retiredB434Batches",
+      "n_ledger_decodeRetiredB434Batches"
     ]
   ],
   "edgesDeleted": [
@@ -2554,6 +3677,818 @@
     [
       "n_web_app_cards_seatWithClaudeCode",
       "n_web_app_cards_rejectLogDetail"
+    ],
+    [
+      "n_ledger_Store_clearSeatTx",
+      "n_ledger_Store_deleteSeatDesktopTx"
+    ],
+    [
+      "n_ledger_Store_SetSeatDesktop",
+      "n_ledger_log"
+    ],
+    [
+      "n_ledger_Store_SetSeatDesktop",
+      "n_proto_ValidateDesktopSessionID"
+    ],
+    [
+      "n_ledger_Store_SetSeatDesktop",
+      "n_ledger_validSeatDesktopVia"
+    ],
+    [
+      "n_ledger_Store_SetSeatDesktop",
+      "n_ledger_Store_mutate"
+    ],
+    [
+      "n_ledger_Store_SetSeatDesktop",
+      "n_ledger_getCardTx"
+    ],
+    [
+      "n_ledger_Store_SetSeatDesktop",
+      "n_ledger_Store_q"
+    ],
+    [
+      "n_ledger_Store_SetSeatDesktop",
+      "n_ledger_Store_tval"
+    ],
+    [
+      "n_ledger_Store_SetSeatDesktop",
+      "n_ledger_Store_timeNow"
+    ],
+    [
+      "n_ledger_Store_SetSeatDesktop",
+      "n_ledger_Store_appendEvent"
+    ],
+    [
+      "n_ledger_Store_SeatDesktopOf",
+      "n_ledger_Store_q"
+    ],
+    [
+      "n_ledger_Store_SeatDesktopOf",
+      "n_ledger_log"
+    ],
+    [
+      "n_ledger_Store_SeatDesktopOf",
+      "n_ledger_toTime"
+    ],
+    [
+      "n_ledger_Store_deleteSeatDesktopTx",
+      "n_ledger_Store_q"
+    ],
+    [
+      "n_ledger_validateDesktopLauncher",
+      "n_proto_ValidateDesktopSessionID"
+    ],
+    [
+      "n_ledger_validateDesktopLauncher",
+      "n_proto_EncodeSeatIdentity"
+    ],
+    [
+      "n_ledger_Store_RegisterDesktopLauncher",
+      "n_ledger_log"
+    ],
+    [
+      "n_ledger_Store_RegisterDesktopLauncher",
+      "n_ledger_validateDesktopLauncher"
+    ],
+    [
+      "n_ledger_Store_RegisterDesktopLauncher",
+      "n_ledger_Store_mutate"
+    ],
+    [
+      "n_ledger_Store_RegisterDesktopLauncher",
+      "n_ledger_Store_q"
+    ],
+    [
+      "n_ledger_Store_RegisterDesktopLauncher",
+      "n_ledger_Store_tval"
+    ],
+    [
+      "n_ledger_Store_RegisterDesktopLauncher",
+      "n_ledger_Store_timeNow"
+    ],
+    [
+      "n_ledger_Store_DesktopLauncherOf",
+      "n_ledger_Store_q"
+    ],
+    [
+      "n_ledger_Store_DesktopLauncherOf",
+      "n_ledger_log"
+    ],
+    [
+      "n_ledger_Store_DesktopLauncherOf",
+      "n_ledger_toTime"
+    ],
+    [
+      "n_ledger_Store_UnregisterDesktopLauncher",
+      "n_ledger_Store_mutate"
+    ],
+    [
+      "n_ledger_Store_UnregisterDesktopLauncher",
+      "n_ledger_Store_q"
+    ],
+    [
+      "n_ledger_Store_UnregisterDesktopLauncher",
+      "n_ledger_log"
+    ],
+    [
+      "n_ledger_Store_ListDesktopLaunchers",
+      "n_ledger_log"
+    ],
+    [
+      "n_ledger_Store_ListDesktopLaunchers",
+      "n_ledger_toTime"
+    ],
+    [
+      "n_agentd_Server_handleCoordWake",
+      "n_agentd_withForwardedWake"
+    ],
+    [
+      "n_agentd_Server_handleCoordWake",
+      "n_agentd_desktopUnopened"
+    ],
+    [
+      "n_agentd_Server_desktopLaunchMaterial",
+      "n_ledger_Store_GetCard"
+    ],
+    [
+      "n_agentd_Server_desktopLaunchMaterial",
+      "n_agentd_Server_resolveLocalProjectRoot"
+    ],
+    [
+      "n_agentd_Server_desktopLaunchMaterial",
+      "n_ledger_Store_EffectiveBaseBranch"
+    ],
+    [
+      "n_agentd_Server_desktopLaunchMaterial",
+      "n_ledger_Store_SessionOfCard"
+    ],
+    [
+      "n_agentd_Server_desktopLaunchMaterial",
+      "n_ledger_Store_GetSession"
+    ],
+    [
+      "n_agentd_Server_desktopLaunchMaterial",
+      "n_agentd_desktopBrief"
+    ],
+    [
+      "n_agentd_Server_desktopLaunchMaterial",
+      "n_ledger_Store_DesktopLauncherOf"
+    ],
+    [
+      "n_agentd_Server_handleDesktopLaunchMaterial",
+      "n_agentd_Server_desktopLaunchMaterial"
+    ],
+    [
+      "n_agentd_Server_handleDesktopLaunchMaterial",
+      "n_agentd_writeJSON"
+    ],
+    [
+      "n_agentd_Server_handleDesktopLaunchMaterial",
+      "n_agentd_writeErr"
+    ],
+    [
+      "n_agentd_Server_handleDesktopLaunchMaterial",
+      "n_agentd_ledgerErr"
+    ],
+    [
+      "n_agentd_Server_desktopLetter",
+      "n_agentd_desktopLetterAssembler_section"
+    ],
+    [
+      "n_agentd_Server_desktopLetter",
+      "n_agentd_renderDesktopLetter"
+    ],
+    [
+      "n_agentd_Server_desktopLetter",
+      "n_agentd_desktopLetterTail"
+    ],
+    [
+      "n_agentd_desktopLetterAssembler_section",
+      "n_agentd_desktopLetterAssembler_roomMessage"
+    ],
+    [
+      "n_agentd_desktopLetterAssembler_section",
+      "n_agentd_desktopLetterAssembler_taskMirrored"
+    ],
+    [
+      "n_agentd_desktopLetterAssembler_section",
+      "n_agentd_desktopLetterAssembler_needsHuman"
+    ],
+    [
+      "n_agentd_desktopLetterAssembler_section",
+      "n_agentd_desktopLetterAssembler_other"
+    ],
+    [
+      "n_agentd_desktopLetterAssembler_roomMessage",
+      "n_collab_room_UnmarshalMessage"
+    ],
+    [
+      "n_agentd_desktopLetterAssembler_roomMessage",
+      "n_agentd_desktopLetterAssembler_unreadOf"
+    ],
+    [
+      "n_agentd_desktopLetterAssembler_roomMessage",
+      "n_agentd_desktopLetterAssembler_heading"
+    ],
+    [
+      "n_agentd_desktopLetterAssembler_unreadOf",
+      "n_collab_Service_ListSessions"
+    ],
+    [
+      "n_agentd_desktopLetterAssembler_taskMirrored",
+      "n_agentd_mirroredTaskTypeAndPayload"
+    ],
+    [
+      "n_agentd_desktopLetterAssembler_taskMirrored",
+      "n_agentd_desktopLetterAssembler_other"
+    ],
+    [
+      "n_agentd_desktopLetterAssembler_taskMirrored",
+      "n_agentd_desktopLetterAssembler_heading"
+    ],
+    [
+      "n_agentd_desktopLetterAssembler_needsHuman",
+      "n_agentd_desktopNeedsHumanReason"
+    ],
+    [
+      "n_agentd_desktopLetterAssembler_needsHuman",
+      "n_agentd_desktopLetterAssembler_heading"
+    ],
+    [
+      "n_agentd_desktopLetterAssembler_other",
+      "n_agentd_desktopLetterAssembler_heading"
+    ],
+    [
+      "n_agentd_Server_deliverDesktopLetter",
+      "n_scheduling_IsLocalMachine"
+    ],
+    [
+      "n_agentd_Server_deliverDesktopLetter",
+      "n_agentd_Server_IsSelfTarget"
+    ],
+    [
+      "n_agentd_Server_deliverDesktopLetter",
+      "n_agentd_Server_deliverLauncherLetterLocal"
+    ],
+    [
+      "n_agentd_Server_deliverDesktopLetter",
+      "n_agentd_Server_forwardLauncherLetter"
+    ],
+    [
+      "n_agentd_Server_forwardLauncherLetter",
+      "n_agentd_Server_clientForTarget"
+    ],
+    [
+      "n_agentd_Server_forwardLauncherLetter",
+      "n_client_Client_DesktopDeliver"
+    ],
+    [
+      "n_agentd_Server_forwardLauncherLetter",
+      "n_client_Client_MarkForwarded"
+    ],
+    [
+      "n_agentd_Server_forwardLauncherLetter",
+      "n_client_StatusCode"
+    ],
+    [
+      "n_agentd_Server_forwardLauncherLetter",
+      "n_client_ServerErrorText"
+    ],
+    [
+      "n_agentd_Server_forwardLauncherLetter",
+      "n_agentd_launcherDeliveryOutcomeUnknown"
+    ],
+    [
+      "n_agentd_Server_deliverLauncherLetterLocal",
+      "n_agentd_Server_renderLauncherLetter"
+    ],
+    [
+      "n_agentd_Server_deliverLauncherLetterLocal",
+      "n_agentd_claudeContinueURL"
+    ],
+    [
+      "n_agentd_Server_deliverLauncherLetterLocal",
+      "n_agentd_Server_desktopMailboxHome"
+    ],
+    [
+      "n_agentd_Server_deliverLauncherLetterLocal",
+      "n_agentd_writeDesktopLetter"
+    ],
+    [
+      "n_agentd_Server_deliverLauncherLetterLocal",
+      "n_agentd_Server_desktopClock"
+    ],
+    [
+      "n_agentd_Server_deliverLauncherLetterLocal",
+      "n_agentd_Server_sweepDesktopLetterTmp"
+    ],
+    [
+      "n_agentd_Server_deliverLauncherLetterLocal",
+      "n_agentd_Server_localMachineName"
+    ],
+    [
+      "n_agentd_validateDesktopDeliverReq",
+      "n_proto_EncodeSeatIdentity"
+    ],
+    [
+      "n_agentd_validateDesktopDeliverReq",
+      "n_proto_ValidateDesktopSessionID"
+    ],
+    [
+      "n_agentd_Server_handleDesktopDeliver",
+      "n_agentd_isForwarded"
+    ],
+    [
+      "n_agentd_Server_handleDesktopDeliver",
+      "n_agentd_writeErr"
+    ],
+    [
+      "n_agentd_Server_handleDesktopDeliver",
+      "n_agentd_validateDesktopDeliverReq"
+    ],
+    [
+      "n_agentd_Server_handleDesktopDeliver",
+      "n_agentd_Server_deliverDesktopLetter"
+    ],
+    [
+      "n_agentd_Server_handleDesktopDeliver",
+      "n_agentd_writeJSON"
+    ],
+    [
+      "n_agentd_Server_wakeDesktopSeat",
+      "n_scheduling_IsLocalMachine"
+    ],
+    [
+      "n_agentd_Server_wakeDesktopSeat",
+      "n_agentd_Server_IsSelfTarget"
+    ],
+    [
+      "n_agentd_Server_wakeDesktopSeat",
+      "n_agentd_Server_wakeRemoteDesktopSeat"
+    ],
+    [
+      "n_agentd_Server_wakeDesktopSeat",
+      "n_proto_ParseSeatIdentity"
+    ],
+    [
+      "n_agentd_Server_wakeDesktopSeat",
+      "n_agentd_Server_desktopLetter"
+    ],
+    [
+      "n_agentd_Server_wakeDesktopSeat",
+      "n_agentd_Server_desktopMailboxHome"
+    ],
+    [
+      "n_agentd_Server_wakeDesktopSeat",
+      "n_agentd_writeDesktopLetter"
+    ],
+    [
+      "n_agentd_Server_wakeDesktopSeat",
+      "n_agentd_Server_desktopClock"
+    ],
+    [
+      "n_agentd_Server_wakeDesktopSeat",
+      "n_agentd_Server_sweepDesktopLetterTmp"
+    ],
+    [
+      "n_agentd_Server_wakeDesktopSeat",
+      "n_agentd_claudeContinueURL"
+    ],
+    [
+      "n_agentd_Server_wakeRemoteDesktopSeat",
+      "n_agentd_isForwardedWake"
+    ],
+    [
+      "n_agentd_Server_wakeRemoteDesktopSeat",
+      "n_agentd_Server_transferCoordinatorWake"
+    ],
+    [
+      "n_agentd_Server_wakeRemoteDesktopSeat",
+      "n_agentd_Server_wakeClaimHolder"
+    ],
+    [
+      "n_agentd_Server_wakeRemoteDesktopSeat",
+      "n_agentd_desktopUnopened"
+    ],
+    [
+      "n_agentd_Server_renderLauncherLetter",
+      "n_agentd_Server_desktopLaunchMaterial"
+    ],
+    [
+      "n_agentd_Server_renderLauncherLetter",
+      "n_agentd_desktopQuoteBlock"
+    ],
+    [
+      "n_agentd_Server_desktopNeedsHumanWakes",
+      "n_agentd_Server_resolveWakeCard"
+    ],
+    [
+      "n_agentd_Server_desktopNeedsHumanWakes",
+      "n_ledger_Store_GetCard"
+    ],
+    [
+      "n_agentd_Server_desktopNeedsHumanWakes",
+      "n_ledger_Store_SeatDesktopOf"
+    ],
+    [
+      "n_agentd_Server_desktopNeedsHumanWakes",
+      "n_agentd_isSystemNeedsHumanActor"
+    ],
+    [
+      "n_agentd_Server_desktopNeedsHumanWakes",
+      "n_agentd_desktopNeedsHumanReason"
+    ],
+    [
+      "n_agentd_Server_driverTakeoverChangedSeat",
+      "n_ledger_Store_GetCard"
+    ],
+    [
+      "n_agentd_Server_desktopWakeRetryPending",
+      "n_agentd_Server_desktopClock"
+    ],
+    [
+      "n_agentd_Server_recordDesktopWakeFailure",
+      "n_agentd_desktopUndelivered"
+    ],
+    [
+      "n_agentd_Server_recordDesktopWakeFailure",
+      "n_agentd_Server_desktopClock"
+    ],
+    [
+      "n_agentd_Server_recordDesktopWakeFailure",
+      "n_agentd_desktopWakeRetryDelay"
+    ],
+    [
+      "n_agentd_Server_recordDesktopWakeFailure",
+      "n_ledger_Store_MarkNeedsHuman"
+    ],
+    [
+      "n_agentd_Server_openViaDesktopLauncher",
+      "n_ledger_Store_GetCard"
+    ],
+    [
+      "n_agentd_Server_openViaDesktopLauncher",
+      "n_ledger_Store_DesktopLauncherOf"
+    ],
+    [
+      "n_agentd_Server_openViaDesktopLauncher",
+      "n_ledger_Store_MarkNeedsHuman"
+    ],
+    [
+      "n_agentd_Server_openViaDesktopLauncher",
+      "n_agentd_Server_deliverDesktopLetter"
+    ],
+    [
+      "n_agentd_Server_openViaDesktopLauncher",
+      "n_agentd_Server_launcherDeliveryFailed"
+    ],
+    [
+      "n_agentd_Server_openViaDesktopLauncher",
+      "n_agentd_desktopDeliveryUnknownError_Error"
+    ],
+    [
+      "n_agentd_Server_launcherDeliveryFailed",
+      "n_agentd_launcherFailureCauseText"
+    ],
+    [
+      "n_agentd_Server_launcherDeliveryFailed",
+      "n_ledger_Store_MarkNeedsHuman"
+    ],
+    [
+      "n_agentd_launcherFailureCauseText",
+      "n_client_ServerErrorText"
+    ],
+    [
+      "n_agentd_launcherFailureCauseText",
+      "n_client_StatusCode"
+    ],
+    [
+      "n_agentd_Server_handleDesktopLauncherOpen",
+      "n_agentd_Server_openViaDesktopLauncher"
+    ],
+    [
+      "n_agentd_Server_handleDesktopLauncherOpen",
+      "n_agentd_writeJSON"
+    ],
+    [
+      "n_agentd_Server_handleDesktopLauncherOpen",
+      "n_agentd_writeErr"
+    ],
+    [
+      "n_agentd_Server_handleDesktopLauncherOpen",
+      "n_agentd_ledgerErr"
+    ],
+    [
+      "n_agentd_desktopQuoteBlock",
+      "n_agentd_sanitizeDesktopQuoteAuthor"
+    ],
+    [
+      "n_agentd_desktopQuoteBlock",
+      "n_agentd_escapeDesktopQuoteBody"
+    ],
+    [
+      "n_agentd_renderDesktopLetter",
+      "n_agentd_sanitizeDesktopQuoteAuthor"
+    ],
+    [
+      "n_agentd_renderDesktopLetter",
+      "n_agentd_desktopQuoteBlock"
+    ],
+    [
+      "n_agentd_Server_wakeCoordinatorRoundID",
+      "n_ledger_Store_SeatDesktopOf"
+    ],
+    [
+      "n_agentd_Server_wakeCoordinatorRoundID",
+      "n_agentd_Server_wakeDesktopSeat"
+    ],
+    [
+      "n_agentd_Server_automationWakeEvents",
+      "n_agentd_Server_desktopNeedsHumanWakes"
+    ],
+    [
+      "n_agentd_Server_resolveWakeCard",
+      "n_ledger_Store_SeatDesktopOf"
+    ],
+    [
+      "n_client_Client_DesktopLauncherOpen",
+      "n_client_Client_log"
+    ],
+    [
+      "n_client_Client_DesktopLauncherOpen",
+      "n_client_Client_do"
+    ],
+    [
+      "n_client_Client_DesktopLauncherOpen",
+      "n_client_Client_httpError"
+    ],
+    [
+      "n_client_Client_DesktopLauncherOpen",
+      "n_client_decodeWire"
+    ],
+    [
+      "n_client_Client_DesktopDeliver",
+      "n_client_Client_log"
+    ],
+    [
+      "n_client_Client_DesktopDeliver",
+      "n_client_Client_do"
+    ],
+    [
+      "n_client_Client_DesktopDeliver",
+      "n_client_Client_httpError"
+    ],
+    [
+      "n_client_Client_DesktopDeliver",
+      "n_client_decodeWire"
+    ],
+    [
+      "n_cmd_runCardCoordinateDesktop",
+      "n_cmd_newTargetClient"
+    ],
+    [
+      "n_cmd_runCardCoordinateDesktop",
+      "n_client_Client_DesktopLauncherOpen"
+    ],
+    [
+      "n_cmd_runCardCoordinateDesktop",
+      "n_client_ServerErrorText"
+    ],
+    [
+      "n_cmd_prepareSeatDesktop",
+      "n_proto_ParseSeatIdentity"
+    ],
+    [
+      "n_cmd_prepareSeatDesktop",
+      "n_cmd_checkMailboxKey"
+    ],
+    [
+      "n_cmd_prepareSeatDesktop",
+      "n_proto_ValidateDesktopSessionID"
+    ],
+    [
+      "n_cmd_prepareSeatDesktop",
+      "n_cmd_validSeatDesktopViaFlag"
+    ],
+    [
+      "n_cmd_prepareSeatDesktop",
+      "n_cmd_resolveDesktopMachine"
+    ],
+    [
+      "n_cmd_resolveDesktopMachine",
+      "n_cmd_loadCLIConfig"
+    ],
+    [
+      "n_cmd_cardSeatDesktopSetCmd_RunE",
+      "n_cmd_openLedger"
+    ],
+    [
+      "n_cmd_cardSeatDesktopSetCmd_RunE",
+      "n_ledger_Store_Close"
+    ],
+    [
+      "n_cmd_cardSeatDesktopSetCmd_RunE",
+      "n_ledger_Store_GetCard"
+    ],
+    [
+      "n_cmd_cardSeatDesktopSetCmd_RunE",
+      "n_cmd_prepareSeatDesktop"
+    ],
+    [
+      "n_cmd_cardSeatDesktopSetCmd_RunE",
+      "n_ledger_Store_SetSeatDesktop"
+    ],
+    [
+      "n_cmd_launcherRegisterCmd_RunE",
+      "n_cmd_currentSeatIdentity"
+    ],
+    [
+      "n_cmd_launcherRegisterCmd_RunE",
+      "n_proto_ParseSeatIdentity"
+    ],
+    [
+      "n_cmd_launcherRegisterCmd_RunE",
+      "n_cmd_resolveDesktopMachine"
+    ],
+    [
+      "n_cmd_launcherRegisterCmd_RunE",
+      "n_cmd_openLedger"
+    ],
+    [
+      "n_cmd_launcherRegisterCmd_RunE",
+      "n_ledger_Store_Close"
+    ],
+    [
+      "n_cmd_launcherRegisterCmd_RunE",
+      "n_ledger_Store_RegisterDesktopLauncher"
+    ],
+    [
+      "n_cmd_launcherRegisterCmd_RunE",
+      "n_ledger_Store_DesktopLauncherOf"
+    ],
+    [
+      "n_cmd_launcherRegisterCmd_RunE",
+      "n_cmd_toLauncherWire"
+    ],
+    [
+      "n_cmd_launcherShowCmd_RunE",
+      "n_cmd_openLedger"
+    ],
+    [
+      "n_cmd_launcherShowCmd_RunE",
+      "n_ledger_Store_Close"
+    ],
+    [
+      "n_cmd_launcherShowCmd_RunE",
+      "n_ledger_Store_DesktopLauncherOf"
+    ],
+    [
+      "n_cmd_launcherShowCmd_RunE",
+      "n_cmd_toLauncherWire"
+    ],
+    [
+      "n_cmd_launcherShowCmd_RunE",
+      "n_ledger_Store_ListDesktopLaunchers"
+    ],
+    [
+      "n_cmd_launcherUnregisterCmd_RunE",
+      "n_cmd_openLedger"
+    ],
+    [
+      "n_cmd_launcherUnregisterCmd_RunE",
+      "n_ledger_Store_Close"
+    ],
+    [
+      "n_cmd_launcherUnregisterCmd_RunE",
+      "n_ledger_Store_UnregisterDesktopLauncher"
+    ],
+    [
+      "n_cmd_probeLaunchers",
+      "n_cmd_loadCLIConfig"
+    ],
+    [
+      "n_cmd_probeLaunchers",
+      "n_cmd_probeLauncherMachine"
+    ],
+    [
+      "n_cmd_probeLauncherMachine",
+      "n_cmd_LocalEndpoint"
+    ],
+    [
+      "n_cmd_probeLauncherMachine",
+      "n_cmd_agentdReach"
+    ],
+    [
+      "n_cmd_probeLauncherMachine",
+      "n_client_New"
+    ],
+    [
+      "n_cmd_probeLauncherMachine",
+      "n_cmd_newTargetClientNamed"
+    ],
+    [
+      "n_cmd_agentdReach",
+      "n_client_Client_Status"
+    ],
+    [
+      "n_ledger_Store_RebindSeat",
+      "n_ledger_Store_deleteSeatDesktopTx"
+    ],
+    [
+      "n_agentd_Server_consumeAutomationEventsOnce",
+      "n_agentd_Server_clearDesktopWakeStall"
+    ],
+    [
+      "n_agentd_Server_consumeAutomationEventsOnce",
+      "n_agentd_Server_desktopWakeRetryPending"
+    ],
+    [
+      "n_agentd_Server_consumeAutomationEventsOnce",
+      "n_agentd_Server_desktopWakeRound"
+    ],
+    [
+      "n_agentd_Server_consumeAutomationEventsOnce",
+      "n_agentd_Server_driverTakeoverChangedSeat"
+    ],
+    [
+      "n_agentd_Server_consumeAutomationEventsOnce",
+      "n_agentd_Server_recordDesktopWakeFailure"
+    ],
+    [
+      "n_agentd_Server_consumeAutomationEventsOnce",
+      "n_agentd_desktopUndelivered"
+    ],
+    [
+      "n_agentd_Server_consumeAutomationEventsOnce",
+      "n_agentd_desktopUnopened"
+    ],
+    [
+      "n_cmd_cardCoordinateCmd_RunE",
+      "n_cmd_runCardCoordinateDesktop"
+    ],
+    [
+      "n_cmd_cardBindCmd_RunE",
+      "n_cmd_prepareSeatDesktop"
+    ],
+    [
+      "n_cmd_cardBindCmd_RunE",
+      "n_cmd_seatDesktopSetRemedy"
+    ],
+    [
+      "n_cmd_cardBindCmd_RunE",
+      "n_ledger_Store_SetSeatDesktop"
+    ],
+    [
+      "n_cmd_statusCmd_RunE",
+      "n_cmd_probeLaunchers"
+    ],
+    [
+      "n_cmd_statusCmd_RunE",
+      "n_cmd_renderLauncherSection"
+    ],
+    [
+      "n_cmd_statusCmd_RunE",
+      "n_ledger_Store_ListDesktopLaunchers"
+    ],
+    [
+      "e_cli_card_seat_desktop_set",
+      "n_cmd_cardSeatDesktopSetCmd_RunE"
+    ],
+    [
+      "e_cli_launcher_register",
+      "n_cmd_launcherRegisterCmd_RunE"
+    ],
+    [
+      "e_cli_launcher_show",
+      "n_cmd_launcherShowCmd_RunE"
+    ],
+    [
+      "e_cli_launcher_unregister",
+      "n_cmd_launcherUnregisterCmd_RunE"
+    ],
+    [
+      "e_http_get_api_cards_id_coordinator_desktop_launch",
+      "n_agentd_Server_handleDesktopLaunchMaterial"
+    ],
+    [
+      "e_http_get_api_cards_id_coordinator_desktop_launch",
+      "n_agentd_Server_withLedger"
+    ],
+    [
+      "e_http_post_api_cards_id_coordinator_desktop_launch",
+      "n_agentd_Server_handleDesktopLauncherOpen"
+    ],
+    [
+      "e_http_post_api_cards_id_coordinator_desktop_launch",
+      "n_agentd_Server_withLedger"
+    ],
+    [
+      "e_http_post_api_desktop_deliver",
+      "n_agentd_Server_handleDesktopDeliver"
+    ],
+    [
+      "e_http_post_api_desktop_deliver",
+      "n_agentd_Server_withLedger"
     ]
   ],
   "projectionsAdded": [],
