@@ -14,6 +14,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"errors"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -456,8 +457,15 @@ func TestB435ResidentBridgeSourceGuard(t *testing.T) {
 		"autoLedger": {"SessionResident": true},
 		"rooms":      {"Recipients": true, "Matches": true},
 	}
+	// B434 卡级失败段属契约 §7 退役面（X 删除），门铃自带有界重试，不得依赖它们（plan 段 2）。
+	retired := map[string]bool{"desktopWakeRetryDelay": true, "recordDesktopWakeFailure": true,
+		"clearDesktopWakeStall": true, "desktopWakeRetryPending": true, "desktopWakeRound": true,
+		"desktopUndeliveredError": true, "desktopUnopenedError": true, "wakeDesktopSeat": true}
 	callsMatcher := false
 	ast.Inspect(f, func(n ast.Node) bool {
+		if id, ok := n.(*ast.Ident); ok && retired[id.Name] {
+			t.Errorf("residentwake.go 引用 B434 退役面 %s——门铃失败处置自带（Q1 甲），X 删除后不得断链", id.Name)
+		}
 		switch x := n.(type) {
 		case *ast.CallExpr:
 			sel, ok := x.Fun.(*ast.SelectorExpr)
@@ -751,5 +759,222 @@ func TestB435ResidentDoorbellNoDoubleRingWhileWatermarkHeld(t *testing.T) {
 	}
 	if n := len(spy.calls()); n != 1 {
 		t.Fatalf("opener 应恰一次，得 %d", n)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 段 2：失败处置（欠账 9，Q1 甲：不挡水位、进程内有界重试、信已落盘不重写）
+// ---------------------------------------------------------------------------
+
+// o2Clock 是可推进的固定时钟（装进 Server.desktopNow；并发安全）。
+type o2Clock struct {
+	mu  sync.Mutex
+	now time.Time
+}
+
+func (c *o2Clock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+func (c *o2Clock) Advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now = c.now.Add(d)
+}
+
+func o2FixClock(srv *Server) *o2Clock {
+	c := &o2Clock{now: time.Unix(1_800_000_000, 0)}
+	srv.desktopNow = c.Now
+	return c
+}
+
+// o2BrokenHome 返回一个普通文件路径当 HOME：MkdirAll(<文件>/.handoff/desktop-wake) 必失败（信未落盘）。
+func o2BrokenHome(t *testing.T) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// Q1 甲：信箱写不出 → 零信、Error 带 stage；同轮的 push 卡唤醒照常发生且自动化水位越过该批（活性）；
+// 退避窗内不重试（恢复可写也不提前写）、窗后重试成功恰一封。
+func TestB435ResidentDoorbellUndeliveredRetriesBoundedWithoutHoldingWatermark(t *testing.T) {
+	env, runner, sessionID, root, goodHome, spy := o2ResidentEnv(t)
+	clock := o2FixClock(env.srv)
+	logs := o2CaptureLog(env.srv)
+	env.srv.desktopHome = o2BrokenHome(t)
+
+	seqA := sendSessionMessage(t, env.srv.rooms, sessionID, "user:tester", "驻场者命中", nil, 0)
+	seqB := sendSessionMessage(t, env.srv.rooms, sessionID, "user:tester", "@根卡", []string{root}, 0)
+	o2Consume(t, env.srv)
+
+	if !strings.Contains(logs.String(), "驻场者门铃信未落盘，稍后重试") || !strings.Contains(logs.String(), "stage=写信箱") {
+		t.Fatalf("信未落盘应有 Error 带 stage: %s", logs.String())
+	}
+	if got := b435Resumes(runner); len(got) != 1 || !b435WokeCard(got[0], root) {
+		t.Fatalf("门铃失败不得拖住同轮 push 卡唤醒: %v", got)
+	}
+	if c := o2Cursor(env.srv); c < seqB {
+		t.Fatalf("门铃失败不挡自动化水位：应越过 %d，得 %d", seqB, c)
+	}
+	if n := len(spy.calls()); n != 0 {
+		t.Fatalf("信未落盘不得调 opener，得 %d", n)
+	}
+
+	env.srv.desktopHome = goodHome
+	o2Consume(t, env.srv)
+	clock.Advance(residentWakeRetryBase - time.Second)
+	o2Consume(t, env.srv)
+	if n := len(o2Letters(t, goodHome)); n != 0 {
+		t.Fatalf("退避窗内不得重试（即使已恢复可写），得 %d 封", n)
+	}
+	clock.Advance(time.Second)
+	o2Consume(t, env.srv)
+	letters := o2Letters(t, goodHome)
+	if len(letters) != 1 || letters[0].body != o2WantLetter(sessionID, 1, seqA, seqA) {
+		t.Fatalf("窗后重试应恰一封且覆盖原批: %+v", letters)
+	}
+	if n := len(spy.calls()); n != 1 {
+		t.Fatalf("重试成功后 opener 恰一次，得 %d", n)
+	}
+	clock.Advance(time.Hour)
+	o2Consume(t, env.srv)
+	if n := len(o2Letters(t, goodHome)); n != 1 {
+		t.Fatalf("成功后不得再重试，得 %d 封", n)
+	}
+}
+
+// 有界：持续失败到 residentWakeMaxAttempts → Error「放弃按铃」、此后不再重试（恢复可写也不补写）；
+// 信箱键不安全是确定性拒绝，首败即放弃。
+func TestB435ResidentDoorbellUndeliveredGivesUpAtBound(t *testing.T) {
+	t.Run("persistent", func(t *testing.T) {
+		env, _, sessionID, _, goodHome, _ := o2ResidentEnv(t)
+		clock := o2FixClock(env.srv)
+		logs := o2CaptureLog(env.srv)
+		env.srv.desktopHome = o2BrokenHome(t)
+		seq := sendSessionMessage(t, env.srv.rooms, sessionID, "user:tester", "持续失败", nil, 0)
+		for i := 0; i < residentWakeMaxAttempts+3; i++ {
+			o2Consume(t, env.srv)
+			clock.Advance(time.Hour)
+		}
+		out := logs.String()
+		if got := strings.Count(out, "驻场者门铃信未落盘，稍后重试"); got != residentWakeMaxAttempts-1 {
+			t.Fatalf("重试登记应恰 %d 次（有界），得 %d", residentWakeMaxAttempts-1, got)
+		}
+		if got := strings.Count(out, "驻场者门铃信未落盘，放弃按铃"); got != 1 {
+			t.Fatalf("到上限应恰一次「放弃按铃」，得 %d", got)
+		}
+		if c := o2Cursor(env.srv); c < seq {
+			t.Fatalf("持续失败不得挡水位：应越过 %d，得 %d", seq, c)
+		}
+		env.srv.desktopHome = goodHome
+		o2Consume(t, env.srv)
+		if n := len(o2Letters(t, goodHome)); n != 0 {
+			t.Fatalf("放弃后不得再写，得 %d 封", n)
+		}
+	})
+	t.Run("unsafe_key", func(t *testing.T) {
+		env, _ := newNoPTYAutomationEnv(t)
+		sessionID := b435Session(t, env)
+		o2SitResident(t, env, sessionID, o2Resident, o2DesktopSession, "a/b", o2Hostname(t))
+		home, spy := o2Wire(t, env.srv)
+		clock := o2FixClock(env.srv)
+		drainAutomation(t, env)
+		logs := o2CaptureLog(env.srv)
+		sendSessionMessage(t, env.srv.rooms, sessionID, "user:tester", "键不安全", nil, 0)
+		for i := 0; i < 3; i++ {
+			o2Consume(t, env.srv)
+			clock.Advance(time.Hour)
+		}
+		out := logs.String()
+		if strings.Count(out, "驻场者门铃信未落盘，放弃按铃") != 1 || strings.Contains(out, "稍后重试") {
+			t.Fatalf("信箱键不安全应首败即放弃、不重试: %s", out)
+		}
+		if n, c := len(o2Letters(t, home)), len(spy.calls()); n != 0 || c != 0 {
+			t.Fatalf("键不安全零信零 opener，得信 %d、opener %d", n, c)
+		}
+	})
+}
+
+// D5 不对称：opener 报错 → 信已落盘（一封）、Error「continue 未发出」；后续三轮不重写同批信。
+func TestB435ResidentDoorbellUnopenedDoesNotRewrite(t *testing.T) {
+	env, _, sessionID, _, home, spy := o2ResidentEnv(t)
+	clock := o2FixClock(env.srv)
+	logs := o2CaptureLog(env.srv)
+	spy.err = errors.New("o2 注入：open 退出 1")
+	seq := sendSessionMessage(t, env.srv.rooms, sessionID, "user:tester", "opener 会失败", nil, 0)
+	for i := 0; i < 4; i++ {
+		o2Consume(t, env.srv)
+		clock.Advance(time.Hour)
+	}
+	letters := o2Letters(t, home)
+	if len(letters) != 1 || letters[0].body != o2WantLetter(sessionID, 1, seq, seq) {
+		t.Fatalf("信已落盘恰一封、不重写: %+v", letters)
+	}
+	if n := len(spy.calls()); n != 1 {
+		t.Fatalf("opener 只试一次（不重试），得 %d", n)
+	}
+	out := logs.String()
+	if !strings.Contains(out, "驻场者门铃信已落盘、continue 未发出") || strings.Contains(out, residentDoorbellRungMsg) {
+		t.Fatalf("应 Error「continue 未发出」且不打成功句: %s", out)
+	}
+}
+
+// 跨平台：opener 未装配（nil）或非 darwin 生产 opener → 信已落盘一封 + Error，日志不出现成功句。
+func TestB435ResidentDoorbellNilOpenerIsUnopenedNotSuccess(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		opener desktopOpener
+		cause  string
+	}{
+		{"nil", nil, "本机未装配桌面端深链 opener"},
+		{"linux", PlatformDesktopOpener("linux"), errDesktopDeepLinkUnsupported.Error()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env, _, sessionID, _, home, _ := o2ResidentEnv(t)
+			env.srv.desktopOpen = tc.opener
+			logs := o2CaptureLog(env.srv)
+			seq := sendSessionMessage(t, env.srv.rooms, sessionID, "user:tester", "无 opener", nil, 0)
+			o2Consume(t, env.srv)
+			o2Consume(t, env.srv)
+			letters := o2Letters(t, home)
+			if len(letters) != 1 || letters[0].body != o2WantLetter(sessionID, 1, seq, seq) {
+				t.Fatalf("信已落盘恰一封: %+v", letters)
+			}
+			out := logs.String()
+			if !strings.Contains(out, "continue 未发出") || !strings.Contains(out, tc.cause) {
+				t.Fatalf("应 Error「continue 未发出」并带原因 %q: %s", tc.cause, out)
+			}
+			if strings.Contains(out, residentDoorbellRungMsg) {
+				t.Fatalf("未打开不得打成功句: %s", out)
+			}
+		})
+	}
+}
+
+// 非法 desktop_session（直写绕过 R 写面校验）→ 信已落盘、continue 深链被拒、opener 零调用、Error 带 stage。
+func TestB435ResidentDoorbellInvalidDesktopSessionIsUnopened(t *testing.T) {
+	env, _ := newNoPTYAutomationEnv(t)
+	sessionID := b435Session(t, env)
+	o2SitResident(t, env, sessionID, o2Resident, "not-local 非法", o2CLISession, o2Hostname(t))
+	home, spy := o2Wire(t, env.srv)
+	drainAutomation(t, env)
+	logs := o2CaptureLog(env.srv)
+	seq := sendSessionMessage(t, env.srv.rooms, sessionID, "user:tester", "非法桌面端 id", nil, 0)
+	o2Consume(t, env.srv)
+	o2Consume(t, env.srv)
+	letters := o2Letters(t, home)
+	if len(letters) != 1 || letters[0].body != o2WantLetter(sessionID, 1, seq, seq) {
+		t.Fatalf("信已落盘恰一封: %+v", letters)
+	}
+	if n := len(spy.calls()); n != 0 {
+		t.Fatalf("深链非法时 opener 零调用（条 84），得 %d", n)
+	}
+	if out := logs.String(); !strings.Contains(out, "continue 未发出") || !strings.Contains(out, "stage=\"构造 continue 深链\"") {
+		t.Fatalf("应 Error 带 stage「构造 continue 深链」: %s", out)
 	}
 }
