@@ -262,7 +262,7 @@ func newTargetClientNamed(name string) (*client.Client, func(), error) {
 	// 选路交给 targetclient：CLI 与 agentd 必须用同一个判据。判据存两份正是
 	// relay 机器在控制台显示「已断开」的成因——agentd 那份从来没被写出来。
 	// 选路日志已由工厂统一记录，这里不重复打印，避免一次派发出现两遍。
-	return targetclient.New(name, t, slog.Default())
+	return targetclient.New(name, t, targetclient.CLIP2P(cfg), slog.Default())
 }
 
 // LocalEndpoint 返回**本机** agentd 的地址与令牌，忽略 --target。
