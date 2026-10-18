@@ -859,9 +859,11 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 - **`internal/client` 的 `TestProductionHTTPClientCallersAreGatewayOnly` 会把嵌套 worktree 扫进来**：它从仓根 WalkDir 找自取 `HTTPClient` 的生产文件，不跳过 `.claude/worktrees/`，主工作树下挂着别的卡的 worktree 时同一文件以不同前缀出现即红（B436 finish 合并后在主工作树实测：列出的全是 `cards+B435/B436` 副本；分支 tip 与纯 `origin/main` 上同测均绿，detach 的干净树见台账）。与 `ci.yml` gofmt 步骤已注明的同一坑。修法：WalkDir 跳过 `.claude/`（或任何含 `.git` 文件的嵌套目录）。来源：B436 finish 合并后全量。
 - **存量 `''` 挂账归属回填**：机器身份收口本期不迁移历史 `''`（用户裁决）；若将来要做，走「属主认领」——各机认领本机 store 里有的 task，同事务改 card_tasks.target、镜像 cursor 与 source_target。来源：B439 spec Out of Scope。
 - **设备表凭据轮换 / 吊销流程**：共享设备表存各机连接凭据后，缺换 token、下线机器吊销凭据的流程。来源：B439 spec Out of Scope。
-- **B439 真机清单未跑（plan §11 七项）**：S1 复现现场（linux-01 本机派发、租约在 macbook-pro → card wait 唤醒）、三机自登记互见、relay 形态经设备表选路、控制台增删不回显凭据、Mac mini 本地 targets 导入、新旧版混跑降级、设备表现读负载。合 main 前至少跑 1/2/5。滚动顺序硬约束：新键 `name:`/`advertise:` 只能和新版二进制同时上——旧版 agentd 以 KnownFields 严格解析，先写键会让旧版起不来；新版有 DSN 缺 name 则账本子系统不挂载。来源：B439 父卡 review。
+- **B439 真机清单残余（plan §11）**：2026-10-18 隔离实例（测试库）已过 §11-1（linux-01 本机派发落 target=linux-01、持有者 macbook-pro 镜像、mac-mini card wait 收 task_mirrored）与 §11-2（三机自登记互见、零凭据回显）；§11-5 沿用此前 Mac mini 观察 imported=3。仍未跑：§11-3 relay 形态经设备表选路（relay 机入队前必跑）、§11-4 控制台增删不回显凭据、§11-6 新旧版混跑降级、§11-7 设备表现读负载。滚动顺序硬约束：新键 `name:`/`advertise:` 只能和新版二进制同时上——旧版 agentd 以 KnownFields 严格解析，先写键会让旧版起不来；新版有 DSN 缺 name 则账本子系统不挂载。来源：B439 父卡 review / finish。
 - **设备表 PG 往返未在执行机验证**：`internal/ledger/b439_devices_test.go` 的 PG 分支需 `LEDGER_TEST_PG_DSN`，linux-01 执行机未配，WU2 只跑了 SQLite 往返。来源：B439.2 review。
 - **`scheduling.SetLegacyAlias` 未注入时 fail-open**：生产组装点已注入，但新组装点漏注不会报错，S6 存量拒收静默失效。宜改成未注入即 fail-closed 或启动断言。来源：B439.3 implement minor。
 - **`ledgermirror` 断链 WARN 注释表述过头**：`mirror.go` 注释「终态挂账静默跳订」在同 target 混有在飞挂账时不成立（target 粒度门控，与健康行一致）。补一句即可。来源：B439.1 review r2 nit。
 - **审批规则对「cd <任务工作树> && go test … > "$TMPDIR/x.log"」一律升级人工**：B439 implement/review 期间约 12 次同形工单，全是任务工作树内跑测试写任务临时目录；静态规则证明不了 cd 落点。宜让规则识别「cd 到本任务工作树」或认 $TMPDIR=任务临时目录。来源：B439 协调者。
 - **opencode review 裁决块形状漂移**：B439 五轮 review 有三轮「裁决解析失败」——结论 JSON 多出自造字段、或把 handoff-verdict 块经提问工单发出且收到答复后继续提问（只能 stop 收口）。宜在纪律块/runner 侧收紧：容忍多余键、或明文禁止经 ask 交裁决。来源：B439 协调者。
+- **卡派发起点取「上一轮任务分支」，非工作分支最新合入**：B439 父卡 review 首两派起点为 cards/B439-charter-2/-3@20dca87（缺 B439.4 合入，子卡合入的是 cards/B439-charter），且每次派发（含被 stop 的）都成为下一轮起点；协调者须手工快进才对上 62ed2a22。宜让父卡工作分支 = 子卡合入目标，并让被 stop 的零提交轮不改写工作分支。来源：B439 finish。
+- **`fake` 执行器无 Profile 能力，卡派发恒带纪律块 → fake 无法走卡派发**：真机/隔离验证想用零成本执行器验镜像链路时被拒（「没有 Profile 能力」），只得改用无凭据 codex 让回合 401 失败。宜给 fake 一个空实现 Profile，或允许纪律块对 fake 跳过。来源：B439 finish 真机。
