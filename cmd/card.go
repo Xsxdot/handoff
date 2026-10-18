@@ -561,6 +561,9 @@ func cardViewWire(view ledger.CardView) map[string]any {
 	if view.DriverSource != "" {
 		out["driver_source"] = view.DriverSource
 	}
+	if view.DriverMode != "" {
+		out["driver_mode"] = view.DriverMode
+	}
 	return out
 }
 

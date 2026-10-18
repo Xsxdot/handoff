@@ -436,6 +436,7 @@ func sessionCards(session proto.Session, byCard map[string]proto.Card) []proto.S
 		}
 		out = append(out, proto.SessionCard{
 			CardID: card.ID, Title: card.Title, Status: card.Status, Seat: card.DriverSession,
+			SeatMode: card.DriverMode,
 		})
 	}
 	return out

@@ -343,4 +343,3 @@ func TestB435CoordinatorLaunchAndRebindWritePush(t *testing.T) {
 		t.Fatalf("rebind --launch 后应写 push: %v %+v", err, got)
 	}
 }
-
