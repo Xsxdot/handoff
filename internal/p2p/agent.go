@@ -55,6 +55,9 @@ func (r Role) String() string {
 	return "controlled"
 }
 
+// ErrBadCandidate 表示对端描述里有无法解析的候选。
+var ErrBadCandidate = errors.New("p2p: 对端候选非法")
+
 // ErrICEFailed 表示 ICE 连通检查以 Failed 收尾（典型：一端对称 NAT 或 UDP 被封）。
 var ErrICEFailed = errors.New("p2p: ICE 连通失败")
 
@@ -198,13 +201,15 @@ func (a *Agent) setOnState(f func(ice.ConnectionState)) {
 // Failed 即早退返回 ErrICEFailed（pion 的 Dial/Accept 自身不因 Failed 返回）。
 // 失败时 Agent 仍需调用方 Close；成功时资源归返回的 Conn。
 func (a *Agent) Connect(ctx context.Context, remote Description) (*Conn, error) {
-	for _, raw := range remote.Candidates {
+	for i, raw := range remote.Candidates {
+		// 错误文本刻意不带 pion 的 cause：它可能回显候选串（内含 ufrag），而
+		// 这里的错误会进调用方的 INFO 日志。
 		c, err := ice.UnmarshalCandidate(raw)
 		if err != nil {
-			return nil, fmt.Errorf("p2p 解析对端候选: %w", err)
+			return nil, fmt.Errorf("%w: 对端候选 #%d 无法解析", ErrBadCandidate, i)
 		}
 		if err := a.agent.AddRemoteCandidate(c); err != nil {
-			return nil, fmt.Errorf("p2p 添加对端候选: %w", err)
+			return nil, fmt.Errorf("%w: 对端候选 #%d 无法添加", ErrBadCandidate, i)
 		}
 	}
 	cctx, cancel := context.WithCancel(ctx)

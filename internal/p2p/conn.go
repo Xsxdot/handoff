@@ -122,6 +122,9 @@ func (c *Conn) Close() error {
 	c.closeOnce.Do(func() {
 		c.markDead()
 		_ = c.stream.Close()
+		// Abort 先发 ABORT（≤200ms 刷出）：对端读侧立即报错，不必等 ICE 超时（~10s）
+		// 才发现直连已关。Close 再回收 association 状态（幂等）。
+		c.assoc.Abort("handoff p2p closed")
 		c.closeErr = c.assoc.Close()
 		if err := c.agent.Close(); c.closeErr == nil {
 			c.closeErr = err
