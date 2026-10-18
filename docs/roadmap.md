@@ -983,6 +983,16 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 - **远端项目用深链 SSH 变体拉起**：`claude://code/new?ssh_host=&ssh_folder=&q=` 文档化（桌面端 ≥ 2.110.0），能把开发机上的项目位置也开成 Claude 桌面端会话；要先定 handoff 的 target 与桌面端 SSH 连接名的对应。来源：同上 Out of Scope。
 - **bind 席位心跳过期与自动换绑**：会话关了席位还在；三期范围。来源：同上 Out of Scope。
 - **主 agent 身份自动入群**：从桌面端会话把 `agent:<名字>` 登记为会话成员，免手填。来源：同上 Out of Scope。
-- **给 claude 开无头协调能力（`coordination` 能力位 + Launch/Resume）或用 `claude --bg` 后台会话当协调者**：用户 2026-10-16 两次弃选（只要桌面端会话形态）；`--bg` 本机已验可无人值守拉起（台账 `6184b87b`），若将来要不依赖桌面端的协调者再重走 spec。来源：同上弃选。
+- **给 claude 开无头协调能力（`coordination` 能力位 + Launch/Resume）或用 `claude --bg` 后台会话当协调者**：用户 2026-10-16 两次弃选（只要桌面端会话形态）；`--bg` 本机已验可无人值守拉起（台账 `6184b87b`），若将来要不依赖桌面端的协调者再重走 spec。来源：同上弃选。（B435 2026-10-18 裁定：桌面端会话不当卡协调者，改作项目房间组织者；无头 claude 当 push 载体归「push 载体扩展」条。）
 - **handoff 移动壳内查看/进入桌面端协调者会话**：今天靠 Claude 手机端 Remote Control；要 handoff 自己的面需先有会话 id 映射。来源：同上 Out of Scope。
 - **定时巡场兜底**：桌面端本地定时任务每 N 分钟开一场新会话扫账本，作拉起器缺席时的无人值守兜底；B434 r2 弃选为主路径，保留为可选。来源：`docs/superpowers/specs/b434.md` 弃选。
+
+## 2026-10-18 B435 协调者统一模型残余（本期不做、后续要做）
+
+- **推式 print 载体扩到 claude CLI / codex / grok**：hostapi 驱动白名单只有 opencode（`internal/hostapi/driver.go:52`）；B435 本期推式只对 opencode 成立，其他 agent 走自驱 `wait`。来源：`docs/superpowers/specs/b435.md` §11（待用户裁决是否拉进本期）。
+- **组织者结构化记忆**：B435 只留记忆目录与简报指针；记忆的结构、检索与过期后续定。来源：b435.md §11。
+- **一个组织者管多项目**：B435 为 project ↔ 项目房间 1:1。来源：b435.md §11。
+- **移动端项目房间专用 UI**：现有房间页可用，专用入口后续。来源：b435.md §11。
+- **`handoff card wait` 别名下线**：B435 保留一期作 `wait --card` 别名。来源：b435.md §5 D2。
+- **跨机拉式 wait**：远端 agentd 驱动的 `wait`，B435 沿用既有转交不改。来源：b435.md §11。
+- **协调者小队在席位模式下的轮换策略**：来源：b435.md §11。
