@@ -350,9 +350,17 @@ func (m *Mirror) reconcile(ctx context.Context) {
 	want := map[string]ledger.TaskLink{}
 	for _, link := range links {
 		if link.Target != "" && !registered[link.Target] && !m.isLocalTarget(link.Target) {
-			// 挂账目标机不在本机机器清单里：取不到客户端，订不到，不静默——
-			// 打 WARN（带 target/task/card）让断链可见，健康行留在未刷新状态
-			// （断链亮灯）。这正是 B439 要杀的静默失效族（S1 关键失败）。
+			// 挂账目标机不在本机机器清单里：取不到客户端，订不到。
+			//
+			// 在飞/终态分档（S7，与同函数健康行 live/终态分档对齐）：只有该
+			// target 仍有非终态挂账（live[link.Target]）才打 WARN——退役机或
+			// 旧别名 target 的全部历史挂账（含已归档）若每 tick 每条重复 WARN，
+			// 会淹没真断链信号。终态挂账静默跳订；在飞挂账不静默：打 WARN
+			// （带 target/task/card）让断链可见，健康行留在未刷新状态（断链
+			// 亮灯）。这正是 B439 要杀的静默失效族（S1 关键失败）。
+			if !live[link.Target] {
+				continue
+			}
 			m.log.Warn("挂账目标机不在本机机器清单，无法订阅（断链）",
 				"card", link.CardID, "target", link.Target, "task", link.TaskID,
 				"node", link.Node, "attempt", link.Attempt)

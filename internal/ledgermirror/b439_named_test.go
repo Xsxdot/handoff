@@ -111,6 +111,37 @@ func TestB439MirrorLegacyEmptyTargetStillMirrors(t *testing.T) {
 	t.Fatal("存量 '' 挂账未走本机源镜像")
 }
 
+// TestB439MirrorTerminalUnregisteredTargetSilentInflightWarns 断链 WARN 按
+// 在飞/终态分档：终态（已归档）挂账指向未登记机器时静默跳订、不打 WARN；
+// 在飞挂账仍打 WARN。退役机/旧别名的全部历史挂账不应每 tick 刷屏。
+func TestB439MirrorTerminalUnregisteredTargetSilentInflightWarns(t *testing.T) {
+	s := testLedger(t)
+	retiredCard := linkedCard(t, s, "retired-01", "T-retired")
+	if _, err := s.AppendMirroredEvent(retiredCard, ledger.MirroredEvent{
+		Target: "retired-01", Task: "T-retired", SourceSeq: 1,
+		Type: string(proto.EventTypeArchived), Payload: []byte(`{}`),
+	}); err != nil {
+		t.Fatalf("预置终态镜像事件: %v", err)
+	}
+	linkedCard(t, s, "linux-01", "T-inflight")
+
+	var logs safeBuf
+	oldLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(oldLogger) })
+
+	m := New(s, newFakeMachines(), Options{Holder: "macbook-pro", SelfName: "macbook-pro"})
+	m.reconcile(context.Background())
+
+	out := logs.String()
+	if strings.Contains(out, "retired-01") {
+		t.Fatalf("终态挂账指向未登记机器不应打 WARN，实得日志:\n%s", out)
+	}
+	if !strings.Contains(out, "target=linux-01") || !strings.Contains(out, "T-inflight") {
+		t.Fatalf("在飞挂账指向未登记机器应打 WARN 带 target/task，实得日志:\n%s", out)
+	}
+}
+
 // TestB439MirrorUnreachableNamedTargetWarnsAndStaysLit 挂账目标机不在本机机器
 // 清单时：WARN 带 target/task，健康行不刷新（断链亮灯），不静默。
 func TestB439MirrorUnreachableNamedTargetWarnsAndStaysLit(t *testing.T) {
