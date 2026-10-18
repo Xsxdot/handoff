@@ -8,7 +8,6 @@ import {
   OPEN_DEEPLINK_MESSAGE_PREFIX,
   requestNativeClipboard,
   requestOpenCurrentPageInBrowser,
-  requestOpenDeepLink,
   requestTitlebarZoom,
   topInset,
 } from './desktopShell'
@@ -119,31 +118,13 @@ describe('requestNativeClipboard', () => {
   })
 })
 
-// B434 契约 §3.12：requestOpenDeepLink 是「用 Claude Code 坐下」在薄壳里的唯一出口；
-// 消息体 = 前缀字面量 + 完整 URL，对侧 desktop/internal/shell/external_deeplink.go 按同一前缀切分。
-describe('requestOpenDeepLink', () => {
-  const bridge = () => (window as unknown as { webkit?: unknown })
-  const url = 'claude://code/new?folder=%2Frepo%2Fhandoff&q=%5Bhandoff%5D%20hi'
-
-  afterEach(() => {
-    delete bridge().webkit
-  })
-
-  it('有桥时恰发一次 handoff:open-deeplink: + url 并返回 true', () => {
-    const postMessage = vi.fn()
-    bridge().webkit = { messageHandlers: { external: { postMessage } } }
-    expect(requestOpenDeepLink(url)).toBe(true)
-    expect(postMessage).toHaveBeenCalledTimes(1)
-    // why：用字面量而非常量拼期望值——常量与实现一起写错时这里仍能红
-    expect(postMessage).toHaveBeenCalledWith(`handoff:open-deeplink:${url}`)
-  })
-
-  it('无桥时返回 false 且不抛', () => {
-    expect(requestOpenDeepLink(url)).toBe(false)
-  })
-
-  it('postMessage 抛错时返回 false，让面板展开复制兜底', () => {
-    bridge().webkit = { messageHandlers: { external: { postMessage: vi.fn(() => { throw new Error('bridge gone') }) } } }
-    expect(requestOpenDeepLink(url)).toBe(false)
+// B435 D10 / 契约 §7（W plan Q4 甲）：薄壳深链出口函数随卡页坐席按钮退役；前缀常量
+// OPEN_DEEPLINK_MESSAGE_PREFIX 与其字面量用例（上方）作为与 desktop/ 的 CDC 对保留。
+// 函数名分段拼接：段 6 的独立判据是 web/src 内 grep 退役名零命中。
+describe('薄壳深链出口退役', () => {
+  it('desktopShell 不再导出深链出口函数，前缀常量仍在', async () => {
+    const shell = await import('./desktopShell')
+    expect(shell).not.toHaveProperty(['requestOpen', 'DeepLink'].join(''))
+    expect(shell.OPEN_DEEPLINK_MESSAGE_PREFIX).toBe('handoff:open-deeplink:')
   })
 })

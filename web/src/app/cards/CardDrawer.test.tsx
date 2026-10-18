@@ -67,8 +67,6 @@ vi.mock('../../api/ledger', async (importOriginal) => ({
 vi.mock('../../api/scheduling', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../api/scheduling')>()),
   getCoordinatorStatus: vi.fn().mockResolvedValue({ bound: false, attach_active: false, attach: null }),
-  // why 挂起：抽屉用例只看协调者三态与入口，不看坐席材料；挂起 = 材料读取中，不打真 fetch、不依赖 jsdom 网络失败的形状
-  getDesktopLaunchMaterial: vi.fn(() => new Promise(() => {})),
 }))
 
 describe('抽屉一处看', () => {
@@ -91,6 +89,20 @@ describe('抽屉协调者接缝', () => {
     expect(await screen.findByText('未绑定')).toBeVisible()
     expect(screen.getByRole('button', { name: '▶ 叫机器人' })).toBeVisible()
     expect(screen.queryByRole('button', { name: /跑「/ })).not.toBeInTheDocument()
+  })
+
+  // B435 D10 / 契约 §7：空座抽屉只见「▶ 叫机器人」，B434 三按钮退役（字面量反面查询）。
+  it('空座抽屉不出现用 Claude Code 坐下 / 复制简报 / 让拉起器代开', async () => {
+    const ledger = await import('../../api/ledger')
+    vi.mocked(ledger.fetchCardDetail).mockResolvedValue({
+      card: card({ id: 'B282', title: '协调者入口', status: '进行中' }),
+      relations: [], events: [], task_states: [], effective_base_branch: '', decisions: [], needs: '', children: [],
+    })
+    render(<CardDrawer id="B282" onClose={() => {}} onOpenCard={() => {}} />)
+    expect(await screen.findByRole('button', { name: '▶ 叫机器人' })).toBeVisible()
+    for (const retired of ['用 Claude Code 坐下', '复制简报', '让拉起器代开']) {
+      expect(screen.queryByRole('button', { name: retired })).toBeNull()
+    }
   })
 
   it('抽屉把未知席位来源标成席位异常', async () => {
