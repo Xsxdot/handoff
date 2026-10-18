@@ -11,11 +11,16 @@
 # 工具链（gate 台账：docs/superpowers/specs/b369-contract.md §0，darwin 双端 PASS）：
 #   go 1.26.1 + gomobile@v0.0.0-20260908204917-8b95e45f8d3e + Xcode 26.6 + NDK 30.0.16248370
 #
-# 两条硬约束（写死在下面的命令里）：
+# 三条硬约束（写死在下面的命令里）：
 #   1. Android 显式 -androidapi 21：NDK 30 移除了 API<21 的 platform，而 gomobile
 #      缺省 minsdk=16，不加会在 bind 时报 "unsupported API version 16"。
 #   2. go.mod 带 tool golang.org/x/mobile/cmd/gobind：新版 gomobile 要求
 #      golang.org/x/mobile 在本模块依赖图内，否则报 "missing golang.org/x/mobile dependency"。
+#   3. 只有 Android 加 -ldflags=-checklinkname=0（B438.2）：打洞依赖 pion/transport 的
+#      stdnet，它在 Android 上经 wlynxg/anet 枚举网卡（Android 11 起禁了 netlink），anet 以
+#      //go:linkname 引用 net.zoneCache，Go 1.23 起链接器默认拒绝，不加会报
+#      "link: github.com/wlynxg/anet: invalid reference to net.zoneCache"。iOS/桌面不加。
+#      升级 Go 后必须重跑 bind 测试与 Android 模拟器取证（见 mobile/README.md）。
 set -euo pipefail
 
 GOMOBILE_VERSION="v0.0.0-20260908204917-8b95e45f8d3e"
@@ -60,6 +65,7 @@ build_android() {
   fi
   printf '==> Android AAR（-androidapi 21）\n' >&2
   ( cd "$MODULE_DIR" && gomobile bind -target=android -androidapi 21 \
+      -ldflags=-checklinkname=0 \
       -o "$OUT_DIR/handoff-mobile.aar" ./bind )
 }
 
