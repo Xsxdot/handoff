@@ -453,12 +453,58 @@ func (s *Server) handleRoomMessages(w http.ResponseWriter, r *http.Request) {
 	for _, event := range events {
 		payloadBytes += len(event.Payload)
 	}
+	// B435 ⑤ 投递投影（C-501–C-508，单一写者即本函数）：逐行读时求值（D-E，不落账、不推进、不唤醒）。
+	// 出键当且仅当该行是 room_message 且 Recipients 地址集为空；载荷 by_system:null 的旧边界在解码层
+	// 识别为结构行（Q10 甲，与 C-202 同判，Recipients 对已解码消息看不到 null）；某行判定读失败 →
+	// 该行不出键、Warn，整页照常 200（C-507：错误不得投影为任何原因）。
+	items := make([]proto.RoomHistoryItem, len(events))
+	keyed := 0
+	for i, event := range events {
+		items[i] = proto.RoomHistoryItem{LedgerEvent: event}
+		if event.Type != room.RoomEventType {
+			continue
+		}
+		if roomHistoryBySystemNull(event.Payload) {
+			items[i].NoRecipient = proto.NoRecipientStructural
+			keyed++
+			continue
+		}
+		var msg proto.RoomMessage
+		if err := room.UnmarshalMessage(event.Payload, &msg); err != nil {
+			s.log.Warn("房间历史投影跳过：消息载荷无效", append(diag.Attrs(r.Context()),
+				"room", roomID, "seq", event.Seq, "cause", err)...)
+			continue
+		}
+		delivery, err := s.rooms.Recipients(msg, event.Actor)
+		if err != nil {
+			s.log.Warn("房间历史投影跳过：收件人判定读失败", append(diag.Attrs(r.Context()),
+				"room", roomID, "seq", event.Seq, "cause", err)...)
+			continue
+		}
+		if len(delivery.Addresses) == 0 {
+			items[i].NoRecipient = delivery.NoRecipient
+			keyed++
+		}
+	}
+	s.log.Debug("房间历史投递投影完成", append(diag.Attrs(r.Context()),
+		"room_id", roomID, "rows", len(items), "no_recipient_rows", keyed)...)
 	annotateReadRows(r.Context(), len(events))
-	writeJSON(w, http.StatusOK, map[string]any{"messages": events})
+	writeJSON(w, http.StatusOK, map[string]any{"messages": items})
 	s.log.Info("房间历史 HTTP 请求完成", append(diag.Attrs(r.Context()),
 		"room_id", roomID,
 		"rows_returned", len(events), "payload_bytes", payloadBytes,
 		"elapsed_ns", time.Since(started).Nanoseconds())...)
+}
+
+// roomHistoryBySystemNull 报告载荷是否带 by_system:null（B353 锁定的旧边界，C-202 判为结构行）。
+// 解析失败返回 false（交由后续解码报错）。
+func roomHistoryBySystemNull(payload json.RawMessage) bool {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &fields); err != nil {
+		return false
+	}
+	raw, present := fields["by_system"]
+	return present && strings.TrimSpace(string(raw)) == "null"
 }
 
 // handleRoomSend POST /api/rooms/{id}/messages → 用户发言（kind 服务端固定 user，
