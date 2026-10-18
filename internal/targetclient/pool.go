@@ -172,7 +172,10 @@ func (p *Pool) For(name string) (*client.Client, error) {
 		delete(p.entries, name)
 	}
 
-	c, dialer, cleanup, err := newWithDialer(name, t, p.log)
+	// 池（agentd 常驻）立即起跳、不打代理提示（agentd 启动已打）。p2p 配置在
+	// 条目构造时读定：改 p2p: 需重启 agentd——条目判等只比 Target，刻意不因
+	// p2p 变化重建全队隧道。
+	c, dialer, cleanup, err := newWithDialer(name, t, P2P{Options: P2PFromConfig(p.conf())}, p.log)
 	if err != nil {
 		return nil, err
 	}

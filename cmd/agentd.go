@@ -52,6 +52,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/relay"
 	"github.com/Xsxdot/handoff/internal/scheduling"
 	"github.com/Xsxdot/handoff/internal/store"
+	"github.com/Xsxdot/handoff/internal/targetclient"
 	"github.com/Xsxdot/handoff/internal/toolchain"
 	"github.com/Xsxdot/handoff/internal/workspace"
 	"github.com/spf13/cobra"
@@ -265,10 +266,18 @@ var agentdCmd = &cobra.Command{
 		if err := srv.StartPreviewServices(wdCtx); err != nil {
 			return fmt.Errorf("启动预览服务: %w", err)
 		}
+		// B438 S8：打洞是 UDP，proxy 设置与 HTTPS_PROXY 都不承载它——配了代理的机器
+		// 启动时明说一次（INFO，不是 WARN：这是知会，不是故障）。
+		if cfg.P2PProxyNotice() {
+			logger.Info(config.P2PProxyNoticeMessage)
+		}
 		if cfg.Relay != nil {
 			// relay 出站与本地 listen 并存，是附加通道；不改变现有 agentd 路由。
+			// 打洞应答（B438）：p2p 开时在 relay 信令会话上应答，直连流交同一 handler。
+			p2pOpts := targetclient.P2PFromConfig(cfg)
 			listener := relay.NewListener(cfg.Relay.URL, cfg.Relay.Credential, cfg.Relay.Node,
-				cfg.Token, "", srv.Handler(), logger)
+				cfg.Token, "", srv.Handler(), logger, relay.WithListenerP2P(p2pOpts))
+			logger.Info("relay 出站已启动", "node", cfg.Relay.Node, "p2p", p2pOpts.Enabled, "stun_servers", len(p2pOpts.STUN))
 			go listener.RunWithReconnect(wdCtx)
 		}
 		// relay 隧道预热：探活只有 3s 预算，首次建隧道（WSS + CONNECT + E2E）

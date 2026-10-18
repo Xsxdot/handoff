@@ -56,6 +56,25 @@ notifications, or requests an executor sends to an AI provider. Production relay
 connections should use `wss://` to protect the outer transport and relay
 credentials.
 
+**Direct peer-to-peer paths.** For relay-form targets, Handoff first connects
+through the relay and then tries, in the background, to open a direct
+peer-to-peer path between the coordinator and the executor (UDP NAT traversal).
+To learn its public address it sends STUN queries to the STUN servers listed in
+`p2p.stun` (by default `stun.miwifi.com`, `stun.cloudflare.com` and
+`stun.l.google.com`). Those STUN operators, and the peer, see this machine's
+public egress IP address and port. ICE candidates and credentials are exchanged
+only inside the end-to-end encrypted relay session, and the direct path carries
+the same end-to-end encryption as the relay path. Once the direct path is up,
+new traffic no longer passes through the relay.
+
+STUN and ICE use UDP and are **not** routed through the `proxy` setting or
+`HTTPS_PROXY`/`HTTP_PROXY` (the `proxy` setting only covers update checks and
+git; the relay WSS connection only honors the environment variables). If you
+need all traffic to stay behind a proxy, or do not want to reveal your egress
+address to STUN operators, set `p2p.enabled: false` to keep all traffic on the
+relay, or set `p2p.stun` to a self-hosted STUN server or to `[]` (only
+local-network host candidates, no STUN queries).
+
 ## 3. Relay accounts, website, and email
 
 If you create a relay account, the service processes your email address and

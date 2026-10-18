@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/coder/websocket"
 	"github.com/hashicorp/yamux"
@@ -33,6 +34,25 @@ type Dialer struct {
 	raw      net.Conn
 	rawConns map[net.Conn]struct{}
 	closed   bool
+
+	// 打洞升级（B438，见 p2p.go）。以下字段除 ctx/wg/配置外都受 mu 保护。
+	p2p               P2POptions
+	p2pStartDelay     time.Duration
+	ctx               context.Context // Dialer 生命周期；Close 取消
+	cancel            context.CancelFunc
+	wg                sync.WaitGroup // 升级与直连监视 goroutine
+	direct            *directPath
+	attempting        bool
+	nextAttempt       time.Time
+	backoff           time.Duration
+	unsupportedLogged bool
+	// 时间参数与时钟：生产取常量，测试缩短。
+	now               func() time.Time
+	upgradeBudget     time.Duration
+	backoffBase       time.Duration
+	backoffMax        time.Duration
+	unsupportedPeriod time.Duration
+	deadRetry         time.Duration
 }
 
 const (
@@ -44,14 +64,28 @@ const (
 
 // NewDialer constructs a lazy coordinator relay dialer. account may be empty:
 // the authenticated CONNECT_OK response supplies it before E2E setup.
-func NewDialer(relayURL, credential, node, token, account string, log *slog.Logger) *Dialer {
+//
+// opts 为空时不打洞（与 B438 之前逐点一致）；WithP2P 开启「relay 先通、后台打洞
+// 升级、新流优先直连、直连死亡回落 relay」。
+func NewDialer(relayURL, credential, node, token, account string, log *slog.Logger, opts ...DialerOption) *Dialer {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Dialer{
+	ctx, cancel := context.WithCancel(context.Background())
+	d := &Dialer{
 		relayURL: relayURL, credential: credential, node: node,
 		token: token, account: account, log: log, rawConns: make(map[net.Conn]struct{}),
+		ctx: ctx, cancel: cancel, now: time.Now,
+		upgradeBudget: upgradeBudget, backoffBase: upgradeBackoffBase, backoffMax: upgradeBackoffMax,
+		unsupportedPeriod: upgradeUnsupportedPeriod, deadRetry: directDeadRetry,
 	}
+	for _, opt := range opts {
+		opt(d)
+	}
+	if d.p2p.Enabled {
+		log.Debug("relay dialer 打洞已开启", "node", node, "stun_servers", len(d.p2p.STUN), "start_delay", d.p2pStartDelay.String())
+	}
+	return d
 }
 
 // RawDialContext opens a target-side raw TCP stream for preview SOCKS.
@@ -63,51 +97,10 @@ func (d *Dialer) RawDialContext(ctx context.Context, network, addr string) (net.
 	if network == "" || addr == "" {
 		return nil, errors.New("relay raw dial 缺少 network 或 addr")
 	}
-	d.mu.Lock()
-	if d.closed {
-		d.mu.Unlock()
-		return nil, errors.New("relay dialer is closed")
-	}
-	account := d.account
-	d.mu.Unlock()
-
 	d.log.Info("relay raw stream dialing", "node", d.node, "network", network, "addr", addr)
-	ws, _, err := websocket.Dial(ctx, d.relayURL, nil)
+	secure, err := d.openSecureSession(ctx)
 	if err != nil {
-		d.log.Warn("relay raw websocket dial failed", "node", d.node, "cause", err)
-		return nil, fmt.Errorf("dial relay raw websocket: %w", err)
-	}
-	// Same net.Dial contract as Client.DialPreviewRaw: ctx covers handshake
-	// only. SOCKS cancel()s the dial ctx immediately after Dial returns.
-	raw := websocket.NetConn(context.Background(), ws, websocket.MessageBinary)
-	closeRaw := func() { _ = raw.Close() }
-	if err := sendControl(ctx, ws, Frame{Type: Connect, Node: d.node, Credential: d.credential}); err != nil {
-		closeRaw()
-		return nil, fmt.Errorf("relay raw connect send: %w", err)
-	}
-	response, err := recvControl(ctx, ws)
-	if err != nil {
-		closeRaw()
-		return nil, fmt.Errorf("relay raw connect response: %w", err)
-	}
-	if response.Type != ConnectOK {
-		closeRaw()
-		return nil, fmt.Errorf("relay raw connect: expected %q, got %q", ConnectOK, response.Type)
-	}
-	if response.Account != "" {
-		account = response.Account
-		d.mu.Lock()
-		d.account = account
-		d.mu.Unlock()
-	}
-	if account == "" {
-		closeRaw()
-		return nil, errors.New("relay raw connect_ok missing account")
-	}
-	secure, err := SecureClient(ctx, raw, d.token, account, d.node)
-	if err != nil {
-		closeRaw()
-		return nil, fmt.Errorf("secure relay raw stream: %w", err)
+		return nil, fmt.Errorf("relay raw: %w", err)
 	}
 	keep := false
 	defer func() {
@@ -130,6 +123,56 @@ func (d *Dialer) RawDialContext(ctx context.Context, network, addr string) (net.
 	d.mu.Unlock()
 	keep = true
 	return &trackedRawConn{Conn: secure, release: d.releaseRawConn}, nil
+}
+
+// openSecureSession 开一条独立的 relay CONNECT 会话并完成 E2E（initiator），返回
+// 密文 net.Conn。preview raw 流与打洞信令共用。ctx 只覆盖握手；调用方拥有返回的连接。
+func (d *Dialer) openSecureSession(ctx context.Context) (net.Conn, error) {
+	d.mu.Lock()
+	if d.closed {
+		d.mu.Unlock()
+		return nil, errors.New("relay dialer is closed")
+	}
+	account := d.account
+	d.mu.Unlock()
+	ws, _, err := websocket.Dial(ctx, d.relayURL, nil)
+	if err != nil {
+		d.log.Warn("relay session websocket dial failed", "node", d.node, "cause", err)
+		return nil, fmt.Errorf("dial relay websocket: %w", err)
+	}
+	// ctx covers handshake only: callers (SOCKS, p2p signalling) cancel it right
+	// after we return, so the NetConn must not inherit it.
+	raw := websocket.NetConn(context.Background(), ws, websocket.MessageBinary)
+	closeRaw := func() { _ = raw.Close() }
+	if err := sendControl(ctx, ws, Frame{Type: Connect, Node: d.node, Credential: d.credential}); err != nil {
+		closeRaw()
+		return nil, fmt.Errorf("relay connect send: %w", err)
+	}
+	response, err := recvControl(ctx, ws)
+	if err != nil {
+		closeRaw()
+		return nil, fmt.Errorf("relay connect response: %w", err)
+	}
+	if response.Type != ConnectOK {
+		closeRaw()
+		return nil, fmt.Errorf("relay connect: expected %q, got %q", ConnectOK, response.Type)
+	}
+	if response.Account != "" {
+		account = response.Account
+		d.mu.Lock()
+		d.account = account
+		d.mu.Unlock()
+	}
+	if account == "" {
+		closeRaw()
+		return nil, errors.New("relay connect_ok missing account")
+	}
+	secure, err := SecureClient(ctx, raw, d.token, account, d.node)
+	if err != nil {
+		closeRaw()
+		return nil, fmt.Errorf("secure relay session: %w", err)
+	}
+	return secure, nil
 }
 
 type trackedRawConn struct {
@@ -271,6 +314,7 @@ func (d *Dialer) ensureTunnel(ctx context.Context) error {
 		return errors.New("relay dialer is closed")
 	}
 	if d.session != nil && !d.session.IsClosed() {
+		d.maybeStartUpgradeLocked()
 		return nil
 	}
 	if d.session != nil {
@@ -338,6 +382,7 @@ func (d *Dialer) ensureTunnel(ctx context.Context) error {
 	d.raw = raw
 	d.session = session
 	d.log.Info("relay tunnel established", "node", d.node, "account", d.account)
+	d.maybeStartUpgradeLocked()
 	return nil
 }
 
@@ -345,7 +390,13 @@ func (d *Dialer) ensureTunnel(ctx context.Context) error {
 // an http.Client placeholder: routing is determined by the authenticated relay
 // tunnel, not by addr. E2E and app-yamux are set up once per tunnel in
 // ensureTunnel; here we only open a fresh app stream per HTTP/WS connection.
+//
+// B438：在役且可选的直连优先；否则（无直连、ICE Disconnected、直连开流失败）
+// 走 relay 隧道。direct 可用时 relay 隧道不健康也不影响新请求。
 func (d *Dialer) DialContext(ctx context.Context, network, addr string) (net.Conn, error) {
+	if conn, ok := d.dialDirect(); ok {
+		return conn, nil
+	}
 	if err := d.ensureTunnel(ctx); err != nil {
 		return nil, err
 	}
@@ -384,8 +435,12 @@ func (d *Dialer) Ensure(ctx context.Context) error { return d.ensureTunnel(ctx) 
 // Transport returns an HTTP transport whose requests all use the relay app
 // streams. Proxy is explicitly nil so the relay URL itself is not redirected
 // through an unrelated HTTP proxy.
+//
+// DisableKeepAlives（B438 plan P3）：每个请求开一条新 app 流（yamux 开流零 RTT），
+// 路径选择因此逐请求生效——否则升级前建的空闲连接永不过期，打洞成功后仍持续走
+// relay。只作用于本 Dialer 自己的 Transport。
 func (d *Dialer) Transport() *http.Transport {
-	return &http.Transport{DialContext: d.DialContext, Proxy: nil}
+	return &http.Transport{DialContext: d.DialContext, Proxy: nil, DisableKeepAlives: true}
 }
 
 // Close closes the current relay tunnel and prevents future lazy reconnects.
@@ -396,6 +451,9 @@ func (d *Dialer) Close() error {
 		return nil
 	}
 	d.closed = true
+	d.cancel()
+	direct := d.direct
+	d.direct = nil
 	session := d.session
 	raw := d.raw
 	rawConns := make([]net.Conn, 0, len(d.rawConns))
@@ -421,5 +479,11 @@ func (d *Dialer) Close() error {
 			closeErr = err
 		}
 	}
+	if direct != nil {
+		direct.close()
+	}
+	// 升级与直连监视 goroutine 都对 d.ctx 取消及时响应；等它们退出，保证 Close
+	// 之后无 goroutine、无 ICE 代理残留。
+	d.wg.Wait()
 	return closeErr
 }
