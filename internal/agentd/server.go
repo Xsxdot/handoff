@@ -39,6 +39,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/collab"
 	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/diag"
+	"github.com/Xsxdot/handoff/internal/envfile"
 	"github.com/Xsxdot/handoff/internal/executor"
 	"github.com/Xsxdot/handoff/internal/hostapi"
 	"github.com/Xsxdot/handoff/internal/keysclient"
@@ -133,6 +134,10 @@ type Server struct {
 	mgr                   orchestration.OrchestrationClient // 任务编排 client（B233.26：契约归域编排包），SetManager 注入
 	providers             *executor.Registry
 	ruleLoader            func(mainHome, cli string) ([]executor.ProfileFile, []executor.ProfileFile, error)
+	// approverEnv 是「代他机裁决」端点跑本机 OneShot 时注入的 env 文件解析器
+	// （B437 §4.4）。与本机 Manager 的审批者共用同一份，沿「审批者与执行者共用
+	// 同一份 env」纪律。由组装点 SetApproverEnv 注入；nil = 不注入。
+	approverEnv *envfile.Resolver
 	// startedAt 是本 agentd 的启动时刻，status 用它换算 uptime。
 	// 在 NewServer 里记录而非从 bootstrap 传入：NewServer 只在 bootstrap 调用
 	// 一次，语义等价，且不必改动它的签名与全部测试调用点。
@@ -998,6 +1003,9 @@ func (s *Server) Handler() http.Handler {
 	// B432：iOS 推送设备登记（spec §契约面 1）。独立注册函数与 ledger/scheduling
 	// 同款，避免 Handler() 主表继续膨胀。
 	s.registerPushRoutes(api)
+	// B437：代他机裁决（agentd↔agentd）。不挂 withLedger——只跑本机 OneShot，
+	// 无 DSN 机器也能当他机环。
+	s.registerApproverRoutes(api)
 
 	// 控制台静态资源兜底：一切未被更精确模式匹配的路径都到这里。
 	//

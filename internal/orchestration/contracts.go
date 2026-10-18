@@ -171,6 +171,9 @@ func NewFailedPayload(reason, branch, commit string) FailedPayload {
 //
 // B405：Model 记录该候选实际使用的模型名；未指定时 = "默认"（ApproverModelDefaultLabel）。
 // addit 字段，omitempty 保证旧事件形态不变。
+//
+// B437：Machine 记录本尝试所属环的机器名；空 = 本地配置链路径（旧事件/本地链）。
+// 加性字段，omitempty 保证旧事件形态不变，旧消费者忽略未知键。
 type ApproverDecisionPayload struct {
 	TicketID   string `json:"ticket_id"`
 	Permission string `json:"permission"`
@@ -179,6 +182,7 @@ type ApproverDecisionPayload struct {
 	ElapsedMS  int64  `json:"elapsed_ms"`
 	Executor   string `json:"executor,omitempty"`
 	Model      string `json:"model,omitempty"`
+	Machine    string `json:"machine,omitempty"`
 }
 
 // —— Dispatch 哨兵（gateway server 层映射为 400/500）——
