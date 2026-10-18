@@ -4,7 +4,7 @@
 // 锁住「唤醒 = 寻址命中」的会话半边（条 29/30/31）与按 target 分流形状
 // （条 47/48/50）。观察点是 fake keystone 的 resumes——briefing 里以
 // "- [message] <Summary>" 列出唤醒事件，可同时断言 Kind 与命中条正文。
-// 边界：不复制 collab 寻址规则（唯一入口 MessageWakeTargets，守卫见本文件
+// 边界：不复制 collab 寻址规则（B435 起唯一入口是匹配函数 Recipients，守卫见本文件
 // TestB3583WakePathSourceGuard）；旧席位回复行为受 plan 岔口#1 约束（默认按契约）。
 package agentd
 
@@ -59,37 +59,46 @@ func sendSessionMessage(t *testing.T, svc *collab.Service, sessionID, actor, bod
 	return seq
 }
 
+// TestB3583NoAddressingDoesNotWake 守卫按 B435 契约 §5 改写（条 29 修订）：
+// 人类作者无寻址 → 默认收件人（本会话单根卡 push 席位）恰一次 Wake；agent: 作者
+// 无寻址 → 零 Wake。两条都推进游标、都标 seen。测试名沿用（守卫行定位不变）。
 func TestB3583NoAddressingDoesNotWake(t *testing.T) {
 	env, runner := newNoPTYAutomationEnv(t)
 	cardID := createCoordCard(t, env)
 	sessionID, svc := mustWakeSessionFixture(t, env, cardID)
+	if err := env.ledger.AddSessionMember(sessionID, "agent:helper", "user:tester"); err != nil {
+		t.Fatalf("登记 agent 成员: %v", err)
+	}
 	drainAutomation(t, env)
 
 	env.srv.automationMu.Lock()
 	seenBefore := len(env.srv.automationSeen)
 	env.srv.automationMu.Unlock()
-	sendSessionMessage(t, svc, sessionID, "user:tester", "群里无寻址的普通发言", nil, 0)
+	agentSeq := sendSessionMessage(t, svc, sessionID, "agent:helper", "agent 无寻址的普通发言", nil, 0)
+	humanSeq := sendSessionMessage(t, svc, sessionID, "user:tester", "人类无寻址的普通发言", nil, 0)
 	processed, escalated, err := env.srv.consumeAutomationEventsOnce(context.Background())
-	if err != nil || escalated || processed != 0 {
-		t.Fatalf("无寻址会话消息不应唤醒，processed=%d escalated=%v err=%v", processed, escalated, err)
+	if err != nil || escalated || processed != 1 {
+		t.Fatalf("人类无寻址应恰一次默认唤醒、agent 无寻址零唤醒，processed=%d escalated=%v err=%v", processed, escalated, err)
 	}
 	_, resumes, _ := runner.snapshot()
-	if len(resumes) != 0 {
-		t.Fatalf("无寻址不得 Resume: %v", resumes)
+	if len(resumes) != 1 {
+		t.Fatalf("应恰一次 Resume（默认收件人 = 单根卡 push 席位），实得 %d: %v", len(resumes), resumes)
+	}
+	if !contains(resumes[0], "人类无寻址的普通发言") || contains(resumes[0], "agent 无寻址的普通发言") {
+		t.Fatalf("默认唤醒只应携带人类无寻址那条: %s", resumes[0])
 	}
 	env.srv.automationMu.Lock()
 	cursor := env.srv.automationCursor
+	_, agentSeen := env.srv.automationSeen[agentSeq]
+	_, humanSeen := env.srv.automationSeen[humanSeq]
 	seenAfter := len(env.srv.automationSeen)
 	env.srv.automationMu.Unlock()
-	if seenAfter != seenBefore+1 {
-		t.Fatalf("无寻址消息必须标 seen：seen %d → %d", seenBefore, seenAfter)
+	if !agentSeen || !humanSeen || seenAfter < seenBefore+2 {
+		t.Fatalf("两条无寻址消息都必须标 seen：agent=%v human=%v seen %d → %d", agentSeen, humanSeen, seenBefore, seenAfter)
 	}
-	maxSeq, err := env.ledger.MaxSeq()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cursor != maxSeq {
-		t.Fatalf("游标未推进到流尾：cursor=%d maxSeq=%d", cursor, maxSeq)
+	// 唤醒回合会追加 wake_round 注释事件（流尾因此越过两条消息），故判据是「游标越过两条消息」。
+	if cursor < humanSeq {
+		t.Fatalf("游标未推进过两条消息：cursor=%d agent_seq=%d human_seq=%d", cursor, agentSeq, humanSeq)
 	}
 }
 
@@ -349,7 +358,8 @@ func TestB3583CardRoomMessagesDoNotWake(t *testing.T) {
 //  1. 广播形状函数 decodeHumanRoomMessage 必须已删（breakdown §3.4 ③）；
 //  2. 「Kind==user 即唤醒」的旧闸不得回潮（条 30）；
 //  3. agentd 不得本地解析 mentions（条 42/契约 §9：唯一入口在 collab）；
-//  4. 会话分流函数体必须调用 MessageWakeTargets（AST 级，条 42）。
+//  4. 会话分流函数体必须调用匹配函数 Recipients，且不得调用 MessageWakeTargets /
+//     AddressesCard（B435 契约 §5 守卫 `:356` 改写，C-233）。
 //
 // 为什么是随 go test 复现的读源码测试而不是 graph check：新增真实调用而不写进
 // 视图 diff 时，闸门眼里它不存在（B156.3 决定性实验）。
@@ -384,16 +394,21 @@ func TestB3583WakePathSourceGuard(t *testing.T) {
 	if dispatch == nil {
 		t.Fatalf("roomMessageWakeEvents 不存在——会话消息寻址分流入口缺失")
 	}
-	callsAddressing := false
+	callsRecipients := false
 	ast.Inspect(dispatch, func(n ast.Node) bool {
 		if call, ok := n.(*ast.CallExpr); ok {
-			if sel, ok := call.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "MessageWakeTargets" {
-				callsAddressing = true
+			if sel, ok := call.Fun.(*ast.SelectorExpr); ok {
+				switch sel.Sel.Name {
+				case "Recipients":
+					callsRecipients = true
+				case "MessageWakeTargets", "AddressesCard":
+					t.Errorf("会话分流调用了 %s——B435 起判定唯一入口是匹配函数 Recipients（C-233）", sel.Sel.Name)
+				}
 			}
 		}
 		return true
 	})
-	if !callsAddressing {
-		t.Fatalf("会话分流未经 MessageWakeTargets——寻址判定唯一入口被绕过（条 42）")
+	if !callsRecipients {
+		t.Fatalf("会话分流未经匹配函数 Recipients——判定唯一入口被绕过（C-233）")
 	}
 }

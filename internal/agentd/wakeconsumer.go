@@ -20,7 +20,6 @@ import (
 	"time"
 
 	"github.com/Xsxdot/handoff/internal/client"
-	"github.com/Xsxdot/handoff/internal/collab/room"
 	"github.com/Xsxdot/handoff/internal/keysclient"
 	"github.com/Xsxdot/handoff/internal/keystone"
 	"github.com/Xsxdot/handoff/internal/ledger"
@@ -322,18 +321,18 @@ func (s *Server) automationWakeEvents(ev proto.LedgerEvent) ([]keystone.WakeEven
 	return []keystone.WakeEvent{wake}, nil
 }
 
-// roomMessageWakeEvents 是会话消息的寻址分流（契约 §3.8、条 47/48/50）。
-// 只对会话房间（room.IsSessionRoom）的人类形状消息做寻址判定；判定唯一入口
-// collab.Service.MessageWakeTargets（agentd 不解析 mentions，不建外部身份
-// 注册表）。分流：
-//   - target = 会话内某卡当前 driver_session → WakeMessage{Card:该卡} 恰一次
-//     （同卡多命中去重）；
-//   - 其余 target（外部身份/非成员/旧席位/不存在的卡）→ 零 keystone Wake，
-//     Info 日志可查，未读由事件+游标天然承载（推醒走 session wait 订阅通道）。
+// roomMessageWakeEvents 是会话消息按匹配函数地址与席位模式的分流（B435 契约 §4.4
+// C-229–C-233；B358 条 47 修订）。判定唯一入口 collab.Service.Recipients（agentd 不解析
+// mentions、不自带默认收件人规则）。分流：
+//   - 席位地址且该卡 mode=push → 恰一次 WakeMessage{Card:该卡}（同卡去重）；
+//   - 席位地址且 mode=pull → 零 keystone Wake（由 card wait 交付）；P4 乙过渡：该卡仍有
+//     B434 桌面端记录时照旧产出 WakeMessage，交给 wakeCoordinatorRoundID 的 pull 分支
+//     走既有信箱（读记录不读来源词），退役归 X 子卡；
+//   - 驻场者地址 → 零 keystone Wake（门铃信桥归 O2 子卡），Info 可查。
 //
-// 非会话房间的消息一律不唤醒：旧房间只读归档（S1），广播形状已删（条 30）。
-// 寻址判定读账本失败上抛；会话本体读失败宁缺毋滥（Error 日志 + 不唤醒，
-// 同 AddressesCard 的装配缺失纪律）。
+// 房间消息唤醒不沿 parent 上走（C-232）：产出的唤醒卡即命中地址的卡，消费循环对
+// WakeMessage 不调 resolveWakeCard。by_system:null 旧边界在解码层按结构行跳过
+// （Recipients 收已解码消息，看不到 null）。匹配函数读账本失败上抛（C-228：水位不越过）。
 func (s *Server) roomMessageWakeEvents(ev proto.LedgerEvent) ([]keystone.WakeEvent, error) {
 	msg, human, err := decodeRoomMessageForWake(ev)
 	if err != nil || !human {
@@ -344,60 +343,73 @@ func (s *Server) roomMessageWakeEvents(ev proto.LedgerEvent) ([]keystone.WakeEve
 			"seq", ev.Seq, "room", msg.Room)
 		return nil, nil
 	}
-	if !room.IsSessionRoom(msg.Room) {
-		s.log.Debug("非会话房间消息不唤醒（旧房间只读归档，广播形状已删）",
-			"seq", ev.Seq, "room", msg.Room)
-		return nil, nil
-	}
-	targets, err := s.rooms.MessageWakeTargets(msg)
+	delivery, err := s.rooms.Recipients(msg, ev.Actor)
 	if err != nil {
+		s.log.Warn("会话消息匹配函数判定失败，本轮不越过该消息", "seq", ev.Seq, "room", msg.Room, "cause", err)
 		return nil, fmt.Errorf("事件 %d 的会话寻址判定失败: %w", ev.Seq, err)
 	}
-	if len(targets) == 0 {
-		s.log.Debug("会话消息无寻址，不唤醒", "seq", ev.Seq, "session", msg.Room)
+	if len(delivery.Addresses) == 0 {
+		s.log.Debug("会话消息无收件地址，不唤醒", "seq", ev.Seq, "room", msg.Room,
+			"reason", delivery.NoRecipient)
 		return nil, nil
-	}
-	session, err := s.autoLedger.GetSession(msg.Room)
-	if err != nil {
-		s.log.Error("会话消息所在会话读取失败，不唤醒",
-			"seq", ev.Seq, "session", msg.Room, "cause", err)
-		return nil, nil
-	}
-	bySeat := make(map[string]string, len(session.Cards))
-	for _, cardID := range session.Cards {
-		card, err := s.autoLedger.GetCard(cardID)
-		if err != nil {
-			s.log.Error("会话卡席位读取失败，该卡不参与本次唤醒",
-				"seq", ev.Seq, "session", msg.Room, "card", cardID, "cause", err)
-			continue
-		}
-		if card.DriverSession != "" {
-			bySeat[card.DriverSession] = cardID
-		}
 	}
 	var wakes []keystone.WakeEvent
-	seenCard := make(map[string]bool, len(targets))
-	external := make([]string, 0, len(targets))
-	for _, target := range targets {
-		cardID, ok := bySeat[target]
-		if !ok {
-			external = append(external, target)
+	seenCard := make(map[string]bool, len(delivery.Addresses))
+	for _, addr := range delivery.Addresses {
+		if addr.Kind != proto.DeliverySeat {
+			s.log.Info("会话消息命中驻场者地址：不经 keystone（门铃信桥归后续子卡）",
+				"seq", ev.Seq, "session", addr.Session, "identity", addr.Identity, "default", delivery.Default)
 			continue
 		}
-		if seenCard[cardID] {
+		if seenCard[addr.Card] {
 			continue
 		}
-		seenCard[cardID] = true
-		wakes = append(wakes, keystone.WakeEvent{
-			Kind: keystone.WakeMessage, Card: cardID,
-			Summary: truncateRunes(msg.Body, 400),
-		})
-	}
-	if len(external) > 0 {
-		s.log.Info("会话消息外部身份命中：不经 keystone，推醒走 session wait 订阅通道",
-			"seq", ev.Seq, "session", msg.Room, "targets", external)
+		seenCard[addr.Card] = true
+		wake, ok, err := s.seatAddressWake(ev, msg, addr)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			wakes = append(wakes, wake)
+		}
 	}
 	return wakes, nil
+}
+
+// seatAddressWake 按席位地址所在卡的当前模式决定是否产出 keystone 唤醒（见
+// roomMessageWakeEvents 分流表）。读卡或读桌面端记录失败上抛：判定读失败不得被当作
+// 「不唤醒」吞掉，否则水位越过该消息。
+func (s *Server) seatAddressWake(ev proto.LedgerEvent, msg proto.RoomMessage, addr proto.DeliveryAddress) (keystone.WakeEvent, bool, error) {
+	card, err := s.autoLedger.GetCard(addr.Card)
+	if err != nil {
+		s.log.Warn("命中席位地址的卡读取失败，本轮不越过该消息", "seq", ev.Seq, "card", addr.Card, "cause", err)
+		return keystone.WakeEvent{}, false, fmt.Errorf("事件 %d 读命中卡 %s: %w", ev.Seq, addr.Card, err)
+	}
+	if card.DriverSession != addr.Identity {
+		s.log.Info("命中席位已换人，本条不唤醒", "seq", ev.Seq, "card", addr.Card)
+		return keystone.WakeEvent{}, false, nil
+	}
+	wake := keystone.WakeEvent{Kind: keystone.WakeMessage, Card: addr.Card, Summary: truncateRunes(msg.Body, 400)}
+	switch proto.SeatMode(card.DriverMode) {
+	case proto.SeatModePush:
+		s.log.Debug("会话消息命中 push 席位", "seq", ev.Seq, "card", addr.Card)
+		return wake, true, nil
+	case proto.SeatModePull:
+		_, hasDesktop, derr := s.ledger.SeatDesktopOf(addr.Card)
+		if derr != nil {
+			s.log.Warn("pull 席位读桌面端记录失败，本轮不越过该消息", "seq", ev.Seq, "card", addr.Card, "cause", derr)
+			return keystone.WakeEvent{}, false, fmt.Errorf("事件 %d 读卡 %s 桌面端记录: %w", ev.Seq, addr.Card, derr)
+		}
+		if hasDesktop {
+			s.log.Info("pull 席位有 B434 桌面端记录：过渡分支沿用信箱", "seq", ev.Seq, "card", addr.Card)
+			return wake, true, nil
+		}
+		s.log.Info("会话消息命中 pull 席位：零回合，由 card wait 交付", "seq", ev.Seq, "card", addr.Card)
+		return keystone.WakeEvent{}, false, nil
+	default:
+		s.log.Warn("命中席位模式非法，不唤醒", "seq", ev.Seq, "card", addr.Card, "mode", card.DriverMode)
+		return keystone.WakeEvent{}, false, nil
+	}
 }
 
 const wakeParentWalkLimit = 32
@@ -493,12 +505,13 @@ func (s *Server) writeWakeRoundFail(card, roundID, class, reason string) {
 	}
 }
 
-// resolveWakeCard 把唤醒目标从事件卡收到真正能被叫醒的席位卡。
-// 事件卡自己有 coordinate 席位 → 自己；事件卡是 bind：有桌面端记录（seat_desktops，
-// B434）→ 自己（走信箱 + continue 深链），无记录 → 空（bind 靠 CLI wait）；空座沿
-// parent_id 上走，无记录的 bind 祖先跳过，coordinate 祖先与有桌面端记录的 bind 祖先
-// 接手（契约 §3.8、P2=A）。读桌面端记录失败：起始卡 Warn + 空（同读卡失败）；祖先
-// Warn 后按无记录继续上走。不改账本 card_id。
+// resolveWakeCard 把卡自动化事件的唤醒目标从事件卡收到真正能被叫醒的席位卡
+// （B435 C-235–C-237：按席位模式判，来源词只作 ValidateSeat 实参）。
+// 事件卡自己是 push 席位 → 自己；事件卡是 pull：有 B434 桌面端记录（P4 乙过渡）→ 自己，
+// 无记录 → 空（不起回合、不上走，pull 靠 card wait）；空座沿 parent_id 上走，无记录的
+// pull 祖先跳过，push 祖先与有桌面端记录的 pull 祖先接手。非空座而模式非法、或 push
+// 席位身份非法 → 按非法席位继续上走（Warn）。读桌面端记录失败：起始卡 Warn + 空（同读卡
+// 失败）；祖先 Warn 后按无记录继续上走。不改账本 card_id。房间消息唤醒不经本函数（C-232）。
 func (s *Server) resolveWakeCard(cardID string) string {
 	if s.ledger == nil || cardID == "" {
 		return ""
@@ -516,30 +529,33 @@ func (s *Server) resolveWakeCard(cardID string) string {
 			s.log.Warn("自动化唤醒读卡失败", "origin", origin, "card", cardID, "cause", err)
 			return ""
 		}
-		occupied := card.DriverSession != "" || card.DriverSource != ""
-		if occupied {
-			if card.DriverSource == string(proto.SeatSourceBind) {
-				_, hasDesktop, derr := s.ledger.SeatDesktopOf(cardID)
-				if derr != nil {
-					s.log.Warn("自动化唤醒读桌面端席位记录失败", "origin", origin, "card", cardID, "cause", derr)
-					if cardID == origin {
-						return ""
-					}
-					// 祖先 bind 读失败：按无记录处理继续上走，保留「找更上层 coordinate 祖先」语义。
-					cardID = card.ParentID
-					continue
-				}
-				if hasDesktop {
-					return cardID
-				}
+		switch proto.SeatMode(card.DriverMode) {
+		case proto.SeatModePull:
+			_, hasDesktop, derr := s.ledger.SeatDesktopOf(cardID)
+			if derr != nil {
+				s.log.Warn("自动化唤醒读桌面端席位记录失败", "origin", origin, "card", cardID, "cause", derr)
 				if cardID == origin {
 					return ""
 				}
+				// 祖先 pull 读失败：按无记录处理继续上走，保留「找更上层 push 祖先」语义。
 				cardID = card.ParentID
 				continue
 			}
+			if hasDesktop {
+				return cardID
+			}
+			if cardID == origin {
+				return ""
+			}
+		case proto.SeatModePush:
 			if proto.ValidateSeat(card.DriverSession, proto.SeatSource(card.DriverSource)) == nil {
 				return cardID
+			}
+			s.log.Warn("自动化唤醒遇非法 push 席位，继续上走", "origin", origin, "card", cardID)
+		default:
+			if card.DriverSession != "" {
+				s.log.Warn("自动化唤醒遇模式非法的非空座，按非法席位继续上走", "origin", origin,
+					"card", cardID, "mode", card.DriverMode)
 			}
 		}
 		cardID = card.ParentID
@@ -745,7 +761,12 @@ func (s *Server) consumeAutomationEventsOnce(ctx context.Context) (processed int
 		if len(wakes) > 0 {
 			queued := 0
 			for _, wake := range wakes {
-				target := s.resolveWakeCard(wake.Card)
+				target := wake.Card
+				if wake.Kind != keystone.WakeMessage {
+					// 卡自动化事件沿 parent 找 push 席位；房间消息唤醒已按匹配函数地址定卡，
+					// 不上走（C-232）。
+					target = s.resolveWakeCard(wake.Card)
+				}
 				if target == "" {
 					s.log.Debug("自动化事件无 coordinate 席位可叫醒", "card", wake.Card, "seq", ev.Seq)
 					continue
