@@ -531,9 +531,14 @@ func (s *Server) Conf() func() *config.Config { return s.conf }
 
 // IsSelfTarget 判断登记名是否指向本 agentd。
 //
-// 空串是本机的规范身份；非空登记名只有在活配置中存在、且其直连地址经
-// config.IsSelfTarget 判定为本机时才算本机。relay 与未知登记名都不是本机，
-// 后者交给 target client 池保留既有的未登记错误。
+// 空串是本机的规范身份；非空登记名在两种情形算本机：名字 == 自名（B439，与地址无关——
+// 设备表源下本机行按全队名出现，地址判认不出它），或活配置中存在且其直连地址经
+// config.IsSelfTarget 判定为本机。relay 与未知登记名都不是本机，后者交给 target client
+// 池保留既有的未登记错误。
+//
+// 为什么自名判在地址判之前且不替换它：B439 前只有地址/别名词表两套判法，配了自名的机器
+// 上「本机」是唯一名字，但旧别名与指向本机的地址仍须判本机（非派发入口不做 S6 拒收，
+// S5 无自名机器逐点不变）。两判是并集，不是替换。
 func (s *Server) IsSelfTarget(name string) bool {
 	if name == "" {
 		return true
@@ -541,6 +546,9 @@ func (s *Server) IsSelfTarget(name string) bool {
 	cfg := s.conf()
 	if cfg == nil {
 		return false
+	}
+	if cfg.Name != "" && cfg.IsSelfName(name) {
+		return true
 	}
 	target, ok := cfg.Targets[name]
 	return ok && config.IsSelfTarget(cfg.Listen, target)
