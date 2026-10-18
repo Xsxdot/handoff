@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/Xsxdot/handoff/internal/client"
+	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/relay"
 )
@@ -50,25 +51,44 @@ type PairResult struct {
 
 // DefaultDial 是生产 DialFunc：relay 形态走 relay.NewDialer + client.NewRelay，
 // 直连形态走 client.New。relay credential 取机器覆盖，缺省沿用管道 credential。
+// relay 形态带打洞升级（B438 S7，选项见 mobileP2P）。
 func DefaultDial(ctx context.Context, b proto.PairBundle, m proto.PairMachine) (*client.Client, func(), error) {
-	if m.Node != "" {
-		if b.Relay == nil || b.Relay.URL == "" {
-			return nil, nil, errors.New("relay 形态机器缺管道 relay 端点")
-		}
-		cred := m.Credential
-		if cred == "" {
-			cred = b.Relay.Credential
-		}
-		if err := relay.CheckTokenEntropy(m.Token); err != nil {
-			return nil, nil, err
-		}
-		d := relay.NewDialer(b.Relay.URL, cred, m.Node, m.Token, "", slog.Default())
-		return client.NewRelay(d, m.Token), func() { _ = d.Close() }, nil
+	return dialWith(mobileP2P(), slog.Default())(ctx, b, m)
+}
+
+// mobileP2P 是移动端的打洞选项。移动端没有配置文件：打洞恒开，STUN 取配置缺省
+// 列表（不写死在本包）。不设启动延迟——移动端 Dialer 随机器登记长驻，不是一次性
+// CLI 进程。
+func mobileP2P() relay.P2POptions {
+	return relay.P2POptions{Enabled: true, STUN: config.DefaultP2PSTUN()}
+}
+
+// dialWith 按给定打洞选项构造 DialFunc。DefaultDial 即 dialWith(mobileP2P(), …)；
+// 测试经它注入 vnet（P2POptions.Net 测试缝）。log 为 nil 时用 slog.Default()。
+func dialWith(p2p relay.P2POptions, log *slog.Logger) DialFunc {
+	if log == nil {
+		log = slog.Default()
 	}
-	if m.Addr == "" {
-		return nil, nil, errors.New("机器登记既非 relay 也非直连形态")
+	return func(ctx context.Context, b proto.PairBundle, m proto.PairMachine) (*client.Client, func(), error) {
+		if m.Node != "" {
+			if b.Relay == nil || b.Relay.URL == "" {
+				return nil, nil, errors.New("relay 形态机器缺管道 relay 端点")
+			}
+			cred := m.Credential
+			if cred == "" {
+				cred = b.Relay.Credential
+			}
+			if err := relay.CheckTokenEntropy(m.Token); err != nil {
+				return nil, nil, err
+			}
+			d := relay.NewDialer(b.Relay.URL, cred, m.Node, m.Token, "", log, relay.WithP2P(p2p))
+			return client.NewRelay(d, m.Token), func() { _ = d.Close() }, nil
+		}
+		if m.Addr == "" {
+			return nil, nil, errors.New("机器登记既非 relay 也非直连形态")
+		}
+		return client.New(m.Addr, m.Token), func() {}, nil
 	}
-	return client.New(m.Addr, m.Token), func() {}, nil
 }
 
 // errCoreClosed 是核关闭后的统一拒绝错误：Close 幂等，关闭后 Pair/Origin/
