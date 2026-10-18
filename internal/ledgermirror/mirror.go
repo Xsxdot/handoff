@@ -41,11 +41,16 @@ type Source func(ctx context.Context, c client.EventStreamClient, taskID string,
 
 // Options 子系统参数。零值取生产默认。
 type Options struct {
-	Holder       string
-	Tick         time.Duration
-	LeaseTTL     time.Duration
-	Source       Source
-	LocalSource  Source
+	Holder string
+	// SelfName 是本机自名（B439）。判等 target == SelfName → 本机源（LocalSource）。
+	// 空 = 无自名：回退 IsSelfTarget 的地址判据（S5，行为与今天一致）。
+	SelfName    string
+	Tick        time.Duration
+	LeaseTTL    time.Duration
+	Source      Source
+	LocalSource Source
+	// IsSelfTarget 是无自名时的回退判据（地址判）。有 SelfName 时不再参与
+	// 名字面判等。
 	IsSelfTarget func(target string) bool
 }
 
@@ -237,8 +242,20 @@ func (m *Mirror) setConn(key string, ok bool) {
 	m.mu.Unlock()
 }
 
+// isLocalTarget 三分支（B439 §4.6）：
+//   - ""（存量无归属）→ 本机源（S7 兼容分支；WU1 保行为，WU3 补 WARN/健康面）
+//   - == 自名 → 本机源
+//   - 其余 → 走池（远端）
+//
+// 无自名时回退地址判据（IsSelfTarget），保持今天行为（S5）。
 func (m *Mirror) isLocalTarget(target string) bool {
-	return target == "" || m.opt.IsSelfTarget != nil && m.opt.IsSelfTarget(target)
+	if target == "" {
+		return true
+	}
+	if m.opt.SelfName != "" {
+		return target == m.opt.SelfName
+	}
+	return m.opt.IsSelfTarget != nil && m.opt.IsSelfTarget(target)
 }
 
 // Holding 当前是否持有镜像 lease（测试与状态面用）。
@@ -330,9 +347,41 @@ func (m *Mirror) reconcile(ctx context.Context) {
 		m.log.Warn("读在飞镜像 target 失败", "err", err)
 		return
 	}
+	nonTerminal, err := m.st.NonTerminalLinks()
+	if err != nil {
+		m.log.Warn("读非终态挂账集合失败", "err", err)
+		return
+	}
 	want := map[string]ledger.TaskLink{}
 	for _, link := range links {
-		if link.Target != "" && !registered[link.Target] && !m.isLocalTarget(link.Target) {
+		if link.Target == "" {
+			// B439 S7：存量无归属 '' 挂账不迁移、不静默。仍按「持有者本机」尽力
+			// 订阅（持有者恰是派发机时仍可用），但每轮对每条**非终态**的 '' 挂账
+			// 打一次 WARN——对账周期天然限频，同一条不刷屏；终态 '' 静默（没有
+			// 可镜像的东西）。这是旧缺陷族「不报错、无 WARN、健康行正常」的
+			// 显性化出口。
+			if nonTerminal[link.Target+"/"+link.TaskID] {
+				m.log.Warn("历史无归属挂账，仅在持有者本机时可镜像",
+					"card", link.CardID, "task", link.TaskID, "node", link.Node, "attempt", link.Attempt)
+			}
+			want[link.Target+"/"+link.TaskID] = link
+			continue
+		}
+		if !registered[link.Target] && !m.isLocalTarget(link.Target) {
+			// 挂账目标机不在本机机器清单里：取不到客户端，订不到。
+			//
+			// 在飞/终态分档（S7，与同函数健康行 live/终态分档对齐）：只有该
+			// target 仍有非终态挂账（live[link.Target]）才打 WARN——退役机或
+			// 旧别名 target 的全部历史挂账（含已归档）若每 tick 每条重复 WARN，
+			// 会淹没真断链信号。终态挂账静默跳订；在飞挂账不静默：打 WARN
+			// （带 target/task/card）让断链可见，健康行留在未刷新状态（断链
+			// 亮灯）。这正是 B439 要杀的静默失效族（S1 关键失败）。
+			if !live[link.Target] {
+				continue
+			}
+			m.log.Warn("挂账目标机不在本机机器清单，无法订阅（断链）",
+				"card", link.CardID, "target", link.Target, "task", link.TaskID,
+				"node", link.Node, "attempt", link.Attempt)
 			continue
 		}
 		want[link.Target+"/"+link.TaskID] = link

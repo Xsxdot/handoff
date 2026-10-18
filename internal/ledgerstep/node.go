@@ -448,6 +448,8 @@ func (n *NodeStep) RunOnce(ctx context.Context, cardID string) (Outcome, error) 
 					"target", info.Target, "task", info.TaskID)
 			} else {
 				pushTarget, pushTask := info.Target, info.TaskID
+				// 存量口径：B439 前的快照 Target 可能为空串（历史无归属）。这类
+				// 挂账只能用本轮 target 兜底——新写入恒为全队名，不会走这里。
 				if pushTarget == "" {
 					pushTarget = target
 				}

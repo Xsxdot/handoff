@@ -86,6 +86,80 @@ func TestSetupLedgerMountsWithRetiredEnabledFlag(t *testing.T) {
 	}
 }
 
+// TestB439SetupLedgerMountGateMissingName 有 DSN 缺 name 时：不打开任何账本
+// （含共享 DSN，也不回退本机 SQLite），setupLedger 不报错（agentd 照常起），
+// 日志给可行动指引。
+func TestB439SetupLedgerMountGateMissingName(t *testing.T) {
+	dir := t.TempDir()
+	sharedPath := filepath.Join(dir, "shared-ledger.db")
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, nil))
+	cfg := &config.Config{DataDir: dir, Ledger: config.LedgerConfig{DSN: sharedPath}}
+	taskStore, err := store.Open(filepath.Join(dir, "tasks.db"))
+	if err != nil {
+		t.Fatalf("开任务库: %v", err)
+	}
+	t.Cleanup(func() { taskStore.Close() })
+	srv := agentd.NewServer(cfg, taskStore, discardLogger())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	stop, err := setupLedger(cfg, srv, taskStore, ctx, logger)
+	if err != nil {
+		t.Fatalf("挂载门不应让 setupLedger 报错（agentd 照常起）: %v", err)
+	}
+	if stop == nil {
+		t.Fatal("stop 不得为 nil")
+	}
+	stop()
+	if srv.LedgerMounted() {
+		t.Fatal("缺 name 时账本不得挂载")
+	}
+	if _, statErr := os.Stat(sharedPath); statErr == nil {
+		t.Fatal("缺 name 时不得打开任何账本（含共享 DSN）")
+	}
+	if !strings.Contains(logs.String(), "name:") {
+		t.Fatalf("日志应给可行动指引「设置 name:」: %s", logs.String())
+	}
+}
+
+// TestB439SetupLedgerMountedLogsSelfName 有 DSN + 自名 + advertise：照常挂载，
+// 日志打印自名，镜像 holder 用自名（不再用 hostname）。
+func TestB439SetupLedgerMountedLogsSelfName(t *testing.T) {
+	dir := t.TempDir()
+	dsn := filepath.Join(dir, "shared-ledger.db")
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, nil))
+	cfg := &config.Config{DataDir: dir, Name: "linux-01", Advertise: "127.0.0.1:7777",
+		Ledger: config.LedgerConfig{DSN: dsn}}
+	taskStore, err := store.Open(filepath.Join(dir, "tasks.db"))
+	if err != nil {
+		t.Fatalf("开任务库: %v", err)
+	}
+	t.Cleanup(func() { taskStore.Close() })
+	srv := agentd.NewServer(cfg, taskStore, discardLogger())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	stop, err := setupLedger(cfg, srv, taskStore, ctx, logger)
+	if err != nil {
+		t.Fatalf("有身份应挂载成功: %v", err)
+	}
+	if stop == nil {
+		t.Fatal("stop 不得为 nil")
+	}
+	t.Cleanup(stop)
+	if !srv.LedgerMounted() {
+		t.Fatal("有 name+advertise 应挂载账本")
+	}
+	if !strings.Contains(logs.String(), "self_name=linux-01") {
+		t.Fatalf("挂载日志应打印自名: %s", logs.String())
+	}
+	if !strings.Contains(logs.String(), "holder=linux-01") {
+		t.Fatalf("镜像 holder 应为自名（非 hostname）: %s", logs.String())
+	}
+}
+
 // TestSetupLedgerFailureDoesNotLogDSNCredentials keeps startup diagnostics useful
 // without exposing a PostgreSQL password when the database cannot be opened.
 func TestSetupLedgerFailureDoesNotLogDSNCredentials(t *testing.T) {
@@ -93,7 +167,10 @@ func TestSetupLedgerFailureDoesNotLogDSNCredentials(t *testing.T) {
 	dsn := "postgres://ledger-user:" + password + "@127.0.0.1:1/ledger-db?sslmode=disable"
 	var logs bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&logs, nil))
-	cfg := &config.Config{Ledger: config.LedgerConfig{DSN: dsn}}
+	// 有自名 + 直连 advertise 才具备挂载共享账本的身份（B439 §4.5）；否则
+	// 挂载门会直接拦下、根本不尝试连库。
+	cfg := &config.Config{Name: "test-box", Advertise: "127.0.0.1:7777",
+		Ledger: config.LedgerConfig{DSN: dsn}}
 
 	_, err := setupLedger(cfg, nil, nil, context.Background(), logger)
 	if err == nil {
@@ -160,7 +237,8 @@ func TestSetupLedgerMountLogsDoNotLogDSNCredentials(t *testing.T) {
 	dsn := filepath.Join(dir, "sentinel-ledger-dsn.db")
 	var logs bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&logs, nil))
-	cfg := &config.Config{DataDir: dir, Ledger: config.LedgerConfig{DSN: dsn}}
+	cfg := &config.Config{DataDir: dir, Name: "test-box", Advertise: "127.0.0.1:7777",
+		Ledger: config.LedgerConfig{DSN: dsn}}
 	taskStore, err := store.Open(filepath.Join(dir, "tasks.db"))
 	if err != nil {
 		t.Fatalf("开任务库: %v", err)

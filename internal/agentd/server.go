@@ -260,7 +260,10 @@ type Server struct {
 	// 为什么在 NewServer 里自建而不是靠注入：NewServer 有约 50 个调用点，
 	// 靠注入必然漏，而漏掉的表现是运行时空指针。池的构造零成本（不发请求），
 	// 自建没有代价。
-	pool          *targetclient.Pool
+	pool *targetclient.Pool
+	// deviceSource 非 nil 表示本机有共享账本、池选路读设备表（B439 WU2）。
+	// 控制台增删开发机据此改写设备表而不是本地 config；无 DSN 时为 nil，行为照旧（S5）。
+	deviceSource  *DeviceTableSource
 	previewOwner  *workspace.PreviewOwner
 	previewOpener PreviewOpener
 	previewMirror *PreviewMirror
@@ -528,9 +531,14 @@ func (s *Server) Conf() func() *config.Config { return s.conf }
 
 // IsSelfTarget 判断登记名是否指向本 agentd。
 //
-// 空串是本机的规范身份；非空登记名只有在活配置中存在、且其直连地址经
-// config.IsSelfTarget 判定为本机时才算本机。relay 与未知登记名都不是本机，
-// 后者交给 target client 池保留既有的未登记错误。
+// 空串是本机的规范身份；非空登记名在两种情形算本机：名字 == 自名（B439，与地址无关——
+// 设备表源下本机行按全队名出现，地址判认不出它），或活配置中存在且其直连地址经
+// config.IsSelfTarget 判定为本机。relay 与未知登记名都不是本机，后者交给 target client
+// 池保留既有的未登记错误。
+//
+// 为什么自名判在地址判之前且不替换它：B439 前只有地址/别名词表两套判法，配了自名的机器
+// 上「本机」是唯一名字，但旧别名与指向本机的地址仍须判本机（非派发入口不做 S6 拒收，
+// S5 无自名机器逐点不变）。两判是并集，不是替换。
 func (s *Server) IsSelfTarget(name string) bool {
 	if name == "" {
 		return true
@@ -539,19 +547,67 @@ func (s *Server) IsSelfTarget(name string) bool {
 	if cfg == nil {
 		return false
 	}
+	if cfg.Name != "" && cfg.IsSelfName(name) {
+		return true
+	}
 	target, ok := cfg.Targets[name]
 	return ok && config.IsSelfTarget(cfg.Listen, target)
 }
 
-// CanonicalTarget 把本机身份归一为空串，保留远端与未知名称原值。
+// IsSelfMachine 报告 name 是否指本机（B439 身份判据，与路由值无关）。
 //
-// 返回值会写入派发请求、任务挂账与快照；调用方不应继续使用归一前的登记名
-// 作为身份。空串与配置中指向本机的登记名共用本机 client。
+// 有自名（S6 收敛）：唯一名字判据——省略或 == 自名。local/本机/hostname 不再是
+// 本机，各入口以 legacyAliasError 拒收并点名改成自名；不再回退地址/别名词表。
+// 无自名（S5）：回退今天判法（空串 / 配置中指向本机的登记名 / 本机别名），逐点不变。
+func (s *Server) IsSelfMachine(name string) bool {
+	cfg := s.conf()
+	if cfg != nil && cfg.Name != "" {
+		return cfg.IsSelfName(name)
+	}
+	if s.IsSelfTarget(name) {
+		return true
+	}
+	return scheduling.IsLocalMachine(name)
+}
+
+// ResolveTarget 把一次目标输入解析成（身份值, 是否本机）。
+//
+// 身份值进共享账本与快照；路由值由调用方按 isLocal 折算（本机 → 空串）。
+// 有自名时本机身份值=自名（全队名），local/本机/hostname 归为远端原值（由各入口
+// 在解析前用 legacyAliasError 拒收，不静默当本机）；无自名时回退今天判法，本机
+// 身份值=空串（旧账本口径，S5 逐点不变）。
+func (s *Server) ResolveTarget(name string) (identity string, isLocal bool) {
+	cfg := s.conf()
+	if cfg != nil && cfg.Name != "" {
+		if cfg.IsSelfName(name) {
+			return cfg.Name, true
+		}
+		return name, false
+	}
+	if s.IsSelfMachine(name) {
+		return "", true
+	}
+	return name, false
+}
+
+// legacyAliasError 报告 target 是否是本机旧别名（local/本机/hostname）且本机
+// 已配自名（S6 拒收）；nil = 不是旧别名或未配自名（S5）。各入口据此补上下文
+// （节点名、入口名）后返回可行动错误。
+func (s *Server) legacyAliasError(target string) error {
+	return s.conf().LegacyLocalAliasError(target)
+}
+
+// CanonicalTarget 返回一次目标输入的**路由值**：本机归一为空串，保留远端与
+// 未知名称原值。返回值进派发请求选路与 wire，不写共享账本（写账本用身份值，
+// 见 ResolveTarget）。
+//
+// 空串与配置中指向本机的登记名共用本机 client。
 func (s *Server) CanonicalTarget(name string) string {
-	if s.IsSelfTarget(name) || scheduling.IsLocalMachine(name) {
+	identity, isLocal := s.ResolveTarget(name)
+	if isLocal {
 		return ""
 	}
-	return name
+	return identity
 }
 
 // clientForTarget 按规范目标取得 agentd client。
@@ -638,6 +694,22 @@ func (s *Server) SetConfigPath(p string) { s.cfgPath = p }
 // 用途：cmd/agentd.go 起预热循环、给 Mirror 注入同一个池——**必须是同一个**，
 // 两个池等于两套隧道，relay 侧会看到重复的节点连接。
 func (s *Server) Pool() *targetclient.Pool { return s.pool }
+
+// SetDeviceSource 注入设备表快照源（B439 WU2，有 DSN 的机器）。
+//
+// 副作用：同时把池的选路数据源切到设备表。传 nil 复位（回落活配置 targets:，S5）。
+// 只在装配期调用（cmd 组装点账本打开后、服务对外前）。
+func (s *Server) SetDeviceSource(src *DeviceTableSource) {
+	s.deviceSource = src
+	if src != nil {
+		s.pool.SetSource(src)
+	} else {
+		s.pool.SetSource(nil)
+	}
+}
+
+// DeviceSource 返回设备表快照源；无 DSN 机器为 nil。
+func (s *Server) DeviceSource() *DeviceTableSource { return s.deviceSource }
 
 // SetPreviewOwner injects the owner-side preview authority before serving HTTP.
 func (s *Server) SetPreviewOwner(owner *workspace.PreviewOwner) { s.previewOwner = owner }

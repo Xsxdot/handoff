@@ -40,6 +40,20 @@ type entry struct {
 	cleanup func()
 }
 
+// TargetSource 是池的选路数据源（B439 F5）。
+//
+// 有账本 DSN 的机器由组装点注入设备表快照源；无 DSN 时为 nil，池回落到活配置
+// 的 targets: 段（S5，行为与今天逐点一致）。池仍是唯一选路判据——消费方
+// （镜像/调度/CLI）不直接读设备表。
+//
+// 实现方保证：Names 已排序；Target 不发网络、不阻塞（读失败回上一份快照）。
+type TargetSource interface {
+	// Names 返回当前机器名，已排序。
+	Names() []string
+	// Target 取一台机器的连接方式；未登记返回 ok=false。
+	Target(name string) (config.Target, bool)
+}
+
 // Pool 是按 target 名缓存的客户端池。
 //
 // 并发安全：全部字段访问都在 mu 保护下；conf 由调用方保证并发安全
@@ -47,6 +61,10 @@ type entry struct {
 type Pool struct {
 	conf func() *config.Config
 	log  *slog.Logger
+	// source 非 nil 时取代活配置 targets: 成为选路数据源（B439 F5）。
+	// 经 SetSource 在账本打开后注入（池在 NewServer 构造、账本在 setupLedger
+	// 之后才打开，构造期拿不到设备表）。
+	source TargetSource
 
 	mu      sync.Mutex
 	entries map[string]*entry
@@ -76,6 +94,24 @@ func NewPool(conf func() *config.Config, log *slog.Logger) *Pool {
 	}
 }
 
+// SetSource 注入选路数据源（B439 F5）。nil 表示回落活配置 targets:。
+//
+// 只在装配期调用一次（账本打开后、服务对外前）。传 nil 是合法的复位。
+func (p *Pool) SetSource(src TargetSource) { p.source = src }
+
+// targetOf 取一台机器的连接方式：有源走源，无源走活配置。
+func (p *Pool) targetOf(name string) (config.Target, bool) {
+	if p.source != nil {
+		return p.source.Target(name)
+	}
+	t, ok := p.conf().Targets[name]
+	return t, ok
+}
+
+// Target 取一台机器的连接方式，供机器投影显示地址/relay 形态。
+// 与 For 同源，但**不构造客户端、不发网络**。
+func (p *Pool) Target(name string) (config.Target, bool) { return p.targetOf(name) }
+
 // NewLocal 创建当前 agentd 的本机客户端。
 //
 // 本机没有 target 名，也没有 relay 隧道可加入池；因此它不写入 Pool.entries，
@@ -88,6 +124,11 @@ func NewLocal(addr, token string) *client.Client {
 //
 // 排序是为了让 UI 列表与日志顺序稳定：每次刷新都跳序会让人以为数据在变。
 func (p *Pool) Names() []string {
+	if p.source != nil {
+		names := append([]string(nil), p.source.Names()...)
+		sort.Strings(names)
+		return names
+	}
 	targets := p.conf().Targets
 	names := make([]string, 0, len(targets))
 	for name := range targets {
@@ -108,12 +149,12 @@ func (p *Pool) Names() []string {
 //
 // 注意：不发任何网络请求。relay 隧道由 Dialer 惰性建立或由 Warm 预热。
 func (p *Pool) For(name string) (*client.Client, error) {
-	t, ok := p.conf().Targets[name]
+	t, ok := p.targetOf(name)
 	if !ok {
-		// 配置里没有了：连带把可能残留的缓存条目关掉，否则一条隧道会一直挂着
+		// 源/配置里没有了：连带把可能残留的缓存条目关掉，否则一条隧道会一直挂着
 		p.drop(name)
 		p.log.Warn("请求未登记机器的客户端", "target", name)
-		return nil, fmt.Errorf("target %s 未在配置中登记", name)
+		return nil, fmt.Errorf("target %s 未登记（设备表/配置中均无此名）", name)
 	}
 
 	p.mu.Lock()

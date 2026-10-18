@@ -35,7 +35,7 @@ type DispatchOpts struct {
 	// HomeDir 是小队派发载体 HOME 的可空透传值；nil=字段缺席，指向空串=显式空值。
 	HomeDir *string
 	// FrozenTarget 是卡节点冻结的执行物理身份（Binding.Target 的原始机器名）。
-	// 与 Target 分工：Target 是路由值，可被 NormalizeTarget 折成本机空串；
+	// 与 Target 分工：Target 是路由值，由 ResolveTarget 按自名折成本机空串；
 	// FrozenTarget 是身份快照，原样透传，不解析、不归一、不校验（B398）。
 	// 空=普通派发或旧调用。
 	FrozenTarget string
@@ -109,9 +109,17 @@ type Dispatcher struct {
 	// 与 ViaTemplate 的 Target 分工：Target 参与路由归一，FrozenTarget 不归一，
 	// 原样进入 DispatchOpts 供接收端 AdmitFrozen（B398）。空=普通派发或旧调用。
 	FrozenTarget string
-	// NormalizeTarget 把调用方已确认的自机登记名归一成空串；nil 等价于恒等
-	// 函数。未知目标名不得在此处改写，目标身份判断归组装点负责。
-	NormalizeTarget func(target string) string
+	// ResolveTarget 把调用方输入解析成（身份值, 是否本机）。身份值进共享账本
+	// 与快照（有自名时恒为全队名）；路由值由本包按 isLocal 折算（本机 → ""，
+	// 否则 = 身份值）进 Transport/wire。nil 等价于旧归一：身份=输入，
+	// isLocal 仅当输入为空串。未知目标名不得在此处改写，身份判断归组装点负责。
+	ResolveTarget func(target string) (identity string, isLocal bool)
+
+	// RejectLegacyAlias 报告 target 是否是本机旧别名（local/本机/hostname）且
+	// 本机已配自名，返回可行动错误（B439 S6）；nil 函数 = 不拒（无自名或旧调用）。
+	// 只作用于**模板声明的 target**（tpl.Def.Target），不作用于请求覆盖或冻结身份
+	// ——后两者由各自的入口拒收（CLI / agentd step），冻结身份按 B398 原样透传。
+	RejectLegacyAlias func(target string) error
 
 	// ProbeBaseAttachments 是首个节点派发前的基线附件探针（B400）。首个非审阅
 	// 派发、卡无显式基线、且有 spec/plan 可查附件时，ViaTemplate 调它确认附件
@@ -238,6 +246,16 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 		slog.Default().Warn("取模板失败", "card", c.ID, "template", req.Template, "cause", err)
 		return zero, fmt.Errorf("取模板: %w", err)
 	}
+	// B439 S6：模板声明的 target 是旧别名（local/本机/hostname）且本机已配自名时
+	// 前置拒发，点名模板与要改成的名字。只判模板缺省 target——请求覆盖与冻结身份
+	// 各由自己的入口处置（CLI / agentd step / B398 透传），不在这里误杀。
+	if d.RejectLegacyAlias != nil {
+		if aerr := d.RejectLegacyAlias(tpl.Def.Target); aerr != nil {
+			slog.Default().Warn("模板派发拒绝本机旧别名", "card", c.ID, "template", tpl.Name,
+				"target", tpl.Def.Target, "cause", aerr)
+			return zero, fmt.Errorf("模板 %s 的 target=%q: %w", tpl.Name, tpl.Def.Target, aerr)
+		}
+	}
 	// 有效目标机与纪律角色名：请求覆盖 > 模板缺省。两个调用方装配处的缝 1
 	// 解析必须与这里完全同序（共用 PreflightDiscipline → disciplineAndTarget），
 	// 各抄一份迟早漂移——探错目标机的拒发闸比没有闸更危险。
@@ -246,15 +264,24 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 		target = tpl.Def.Target
 	}
 	rawTarget := target
-	if d.NormalizeTarget != nil {
-		target = d.NormalizeTarget(target)
+	// 身份值与路由值分离（B439 §4.2）：身份值进共享账本与快照，路由值进
+	// Transport/wire。nil 解析器 = 旧归一（身份=输入，空输入视作本机）。
+	identity := target
+	isLocal := target == ""
+	if d.ResolveTarget != nil {
+		identity, isLocal = d.ResolveTarget(target)
+	}
+	routeTarget := identity
+	if isLocal {
+		routeTarget = ""
 	}
 	disciplineName := tpl.Def.Discipline
 	if req.DisciplineOverride != "" {
 		disciplineName = req.DisciplineOverride
 	}
-	slog.Default().Info("模板派发目标已归一", "card", c.ID, "template", req.Template,
-		"raw_target", rawTarget, "target", target, "frozen_target", d.FrozenTarget)
+	slog.Default().Info("模板派发目标已解析", "card", c.ID, "template", req.Template,
+		"raw_target", rawTarget, "identity_target", identity, "route_target", routeTarget,
+		"local", isLocal, "frozen_target", d.FrozenTarget)
 
 	// 有效用途：节点覆盖优先于模板。下面**所有**按用途裁决的地方都读它，
 	// 不再直接读取模板用途字段——漏掉任何一处都会让节点只对了一半（例如分支
@@ -275,15 +302,24 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 			"previous_target", "", "branch", "", "cause", workErr)
 		return zero, fmt.Errorf("取卡工作分支: %w", workErr)
 	}
+	// previousTarget 是快照里存的**身份值**（新写入恒为全队名，存量可能是 ''）。
+	// 比对在身份值域进行，不再过归一。
+	//
+	// 存量 '' 的处置（spec 实现决定）：在**有自名**的机器上，新写入恒为全队名，
+	// 因此 '' 只能是历史无归属快照——异机读者不该把它误判成跨机拒接，视作本机、
+	// 跳过跨机判据。无自名机器的 '' 是本机身份（新写入也是 ''），按字面比对，
+	// 保持今天行为（S5 逐点不变）。判据：解析器对空输入的产物是否非空。
 	previousTarget := ""
 	if hasWorkBranch {
 		previousTarget = workInfo.Target
-		if d.NormalizeTarget != nil {
-			previousTarget = d.NormalizeTarget(previousTarget)
-		}
 	}
+	selfIdentity := ""
+	if d.ResolveTarget != nil {
+		selfIdentity, _ = d.ResolveTarget("")
+	}
+	legacyUnattributed := previousTarget == "" && selfIdentity != ""
 	originReady := false
-	if hasWorkBranch && previousTarget != target {
+	if hasWorkBranch && !legacyUnattributed && previousTarget != identity {
 		published, pubErr := d.St.WorkBranchPublished(c.ID, workInfo.Branch)
 		if pubErr != nil {
 			slog.Default().Error("读取工作分支 origin 发布失败", "card", c.ID,
@@ -292,14 +328,14 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 		}
 		if !published {
 			slog.Default().Warn("工作分支跨目标机且未发布 origin，拒绝接续", "card", c.ID,
-				"branch", workInfo.Branch, "previous_target", previousTarget, "target", target,
+				"branch", workInfo.Branch, "previous_target", previousTarget, "target", identity,
 				"cause", "目标机身份不一致且 origin 未见该分支")
 			return zero, fmt.Errorf("工作分支只存在于创建它的那台机器：上次目标机 %q，本次目标机 %q；请先在上一台 git push origin %s（失败则 needs_human）。日常路径不使用 --base",
-				previousTarget, target, workInfo.Branch)
+				previousTarget, identity, workInfo.Branch)
 		}
 		originReady = true
 		slog.Default().Info("工作分支已在 origin，跨机接续", "card", c.ID,
-			"branch", workInfo.Branch, "previous_target", previousTarget, "target", target)
+			"branch", workInfo.Branch, "previous_target", previousTarget, "target", identity)
 	}
 
 	// 判据被收起时不留空冒号：模板正文里「验收判据：{{ACCEPT}}」后面跟一片
@@ -379,7 +415,8 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 	prompt := buildPrompt(body, c, cardBase, req.CarryCardContext, req.OmitAcceptance, req.Extra, req.OutputPath)
 	model := ""
 	if tpl.Def.ModelByTarget != nil {
-		model = tpl.Def.ModelByTarget[target]
+		// 模型按路由值取（本机 = 空键），与历史 ModelByTarget[""] 语义一致。
+		model = tpl.Def.ModelByTarget[routeTarget]
 	}
 	executor := tpl.Def.Executor
 	if req.ExecutorOverride != "" && req.ExecutorOverride != tpl.Def.Executor {
@@ -422,7 +459,7 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 		"template", req.Template, "target", target, "receiver", req.Receiver,
 		"output_path", req.OutputPath)
 	taskID, baseCommit, err := d.Transport(ctx, DispatchOpts{
-		Prompt: prompt, Branch: branch, Target: target, Project: c.Project,
+		Prompt: prompt, Branch: branch, Target: routeTarget, Project: c.Project,
 		Executor: executor, Model: model, PlanB64: planB64,
 		Receiver:     req.Receiver,
 		Carrier:      d.Carrier,
@@ -440,12 +477,12 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 	})
 	if err != nil {
 		slog.Default().Warn("模板派发传输失败", "card", c.ID, "node", req.Node,
-			"attempt", "", "target", target, "task", "", "seq", 0,
+			"attempt", "", "target", routeTarget, "task", "", "seq", 0,
 			"type", ledger.EvDispatched, "branch", branch, "base", base, "cause", err)
 		return zero, fmt.Errorf("派发: %w", err)
 	}
 	slog.Default().Info("模板派发传输已返回", "card", c.ID, "node", req.Node,
-		"attempt", taskID, "target", target, "task", taskID, "seq", 0,
+		"attempt", taskID, "target", routeTarget, "task", taskID, "seq", 0,
 		"type", ledger.EvDispatched, "receiver", req.Receiver, "carrier", d.Carrier, "squad", d.Squad,
 		"base", base, "base_commit", baseCommit)
 	slog.Default().Info("模板派发已裁定纪律块角色", "card", c.ID, "node", req.Node,
@@ -462,42 +499,43 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 	if req.WriteGate != nil && !req.WriteGate() {
 		originalErr := fmt.Errorf("派发落账被拒：%w", ErrWriteGateClosed)
 		slog.Default().Warn("失去写权，停止派发快照与挂账", "card", c.ID,
-			"node", req.Node, "attempt", taskID, "target", target, "task", taskID,
+			"node", req.Node, "attempt", taskID, "target", routeTarget, "task", taskID,
 			"seq", 0, "type", ledger.EvDispatched, "cause", originalErr)
-		d.compensateFailedDispatch(ctx, c, purpose, target, taskID, originalErr)
+		d.compensateFailedDispatch(ctx, c, purpose, routeTarget, taskID, originalErr)
 		return zero, originalErr
 	}
 	snapshot := ledger.DispatchSnapshot{
 		Template: tpl.Name, TemplateVersion: tpl.Version, DisciplineName: disciplineName,
 		DisciplineVersion: d.DisciplineVersion,
-		Target:            target, TaskID: taskID, Branch: snapshotBranch,
+		// Target 是**身份值**（全队名，进共享账本）；路由值只进 Transport。
+		Target: identity, TaskID: taskID, Branch: snapshotBranch,
 		Node: req.Node, Attempt: taskID,
 		Base: base, BaseCommit: baseCommit,
 		Executor: executor, Model: model,
 		Purpose: purpose, PlanPath: req.PlanPath, Actor: d.Actor,
 	}
 	slog.Default().Info("模板派发快照与挂账落账开始", "card", c.ID, "node", req.Node,
-		"attempt", taskID, "target", target, "task", taskID, "seq", 0,
+		"attempt", taskID, "target", identity, "route_target", routeTarget, "task", taskID, "seq", 0,
 		"type", ledger.EvDispatched, "snapshot", snapshot)
 	snapshotSeq, linkSeq, err := d.St.RecordDispatchAndLinkTask(c.ID, snapshot)
 	if err != nil {
 		slog.Default().Warn("模板派发快照与挂账落账失败", "card", c.ID, "node", req.Node,
-			"attempt", taskID, "target", target, "task", taskID, "seq", snapshotSeq,
+			"attempt", taskID, "target", identity, "task", taskID, "seq", snapshotSeq,
 			"type", ledger.EvDispatched, "link_seq", linkSeq, "cause", err)
 		originalErr := fmt.Errorf("快照与挂账落账: %w", err)
-		d.compensateFailedDispatch(ctx, c, purpose, target, taskID, originalErr)
+		d.compensateFailedDispatch(ctx, c, purpose, routeTarget, taskID, originalErr)
 		return zero, originalErr
 	}
 	slog.Default().Info("模板派发快照与挂账落账完成", "card", c.ID, "node", req.Node,
-		"attempt", taskID, "target", target, "task", taskID, "seq", linkSeq,
+		"attempt", taskID, "target", identity, "task", taskID, "seq", linkSeq,
 		"type", ledger.EvComment, "snapshot_seq", snapshotSeq, "snapshot", snapshot)
 	slog.Default().Info("模板派发完成", "card", c.ID, "node", req.Node, "template", tpl.Name,
-		"attempt", taskID, "task", taskID, "target", target, "receiver", req.Receiver,
+		"attempt", taskID, "task", taskID, "target", identity, "receiver", req.Receiver,
 		"carrier", d.Carrier, "squad", d.Squad, "home_dir_set", d.HomeDir != nil,
 		"frozen_target", d.FrozenTarget,
 		"executor", executor, "model", model, "branch", snapshotBranch, "discipline", disciplineName)
 	return DispatchResult{
-		Card: c.ID, Task: taskID, Target: target, Branch: snapshotBranch,
+		Card: c.ID, Task: taskID, Target: identity, Branch: snapshotBranch,
 		Node: req.Node, Attempt: taskID,
 		Base: base, BaseCommit: baseCommit,
 		Template: tpl.Name, TemplateVersion: tpl.Version, DisciplineName: disciplineName,

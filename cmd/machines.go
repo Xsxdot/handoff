@@ -46,7 +46,10 @@ var machinesCmd = &cobra.Command{
 		fmt.Fprintln(tw, "名字\t地址\t状态\t版本\t活跃\t延迟\t缺省执行者")
 		for _, m := range resp.Machines {
 			name := m.Name
-			if name == "" {
+			switch {
+			case m.Self && name != "":
+				name = name + "（本机）" // B439：有自名时本机行标出「本机」
+			case name == "":
 				name = "本机" // 空串是线格式，人看的是「本机」
 			}
 			state := "可达"

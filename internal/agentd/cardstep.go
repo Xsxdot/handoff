@@ -139,6 +139,15 @@ func (s *Server) startCardStep(cardID string, req proto.CardStepReq) error {
 		s.releaseCardStep(cardID)
 		return err
 	}
+	// B439 S6：有自名的机器上，节点目标机的旧别名（local/本机/hostname）拒收并
+	// 点名改成自名；未配自名沿今天判法（S5）。只判请求显式目标——小队/载体冻结的
+	// Binding.Target 是已登记身份，不在此拒收。
+	if aerr := s.legacyAliasError(req.Target); aerr != nil {
+		s.releaseCardStep(cardID)
+		s.log.Warn("卡节点派发拒绝本机旧别名", "card", cardID, "node", req.Step,
+			"target", req.Target, "cause", aerr)
+		return fmt.Errorf("节点 %s 的目标机: %w", req.Step, aerr)
+	}
 	if node.Override.Squad != "" {
 		if named := strings.TrimSpace(req.Target); named != "" {
 			s.releaseCardStep(cardID)
@@ -215,7 +224,8 @@ func (s *Server) startCardStep(cardID string, req proto.CardStepReq) error {
 			FrozenTarget:         binding.Target,
 			DisciplineText:       resolved.Text,
 			DisciplineVersion:    resolved.Version,
-			NormalizeTarget:      s.CanonicalTarget,
+			ResolveTarget:        s.ResolveTarget,
+			RejectLegacyAlias:    s.legacyAliasError,
 			ProbeBaseAttachments: s.probeBaseAttachments,
 		},
 		Clients: func(target string) (ledgerstep.StepClient, error) {
@@ -322,10 +332,10 @@ func (s *Server) resolveStepDiscipline(node ledger.NodeDef, reqTarget string) (d
 		return discipline.ResolvedDiscipline{}, "", err
 	}
 	target = s.CanonicalTarget(target)
-	if isLocalMachine(target) {
+	if s.IsSelfMachine(target) {
 		// "local"/"本机"/hostname 不是 config.Targets 里的远程机；CanonicalTarget
-		// 只认空串和指向 Listen 的登记名。归一成空串后走 clientForTarget 的本机
-		// 直连，不再 pool.For("local") fail-closed（B299）。
+		// 只认空串、自名（有自名时）和指向 Listen 的登记名。归一成空串后走
+		// clientForTarget 的本机直连，不再 pool.For("local") fail-closed（B299）。
 		target = ""
 	}
 	cl, err := s.clientForTarget(target)
@@ -372,7 +382,7 @@ func (s *Server) resolveStepDiscipline(node ledger.NodeDef, reqTarget string) (d
 // 远程机仍走探活；失败保持 nil，按不支持处置。生产派发走 resolveStepDiscipline
 // 的探活失败硬红路径；本函数只服务本机短路单测。
 func (s *Server) disciplineTargetCap(target string) *bool {
-	if isLocalMachine(target) {
+	if s.IsSelfMachine(target) {
 		yes := true
 		return &yes
 	}
@@ -391,7 +401,7 @@ func (s *Server) disciplineTargetCap(target string) *bool {
 
 func (s *Server) stepTransport(ctx context.Context, opts ledgerstep.DispatchOpts) (string, string, error) {
 	canonical := s.CanonicalTarget(opts.Target)
-	if isLocalMachine(canonical) {
+	if s.IsSelfMachine(canonical) {
 		canonical = ""
 	}
 	dispatchTarget := canonical

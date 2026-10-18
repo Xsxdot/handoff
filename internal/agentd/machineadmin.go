@@ -7,7 +7,8 @@
 // 边界：
 //   - **不做 HTTP 编解码**：状态码与响应体由 machines.go 的 handler 决定
 //   - **不做网络探测**：可达性探测是 I/O，属 handler 层，本文件保持纯逻辑
-//   - **不建表**：机器的真相仍是 config.yaml 的 targets 段（同 machines.go）
+//   - 机器的真相：有 DSN 的机器是全队设备表（B439），无 DSN 机器仍是
+//     config.yaml 的 targets 段（S5）——按 Server.deviceSource 分流
 package agentd
 
 import (
@@ -17,6 +18,7 @@ import (
 	"strings"
 
 	"github.com/Xsxdot/handoff/internal/config"
+	"github.com/Xsxdot/handoff/internal/ledger"
 	"github.com/Xsxdot/handoff/internal/proto"
 )
 
@@ -66,11 +68,14 @@ func validateAddMachine(req proto.AddMachineReq, existing map[string]config.Targ
 // 注意：重名判定在 swapConf 的临界区内再做一次。校验时的那次是为了尽早
 // 返回清晰的错误，但两次请求并发到达时只有临界区内的判定作数。
 func (s *Server) addMachine(req proto.AddMachineReq) error {
+	// 只打名字与地址，绝不打 token
+	s.log.Info("新增开发机", "name", req.Name, "addr", req.Addr, "user", req.User)
+	if s.deviceSource != nil {
+		return s.addDeviceMachine(req)
+	}
 	if err := validateAddMachine(req, s.conf().Targets); err != nil {
 		return err
 	}
-	// 只打名字与地址，绝不打 token
-	s.log.Info("新增开发机", "name", req.Name, "addr", req.Addr, "user", req.User)
 	return s.swapConf(func(c *config.Config) error {
 		if _, ok := c.Targets[req.Name]; ok {
 			return fmt.Errorf("%w: %s", ErrMachineExists, req.Name)
@@ -92,6 +97,9 @@ func (s *Server) removeMachine(name string) error {
 		return fmt.Errorf("%w: 名字为空", ErrMachineNotFound)
 	}
 	s.log.Info("删除开发机", "name", name)
+	if s.deviceSource != nil {
+		return s.removeDeviceMachine(name)
+	}
 	return s.swapConf(func(c *config.Config) error {
 		if _, ok := c.Targets[name]; !ok {
 			return fmt.Errorf("%w: %s", ErrMachineNotFound, name)
@@ -99,4 +107,41 @@ func (s *Server) removeMachine(name string) error {
 		delete(c.Targets, name)
 		return nil
 	})
+}
+
+// addDeviceMachine 把新增开发机写入共享设备表（B439 S4）。
+//
+// 重名语义保留（ErrMachineExists → 409）；写设备表失败返回原始错误，**不回落**
+// 写本地 config——回落会让「全队可见」变成只有本机可见的静默降级。
+func (s *Server) addDeviceMachine(req proto.AddMachineReq) error {
+	// 重名判定用池的名字清单（有 DSN 时即设备表）；与落表之间仍有并发窗口，
+	// 由 PutDevice 的 ErrDeviceExists 兜底。
+	existing := make(map[string]config.Target, len(s.pool.Names()))
+	for _, n := range s.pool.Names() {
+		existing[n] = config.Target{}
+	}
+	if err := validateAddMachine(req, existing); err != nil {
+		return err
+	}
+	target := config.Target{Addr: req.Addr, Token: req.Token, User: req.User}
+	if err := s.ledger.PutDevice(req.Name, configToDeviceTarget(target), nil); err != nil {
+		if errors.Is(err, ledger.ErrDeviceExists) {
+			return fmt.Errorf("%w: %s", ErrMachineExists, req.Name)
+		}
+		return fmt.Errorf("写设备表新增 %s: %w", req.Name, err)
+	}
+	s.log.Info("开发机已写入设备表", "name", req.Name)
+	return nil
+}
+
+// removeDeviceMachine 从共享设备表删除一台开发机（B439 S4）。
+func (s *Server) removeDeviceMachine(name string) error {
+	if err := s.ledger.DeleteDevice(name); err != nil {
+		if errors.Is(err, ledger.ErrDeviceNotFound) {
+			return fmt.Errorf("%w: %s", ErrMachineNotFound, name)
+		}
+		return fmt.Errorf("写设备表删除 %s: %w", name, err)
+	}
+	s.log.Info("开发机已从设备表删除", "name", name)
+	return nil
 }

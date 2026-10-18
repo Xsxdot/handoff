@@ -40,16 +40,26 @@ func (s *Server) probeMachines(ctx context.Context) proto.MachinesResp {
 	ctx, cancel := context.WithTimeout(ctx, machineProbeBudget)
 	defer cancel()
 
-	out := make([]proto.Machine, 0, len(s.conf().Targets)+1)
+	cfg := s.conf()
+	out := make([]proto.Machine, 0, len(s.pool.Names())+1)
+	// 本机恒在第一条（进程内直查，不自拨 HTTP）。B439：有自名时本机行的 Name
+	// 是自名并标 Self；设备表里同名的行由下面的循环跳过，不重复展示。
 	out = append(out, s.localMachine())
 
-	// 「有哪些机器」的判据只有一处：池。Names 已排序（顺序稳定：UI 列表不该
-	// 每次刷新都跳）。
+	// 「有哪些机器」的判据只有一处：池（有 DSN 时即设备表）。Names 已排序
+	//（顺序稳定：UI 列表不该每次刷新都跳）。
 	names := s.pool.Names()
+	probeNames := make([]string, 0, len(names))
+	for _, name := range names {
+		if cfg.Name != "" && name == cfg.Name {
+			continue // 本机行已由 localMachine 呈现
+		}
+		probeNames = append(probeNames, name)
+	}
 
-	remote := make([]proto.Machine, len(names))
+	remote := make([]proto.Machine, len(probeNames))
 	var wg sync.WaitGroup
-	for i, name := range names {
+	for i, name := range probeNames {
 		wg.Add(1)
 		go func(i int, name string) {
 			defer wg.Done()
@@ -76,8 +86,10 @@ func (s *Server) probeMachines(ctx context.Context) proto.MachinesResp {
 // localMachine 投影本机：进程内直查，不自拨 HTTP（自拨会在 agentd 忙时把
 // 自己的健康状态也一起拖垮，且毫无必要）。
 func (s *Server) localMachine() proto.Machine {
+	cfg := s.conf()
 	m := proto.Machine{
-		Name: "", Addr: s.conf().Listen, Reachable: true,
+		// B439：配置了自名时本机行用自名并标 Self；无自名时保持空串名（S5）。
+		Name: cfg.Name, Self: cfg.Name != "", Addr: cfg.Listen, Reachable: true,
 		Executors: []string{}, ProbeMs: 0, ScratchRoot: s.scratchRoot(),
 	}
 	if s.mgr == nil {
@@ -114,7 +126,8 @@ func (s *Server) localMachine() proto.Machine {
 
 // probeRemote 探活一台远程机器。
 func (s *Server) probeRemote(ctx context.Context, name string) proto.Machine {
-	t := s.conf().Targets[name]
+	// B439：连接方式从池的数据源取（有 DSN 时即设备表），不再读活配置 targets:。
+	t, _ := s.pool.Target(name)
 	m := proto.Machine{Name: name, Addr: t.Addr, Relay: t.Node, Executors: []string{}}
 	start := time.Now()
 	// 选路走池：relay 形态的机器没有 addr，直连构造会退化成一个没有 Host 的

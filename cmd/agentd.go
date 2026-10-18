@@ -253,7 +253,13 @@ var agentdCmd = &cobra.Command{
 		// 执行器存活的任务经 mgr.ResumeTask 重建 SSE 订阅并重启中介循环，已不在的
 		// 任务转 failed/waiting_review 交协调者裁决。探活与「重建订阅」封装在同一个
 		// 闭包里（watchdog.go RecoverOnStartup 的 seam 说明），此处即其接线点
-		if err := srv.RecoverOnStartup(mgr.ResumeTask, mgr.SweepTaskProcs, logger); err != nil {
+		// 账本未挂载（S2 挂载门：有 DSN 缺机器身份）时跳过启动恢复对账——
+		// RecoverOnStartup 依赖自动化账本门面，未挂载时它必然失败。agentd 照常
+		// 提供服务，账本/镜像/卡派发/调度不可用，日志已给可行动指引。
+		if !srv.LedgerMounted() {
+			logger.Warn("账本未挂载，跳过启动恢复对账",
+				"action", "在 config.yaml 设置 name:（直连形态还需 advertise:）后重启")
+		} else if err := srv.RecoverOnStartup(mgr.ResumeTask, mgr.SweepTaskProcs, logger); err != nil {
 			return fmt.Errorf("启动恢复: %w", err)
 		}
 		if err := srv.StartPreviewServices(wdCtx); err != nil {
@@ -475,15 +481,54 @@ func init() {
 func setupLedger(cfg *config.Config, srv *agentd.Server, taskStore *store.Store, ctx context.Context,
 	logger *slog.Logger) (func(), error) {
 	ldsn := cfg.Ledger.DSN
-	if ldsn == "" {
+	shared := ldsn != ""
+	// S2 / §4.5 挂载门：有 DSN 但缺机器身份（无自名，或直连形态缺 advertise:）
+	// 时**不打开任何账本**（也不回退本机 SQLite），账本相关子系统（镜像、卡派发、
+	// 自登记、调度、自动化、推送）全部不挂载，agentd 照常起。不给一台无名机器留
+	// 半共享状态——它会消费共享事件流，正是旧缺陷族的变体。
+	if shared && !cfgHasLedgerIdentity(cfg) {
+		reason := "有账本 DSN 但缺少可用的机器身份：请在 config.yaml 设置 name:（直连形态还需 advertise:，relay 形态需配 relay: 段）"
+		logger.Warn("账本子系统未挂载：缺少机器身份，agentd 照常提供服务（账本/镜像/卡派发/调度不可用）",
+			"dsn_configured", true, "name_set", cfg.Name != "",
+			"relay_set", cfg.Relay != nil, "advertise_set", cfg.Advertise != "",
+			"action", reason)
+		return func() {}, nil
+	}
+	if !shared {
 		ldsn = filepath.Join(cfg.DataDir, "ledger.db")
 	}
-	lst, err := ledger.Open(ldsn)
+	var lst *ledger.Store
+	var err error
+	if shared {
+		lst, err = ledger.OpenShared(ldsn)
+	} else {
+		lst, err = ledger.Open(ldsn)
+	}
 	if err != nil {
-		logger.Error("打开账本库失败", "dsn_configured", cfg.Ledger.DSN != "", "cause", err)
+		logger.Error("打开账本库失败", "dsn_configured", shared, "cause", err)
 		return nil, fmt.Errorf("打开账本库: %w", err)
 	}
+	// B439 S3/S8：自登记（账本打开后、镜像挂载前同步执行）与本地 targets 一次性导入。
+	// 撞名（异实例）→ 账本子系统不挂载，agentd 照常起（与 S2 挂载门同款 fail-closed）。
+	if shared {
+		if err := agentd.SelfRegister(lst, cfg, logger); err != nil {
+			logger.Error("机器自登记失败，账本子系统不挂载（agentd 照常提供服务）",
+				"cause", err, "action", "改 config.yaml 的 name: 或清理设备表冲突行后重启")
+			_ = lst.Close()
+			return func() {}, nil
+		}
+		if err := agentd.ImportLocalTargets(lst, cfg, logger); err != nil {
+			logger.Error("本地 targets 导入设备表失败，账本子系统不挂载", "cause", err)
+			_ = lst.Close()
+			return func() {}, nil
+		}
+	}
 	srv.SetLedger(lst)
+	// B439 F5：有 DSN 的机器把池的选路数据源切到设备表；无 DSN 保持活配置（S5）。
+	// 必须在镜像/调度/探活之前注入——它们都经池取机器清单。
+	if shared {
+		srv.SetDeviceSource(agentd.NewDeviceTableSource(lst, logger.With("component", "devices")))
+	}
 	// B156.3 自动化层装配。B233.18：SetupAutomation 收缩为账本门面 / automation
 	// cursor / ptyGate 的纯装配；房间/keystone/hostapi 三域构造上移本组装点
 	// （target.json assembly 登记点语义随之由 cmd 承接）——先备 facade，再构造注入。
@@ -516,8 +561,13 @@ func setupLedger(cfg *config.Config, srv *agentd.Server, taskStore *store.Store,
 		return nil, fmt.Errorf("编制域装配：SchedulingRegistry 为空（SetupAutomation 未装配账本门面）")
 	}
 	sched := scheduling.New(reg)
-	// 保留控制台改机器清单不必重启 agentd：闭包经 Conf() 读活配置。
+	// 保留控制台改机器清单不必重启 agentd：有 DSN 时判据是设备表（经快照源现读），
+	// 无 DSN 时回落活配置 targets:（S5）。
 	sched.SetKnownMachines(func(name string) bool {
+		if src := srv.DeviceSource(); src != nil {
+			_, ok := src.Target(name)
+			return ok
+		}
 		cfg := srv.Conf()()
 		if cfg == nil {
 			return false
@@ -525,6 +575,12 @@ func setupLedger(cfg *config.Config, srv *agentd.Server, taskStore *store.Store,
 		_, ok := cfg.Targets[name]
 		return ok
 	})
+	// B439 S6：编制域的本机判据收敛到自名（组装点从 config.Name 注入）。无自名
+	// 时注入空串 = 保持今天别名词表（S5）。旧别名判据注入 config.IsLegacyLocalAlias
+	// （词法唯一定义点在 config）：派发准入（AdmitFrozen）据此拒存量 carrier 的旧
+	// 别名 machine，不再经 samePhysicalMachine 的别名语义静默放行。
+	sched.SetSelfName(cfg.Name)
+	sched.SetLegacyAlias(config.IsLegacyLocalAlias)
 	srv.SetScheduling(sched)
 	// B156.3 K5：账本打开后才能启动自动化事件流。
 	// ctx 随 agentd 停机取消；首轮先重放事件与队列，再进入轮询。
@@ -534,25 +590,45 @@ func setupLedger(cfg *config.Config, srv *agentd.Server, taskStore *store.Store,
 	srv.StartPush(ctx)
 	// B409.6 脱敏红线：DSN URL/密码不进日志。诊断保留 dsn_configured 布尔
 	//（与 TestSetupLedgerFailureDoesNotLogDSNCredentials 同族，Wave 0 先例）。
-	logger.Info("自动化编排已挂载", "dsn_configured", ldsn != "", "poll", "2s")
+	logger.Info("自动化编排已挂载", "dsn_configured", shared, "poll", "2s")
 	// 恒挂载：机器清单来自 target 客户端池的活配置读取，启动时没有机器
 	// 不代表以后没有——留着 len(cfg.Targets)>0 的闸会让控制台新增的第一台
 	// 机器永远等不到账本镜像（与任务镜像同一条纪律，B163 ①）。
 	// 池必须与任务镜像共用同一个：两个池等于两套 relay 隧道。
 	host, _ := os.Hostname()
+	// B439：镜像 holder 用自名（不再用 hostname），命名挂账按「名字 == 自名」
+	// 路由到本机源。无自名（无 DSN 单机账本）回退 hostname + 地址判据（S5）。
+	holder := cfg.Name
+	if holder == "" {
+		holder = host
+	}
 	lm := ledgermirror.New(lst, agentd.NewLedgerMirrorMachines(srv.Pool()), ledgermirror.Options{
-		Holder:       host,
+		Holder:       holder,
+		SelfName:     cfg.Name,
 		LocalSource:  ledgermirror.NewLocalSource(taskStore, logger.With("source", "local")),
 		IsSelfTarget: srv.IsSelfTarget,
 	})
 	go lm.Run(ctx)
-	logger.Info("账本镜像子系统已挂载", "holder", host,
-		"machines", len(srv.Pool().Names()), "dsn_configured", ldsn != "")
+	logger.Info("账本镜像子系统已挂载", "holder", holder, "self_name", cfg.Name,
+		"machines", len(srv.Pool().Names()), "dsn_configured", shared)
 	return func() {
 		// 次序硬约束：先停镜像（不再写库）再关账本库。
 		lm.Stop()
 		lst.Close()
 	}, nil
+}
+
+// cfgHasLedgerIdentity 报告配置是否具备挂载共享账本所需的机器身份（B439 §4.5）：
+// 有自名，且（relay 形态 或 直连形态有 advertise:）。缺任一项即 fail-closed，
+// 不挂载账本子系统（P1 取甲：缺 advertise 视同缺自名）。
+func cfgHasLedgerIdentity(cfg *config.Config) bool {
+	if cfg.Name == "" {
+		return false
+	}
+	if cfg.Relay != nil {
+		return true
+	}
+	return cfg.Advertise != ""
 }
 
 // bindApproverOneShot 绑定审批者使用的 OneShot 能力。

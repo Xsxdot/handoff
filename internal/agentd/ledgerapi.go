@@ -29,6 +29,10 @@ import (
 // SetLedger 注入账本库（agentd 启动时；nil = 未配置，除 health 外 API 降级 503）。
 func (s *Server) SetLedger(st *ledger.Store) { s.ledger = st }
 
+// LedgerMounted 报告账本是否已挂载。组装点用它跳过账本依赖的启动步骤
+// （B439 S2 挂载门：有 DSN 缺机器身份时不打开账本，agentd 照常起）。
+func (s *Server) LedgerMounted() bool { return s.ledger != nil }
+
 func (s *Server) registerLedgerRoutes(api *http.ServeMux) {
 	// B409.6 S4：五条读路由套 observeRead（路线限定观测包装），生成贯穿
 	// collab/ledger 日志的 operation_id；写路径与其余端点不套。
@@ -1093,7 +1097,16 @@ func (s *Server) handleLedgerHealth(w http.ResponseWriter, r *http.Request) {
 		ledgerErr(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"enabled": true, "mirror": rows})
+	// B439 S7：加性字段报「无归属在飞挂账 N 条」——存量 target='' 的非终态挂账
+	// 只在持有者本机时可镜像，健康面显性化它，不让它继续藏在正常健康行后面。
+	unattributed, err := s.ledger.UnattributedInflightCount()
+	if err != nil {
+		ledgerErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"enabled": true, "mirror": rows, "unattributed_inflight": unattributed,
+	})
 }
 
 // attachmentKinds 是允许的附件类型。收窄成白名单不是洁癖：附件 kind 是

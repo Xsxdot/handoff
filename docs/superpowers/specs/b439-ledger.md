@@ -1,0 +1,11 @@
+# 机器身份收口 spec 台账
+
+- 2026-10-18 排查第 0 步：worktree `focused-cohen-b86690`，分支 `claude/focused-cohen-b86690`，HEAD `01ea0a9f`，工作树干净。
+- 2026-10-18 读码定位：`internal/ledgermirror/mirror.go:240-241` `isLocalTarget` 把 `''` 判为本机；`subscribe` 对本机挂账走 `opt.LocalSource`（持有者自己的 store，`cmd/agentd.go:543-546` 注入 `NewLocalSource(taskStore)`）。`''` 来源：`cmd/card_dispatch.go:175-191` `canonicalCLITarget` 与 `internal/agentd/server.go:550-555` `CanonicalTarget`，经 `ledgerstep.Dispatcher.NormalizeTarget`（`internal/ledgerstep/dispatch.go:249-251`）写进 `RecordDispatchAndLinkTask`。`''` 语义由 B271（`390fb8a6`，`docs/superpowers/specs/b271-ledger.md`）引入，当时以单机视角定义。
+- 2026-10-18 红色回路：在 `internal/ledgermirror/mirror_test.go` 追加 `TestMirrorHolderNotDispatcherMirrorsLocalDispatch`（两个 Mirror 共享一本账本；持有者 `MacBook-Pro.local` 先取租约、LocalSource=空 store；派发机 `linux-01` LocalSource=有 message 事件的 store；挂账 target=`''`）。`go test ./internal/ledgermirror -run TestMirrorHolderNotDispatcherMirrorsLocalDispatch -count=1` 退出码 1，原始输出：`--- FAIL: TestMirrorHolderNotDispatcherMirrorsLocalDispatch (2.03s)`、`mirror_test.go:656: 持有者≠派发机时，派发机本机任务的事件两秒内没有镜像进账本（holder.Holding=true dispatcher.Holding=false）`、`FAIL github.com/Xsxdot/handoff/internal/ledgermirror 3.437s`。断言红、确定性，根因确认。
+- 2026-10-18 复现测试未入库：它编码的是 `''` 挂账，而用户裁决存量不迁移，按 spec 改写为命名挂账版（S1）+ `''` 兼容断言（S7）。原文件副本留在会话 scratchpad，未提交。
+- 2026-10-18 事实调查（Explore 子代理，只读）：`targets:` 唯一真相是本地 config（`internal/agentd/machineadmin.go:10`）；控制台 `POST/DELETE /api/machines` 经 `swapConf`→`config.Save` 写本地（`internal/agentd/server.go:721-757,881-882`），只支持直连形态；无 CLI `target add`；token/credential 只在本地 config，账本无凭据列；账本已有 `registry(kind,id,…)` 表供 carrier/squad；无任何自名配置，hostname 是事实上的自名（多处）；四套「本机」判据见 spec 问题陈述 3。
+- 2026-10-18 本机读数：Mac mini hostname `DF-ZIDONGdeMac-mini.local`，本地 `targets:` 有 `linux-01`（直连）、`mac-02`/`macbook-pro`（relay，node 分别 `mac-air`/`mac-pro`），本机不在自己的 targets 里。
+- 2026-10-18 用户裁决（对话）：修法取「甲：全局机器名」，并扩为「配置自名 + 几台设备共享设备列表、互相添加」；凭据进账本；有 DSN 时共享表为准、无 DSN 用本地 targets；有 DSN 缺自名 → 账本子系统不挂载；存量 `''` 不迁移；「本机」输入只认省略或自名。
+- 2026-10-18 r1：吸收协调会话（local_30aaf694）补充约束——设备表身份键=机器名，与传输形态/地址解耦；存储须可按机器追加字段；后续消费者 B437（共享审批链）、B438（传输层端点候选），其字段本卡不加。
+- 2026-10-18 用户批准 r1（「批准 spec r1，建卡进 plan」）；建卡 B439（项目 handoff，优先级高）；spec 与台账改名为 b439.md / b439-ledger.md，roadmap 来源改为 B439。

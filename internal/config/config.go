@@ -46,6 +46,16 @@ type Config struct {
 	Listen  string
 	Token   string
 	DataDir string
+	// Name 是本机自名：全队唯一的机器身份，落共享账本、按名路由，也是「本机」
+	// 的唯一名字判据（省略输入 = 自名）。空 = 未配置。词法见 ValidateSelfName。
+	//
+	// omitempty 是硬要求，理由同 PathDirs：配置以 KnownFields(true) 严格解析，
+	// 空值不写盘，旧版 agentd 不会被新键顶死（B59 spec D7 同款）。
+	Name string `yaml:"name,omitempty"`
+	// Advertise 是直连形态下本机对外可达地址（host:port），供别的机器按名
+	// 从设备表取连接方式。relay 形态不设此键（用 relay: 段）。空 = 未配置。
+	// omitempty 同 Name。
+	Advertise string `yaml:"advertise,omitempty"`
 	// Relay 是 executor 出站 relay 配置；nil 表示不启用 relay 出站。
 	Relay *RelayConfig `yaml:"relay,omitempty"`
 	// RepoRoot 是自动登记（B62）的 clone 落点根目录：首次派发到某台机器、而
@@ -590,6 +600,11 @@ func (c *Config) validate() error {
 	if c.StallTimeout <= 0 {
 		return fmt.Errorf("stalltimeout 必须为正时长（当前 %s）；省略该键即用默认 2h", c.StallTimeout)
 	}
+	// 自名词法必须在启动期硬拒：它进共享账本、作跨机身份键，带空白或 / 的
+	// 名字会让设备表行无法被其它机器按名引用（B439 spec §实现决定）。
+	if err := ValidateSelfName(c.Name); err != nil {
+		return err
+	}
 	// 坏代理必须在启动期硬拒。运行期容错的后果是：后台更新检查那条路径的纪律
 	// 是「任何一步失败都静默跳过」（它挂在每条命令上，自己不能成为故障源），
 	// 于是一个拼错的代理表现为**什么都不发生**，可以存在数月而无人察觉。
@@ -674,7 +689,7 @@ func decodeStrict(b []byte, cfg *Config) error {
 		}
 		// 已知键清单与 yaml 报错文本（含未知键名）一起返回；
 		// 旧版 access_key/secret_key 等键已不支持，提示直接删除或升级配置
-		return fmt.Errorf("配置包含未知字段（支持: listen/token/datadir/repo_root/path_dirs/proxy/env_forward/stalltimeout/console_user/relay{url,credential,node}/targets{addr,user,token,relay,credential,node}/ledger{enabled,dsn}/approver{executor,model,models,timeout,blacklist}/executor{default,model}/terminal{auto}/sync{auto}/proc_fence/env{<agent>: <文件名>}/discipline{<executor>: <文件名>}/platform_invariants）: %w；旧版 access_key/secret_key 等键已废弃，请删除未知键或升级配置", err)
+		return fmt.Errorf("配置包含未知字段（支持: listen/token/datadir/name/advertise/repo_root/path_dirs/proxy/env_forward/stalltimeout/console_user/relay{url,credential,node}/targets{addr,user,token,relay,credential,node}/ledger{enabled,dsn}/approver{executor,model,models,timeout,blacklist}/executor{default,model}/terminal{auto}/sync{auto}/proc_fence/env{<agent>: <文件名>}/discipline{<executor>: <文件名>}/platform_invariants）: %w；旧版 access_key/secret_key 等键已废弃，请删除未知键或升级配置", err)
 	}
 	return nil
 }

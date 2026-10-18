@@ -255,6 +255,8 @@ func TestInitAcceptsAnswers(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "config.yaml")
 	answers := strings.Join([]string{
 		"executor",
+		"", // 机器名 name
+		"", // 对外直连地址 advertise（B439 新增，执行机/两者可见）
 		"", // 默认执行者
 		"", // 模型
 		"custom",
@@ -345,6 +347,8 @@ func TestPrintDetectionQuietForMissingTool(t *testing.T) {
 func execAnswers(installAnswer string) string {
 	return strings.Join([]string{
 		"executor",
+		"", // 机器名 name（B439 新增，所有角色可见）
+		"", // 对外直连地址 advertise（B439 新增，执行机/两者可见）
 		"", // 默认执行者
 		"", // 模型
 		"", // 监听（首次预选 all）
@@ -640,7 +644,7 @@ func TestInitPairingUsesDetectedIP(t *testing.T) {
 // 监听三档：显式选 all / loopback 写入对应地址。
 func TestInitListenSelectAll(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "config.yaml")
-	answers := strings.Join([]string{"executor", "", "", "all", "", "", "n"}, "\n") + "\n"
+	answers := strings.Join([]string{"executor", "", "", "", "", "all", "", "", "n"}, "\n") + "\n"
 	if _, err := runInit(t, p, true, answers); err != nil {
 		t.Fatalf("init: %v", err)
 	}
@@ -651,7 +655,7 @@ func TestInitListenSelectAll(t *testing.T) {
 
 func TestInitListenSelectLoopback(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "config.yaml")
-	answers := strings.Join([]string{"executor", "", "", "loopback", "", "", "n"}, "\n") + "\n"
+	answers := strings.Join([]string{"executor", "", "", "", "", "loopback", "", "", "n"}, "\n") + "\n"
 	if _, err := runInit(t, p, true, answers); err != nil {
 		t.Fatalf("init: %v", err)
 	}

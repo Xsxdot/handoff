@@ -28,11 +28,15 @@ import (
 // 入口上，删除它即覆盖全族）。
 func openLedger() (*ledger.Store, error) {
 	cfg := loadCLIConfig()
-	dsn := cfg.Ledger.DSN
-	if dsn == "" {
-		dsn = filepath.Join(cfg.DataDir, "ledger.db")
+	if dsn := cfg.Ledger.DSN; dsn != "" {
+		// 有 DSN = 全队共享账本（B439）：新派发 target 不得为空串。
+		st, err := ledger.OpenShared(dsn)
+		if err != nil {
+			return nil, fmt.Errorf("打开账本库: %w", err)
+		}
+		return st, nil
 	}
-	st, err := ledger.Open(dsn)
+	st, err := ledger.Open(filepath.Join(cfg.DataDir, "ledger.db"))
 	if err != nil {
 		return nil, fmt.Errorf("打开账本库: %w", err)
 	}

@@ -118,8 +118,12 @@ type ProjectTreeResp struct {
 // **不可达是数据不是错误**：单台超时/拒连不影响整个响应 200。
 type Machine struct {
 	// Name 为 ""=本机（与 tasks.target 的空串语义一致；UI 显示「本机」）。
+	// B439 起：配置了自名的机器，本机行 Name 是自名（全队名）。
 	Name string `json:"name"`
 	Addr string `json:"addr"`
+	// Self 标记本机行（B439 P2，加性 JSON 字段，旧客户端忽略）。
+	// 机器列表来自全队设备表后，本机行不再靠「空串名」识别，改用本字段。
+	Self bool `json:"self,omitempty"`
 	// Relay 是这台机器的 relay 节点名；空=直连形态。
 	//
 	// 为什么需要它：relay 形态与 addr 互斥，中继机器的 Addr 恒为空，界面上
