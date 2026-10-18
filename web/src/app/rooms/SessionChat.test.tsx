@@ -8,6 +8,7 @@ import { addSessionMember, fetchIdentity, sendRoomMessage } from '../../api/room
 import type { RoomHistoryItem, SessionSummary } from '../../api/rooms'
 import { SessionChat } from './SessionChat'
 import { DELIVERY_READ_TIME_HINT, NEEDS_MENTION_COPY, NO_RECIPIENT_COPY } from './deliveryCopy'
+import { MEMBER_KIND_LABEL, RESIDENT_ORGANIZER_LABEL } from './sessionModel'
 
 vi.mock('../../api/rooms', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../api/rooms')>()),
@@ -420,5 +421,24 @@ describe('B435 无收件人标注', () => {
     const input = screen.getByRole('textbox', { name: '发送消息' })
     expect(input.getAttribute('placeholder')).not.toContain('不唤醒任何人')
     expect(input).toHaveAttribute('placeholder', '发消息…')
+  })
+})
+
+// B435 Q6：@ 候选里的 resident 与详情成员行同一标签（项目房间「组织者」、否则「驻场者」）。
+describe('B435 @ 候选的驻场者标签', () => {
+  const withResident = (project?: string) => summary({
+    project,
+    members: [{ identity: 'agent:org', kind: 'resident', status: 'listening' }],
+  })
+
+  it('项目房间标组织者，非项目房间标驻场者', async () => {
+    const user = userEvent.setup()
+    const view = render(<SessionChat sessionId="session:1" summary={withResident('handoff')} events={[]} historyExpired={false} historyError="" onSent={() => {}} />)
+    await user.type(screen.getByRole('textbox', { name: '发送消息' }), '@org')
+    expect(screen.getByTestId('mention-option-0')).toHaveTextContent(RESIDENT_ORGANIZER_LABEL)
+    view.unmount()
+    render(<SessionChat sessionId="session:1" summary={withResident()} events={[]} historyExpired={false} historyError="" onSent={() => {}} />)
+    await user.type(screen.getByRole('textbox', { name: '发送消息' }), '@org')
+    expect(screen.getByTestId('mention-option-0')).toHaveTextContent(MEMBER_KIND_LABEL.resident)
   })
 })

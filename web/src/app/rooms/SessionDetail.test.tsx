@@ -2,11 +2,13 @@
 // 列表、节点、timeline（含未知 kind 兜底）、归档入口。
 // 夹具直接取孪生金样本（同一 JSON）——组件渲染与 Go 编码器同源。
 import { describe, expect, it, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import fixture from '../../api/testdata/RoomsFixture.json'
+import b435Fixture from '../../api/testdata/SessionDetailB435.json'
 import type { SessionDetail as SessionDetailDTO, SessionSummary } from '../../api/rooms'
 import { SessionDetail } from './SessionDetail'
+import { MEMBER_KIND_LABEL, RESIDENT_ORGANIZER_LABEL } from './sessionModel'
 
 const cases = fixture as { case: string; detail?: SessionDetailDTO; summary?: SessionSummary }[]
 
@@ -107,5 +109,53 @@ describe('SessionDetail', () => {
     view.rerender(<SessionDetail detail={{ summary: archived, nodes: [], timeline: [] }} onArchive={onArchive} />)
     expect(screen.queryByTestId('session-archive')).toBeNull()
     expect(screen.getByText('会话已归档（只读）。')).toBeInTheDocument()
+  })
+})
+
+// B435（C-208/406、C-327；W plan Q6）：成员行 kind 标签（resident：项目房间「组织者」、否则
+// 「驻场者」）；席位行与会话卡行附 seat_mode。夹具取 Go 生成的 SessionDetailB435.json。
+describe('B435 驻场者/组织者与席位模式', () => {
+  const projectRoom = b435Fixture as SessionDetailDTO
+  const plainRoom: SessionDetailDTO = { ...projectRoom, summary: { ...projectRoom.summary, project: undefined } }
+
+  it('项目房间：resident 行标组织者，席位行标席位，人类行标成员', () => {
+    render(<SessionDetail detail={projectRoom} />)
+    expect(screen.getByTestId('member-kind-0')).toHaveTextContent(MEMBER_KIND_LABEL.human)
+    expect(screen.getByTestId('member-kind-1')).toHaveTextContent(RESIDENT_ORGANIZER_LABEL)
+    expect(screen.getByTestId('member-kind-2')).toHaveTextContent(MEMBER_KIND_LABEL.seat)
+    expect(screen.getByTestId('member-kind-2')).not.toHaveTextContent(MEMBER_KIND_LABEL.resident)
+  })
+
+  it('非项目房间：resident 行标驻场者（不标组织者）', () => {
+    render(<SessionDetail detail={plainRoom} />)
+    expect(screen.getByTestId('member-kind-1')).toHaveTextContent(MEMBER_KIND_LABEL.resident)
+    expect(screen.getByTestId('member-kind-1')).not.toHaveTextContent(RESIDENT_ORGANIZER_LABEL)
+  })
+
+  it('会话卡行：坐着的卡附 seat_mode，空座卡不出模式', () => {
+    render(<SessionDetail detail={projectRoom} />)
+    const rows = screen.getAllByTestId('session-card-row')
+    expect(within(rows[0]).getByTestId('session-card-seat-mode')).toHaveTextContent('pull')
+    expect(within(rows[1]).queryByTestId('session-card-seat-mode')).toBeNull()
+    expect(rows[1]).toHaveTextContent('空座 · 还没配人')
+  })
+
+  it('S9：同一身份驻场者行与席位行并列两行，席位行带卡名与模式', () => {
+    const s9: SessionDetailDTO = { summary: {
+      ...plainRoom.summary,
+      members: [
+        { identity: 'agent:org', kind: 'resident', status: 'listening' },
+        { identity: 'agent:org', kind: 'seat', card_id: 'B7', card_title: '拆解', status: 'working' },
+      ],
+      cards: [{ card_id: 'B7', title: '拆解', status: '进行中', seat: 'agent:org', seat_mode: 'pull' }],
+    } }
+    render(<SessionDetail detail={s9} />)
+    expect(within(screen.getByLabelText('成员')).getAllByText('agent:org', { exact: false })).toHaveLength(2)
+    expect(screen.getByTestId('member-kind-0')).toHaveTextContent(MEMBER_KIND_LABEL.resident)
+    expect(screen.getByTestId('member-kind-1')).toHaveTextContent(MEMBER_KIND_LABEL.seat)
+    const seatRow = screen.getByTestId('member-row-1')
+    expect(seatRow).toHaveTextContent('拆解')
+    expect(within(seatRow).getByTestId('member-seat-mode-1')).toHaveTextContent('pull')
+    expect(within(screen.getByTestId('member-row-0')).queryByTestId('member-seat-mode-0')).toBeNull()
   })
 })

@@ -2,7 +2,7 @@
 // @分段、未读聚合。边界：不发请求、不碰 React；两张词表是「看板不说谎」
 // （proto 四值词表）与「未知值不白屏」（透传兜底）的前端半边，词表漂移由
 // sessionModel.test 与孪生金样本双侧拦截。
-import type { SessionMember, SessionSummary } from '../../api/rooms'
+import type { SessionMember, SessionMemberKind, SessionSummary } from '../../api/rooms'
 import { formatRelative, isUnrecordedTime } from '../lib/format'
 
 // 恰四值（proto.SessionMember* 词表）；listening 生产零载体（B358.2 澄清③），
@@ -72,14 +72,28 @@ export function segmentBody(body: string, mentions?: string[]): BodySegment[] {
     .map((token) => ({ text: token, mention: token.startsWith('@') && set.has(token.slice(1)) }))
 }
 
-// 恰三值（proto.SessionMemberKind 词表）：详情成员行与 @ 候选面板共用的 kind 标签。
+// 与 proto.SessionMember* 种类词表逐值一致（B435 增 resident）：详情成员行与 @ 候选面板共用的 kind 标签。
+// satisfies 让 SessionMemberKind 新增取值而这里未登记时编译失败。
 export const MEMBER_KIND_LABEL: Readonly<Record<string, string>> = {
-  human: '成员', agent: '代理', seat: '席位',
-}
+  human: '成员', agent: '代理', seat: '席位', resident: '驻场者',
+} satisfies Record<SessionMemberKind, string>
+
+// RESIDENT_ORGANIZER_LABEL 项目房间里的驻场者称「组织者」（spec 术语，W plan Q6）。
+export const RESIDENT_ORGANIZER_LABEL = '组织者'
 
 // memberKindLabel 成员 kind 渲染：词表内出中文标签，词表外原样透传。
 export function memberKindLabel(kind: string): string {
   return MEMBER_KIND_LABEL[kind] ?? kind
+}
+
+// memberRoleLabel 成员行/候选的角色标签：resident 在项目房间（summary.project 非空）标
+// 「组织者」，否则同 memberKindLabel。只看 kind 与所在会话的 project，席位行不受影响。
+export function memberRoleLabel(
+  member: Pick<SessionMember, 'kind'>,
+  summary: Pick<SessionSummary, 'project'> | null | undefined,
+): string {
+  if (member.kind === 'resident' && summary?.project) return RESIDENT_ORGANIZER_LABEL
+  return memberKindLabel(member.kind)
 }
 
 // MENTION_TOKEN_RE 草稿末尾的进行中 mention token（@ 开头到空白前）。

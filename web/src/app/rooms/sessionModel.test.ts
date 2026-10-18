@@ -2,9 +2,9 @@
 // 成员状态/ timeline kind 两张渲染词表是「看板不说谎」与「未知值不白屏」的
 // 前端半边；变异（往 MEMBER_STATUS_LABEL 加 online 键）必须让第一支变红。
 import { describe, expect, it } from 'vitest'
-import type { SessionMember, SessionSummary } from '../../api/rooms'
+import { SESSION_MEMBER_KINDS, type SessionMember, type SessionSummary } from '../../api/rooms'
 import {
-  MEMBER_KIND_LABEL, MEMBER_STATUS_LABEL, TIMELINE_KIND_LABEL,
+  MEMBER_KIND_LABEL, MEMBER_STATUS_LABEL, RESIDENT_ORGANIZER_LABEL, TIMELINE_KIND_LABEL, memberRoleLabel,
   applyMention, extractSessionMentions, filterSessionsByProject, isSelfActor, memberKindLabel, memberStatusLabel, memberStatusText,
   mentionCandidates, segmentBody, signatureText, timelineKindLabel, totalUnread,
 } from './sessionModel'
@@ -119,12 +119,34 @@ describe('@ 候选与 token 替换（B358.8 #2 纯函数缝）', () => {
     { identity: '', kind: 'seat', card_id: 'B1', status: 'empty' },
   ]
 
-  it('kind 标签恰三值，词表外透传', () => {
-    expect(Object.keys(MEMBER_KIND_LABEL).sort()).toEqual(['agent', 'human', 'seat'])
+  it('kind 标签与成员种类词表逐值一致（B435 增 resident），词表外透传', () => {
+    expect(Object.keys(MEMBER_KIND_LABEL).sort()).toEqual([...SESSION_MEMBER_KINDS].sort())
     expect(memberKindLabel('human')).toBe('成员')
     expect(memberKindLabel('agent')).toBe('代理')
     expect(memberKindLabel('seat')).toBe('席位')
+    expect(memberKindLabel('resident')).toBe(MEMBER_KIND_LABEL.resident)
     expect(memberKindLabel('未来新值')).toBe('未来新值')
+  })
+
+  it('B435 Q6：resident 在项目房间标组织者、否则标驻场者；其余 kind 不受 project 影响', () => {
+    const resident: SessionMember = { identity: 'agent:org', kind: 'resident', status: 'listening' }
+    const seat: SessionMember = { identity: 'agent:org', kind: 'seat', card_id: 'B7', status: 'working' }
+    expect(MEMBER_KIND_LABEL.resident).toBe('驻场者')
+    expect(RESIDENT_ORGANIZER_LABEL).toBe('组织者')
+    expect(memberRoleLabel(resident, { project: 'handoff' })).toBe(RESIDENT_ORGANIZER_LABEL)
+    expect(memberRoleLabel(resident, {})).toBe(MEMBER_KIND_LABEL.resident)
+    expect(memberRoleLabel(resident, null)).toBe(MEMBER_KIND_LABEL.resident)
+    expect(memberRoleLabel(seat, { project: 'handoff' })).toBe('席位')
+  })
+
+  it('B435 S9：同身份 resident + seat 两行，@ 候选去重后只留一条且保留驻场者行', () => {
+    const both: SessionMember[] = [
+      { identity: 'agent:org', kind: 'seat', card_id: 'B7', status: 'working' },
+      { identity: 'agent:org', kind: 'resident', status: 'listening' },
+    ]
+    const candidates = mentionCandidates(both, '')
+    expect(candidates).toHaveLength(1)
+    expect(candidates[0].kind).toBe('resident')
   })
 
   it('候选：空串=全量；空座不进候选；片段大小写不敏感包含过滤', () => {

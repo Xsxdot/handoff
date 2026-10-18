@@ -21,7 +21,7 @@ import { cn } from '@/lib/utils'
 import { SessionExpiredBanner } from '../lib/Banners'
 import { logRoom } from './roomLog'
 import { DELIVERY_READ_TIME_HINT, noRecipientLabel } from './deliveryCopy'
-import { applyMention, extractSessionMentions, isSelfActor, memberKindLabel, mentionCandidates, segmentBody, signatureText } from './sessionModel'
+import { applyMention, extractSessionMentions, isSelfActor, memberRoleLabel, mentionCandidates, segmentBody, signatureText } from './sessionModel'
 
 export interface SessionChatProps {
   sessionId: string
@@ -301,7 +301,7 @@ export function SessionChat({ sessionId, summary, events, historyError, historyL
                 onClick={() => pickMention(member.identity)}
                 className={`flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm ${index === mentionIndex ? 'bg-accent' : 'hover:bg-accent/60'}`}>
                 <span className="font-mono text-xs">{member.identity}</span>
-                <span className="shrink-0 rounded-full border px-1.5 text-[10px] text-muted-foreground">{memberKindLabel(member.kind)}</span>
+                <span className="shrink-0 rounded-full border px-1.5 text-[10px] text-muted-foreground">{memberRoleLabel(member, summary)}</span>
                 {member.card_title && <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">{member.card_title}</span>}
               </button>
             ))}

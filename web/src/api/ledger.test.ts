@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
-import { attachFile, createCard, detachFile, fetchFlow, migrateCard, patchCard, putFlow, runCardStep } from './ledger'
+import { SEAT_MODE_HINT, SEAT_MODE_UNKNOWN_LABEL, attachFile, createCard, detachFile, fetchFlow, migrateCard, patchCard, putFlow, runCardStep } from './ledger'
 
 // 直接打桩 fetch：这一层要验的是「方法、路径、请求体」，不是渲染。
 const calls: Array<{ url: string; init: RequestInit }> = []
@@ -85,5 +85,16 @@ describe('工作流读取的线格式', () => {
     expect(calls[0].url).toBe('/api/flows/custom%20flow?version=7')
     expect(calls[0].init.method).toBeUndefined()
     expect(calls[0].init.credentials).toBe('same-origin')
+  })
+})
+
+// B435 Q5：席位模式悬停说明与「模式未知」文案金样本（字面量只在 ledger.ts 与本处各一份）。
+describe('席位模式展示文案冻结', () => {
+  it('push / pull 悬停说明与未知态逐字', () => {
+    expect(SEAT_MODE_HINT).toEqual({
+      push: 'agentd 收到寻址消息即起回合',
+      pull: '由坐席者自己 card wait 取',
+    })
+    expect(SEAT_MODE_UNKNOWN_LABEL).toBe('模式未知')
   })
 })

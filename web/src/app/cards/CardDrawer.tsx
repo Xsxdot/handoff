@@ -3,7 +3,7 @@ import type { ReactNode } from 'react'
 import { ChevronLeft, X } from 'lucide-react'
 import { ApiError, fetchTaskDetail, replyTicket } from '../../api/client'
 import type { Task, TaskDetail, Ticket } from '../../api/types'
-import { acceptCard, answerDecision, attachFile, clearCardNeeds, detachFile, fetchCardDetail, moveCard, noteCard, patchCard } from '../../api/ledger'
+import { acceptCard, answerDecision, attachFile, clearCardNeeds, detachFile, fetchCardDetail, moveCard, noteCard, patchCard, seatModeView } from '../../api/ledger'
 import type { CardDetail, Decision, LedgerEvent, NodeDef } from '../../api/ledger'
 import type { CoordinatorAttachInfo } from '../../api/scheduling'
 import { errorMessage } from '../lib/format'
@@ -404,6 +404,8 @@ export function CardDrawer({
   const following = value(card, 'following', '')
   const driverSession = value(card, 'driver_session', '')
   const driverSource = value<string>(card, 'driver_source', '')
+  // B435 Q5：席位模式只在坐着时有意义；空座不读（driver_mode 与 driver_session 同缺）。
+  const driverMode = driverSession ? seatModeView(value<unknown>(card, 'driver_mode', undefined), 'driver_mode') : null
   const heartbeat = value(card, 'driver_heartbeat_at', '')
   const driverStale = Boolean(driverSession) && (!heartbeat || Number.isNaN(Date.parse(heartbeat)) || Date.now() - Date.parse(heartbeat) > 5 * 60 * 1000)
   const acceptanceInfo = detail ? acceptance(detail) : { criteria: '', verified: false, evidence: '' }
@@ -673,7 +675,7 @@ export function CardDrawer({
     <section className="mb-5 rounded-lg border p-3">
       <h3 className="mb-1.5 text-xs font-semibold text-muted-foreground">协调者席位</h3>
       {driverSession
-        ? <dl className="grid grid-cols-[max-content_minmax(0,1fr)] gap-x-3 gap-y-1 text-xs"><dt className="text-muted-foreground">身份</dt><dd className="break-all font-mono">{driverSession}</dd><dt className="text-muted-foreground">来源</dt><dd>{driverSource === 'bind' ? '坐下' : driverSource === 'coordinate' ? '叫机器人' : '席位异常'}</dd></dl>
+        ? <dl className="grid grid-cols-[max-content_minmax(0,1fr)] gap-x-3 gap-y-1 text-xs"><dt className="text-muted-foreground">身份</dt><dd className="break-all font-mono">{driverSession}</dd>{driverMode && <><dt className="text-muted-foreground">模式</dt><dd data-testid="coordinator-seat-mode" title={driverMode.hint} className="font-mono">{driverMode.text}</dd></>}<dt className="text-muted-foreground">来源</dt><dd>{driverSource === 'bind' ? '坐下' : driverSource === 'coordinate' ? '叫机器人' : '席位异常'}</dd></dl>
         : <p className="text-xs text-muted-foreground">空座：可选择“叫机器人”启动协调者。</p>}
     </section>
   )

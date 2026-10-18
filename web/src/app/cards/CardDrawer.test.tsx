@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import type { Card, CardDetail } from '../../api/ledger'
+import { SEAT_MODES, SEAT_MODE_HINT, SEAT_MODE_UNKNOWN_LABEL, type Card, type CardDetail } from '../../api/ledger'
 import type { Task } from '../../api/types'
 import { CardDrawer } from './CardDrawer'
 
@@ -913,5 +913,54 @@ describe('B369.10 compact 双跳行与验收行式', () => {
     // 桌面验收块原样：acceptanceLabel 一行块，判据直接内嵌
     expect(screen.getByText('未验')).toBeInTheDocument()
     expect(screen.getByText('判据：全绿')).toBeInTheDocument()
+  })
+})
+
+// B435 Q5（C-305）：「协调者席位」块显示 driver_mode 原值（push/pull 不翻译）+ 悬停说明；
+// 坐着无 mode →「模式未知」；词表外原样透传并告警；空座无模式行；来源行保留。
+describe('B435 席位模式', () => {
+  const seated = (over: Partial<Card>) => ({
+    card: card({ id: 'B435', title: '席位模式', driver_session: 'cli:opencode#s1', driver_source: 'coordinate', ...over }),
+    relations: [], events: [], task_states: [], effective_base_branch: '', decisions: [], needs: '', children: [],
+  })
+
+  it('push / pull 显示原值与悬停说明，来源行仍在', async () => {
+    const ledger = await import('../../api/ledger')
+    for (const mode of SEAT_MODES) {
+      vi.mocked(ledger.fetchCardDetail).mockResolvedValue(seated({ driver_mode: mode }))
+      const view = render(<CardDrawer id="B435" onClose={() => {}} onOpenCard={() => {}} />)
+      const cell = await view.findByTestId('coordinator-seat-mode')
+      expect(cell).toHaveTextContent(mode)
+      expect(cell).toHaveAttribute('title', SEAT_MODE_HINT[mode])
+      expect(view.getByText('叫机器人', { selector: 'dd' })).toBeInTheDocument()
+      view.unmount()
+    }
+  })
+
+  it('坐着却无 driver_mode → 模式未知', async () => {
+    const ledger = await import('../../api/ledger')
+    vi.mocked(ledger.fetchCardDetail).mockResolvedValue(seated({}))
+    render(<CardDrawer id="B435" onClose={() => {}} onOpenCard={() => {}} />)
+    expect(await screen.findByTestId('coordinator-seat-mode')).toHaveTextContent(SEAT_MODE_UNKNOWN_LABEL)
+  })
+
+  it('词表外值原样透传并 console.warn', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const ledger = await import('../../api/ledger')
+    vi.mocked(ledger.fetchCardDetail).mockResolvedValue(seated({ driver_mode: JSON.parse('"autopilot"') }))
+    render(<CardDrawer id="B435" onClose={() => {}} onOpenCard={() => {}} />)
+    const cell = await screen.findByTestId('coordinator-seat-mode')
+    expect(cell).toHaveTextContent('autopilot')
+    expect(cell).not.toHaveAttribute('title')
+    expect(warn).toHaveBeenCalledWith(expect.objectContaining({ key: 'driver_mode', value: 'autopilot' }))
+    warn.mockRestore()
+  })
+
+  it('空座不显示模式行', async () => {
+    const ledger = await import('../../api/ledger')
+    vi.mocked(ledger.fetchCardDetail).mockResolvedValue({ ...seated({}), card: card({ id: 'B435', title: '席位模式' }) })
+    render(<CardDrawer id="B435" onClose={() => {}} onOpenCard={() => {}} />)
+    expect(await screen.findByText(/空座：/)).toBeInTheDocument()
+    expect(screen.queryByTestId('coordinator-seat-mode')).toBeNull()
   })
 })
