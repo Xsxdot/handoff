@@ -9,3 +9,4 @@
 - 2026-10-19 卡 note 顺带观察核实：`cd <wt> && go test … > "$TMPDIR/x.log"` 在 `internal/permgate/cdbase.go:70-73` 无法解析重定向目标 → `permgate.go:240-243` 硬 Escalate，不经审批链；roadmap 已有条目（B439 协调者）。判：与 B437 改动面不重叠，不并入。
 - 2026-10-19 写 spec r1 草稿 `docs/superpowers/specs/b437.md`，定级 L3、不扇出；待用户批准。
 - 2026-10-19 提交 spec r1：`git commit` → `262c312a docs(b437): spec r1 草稿——共享审批链跨多机逐环裁决（L3，待批准）`；随后 amend 收进本行。OOS 三条「本期不做」落 `docs/roadmap.md`。
+- 2026-10-19 批准：协调会话 local_30aaf694（用户全权授权）批准 r1，附修订「连接失败与裁决时限分开：他机环拨号独立短时限、快速失败；单环 timeout 只约束连上后等裁决；审计区分不可达/超时」。已并入 spec 成 r2（实现决定·时限、S3）。
