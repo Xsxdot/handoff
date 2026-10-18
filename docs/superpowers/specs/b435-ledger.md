@@ -261,3 +261,14 @@ WARN 原文 internal/collab/sessions.go:393-394：`log().Warn("会话成员身�
 - `codegraph --view cards-B435-charter-1 resolve --doc docs/superpowers/specs/b435-contract.md` → 12 个锚全部解析（ok 6 / moved 6，无坏锚）；`resolveWakeCard` 锚解析到 :502（文中原写 :500），契约与台账同改为 :502。
 - 终跑：`go build ./...` 无输出；`go test -count=1 ./internal/proto/ ./internal/collab/... ./internal/ledger/api/` 4 包 ok；`go test -count=1 -run TestB435 github.com/Xsxdot/handoff/cmd` ok。
 - 冻结提交：`git add <16 个文件>` + `git commit -q -m "docs(B435): contract 冻结四条缝…"`；`git log --oneline -1` → `9e8c7543 docs(B435): contract 冻结四条缝——一套 wait、匹配函数判定表、席位模式 wire、驻场者门铃信`（历史读数；随后 amend 一次收进本行，hash 会变，不回写）。未 push。
+
+## 六、协调者检查点：contract 稿审阅与退回裁决（2026-10-18 15:0x）
+
+- 复跑：`go build ./...` 退出 0；`go test -count=1 ./internal/proto/ ./internal/collab/... ./internal/ledger/api/` 4 包 ok；`go test -count=1 -run 'TestB435|TestB353CardWait|TestB409CardWait' ./cmd/` ok（18.4s）。提交 4099e2c0 工作树干净。
+- 条目规模：137 条。协调者判定：4.1 的输出顺序/去重/退出码对其他 agent 可观察，属接缝断言；4.5 的 315–318 是跨包守卫。未要求缩减。
+- D-B：确认——「≤1 人」只约束默认收件人分支；显式多 @ 按 B358 条 20–25。
+- R1 裁决：本期 `card bind --mode push` 拒绝（非 0 退出，提示 `card coordinate`）；push 席位只经 coordinate/rebind --launch。不放开 bind 承载规则（B389 规则 1/2 不动）。
+- R2 裁决：选甲——驻场者信件只由 `SessionResident.machine` 所在机 agentd 写；转交端点只服务 push 席位；不新建会话键转交 DTO。
+- R3 裁决：人类作者 = `user:<n>` ∪ `cli:<user>@<host>`（CLI 人形 actor）；席位身份、`agent:*`、`web:*` 非人类。S1 剧本不改。C-201 与 `TestB435IsHumanAuthor` 需补签。
+- 户口更正：消费循环按 `best.json` 归 d_gateway，spec §8 r3 更正。
+- 以上写入 spec r3（头部修订记录 + D1/D4/D10/§8/§9），交回 contract 节点补签。
