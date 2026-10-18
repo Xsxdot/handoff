@@ -260,7 +260,10 @@ type Server struct {
 	// 为什么在 NewServer 里自建而不是靠注入：NewServer 有约 50 个调用点，
 	// 靠注入必然漏，而漏掉的表现是运行时空指针。池的构造零成本（不发请求），
 	// 自建没有代价。
-	pool          *targetclient.Pool
+	pool *targetclient.Pool
+	// deviceSource 非 nil 表示本机有共享账本、池选路读设备表（B439 WU2）。
+	// 控制台增删开发机据此改写设备表而不是本地 config；无 DSN 时为 nil，行为照旧（S5）。
+	deviceSource  *DeviceTableSource
 	previewOwner  *workspace.PreviewOwner
 	previewOpener PreviewOpener
 	previewMirror *PreviewMirror
@@ -675,6 +678,22 @@ func (s *Server) SetConfigPath(p string) { s.cfgPath = p }
 // 用途：cmd/agentd.go 起预热循环、给 Mirror 注入同一个池——**必须是同一个**，
 // 两个池等于两套隧道，relay 侧会看到重复的节点连接。
 func (s *Server) Pool() *targetclient.Pool { return s.pool }
+
+// SetDeviceSource 注入设备表快照源（B439 WU2，有 DSN 的机器）。
+//
+// 副作用：同时把池的选路数据源切到设备表。传 nil 复位（回落活配置 targets:，S5）。
+// 只在装配期调用（cmd 组装点账本打开后、服务对外前）。
+func (s *Server) SetDeviceSource(src *DeviceTableSource) {
+	s.deviceSource = src
+	if src != nil {
+		s.pool.SetSource(src)
+	} else {
+		s.pool.SetSource(nil)
+	}
+}
+
+// DeviceSource 返回设备表快照源；无 DSN 机器为 nil。
+func (s *Server) DeviceSource() *DeviceTableSource { return s.deviceSource }
 
 // SetPreviewOwner injects the owner-side preview authority before serving HTTP.
 func (s *Server) SetPreviewOwner(owner *workspace.PreviewOwner) { s.previewOwner = owner }
