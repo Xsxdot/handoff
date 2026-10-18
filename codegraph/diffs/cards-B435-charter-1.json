@@ -1,7 +1,7 @@
 {
   "view": "cards/B435-charter-1",
   "base": "7f860685752a5d4dea43d38b96441be9437a0565",
-  "summary": "B435 contract Ticket 0：席位驱动模式词表 SeatMode/ParseSeatMode 与 Card/CardView.driver_mode、SessionCard.seat_mode 投影键（③）；收件地址 DeliveryAddress/DeliveryAddressKind、游标键 DeliveryCursorKey、无收件人原因 NoRecipientReason、匹配结果 Delivery、人类作者判据 IsHumanAuthor（②）；匹配函数空壳 collab.Service.Recipients/Matches/defaultRecipient（恒报未实现）；驻场者 DTO SessionResident 与出站接口 LedgerClient.SessionResident（Facade 空壳恒报未实现）；驻场者来信正文 ResidentLetter/RenderResidentLetter（④，正文即 wire 定义）；r3 补签⑤投递投影：房间历史行 RoomHistoryItem（LedgerEvent 平铺 + no_recipient 可省略键）与 SessionSummary.project 可省略键。常量与哨兵不入图。 B435.1（K0）：席位模式列与显式写面 BindSeatMode/RebindSeatMode、迁移 migrateDriverMode；匹配函数落码（Recipients 直调 proto.IsHumanAuthor）；驻场者只读面 Store.SessionResident；agentd 房间唤醒改接 Recipients + seatAddressWake（删 room.IsSessionRoom / MessageWakeTargets 两条旧边）；card wait 房间命中段（SeatMessageCandidatesContext / 游标行 / 坐下下界 + Matches）；删 Service.AddressesCard。图覆盖债：Store.SeatRevisionContext、Store.AdvanceSessionDeliveryCursor 未入基线，相关边未登记。 B435.2（R）：驻场者写面 Store.SitResident/StandResident → Facade → collab.Service.SitResident/StandResident（mapResidentError、书写者集 sessionWriters ∪ 驻场者）；CLI session sit/stand 与 session wait <session>（runSessionWait → sessionWaitRun → sessionWaitPage → sessionWaitMatch → Matches，候选读 ResidentMessageCandidatesContext，与席位读共用 addressCandidatesSQL）；F-RM1：coordinatorRunner.Resume → seatEnv、CoordSessionRef/SessionRef.Env 对称字段、简报 briefingSessionSend/briefingRoomResume/briefingWakeEvents；删 resumeTurnRequest。MessageWakeTargets 保留（Q12 乙）。图覆盖债：session 命令族其余子命令与 buildSessionWake、Service.sendToSession、bumpSeatRevisionTx、rebuildAfterResumeFailure 未入基线，相关边未登记；collab → LedgerClient 接口方法调用不入图。",
+  "summary": "B435 contract Ticket 0：席位驱动模式词表 SeatMode/ParseSeatMode 与 Card/CardView.driver_mode、SessionCard.seat_mode 投影键（③）；收件地址 DeliveryAddress/DeliveryAddressKind、游标键 DeliveryCursorKey、无收件人原因 NoRecipientReason、匹配结果 Delivery、人类作者判据 IsHumanAuthor（②）；匹配函数空壳 collab.Service.Recipients/Matches/defaultRecipient（恒报未实现）；驻场者 DTO SessionResident 与出站接口 LedgerClient.SessionResident（Facade 空壳恒报未实现）；驻场者来信正文 ResidentLetter/RenderResidentLetter（④，正文即 wire 定义）；r3 补签⑤投递投影：房间历史行 RoomHistoryItem（LedgerEvent 平铺 + no_recipient 可省略键）与 SessionSummary.project 可省略键。常量与哨兵不入图。 B435.1（K0）：席位模式列与显式写面 BindSeatMode/RebindSeatMode、迁移 migrateDriverMode；匹配函数落码（Recipients 直调 proto.IsHumanAuthor）；驻场者只读面 Store.SessionResident；agentd 房间唤醒改接 Recipients + seatAddressWake（删 room.IsSessionRoom / MessageWakeTargets 两条旧边）；card wait 房间命中段（SeatMessageCandidatesContext / 游标行 / 坐下下界 + Matches）；删 Service.AddressesCard。图覆盖债：Store.SeatRevisionContext、Store.AdvanceSessionDeliveryCursor 未入基线，相关边未登记。 B435.2（R）：驻场者写面 Store.SitResident/StandResident → Facade → collab.Service.SitResident/StandResident（mapResidentError、书写者集 sessionWriters ∪ 驻场者）；CLI session sit/stand 与 session wait <session>（runSessionWait → sessionWaitRun → sessionWaitPage → sessionWaitMatch → Matches，候选读 ResidentMessageCandidatesContext，与席位读共用 addressCandidatesSQL）；F-RM1：coordinatorRunner.Resume → seatEnv、CoordSessionRef/SessionRef.Env 对称字段、简报 briefingSessionSend/briefingRoomResume/briefingWakeEvents；删 resumeTurnRequest。MessageWakeTargets 保留（Q12 乙）。图覆盖债：session 命令族其余子命令与 buildSessionWake、Service.sendToSession、bumpSeatRevisionTx、rebuildAfterResumeFailure 未入基线，相关边未登记；collab → LedgerClient 接口方法调用不入图。 B435.3（O1）：项目房间 Store.EnsureProjectRoom（首句无操作写取写锁 claimProjectRoomWriteLockTx，与 CreateSession 共用 createSessionTx）/ProjectRoom/SessionProject → Facade → collab.Service.EnsureProjectRoom；agentd 消费循环 → notifyProjectRoom（projectNoticeTargetOf/projectNoticeAlreadySent/finishProjectNotice/holdProjectNotifyClaim/settleInapplicableNotice）→ collab.Service.Send；handleRoomMessages 读时经 Recipients 投影 no_recipient（roomHistoryBySystemNull）；CLI project room、session sit --project、card show 无组织者提示（cardShowOrganizerHint）。图覆盖债：Store.ClaimWake/CompleteWake/CursorWatermark/MentionCandidatesContext 与 Service.HistoryContext 未入基线，相关边未登记；summarizeSession → LedgerClient.SessionProject 为接口方法调用不入图。",
   "nodesAdded": {
     "m_proto_SeatMode": {
       "kind": "model",
@@ -117,7 +117,7 @@
       "name": "RoomHistoryItem",
       "file": "internal/proto/delivery.go",
       "line": 120,
-      "signature": "type RoomHistoryItem struct {\n\tLedgerEvent\n\tNoRecipient NoRecipientReason `json:\"no_recipient,omitempty\"`\n}",
+      "signature": "type RoomHistoryItem struct",
       "summary": "RoomHistoryItem 是房间历史视图（GET /api/rooms/{id}/messages 的 messages[]）的一行 （B435 ⑤ 投递投影）：账本事件原样平铺 + 可省略的 no_recipient。仅当该行是会话房间 room_message 且经 collab.Service.Recipients 解析为空集时出键，取值 = 该次的 NoRecipientReason；有收件人、非 room_message 或判定读失败时不出键。",
       "modelKind": "dto",
       "tests": [
@@ -828,6 +828,207 @@
       "line": 375,
       "signature": "func briefingWakeEvents(evs []WakeEvent) string",
       "summary": "简报「本次唤醒事件」段；重建回合只带这一段（不带旧会话字面席位）。"
+    },
+    "n_ledger_Store_EnsureProjectRoom": {
+      "kind": "func",
+      "container": "k_ledger_Store",
+      "order": 166,
+      "name": "Store.EnsureProjectRoom",
+      "file": "internal/ledger/project_room.go",
+      "line": 30,
+      "signature": "func (s *Store) EnsureProjectRoom(project, owner, actor string) (Session, bool, error)",
+      "summary": "EnsureProjectRoom 取或建项目房间：单事务首句无操作写取写锁 → 查绑定 → 有则读会话，无则 createSessionTx + 写 project_rooms（每项目恰一场，H1）。"
+    },
+    "n_ledger_Store_claimProjectRoomWriteLockTx": {
+      "kind": "func",
+      "container": "k_ledger_Store",
+      "order": 167,
+      "name": "Store.claimProjectRoomWriteLockTx",
+      "file": "internal/ledger/project_room.go",
+      "line": 81,
+      "signature": "func (s *Store) claimProjectRoomWriteLockTx(tx *sql.Tx, project string) error",
+      "summary": "事务首句无操作 UPDATE，令 SQLite WAL 事务一开始即持写锁（避免读后升写 SQLITE_BUSY）。"
+    },
+    "n_ledger_Store_ProjectRoom": {
+      "kind": "func",
+      "container": "k_ledger_Store",
+      "order": 168,
+      "name": "Store.ProjectRoom",
+      "file": "internal/ledger/project_room.go",
+      "line": 90,
+      "signature": "func (s *Store) ProjectRoom(project string) (string, bool, error)",
+      "summary": "ProjectRoom 读项目绑定的项目房间 id（无绑定 ok=false）。"
+    },
+    "n_ledger_Store_SessionProject": {
+      "kind": "func",
+      "container": "k_ledger_Store",
+      "order": 169,
+      "name": "Store.SessionProject",
+      "file": "internal/ledger/project_room.go",
+      "line": 107,
+      "signature": "func (s *Store) SessionProject(session string) (string, error)",
+      "summary": "SessionProject 读会话绑定的项目名；非项目房间返回空串。"
+    },
+    "n_ledger_Store_createSessionTx": {
+      "kind": "func",
+      "container": "k_ledger_Store",
+      "order": 170,
+      "name": "Store.createSessionTx",
+      "file": "internal/ledger/sessions.go",
+      "line": 58,
+      "signature": "func (s *Store) createSessionTx(tx *sql.Tx, sink *eventSink, title, owner, actor string) (Session, error)",
+      "summary": "事务内建会话并落 EvSessionCreated（CreateSession 与 EnsureProjectRoom 共用）。"
+    },
+    "n_ledger_api_Facade_EnsureProjectRoom": {
+      "kind": "func",
+      "container": "k_ledger_api_Facade",
+      "order": 26,
+      "name": "Facade.EnsureProjectRoom",
+      "file": "internal/ledger/api/api.go",
+      "line": 268,
+      "signature": "func (f *Facade) EnsureProjectRoom(project, owner, actor string) (proto.Session, bool, error)",
+      "summary": "EnsureProjectRoom 出站门面：账本 ErrBadState → client.ErrBadState，会话转 wire。"
+    },
+    "n_ledger_api_Facade_SessionProject": {
+      "kind": "func",
+      "container": "k_ledger_api_Facade",
+      "order": 27,
+      "name": "Facade.SessionProject",
+      "file": "internal/ledger/api/api.go",
+      "line": 280,
+      "signature": "func (f *Facade) SessionProject(sessionID string) (string, error)",
+      "summary": "SessionProject 出站门面直通。"
+    },
+    "n_collab_Service_EnsureProjectRoom": {
+      "kind": "func",
+      "container": "k_collab_Service",
+      "order": 37,
+      "name": "Service.EnsureProjectRoom",
+      "file": "internal/collab/sessions.go",
+      "line": 281,
+      "signature": "func (s *Service) EnsureProjectRoom(project, actor string) (proto.Session, bool, error)",
+      "summary": "EnsureProjectRoom：项目名校验（空/含空白控制字符 → ErrProjectName）→ 出站取或建，群主为系统通知者身份。"
+    },
+    "n_agentd_Server_notifyProjectRoom": {
+      "kind": "func",
+      "container": "k_agentd_Server",
+      "order": 1931,
+      "name": "Server.notifyProjectRoom",
+      "file": "internal/agentd/projectnotify.go",
+      "line": 89,
+      "signature": "func (s *Server) notifyProjectRoom(ctx context.Context, ev proto.LedgerEvent)",
+      "summary": "项目房间系统通知：三类事件 → 判适用 → 认领 notify:<类型> → 幂等锚 seq:<源 seq> 点读 → 以系统通知者身份 @驻场者发一条 → 收尾（Q7 乙）。"
+    },
+    "n_agentd_Server_projectNoticeTargetOf": {
+      "kind": "func",
+      "container": "k_agentd_Server",
+      "order": 1932,
+      "name": "Server.projectNoticeTargetOf",
+      "file": "internal/agentd/projectnotify.go",
+      "line": 162,
+      "signature": "func (s *Server) projectNoticeTargetOf(ev proto.LedgerEvent) (projectNoticeTarget, bool, string, error)",
+      "summary": "读卡/项目房间/驻场者定通知去向；卡不存在、无项目、无房间、无驻场者为不适用。"
+    },
+    "n_agentd_projectNoticeBody": {
+      "kind": "func",
+      "container": "k_agentd_fn",
+      "order": 198,
+      "name": "projectNoticeBody",
+      "file": "internal/agentd/projectnotify.go",
+      "line": 194,
+      "signature": "func projectNoticeBody(ev proto.LedgerEvent, card ledger.Card) string",
+      "summary": "按事件类型套正文模板。"
+    },
+    "n_agentd_Server_projectNoticeAlreadySent": {
+      "kind": "func",
+      "container": "k_agentd_Server",
+      "order": 1933,
+      "name": "Server.projectNoticeAlreadySent",
+      "file": "internal/agentd/projectnotify.go",
+      "line": 220,
+      "signature": "func (s *Server) projectNoticeAlreadySent(ctx context.Context, target projectNoticeTarget, after int64, anchor string) (bool, error)",
+      "summary": "幂等点读：分页读 @驻场者 候选，作者为系统通知者且带锚 Ref 即已发。"
+    },
+    "n_agentd_Server_finishProjectNotice": {
+      "kind": "func",
+      "container": "k_agentd_Server",
+      "order": 1934,
+      "name": "Server.finishProjectNotice",
+      "file": "internal/agentd/projectnotify.go",
+      "line": 253,
+      "signature": "func (s *Server) finishProjectNotice(ev proto.LedgerEvent, key, holder string)",
+      "summary": "CompleteWake 收尾认领并记 handled。"
+    },
+    "n_agentd_Server_holdProjectNotifyClaim": {
+      "kind": "func",
+      "container": "k_agentd_Server",
+      "order": 1935,
+      "name": "Server.holdProjectNotifyClaim",
+      "file": "internal/agentd/projectnotify.go",
+      "line": 262,
+      "signature": "func (s *Server) holdProjectNotifyClaim(ev proto.LedgerEvent, key string)",
+      "summary": "认领前读失败时取认领挡住水位（不发、不收尾）。"
+    },
+    "n_agentd_Server_settleInapplicableNotice": {
+      "kind": "func",
+      "container": "k_agentd_Server",
+      "order": 1936,
+      "name": "Server.settleInapplicableNotice",
+      "file": "internal/agentd/projectnotify.go",
+      "line": 273,
+      "signature": "func (s *Server) settleInapplicableNotice(ev proto.LedgerEvent, key, reason string)",
+      "summary": "不适用事件处置：若该 seq 仍有在飞认领则取回并收尾，否则记 handled。"
+    },
+    "n_agentd_roomHistoryBySystemNull": {
+      "kind": "func",
+      "container": "k_agentd_fn",
+      "order": 199,
+      "name": "roomHistoryBySystemNull",
+      "file": "internal/agentd/roomsapi.go",
+      "line": 503,
+      "signature": "func roomHistoryBySystemNull(payload json.RawMessage) bool",
+      "summary": "房间历史行载荷 by_system 为 null 判定（结构行，不投影 no_recipient）。"
+    },
+    "e_cli_project_room": {
+      "kind": "entry",
+      "container": "c_cli",
+      "order": 112,
+      "name": "project room",
+      "file": "cmd/project_room.go",
+      "line": 23,
+      "channel": "cli"
+    },
+    "n_cmd_projectRoomCmd_RunE": {
+      "kind": "func",
+      "container": "k_cmd_fn",
+      "order": 9142,
+      "name": "projectRoomCmd.RunE",
+      "file": "cmd/project_room.go",
+      "line": 27,
+      "signature": "func(cmd *cobra.Command, args []string) error",
+      "params": [
+        [
+          "cmd",
+          "*cobra.Command",
+          ""
+        ],
+        [
+          "args",
+          "[]string",
+          ""
+        ]
+      ],
+      "returns": "error"
+    },
+    "n_cmd_cardShowOrganizerHint": {
+      "kind": "func",
+      "container": "k_cmd_fn",
+      "order": 9143,
+      "name": "cardShowOrganizerHint",
+      "file": "cmd/card.go",
+      "line": 156,
+      "signature": "func cardShowOrganizerHint(cmd *cobra.Command, st *ledger.Store, cardID, project string)",
+      "summary": "card show 无组织者 stderr 提示：读项目房间与驻场者，读失败 Warn 静默。"
     }
   },
   "nodesModified": {
@@ -1357,7 +1558,7 @@
       "order": 12,
       "name": "Service.briefing",
       "file": "internal/keystone/keystone.go",
-      "line": 391,
+      "line": 397,
       "signature": "func (s *Service) briefing(card string, evs []WakeEvent, room string) string",
       "params": [
         [
@@ -1480,6 +1681,106 @@
       ],
       "returns": "[]string, error",
       "summary": "MessageWakeTargets 是 WakeTargets 的消息级半边（已在手解析好 replyAuthor 的 调用方用它）。唤醒路径只认它——签名里没有成员集合，扇出形状写不出来。"
+    },
+    "n_ledger_Store_CreateSession": {
+      "kind": "func",
+      "container": "k_ledger_Store",
+      "order": 103,
+      "name": "Store.CreateSession",
+      "file": "internal/ledger/sessions.go",
+      "line": 39,
+      "signature": "func (s *Store) CreateSession(title, owner, actor string) (Session, error)",
+      "params": [
+        [
+          "title",
+          "string",
+          ""
+        ],
+        [
+          "owner",
+          "string",
+          ""
+        ],
+        [
+          "actor",
+          "string",
+          ""
+        ]
+      ],
+      "returns": "Session, error",
+      "summary": "CreateSession 建一场会话并落 EvSessionCreated（无卡事件）。返回带分配 id 的会话。id 形如 session:<n>，由账本单调分配、不复用。"
+    },
+    "n_collab_Service_summarizeSession": {
+      "kind": "func",
+      "container": "k_collab_Service",
+      "order": 25,
+      "name": "Service.summarizeSession",
+      "file": "internal/collab/sessions.go",
+      "line": 391,
+      "signature": "func (s *Service) summarizeSession(session proto.Session, byCard map[string]proto.Card,",
+      "params": [
+        [
+          "session",
+          "proto.Session",
+          ""
+        ],
+        [
+          "byCard",
+          "map[string]proto.Card",
+          ""
+        ],
+        [
+          "events",
+          "[]proto.LedgerEvent",
+          ""
+        ],
+        [
+          "needs",
+          "map[string]bool",
+          ""
+        ]
+      ],
+      "returns": "proto.SessionSummary",
+      "summary": "summarizeSession 组装会话列表/详情头部的会话摘要。"
+    },
+    "n_agentd_Server_handleRoomMessages": {
+      "kind": "func",
+      "container": "k_agentd_Server",
+      "order": 190,
+      "name": "Server.handleRoomMessages",
+      "file": "internal/agentd/roomsapi.go",
+      "line": 430,
+      "signature": "func (s *Server) handleRoomMessages(w http.ResponseWriter, r *http.Request)",
+      "params": [
+        [
+          "w",
+          "http.ResponseWriter",
+          ""
+        ],
+        [
+          "r",
+          "*http.Request",
+          ""
+        ]
+      ],
+      "summary": "handleRoomMessages GET /api/rooms/{id}/messages?before=&limit= → History。 契约 §3.5 要求 ErrNoRoom→404 这格映射，分支保留；但今天不可达——读侧宽容的 History（C4 合规实现）对不存在的房间返回空列表而非 ErrNoRoom，读不存在房间与 读空房间对渲染方是同一件事（协调者裁决，台账 L21）。无端到端输入能让此分支 触发，故不写声称验证它的测试。"
+    },
+    "n_agentd_Server_consumeAutomationEventsOnce": {
+      "kind": "func",
+      "container": "k_agentd_Server",
+      "order": 284,
+      "name": "Server.consumeAutomationEventsOnce",
+      "file": "internal/agentd/wakeconsumer.go",
+      "line": 675,
+      "signature": "func (s *Server) consumeAutomationEventsOnce(ctx context.Context) (processed int, escalated bool, err error)",
+      "params": [
+        [
+          "ctx",
+          "context.Context",
+          ""
+        ]
+      ],
+      "returns": "int, bool, error"
     }
   },
   "nodesDeleted": [
@@ -1862,6 +2163,174 @@
     [
       "n_keystone_Service_briefing",
       "n_keystone_briefingWakeEvents"
+    ],
+    [
+      "n_ledger_Store_createSessionTx",
+      "n_ledger_Store_nextSessionSeqTx"
+    ],
+    [
+      "n_ledger_Store_createSessionTx",
+      "n_ledger_Store_appendEvent"
+    ],
+    [
+      "n_ledger_Store_createSessionTx",
+      "n_ledger_encodeMembers"
+    ],
+    [
+      "n_ledger_Store_createSessionTx",
+      "n_ledger_Store_q"
+    ],
+    [
+      "n_ledger_Store_createSessionTx",
+      "n_ledger_Store_tval"
+    ],
+    [
+      "n_ledger_Store_createSessionTx",
+      "n_ledger_Store_timeNow"
+    ],
+    [
+      "n_ledger_Store_createSessionTx",
+      "m_ledger_Session"
+    ],
+    [
+      "n_ledger_Store_CreateSession",
+      "n_ledger_Store_createSessionTx"
+    ],
+    [
+      "n_ledger_Store_EnsureProjectRoom",
+      "n_ledger_Store_mutate"
+    ],
+    [
+      "n_ledger_Store_EnsureProjectRoom",
+      "n_ledger_Store_claimProjectRoomWriteLockTx"
+    ],
+    [
+      "n_ledger_Store_EnsureProjectRoom",
+      "n_ledger_Store_createSessionTx"
+    ],
+    [
+      "n_ledger_Store_EnsureProjectRoom",
+      "n_ledger_getSessionTx"
+    ],
+    [
+      "n_ledger_Store_EnsureProjectRoom",
+      "n_ledger_Store_attachSessionCards"
+    ],
+    [
+      "n_ledger_api_Facade_EnsureProjectRoom",
+      "n_ledger_Store_EnsureProjectRoom"
+    ],
+    [
+      "n_ledger_api_Facade_EnsureProjectRoom",
+      "n_ledger_api_sessionWire"
+    ],
+    [
+      "n_ledger_api_Facade_SessionProject",
+      "n_ledger_Store_SessionProject"
+    ],
+    [
+      "n_agentd_Server_consumeAutomationEventsOnce",
+      "n_agentd_Server_notifyProjectRoom"
+    ],
+    [
+      "n_agentd_Server_notifyProjectRoom",
+      "n_agentd_Server_projectNoticeTargetOf"
+    ],
+    [
+      "n_agentd_Server_notifyProjectRoom",
+      "n_agentd_Server_holdProjectNotifyClaim"
+    ],
+    [
+      "n_agentd_Server_notifyProjectRoom",
+      "n_agentd_Server_settleInapplicableNotice"
+    ],
+    [
+      "n_agentd_Server_notifyProjectRoom",
+      "n_agentd_Server_wakeClaimHolder"
+    ],
+    [
+      "n_agentd_Server_notifyProjectRoom",
+      "n_agentd_Server_projectNoticeAlreadySent"
+    ],
+    [
+      "n_agentd_Server_notifyProjectRoom",
+      "n_agentd_Server_finishProjectNotice"
+    ],
+    [
+      "n_agentd_Server_notifyProjectRoom",
+      "n_collab_Service_Send"
+    ],
+    [
+      "n_agentd_Server_projectNoticeTargetOf",
+      "n_ledger_Store_GetCard"
+    ],
+    [
+      "n_agentd_Server_projectNoticeTargetOf",
+      "n_ledger_Store_ProjectRoom"
+    ],
+    [
+      "n_agentd_Server_projectNoticeTargetOf",
+      "n_ledger_Store_SessionResident"
+    ],
+    [
+      "n_agentd_Server_projectNoticeTargetOf",
+      "n_agentd_projectNoticeBody"
+    ],
+    [
+      "n_agentd_Server_holdProjectNotifyClaim",
+      "n_agentd_Server_wakeClaimHolder"
+    ],
+    [
+      "n_agentd_Server_settleInapplicableNotice",
+      "n_agentd_Server_wakeClaimHolder"
+    ],
+    [
+      "n_agentd_Server_settleInapplicableNotice",
+      "n_agentd_Server_finishProjectNotice"
+    ],
+    [
+      "n_agentd_Server_handleRoomMessages",
+      "n_collab_Service_Recipients"
+    ],
+    [
+      "n_agentd_Server_handleRoomMessages",
+      "n_agentd_roomHistoryBySystemNull"
+    ],
+    [
+      "e_cli_project_room",
+      "n_cmd_projectRoomCmd_RunE"
+    ],
+    [
+      "n_cmd_projectRoomCmd_RunE",
+      "n_cmd_openRoomService"
+    ],
+    [
+      "n_cmd_projectRoomCmd_RunE",
+      "n_collab_Service_EnsureProjectRoom"
+    ],
+    [
+      "n_cmd_projectRoomCmd_RunE",
+      "n_cmd_ledgerActor"
+    ],
+    [
+      "n_cmd_projectRoomCmd_RunE",
+      "n_collab_Service_SessionDetail"
+    ],
+    [
+      "n_cmd_cardShowCmd_RunE",
+      "n_cmd_cardShowOrganizerHint"
+    ],
+    [
+      "n_cmd_cardShowOrganizerHint",
+      "n_ledger_Store_ProjectRoom"
+    ],
+    [
+      "n_cmd_cardShowOrganizerHint",
+      "n_ledger_Store_SessionResident"
+    ],
+    [
+      "n_cmd_sessionSitCmd_RunE",
+      "n_collab_Service_EnsureProjectRoom"
     ]
   ],
   "edgesDeleted": [
@@ -1896,6 +2365,30 @@
     [
       "n_cmd_runCardWait",
       "n_ledger_Store_Follow"
+    ],
+    [
+      "n_ledger_Store_CreateSession",
+      "n_ledger_Store_nextSessionSeqTx"
+    ],
+    [
+      "n_ledger_Store_CreateSession",
+      "n_ledger_Store_appendEvent"
+    ],
+    [
+      "n_ledger_Store_CreateSession",
+      "n_ledger_encodeMembers"
+    ],
+    [
+      "n_ledger_Store_CreateSession",
+      "n_ledger_Store_q"
+    ],
+    [
+      "n_ledger_Store_CreateSession",
+      "n_ledger_Store_tval"
+    ],
+    [
+      "n_ledger_Store_CreateSession",
+      "n_ledger_Store_timeNow"
     ]
   ],
   "projectionsAdded": [],

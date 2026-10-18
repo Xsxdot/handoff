@@ -327,6 +327,13 @@ func TestB435RoomsAPISourceGuard(t *testing.T) {
 			if sel, ok := call.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "Recipients" {
 				calls = true
 			}
+			// d_gateway→d_collab 只经入站门面（target.json entries「collab 入站门面」，预算 0）：
+			// 投影不得调 collab/room 包级函数（段 7 check 读数，台账 #16）。
+			if sel, ok := call.Fun.(*ast.SelectorExpr); ok {
+				if pkg, ok := sel.X.(*ast.Ident); ok && pkg.Name == "room" {
+					t.Errorf("%s handleRoomMessages 调了 room.%s——须经 collab 入站门面", fset.Position(call.Pos()), sel.Sel.Name)
+				}
+			}
 		}
 		return true
 	})

@@ -470,7 +470,9 @@ func (s *Server) handleRoomMessages(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		var msg proto.RoomMessage
-		if err := room.UnmarshalMessage(event.Payload, &msg); err != nil {
+		// 直接按 proto DTO 解码（与 room.UnmarshalMessage 同为 encoding/json 默认语义）：d_gateway→d_collab
+		// 只许经入站门面 Service，穿透 collab/room 包级函数会新增 over-budget（段 7 check 读数，台账 #16）。
+		if err := json.Unmarshal(event.Payload, &msg); err != nil {
 			s.log.Warn("房间历史投影跳过：消息载荷无效", append(diag.Attrs(r.Context()),
 				"room", roomID, "seq", event.Seq, "cause", err)...)
 			continue
