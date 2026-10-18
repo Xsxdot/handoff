@@ -134,9 +134,25 @@ func TestContractFixtures(t *testing.T) {
 		{"LedgerEvent", LedgerEvent{Seq: 9, CardID: "B167", Type: "workflow_migrated", Actor: "web:127.0.0.1",
 			Payload: json.RawMessage(`{"from_workflow":"bug","from_version":1,"from_status":"进行中","to_workflow":"domain","to_version":1,"to_status":"拆解"}`), CreatedAt: now}},
 		{"CoordinatorRebindReq", CoordinatorRebindReq{Mode: "launch"}},
-		{"CardView", CardView{ID: "B167", Title: "需要定性", Status: "待办", Priority: "中", Project: "handoff", Workflow: "triage", WorkflowVersion: 1, Parent: "", BaseBranch: "main", DriverSession: "cli:codex#thread-01", DriverSource: string(SeatSourceBind),
+		{"CardView", CardView{ID: "B167", Title: "需要定性", Status: "待办", Priority: "中", Project: "handoff", Workflow: "triage", WorkflowVersion: 1, Parent: "", BaseBranch: "main", DriverSession: "cli:codex#thread-01", DriverSource: string(SeatSourceBind), DriverMode: string(SeatModePull),
 			BaseFrozen: false, Attachments: []Attachment{{Kind: "spec", Path: "specs/example.md"}}, BlockedBy: []string{}, Following: "", Needs: "", Blocked: false, MergedCount: 0, OpenDecisions: 0, ChildrenTotal: 0, ChildrenDone: 0, Conflict: false, OpenTickets: 0}},
 		{"CardDetail", CardDetail{Card: Card{ID: "B167", Title: "需要定性", Status: "待办", Priority: "中", Project: "handoff", WorkflowName: "triage", WorkflowVersion: 1}, Relations: []Relation{}, Events: []LedgerEvent{}, TaskStates: []TaskStateRow{}, EffectiveBaseBranch: "main", Decisions: []Decision{}, Needs: "", Children: []CardBrief{}}},
+		// B435（C-305/306）：席位驱动模式。空座 CardView 三个 driver_* 键同缺（omitempty）；
+		// 坐着的 CardView 见上（pull）；带席位 CardDetail 用 coordinate → push。
+		{"CardViewEmptySeat", CardView{ID: "B168", Title: "空座", Status: "待办", Priority: "中", Project: "handoff", Workflow: "triage", WorkflowVersion: 1, BaseBranch: "main",
+			Attachments: []Attachment{}, BlockedBy: []string{}}},
+		{"CardDetailSeated", CardDetail{Card: Card{ID: "B169", Title: "已叫机器人", Status: "进行中", Priority: "高", Project: "handoff", WorkflowName: "triage", WorkflowVersion: 1,
+			DriverSession: "cli:opencode#sess-b169", DriverSource: string(SeatSourceCoordinate), DriverMode: string(SeatModePush), DriverHeartbeatAt: now, CreatedAt: now, UpdatedAt: now},
+			Relations: []Relation{}, Events: []LedgerEvent{}, TaskStates: []TaskStateRow{}, EffectiveBaseBranch: "main", Decisions: []Decision{}, Needs: "", Children: []CardBrief{}}},
+		// B435（C-208/406、C-307/327、C-510）：项目房间详情——human / resident（无 card_id）/
+		// 坐着的 seat / 空座 seat 四种成员行；两张卡一张带 seat_mode、一张空座（seat 与 seat_mode 同缺）。
+		{"SessionDetailB435", sessionDetailB435Sample(now)},
+		// B435 ⑤（C-509/510，plan Q2 乙）：事实源是 internal/proto/testdata 两份金样本，
+		// 经 Go 解码再编码写进 web 夹具——金样本或 DTO 平铺/omitempty 一漂，本 case 与金样本测试同红。
+		{"RoomHistoryB435", decodeGoldenSample[roomHistoryEnvelope](t, "b435_room_history.json")},
+		{"SessionSummaryProjectB435", decodeGoldenSample[[]SessionSummary](t, "b435_session_summary_project.json")},
+		// B435 词表夹具：Go 常量逐值同序列出，TS 侧词表数组逐值比对（枚举新值过白名单）。
+		{"B435Vocab", b435VocabSample()},
 		{"NodeDef", NodeDef{
 			Name: "定性中", Next: "已定性",
 			Produces: &NodeOutput{Kind: "doc", Path: "docs/superpowers/plans/b201-plan.md"},
@@ -191,26 +207,8 @@ func TestContractFixtures(t *testing.T) {
 		{"HomeWakeResp", HomeWakeResp{Outcome: "need_login", Detail: "需要登录。"}},
 		{"CarrierDetectResp", CarrierDetectResp{Name: "mbp-codex", Status: "pending", LastError: "需要登录。", Version: 2}},
 		{"CarrierRunCommandResp", CarrierRunCommandResp{Command: "HOME=~/.handoff/home/mbp-codex codex"}},
-		// B434（契约 §6 DTO 行）：拉起材料两条——已登记拉起器（launcher 在场）与未登记
-		// （omitempty：launcher 缺键，TS 侧 hasOwnProperty=false，不是空串）。
-		{"DesktopLaunchMaterial", DesktopLaunchMaterial{
-			Card: "B434", Folder: "/Users/dev/workspace/handoff",
-			Brief:    "[handoff] 你是卡 B434 的协调者，坐在这场 Claude 桌面端会话里。\n\n- 卡号：B434",
-			Launcher: "local_6f1c-launcher",
-		}},
-		{"DesktopLaunchMaterialNoLauncher", DesktopLaunchMaterial{
-			Card: "B434", Folder: "/Users/dev/workspace/handoff",
-			Brief: "[handoff] 你是卡 B434 的协调者，坐在这场 Claude 桌面端会话里。\n\n- 卡号：B434",
-		}},
-		// machine 空串 = 本机：零值必须在场（非 omitempty）。
-		{"DesktopLauncherOpenResp", DesktopLauncherOpenResp{
-			Launcher: "local_6f1c-launcher", Machine: "", HandledBy: "mac-01",
-		}},
-		// agentd↔agentd 投递 wire（P3=A、r5：携带卡号不携带正文）；opened=false 零值在场。
-		{"DesktopDeliverReq", DesktopDeliverReq{
-			CLISession: "9b2e7c1a-4d", DesktopSession: "local_6f1c-launcher", Card: "B434",
-		}},
-		{"DesktopDeliverResp", DesktopDeliverResp{HandledBy: "mac-01", Written: true, Opened: false}},
+		// B434 拉起器五个 Desktop* case 已随 B435 契约 §7 退役删除（W plan Q3 甲）；
+		// Go DTO 本身由 X 卡删——W 先合，X 删 DTO 时此处已无引用。
 	}
 
 	dir := fixtureDir(t)
@@ -870,4 +868,65 @@ func executorDefaultRespSample() ExecutorDefaultResp {
 // model 刻意给空串——「不设默认模型」是常态取值，必须在线格式里出现过一次。
 func executorDefaultReqSample() ExecutorDefaultReq {
 	return ExecutorDefaultReq{Default: "codex", Model: ""}
+}
+
+// roomHistoryEnvelope 是 GET /api/rooms/{id}/messages 的响应信封形状（与金样本同形）。
+type roomHistoryEnvelope struct {
+	Messages []RoomHistoryItem `json:"messages"`
+}
+
+// decodeGoldenSample 把 internal/proto/testdata/<name> 金样本解码成 T，作为 web 夹具的样本。
+//
+// 为什么解码再编码而不是直接拷文件（W plan Q2 乙）：事实源仍是金样本一份，但链路穿过
+// Go 的真实解码与 MarshalIndent——DTO 若丢键、改 omitempty 或平铺失效，生成结果与已存
+// web 夹具逐字节不等，本 case 当场红。解码失败即 Fatal（带文件名与原因）。
+func decodeGoldenSample[T any](t *testing.T, name string) T {
+	t.Helper()
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("无法定位测试文件自身路径")
+	}
+	path := filepath.Join(filepath.Dir(thisFile), "testdata", name)
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("读金样本 %s: %v", path, err)
+	}
+	var out T
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&out); err != nil {
+		t.Fatalf("解码金样本 %s: %v", path, err)
+	}
+	return out
+}
+
+// sessionDetailB435Sample 返回项目房间详情样本：成员行覆盖 human / resident / 坐着的 seat /
+// 空座 seat 四种（resident 无 card_id；空座 seat 身份空串、status=empty），两张卡一坐一空。
+func sessionDetailB435Sample(now time.Time) SessionDetail {
+	return SessionDetail{Summary: SessionSummary{
+		ID: "session:5", Kind: SessionKind, Title: "handoff 项目房间", Owner: "user:sy",
+		Project: "handoff", Unread: 1, LastActivity: now,
+		Members: []SessionMember{
+			{Identity: "user:sy", Kind: SessionMemberHuman, Status: SessionMemberLastActive, LastActive: now},
+			{Identity: "agent:org", Kind: SessionMemberResident, Status: SessionMemberListening, LastActive: now},
+			{Identity: "cli:claude#sess-b7", Kind: SessionMemberSeat, CardID: "B7", CardTitle: "拆解", Status: SessionMemberWorking, LastActive: now},
+			{Kind: SessionMemberSeat, CardID: "B9", CardTitle: "实现", Status: SessionMemberEmpty},
+		},
+		Cards: []SessionCard{
+			{CardID: "B7", Title: "拆解", Status: "进行中", Seat: "cli:claude#sess-b7", SeatMode: string(SeatModePull)},
+			{CardID: "B9", Title: "实现", Status: "待办"},
+		},
+	}}
+}
+
+// b435VocabSample 列出 B435 新增词表的 Go 常量（逐值同序）；TS 侧词表数组与之逐值比对。
+func b435VocabSample() map[string][]string {
+	return map[string][]string{
+		"seat_modes": {string(SeatModePush), string(SeatModePull)},
+		"no_recipient_reasons": {
+			string(NoRecipientStructural), string(NoRecipientNotSessionRoom), string(NoRecipientNonHumanUnaddressed),
+			string(NoRecipientAddressedUnresolved), string(NoRecipientRootNoSeat), string(NoRecipientNeedsMention),
+		},
+		"session_member_kinds": {SessionMemberHuman, SessionMemberAgent, SessionMemberSeat, SessionMemberResident},
+	}
 }

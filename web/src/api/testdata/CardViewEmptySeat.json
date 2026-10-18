@@ -1,0 +1,23 @@
+{
+  "id": "B168",
+  "title": "空座",
+  "status": "待办",
+  "priority": "中",
+  "project": "handoff",
+  "workflow": "triage",
+  "workflow_version": 1,
+  "parent": "",
+  "base_branch": "main",
+  "base_frozen": false,
+  "attachments": [],
+  "following": "",
+  "blocked": false,
+  "blocked_by": [],
+  "merged_count": 0,
+  "needs": "",
+  "open_decisions": 0,
+  "children_total": 0,
+  "children_done": 0,
+  "conflict": false,
+  "open_tickets": 0
+}
