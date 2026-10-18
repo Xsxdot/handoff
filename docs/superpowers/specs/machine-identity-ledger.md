@@ -7,3 +7,4 @@
 - 2026-10-18 事实调查（Explore 子代理，只读）：`targets:` 唯一真相是本地 config（`internal/agentd/machineadmin.go:10`）；控制台 `POST/DELETE /api/machines` 经 `swapConf`→`config.Save` 写本地（`internal/agentd/server.go:721-757,881-882`），只支持直连形态；无 CLI `target add`；token/credential 只在本地 config，账本无凭据列；账本已有 `registry(kind,id,…)` 表供 carrier/squad；无任何自名配置，hostname 是事实上的自名（多处）；四套「本机」判据见 spec 问题陈述 3。
 - 2026-10-18 本机读数：Mac mini hostname `DF-ZIDONGdeMac-mini.local`，本地 `targets:` 有 `linux-01`（直连）、`mac-02`/`macbook-pro`（relay，node 分别 `mac-air`/`mac-pro`），本机不在自己的 targets 里。
 - 2026-10-18 用户裁决（对话）：修法取「甲：全局机器名」，并扩为「配置自名 + 几台设备共享设备列表、互相添加」；凭据进账本；有 DSN 时共享表为准、无 DSN 用本地 targets；有 DSN 缺自名 → 账本子系统不挂载；存量 `''` 不迁移；「本机」输入只认省略或自名。
+- 2026-10-18 r1：吸收协调会话（local_30aaf694）补充约束——设备表身份键=机器名，与传输形态/地址解耦；存储须可按机器追加字段；后续消费者 B437（共享审批链）、B438（传输层端点候选），其字段本卡不加。

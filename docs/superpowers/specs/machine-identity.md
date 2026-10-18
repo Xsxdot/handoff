@@ -1,6 +1,6 @@
 # 机器身份收口：自名 + 全队共享设备表
 
-- 状态：草稿 r0，待用户批准（2026-10-18）
+- 状态：草稿 r1，待用户批准（2026-10-18；r1 吸收协调会话约束：身份键稳定、可扩展）
 - 级别：**L3**（跨 config / ledger / ledgerstep / ledgermirror / agentd / scheduling / cmd 七个子系统的契约面，并动账本 schema）
 - 来源：账本镜像静默失效排查（2026-10-18，linux-01 本机派发、租约在 MacBook-Pro.local 时零 task_mirrored）
 - 台账：`docs/superpowers/specs/machine-identity-ledger.md`
@@ -50,7 +50,9 @@
 
 ## 目标架构与接缝语义
 
-- **设备表领域（账本侧，新）**：权威状态 = 全队机器行（名字唯一、连接方式、凭据、登记者实例 id、更新时间）。写入口只有两个：自登记（upsert 自己那一行，实例 id 不匹配即冲突）和控制台/CLI 的增删。凭据只在读给池的那条路径上出现。
+- **设备表领域（账本侧，新）**：权威状态 = 全队机器行（名字唯一、连接方式、凭据、登记者实例 id、更新时间）。
+  - **身份键 = 机器名（自名）**，全局唯一、稳定，可被别的子系统按名引用。它**不与传输形态或地址绑定**：一台机器换 IP、换 relay 节点名、在直连与 relay 之间切换，身份不变，只改它那一行的连接方式。连接方式是挂在身份下的属性，不参与判等。
+  - **按机器可追加字段**：存储结构要能在不改身份键、不迁移既有行的前提下给每台机器追加属性（不做只放得下名字+一组连接字段的扁平表）。已知后续消费者：B437 共享审批链（按名唯一找到一台机器）、B438 传输层（给每台机器挂端点候选）。**它们的字段本卡不加**，留给各自 spec。写入口只有两个：自登记（upsert 自己那一行，实例 id 不匹配即冲突）和控制台/CLI 的增删。凭据只在读给池的那条路径上出现。
 - **target 客户端池（agentd 侧，既有）**：唯一选路判据。有 DSN 时数据源从「活配置 `targets:`」换成「设备表」，无 DSN 时不变。池的「实例判等 = 配置未变」语义保持（`internal/ledgermirror/mirror.go` 的 subscription 注释依赖它）。
 - **自名判据（config 侧，新）**：「这个名字是不是我」只有一处定义 = 与 `name:` 相等（输入省略视作自名）。`IsSelfTarget`/`CanonicalTarget`/`IsLocalMachine`/`isLocalMachineName`/`probeLauncherMachine`/`canonicalCLITarget` 收敛到它，多余的删掉。
 - **落账层（ledger/ledgerstep，既有）**：新写入的 card_tasks.target、dispatched 快照 Target、镜像 source_target、seat/desktop machine 一律是全队名字；账本写接口拒收 `''`（存量读取照旧兼容）。路由值与身份值分开：传给传输层的仍可是本机短路，落账的是名字。
