@@ -411,3 +411,14 @@ WARN 原文 internal/collab/sessions.go:393-394：`log().Warn("会话成员身�
 - 卡：B435.3 `accept` 已验 → `finish` → `已完成`（charter v15 无「阶段验收」列，阶段验收记台账与 note）。
 - **残余（finish 回写清单追加）**：C-505 措辞勘误；项目房间书写者集规则进 SKILL/契约（r3 无对应条目，K0 前不变式）；空库双 agentd 首启 DDL 竞争（`CREATE TABLE IF NOT EXISTS` 并发 → `pg_type_typname_nsp_index`）；`desktopwake.go:308` `room.UnmarshalMessage` 穿透（X/O2 合入后定归属）；m1（换人 + 崩溃窗幂等锚按当前驻场者查可能重发，并入 N3/N4）、m2（已终局认领让过不记 handled 的重复开销）、m3（含空白项目名建不了房）；N5 200 条页耗时未造；opencode executor 测试时序抖动；plan 两处坏锚（`keystone.go#Service.briefing` 简写、`readmodel_test.go#fakeLC`）。
 - 下一张：O2（B435.4）以 `58f7bf52` 为基线，子分支 `cards/B435.4-charter-1`。
+
+## 十二、批 2 第二张：O2（B435.4）全节点读数与合入（2026-10-18）
+
+- **implement**（opus subagent，`cards/B435.4-charter-1` 自 `58f7bf52`）：段 0–6 七个提交 `771c480a..1a662707`（`residentwake.go` +test、`wakeconsumer.go` +5/−1、`server.go` 一字段、授权规则改写、SKILL 组织者节与三支文本测试、视图 diff）；偏离 13 条——**#9 段内先红后绿顺序偏离**（段 1/2 行为在段 0 一次写完、测试后补；补救红原文在台账）认为纪律偏离不打回、review 变异核牙；**#12 组织者不是卡会话书写者**（spec D9「组织类问题答回卡所在会话」撞书写权，(a′) 的镜像）→ **追加裁决 R-K1 (a″)**（拆解 §2.3 R-K1 行）：含项目 p 的卡的会话书写者集 ∪ p 的项目房间驻场者，寻址不变（答话须 `@<卡号>` 或 `--reply-to`）；修复轮 `081bf5d5`/`eed87677`（`sessionWriters` 一函数 + `LedgerClient.ProjectRoom` 只读面 + collab/cmd/skill 三处红绿）；检查点 `5d2d5a41`。
+- **review**（opus 独立审查）：**pass**；偏离已核无漏报；8 处变异全红全绿（本机判据、聚合、去重、写信失败挡水位、opener 失败重写、正文进信、F5 读失败伪装/吞错、授权规则改字）；架构轴通过（调用点位置、依赖方向白名单守卫、禁区零 diff、`check`/`validate` 存量不增）；Minor 6 条：(a″) 第二读失败分支与「新命中并入在途重试」无测试锁、`human` 变量名误导、修复轮越禁区测试文件未单列 F 行、CLAUDE.md 片段过渡窗口旧「正式请求」句与新授权规则并存（转 X）、两支 unopened 测试对重写不敏感。记录 `3014fcac`。
+- **阶段验收：真机批 2 T 类**（`b435.4-impl-ledger.md` 同名节；二进制 `cc020b54f31bb8eb`，stub `open`）：T1 两封两行门铃信（120 字节、无正文、哨兵 0 泄漏）、continue 深链各一次、push 卡 +0、游标只因 `session wait` 推进；T2 异机零动作（`skip_reasons={"not_local":1}`）、回本机即写信；T3 信箱不可写 → Error 带 stage/attempts、零信、**活性成立**（`@T1` 一轮、水位 `seq:14` 越过）、恢复后新命中并入在途重试、退避窗到期恰一封、`open` 退出 1 → 「信已落盘、continue 未发出（不重写）」mtime 不变；T4 `sit --project … --desktop-session` → `card add` → O1 通知 → 门铃一封（批 2 #9/#10 衔接）；T5 (a″) 组织者 `@T1` 答回卡会话 → T1 一轮、不带 @ `non_human_unaddressed`、无关驻场者被拒。U1–U6（用户机 mod/桌面端）与 M1（双机）未验。
+- **合入**：`git merge --no-ff cards/B435.4-charter-1` → **`21735127`**（批 2 完成基线）；`merge-base --is-ancestor 30752a1b` 成立。合入后复跑：`go build` 0；ledger/api/collab/room/keystone/agentd(68.6s)/skill/proto/executor-opencode(28.4s) 全 ok；`./cmd/` 仅存量 `TestRepoContractGate`。
+- 卡：B435.4 `accept` 已验 → `finish` → `已完成`。
+- **残余追加**：R-K1 (a″) 书写者集规则进 SKILL/契约回写（与 (a′) 同条）；Minor-1/2/3（I 卡：两支测试补锁 + `human`→`addressable`）；Minor-4 回旋镖（修复轮越禁区测试文件须单列 F 行；派发简报须更强调逐段红绿）；Minor-5 转 X plan；O2-U1…U6、O2-M1、N5 200 条页、R-1m/R-5b、K0-3/K0-D 留用户机。
+- **回旋镖（批 2）**：plan/拆解/contract 三份都把「书写者集」当既有不变式而没当接缝核，R-K1 (a)「零机制改动」在两个方向上都错（(a′) 协调者→项目房间，(a″) 组织者→卡会话）；两次都由真机（O1-7）与实现（O2 #12）各撞出一半——下次跨房间的「谁对谁说话」承诺，spec 阶段就该把书写权与寻址分开核。
+- 下一批（批 3）：W（B435.6）与 X（B435.5）plan 并行出稿，基线 `21735127`；合并序 W 先于 X。
