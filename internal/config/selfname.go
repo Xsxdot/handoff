@@ -17,12 +17,47 @@ package config
 
 import (
 	"fmt"
+	"os"
 	"strings"
 )
 
 // reservedSelfNames 是「本机」输入别名，不可用作自名——把它们当自名会让
 // 「省略 = 自名」与「旧别名 = 本机」两套语义撞在一起。
 var reservedSelfNames = map[string]bool{"local": true, "本机": true}
+
+// IsLegacyLocalAlias 报告 target 是否是「本机」的旧输入别名：local、本机、
+// 或当前进程 hostname。它是 S6 拒收的唯一判据来源（F2：自名判据只有 config
+// 一处定义）；调用方据此对「有自名机器收到旧别名」给可行动错误。
+//
+// 注意：空串不是别名（空串是「省略」= 自名的正当输入），恒返回 false。
+func IsLegacyLocalAlias(target string) bool {
+	name := strings.TrimSpace(target)
+	if name == "" {
+		return false
+	}
+	if reservedSelfNames[name] {
+		return true
+	}
+	host, err := os.Hostname()
+	return err == nil && host != "" && name == host
+}
+
+// LegacyLocalAliasError 报告 target 是否是「本机」旧别名，且本机已配自名
+// （有可改成的名字）。返回可行动错误，点名旧别名与要改成的 name: 值。
+//
+// 返回 nil 的两种情形：本机未配自名（无名字可改，S5 沿今天判法），或 target
+// 不是旧别名。调用方各自补「哪条记录 / 哪个入口」的上下文（模板名、carrier.machine
+// 等），本函数只给核心判据与「改成什么」。
+func (c *Config) LegacyLocalAliasError(target string) error {
+	if c == nil || c.Name == "" {
+		return nil
+	}
+	if !IsLegacyLocalAlias(target) {
+		return nil
+	}
+	return fmt.Errorf("机器名 %q 是本机旧别名（local/本机/hostname），不再按本机解释；请改成 config.yaml 的 name: 值 %q",
+		target, c.Name)
+}
 
 // ValidateSelfName 校验自名词法；空串表示未配置，合法。
 //

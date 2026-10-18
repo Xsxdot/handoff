@@ -242,7 +242,22 @@ func probeLaunchers(ctx context.Context, ls []ledger.DesktopLauncher) []launcher
 func probeLauncherMachine(ctx context.Context, cfg *config.Config, host, machine string) (string, string) {
 	ctx, cancel := context.WithTimeout(ctx, launcherProbeTimeout)
 	defer cancel()
-	if machine == "" || machine == "local" || machine == "本机" || (host != "" && machine == host) {
+	// B439 S6：有自名的机器上，本机只有一个名字（省略或 == 自名）。local/本机/
+	// hostname 是旧别名，拒绝登记并点名改成自名——它们会被异机解释成发起机自己，
+	// 正是要杀的歧义源。无自名沿今天判法（S5）。
+	if cfg != nil && cfg.Name != "" {
+		if machine == "" || machine == cfg.Name {
+			addr, token, err := LocalEndpoint()
+			if err != nil {
+				return fmt.Sprintf("不可达（%v）", err), ""
+			}
+			return agentdReach(ctx, client.New(addr, token)), ""
+		}
+		if err := cfg.LegacyLocalAliasError(machine); err != nil {
+			return "不可探（本机旧别名）", fmt.Sprintf(
+				"机器名 %q 是本机旧别名（local/本机/hostname），不再按本机解释；请用 --machine %s 重新登记", machine, cfg.Name)
+		}
+	} else if machine == "" || machine == "local" || machine == "本机" || (host != "" && machine == host) {
 		addr, token, err := LocalEndpoint()
 		if err != nil {
 			return fmt.Sprintf("不可达（%v）", err), ""

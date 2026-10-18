@@ -167,10 +167,34 @@ var (
 type Service struct {
 	repo          schedclient.Registry
 	knownMachines func(string) bool // nil：不拦远程名（编制单测）；生产注入 targets 键
+	// selfName 是本机自名（B439 S6 门控）。空 = 未配自名，判据回退今天的本机
+	// 别名词表（S5）；非空 = 只有省略或 == 自名是本机，local/本机/hostname 拒收。
+	selfName string
 }
 
 // New 用组装点绑定的注册表端口构造服务。
 func New(repo schedclient.Registry) *Service { return &Service{repo: repo} }
+
+// SetSelfName 注入本机自名（组装点从 config.Name 取）。它把「本机」判据从
+// 别名词表收敛到唯一名字（B439 §4.1）：配了自名的机器上，local/本机/hostname
+// 不再是本机，登记时以 ErrInvalid 拒收并点名改成什么（S6）；未注入（无自名）
+// 保持今天词表（S5）。与 SetKnownMachines 一样只在组装点调用一次。
+func (s *Service) SetSelfName(name string) { s.selfName = name }
+
+// isLocalMachine 是本机判据的编制域入口（B439 §4.1）：
+//   - 有自名：省略或 == 自名才是本机；local/本机/hostname 都否（S6 由
+//     checkKnownMachine 给可行动错误，不再静默当本机）。
+//   - 无自名：回退别名词表（空串/local/本机/hostname），与今天一致（S5）。
+//
+// 物理身份核验（samePhysicalMachine）刻意不用它：那是比对两条已存值的形态
+// 差异，不是「一次输入是不是本机」，两者门控不同（B398）。
+func (s *Service) isLocalMachine(machine string) bool {
+	if s.selfName != "" {
+		name := strings.TrimSpace(machine)
+		return name == "" || name == s.selfName
+	}
+	return IsLocalMachine(machine)
+}
 
 // SetKnownMachines 注入「这台机器现在能不能派到」的查询。生产绑
 // conf().Targets 的键；本机别名不走这张表。fn 为 nil 时只放行本机别名之外的
@@ -311,8 +335,16 @@ func (s *Service) DeleteCarrier(name string, expect int) error {
 }
 
 func (s *Service) checkKnownMachine(name, machine string, expect int) error {
-	if IsLocalMachine(machine) {
+	if s.isLocalMachine(machine) {
 		return nil
+	}
+	// 有自名时，local/本机/hostname 是「本机」旧别名：拒收并点名改成自名（S6）。
+	// 不落到下面的 targets 未命中错误——那会把人指向错误的方向。
+	if s.selfName != "" && IsLocalMachine(machine) {
+		statusLog().Error("载体登记校验失败", "name", name, "machine", machine, "expect", expect,
+			"cause", "machine 是本机旧别名")
+		return fmt.Errorf("%w: 载体 %s 的 carrier.machine=%q 是本机旧别名（local/本机/hostname），不再按本机解释；请改成 config.yaml 的 name: 值 %q",
+			ErrInvalid, name, machine, s.selfName)
 	}
 	if s.knownMachines == nil {
 		return nil

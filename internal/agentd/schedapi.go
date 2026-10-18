@@ -254,7 +254,7 @@ func (s *Server) handleCarrierDetect(w http.ResponseWriter, r *http.Request) {
 	}
 	s.log.Info("检测载体开始", "name", name, "machine", carrier.Machine, "path", r.URL.Path)
 	var wake proto.HomeWakeResp
-	if isLocalMachine(carrier.Machine) {
+	if s.IsSelfMachine(carrier.Machine) {
 		reply, wakeErr := s.hostAPI.WakeHome(r.Context(), hostapi.WakeRequest{
 			CLI: carrier.CLI, HomeDir: carrier.HomeDir, Credential: string(carrier.Credential), Model: carrier.Model,
 		})
@@ -357,12 +357,6 @@ func (s *Server) handleCarrierDetect(w http.ResponseWriter, r *http.Request) {
 		Name: c.Name, Status: string(c.Status), LastError: c.LastError,
 		Version: version,
 	})
-}
-
-// isLocalMachine 统一本机 carrier 的登记写法；其他值必须走 target 池，
-// 从而检测状态仍只落在协调机 registry。词表与 PutCarrier 同源。
-func isLocalMachine(machine string) bool {
-	return scheduling.IsLocalMachine(machine)
 }
 
 // detectEvidence 是 detect handler 唯一的 wake outcome 白名单。未知值不落库，

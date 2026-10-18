@@ -347,9 +347,27 @@ func (m *Mirror) reconcile(ctx context.Context) {
 		m.log.Warn("读在飞镜像 target 失败", "err", err)
 		return
 	}
+	nonTerminal, err := m.st.NonTerminalLinks()
+	if err != nil {
+		m.log.Warn("读非终态挂账集合失败", "err", err)
+		return
+	}
 	want := map[string]ledger.TaskLink{}
 	for _, link := range links {
-		if link.Target != "" && !registered[link.Target] && !m.isLocalTarget(link.Target) {
+		if link.Target == "" {
+			// B439 S7：存量无归属 '' 挂账不迁移、不静默。仍按「持有者本机」尽力
+			// 订阅（持有者恰是派发机时仍可用），但每轮对每条**非终态**的 '' 挂账
+			// 打一次 WARN——对账周期天然限频，同一条不刷屏；终态 '' 静默（没有
+			// 可镜像的东西）。这是旧缺陷族「不报错、无 WARN、健康行正常」的
+			// 显性化出口。
+			if nonTerminal[link.Target+"/"+link.TaskID] {
+				m.log.Warn("历史无归属挂账，仅在持有者本机时可镜像",
+					"card", link.CardID, "task", link.TaskID, "node", link.Node, "attempt", link.Attempt)
+			}
+			want[link.Target+"/"+link.TaskID] = link
+			continue
+		}
+		if !registered[link.Target] && !m.isLocalTarget(link.Target) {
 			// 挂账目标机不在本机机器清单里：取不到客户端，订不到。
 			//
 			// 在飞/终态分档（S7，与同函数健康行 live/终态分档对齐）：只有该

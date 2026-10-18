@@ -550,6 +550,9 @@ func setupLedger(cfg *config.Config, srv *agentd.Server, taskStore *store.Store,
 		_, ok := cfg.Targets[name]
 		return ok
 	})
+	// B439 S6：编制域的本机判据收敛到自名（组装点从 config.Name 注入）。无自名
+	// 时注入空串 = 保持今天别名词表（S5）。
+	sched.SetSelfName(cfg.Name)
 	srv.SetScheduling(sched)
 	// B156.3 K5：账本打开后才能启动自动化事件流。
 	// ctx 随 agentd 停机取消；首轮先重放事件与队列，再进入轮询。

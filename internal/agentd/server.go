@@ -545,13 +545,13 @@ func (s *Server) IsSelfTarget(name string) bool {
 
 // IsSelfMachine 报告 name 是否指本机（B439 身份判据，与路由值无关）。
 //
-// 判据顺序：有自名且省略或 == 自名 → 本机；否则回退今天判法（空串 / 配置中
-// 指向本机的登记名 / 本机别名）。**WU1 保留本机别名回退**（local/本机/hostname
-// 仍视作本机，S5/S6 边界，§6.3）；旧别名的拒收在 WU3 收敛。
+// 有自名（S6 收敛）：唯一名字判据——省略或 == 自名。local/本机/hostname 不再是
+// 本机，各入口以 legacyAliasError 拒收并点名改成自名；不再回退地址/别名词表。
+// 无自名（S5）：回退今天判法（空串 / 配置中指向本机的登记名 / 本机别名），逐点不变。
 func (s *Server) IsSelfMachine(name string) bool {
 	cfg := s.conf()
-	if cfg != nil && cfg.Name != "" && cfg.IsSelfName(name) {
-		return true
+	if cfg != nil && cfg.Name != "" {
+		return cfg.IsSelfName(name)
 	}
 	if s.IsSelfTarget(name) {
 		return true
@@ -562,12 +562,13 @@ func (s *Server) IsSelfMachine(name string) bool {
 // ResolveTarget 把一次目标输入解析成（身份值, 是否本机）。
 //
 // 身份值进共享账本与快照；路由值由调用方按 isLocal 折算（本机 → 空串）。
-// 有自名时本机身份值=自名（全队名）；无自名时回退今天判法，本机身份值=空串
-// （旧账本口径，S5 逐点不变）。本机别名在 WU1 仍视作本机（§6.3）。
+// 有自名时本机身份值=自名（全队名），local/本机/hostname 归为远端原值（由各入口
+// 在解析前用 legacyAliasError 拒收，不静默当本机）；无自名时回退今天判法，本机
+// 身份值=空串（旧账本口径，S5 逐点不变）。
 func (s *Server) ResolveTarget(name string) (identity string, isLocal bool) {
 	cfg := s.conf()
 	if cfg != nil && cfg.Name != "" {
-		if cfg.IsSelfName(name) || s.IsSelfTarget(name) || scheduling.IsLocalMachine(name) {
+		if cfg.IsSelfName(name) {
 			return cfg.Name, true
 		}
 		return name, false
@@ -576,6 +577,13 @@ func (s *Server) ResolveTarget(name string) (identity string, isLocal bool) {
 		return "", true
 	}
 	return name, false
+}
+
+// legacyAliasError 报告 target 是否是本机旧别名（local/本机/hostname）且本机
+// 已配自名（S6 拒收）；nil = 不是旧别名或未配自名（S5）。各入口据此补上下文
+// （节点名、入口名）后返回可行动错误。
+func (s *Server) legacyAliasError(target string) error {
+	return s.conf().LegacyLocalAliasError(target)
 }
 
 // CanonicalTarget 返回一次目标输入的**路由值**：本机归一为空串，保留远端与

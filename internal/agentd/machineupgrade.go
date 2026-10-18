@@ -115,7 +115,15 @@ func (s *Server) machineUpgradeState(name string) *proto.MachineUpgrade {
 // handleMachineUpgrade 处理 POST /api/machines/{name}/upgrade。
 func (s *Server) handleMachineUpgrade(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-	if isLocalMachineName(name) {
+	// B439 S6：有自名时 local/本机/hostname 是旧别名，拒收并点名改成自名。
+	if aerr := s.legacyAliasError(name); aerr != nil {
+		s.log.Warn("拒绝升级本机旧别名", "name", name, "cause", aerr)
+		writeJSON(w, http.StatusBadRequest, proto.MachineUpgradeResp{
+			Verdict: "local", Reason: aerr.Error(),
+		})
+		return
+	}
+	if s.isLocalUpgradeTarget(name) {
 		s.log.Warn("拒绝升级本机", "name", name)
 		writeJSON(w, http.StatusBadRequest, proto.MachineUpgradeResp{
 			Verdict: "local", Reason: "本机版本由薄壳同步路决定，不能从执行机端点升级",
@@ -328,7 +336,16 @@ func (s *Server) runMachineUpgradeBackground(name string, m upgrade.Machine, tar
 		"verdict", result.Verdict.String(), "reason", result.Reason)
 }
 
-func isLocalMachineName(name string) bool {
+// isLocalUpgradeTarget 报告升级目标名是否指本机。
+//
+// 有自名（B439 S6）：唯一名字判据 == 自名（升级名来自路径，恒非空，省略不可能）；
+// 旧别名已由调用方 legacyAliasError 先行拒收。无自名：沿用今天的本机判法
+// （空串/本机/hostname），逐点不变（S5）。
+func (s *Server) isLocalUpgradeTarget(name string) bool {
+	cfg := s.conf()
+	if cfg != nil && cfg.Name != "" {
+		return name == cfg.Name
+	}
 	if name == "" || name == "本机" {
 		return true
 	}

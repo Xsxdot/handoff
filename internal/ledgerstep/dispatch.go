@@ -115,6 +115,12 @@ type Dispatcher struct {
 	// isLocal 仅当输入为空串。未知目标名不得在此处改写，身份判断归组装点负责。
 	ResolveTarget func(target string) (identity string, isLocal bool)
 
+	// RejectLegacyAlias 报告 target 是否是本机旧别名（local/本机/hostname）且
+	// 本机已配自名，返回可行动错误（B439 S6）；nil 函数 = 不拒（无自名或旧调用）。
+	// 只作用于**模板声明的 target**（tpl.Def.Target），不作用于请求覆盖或冻结身份
+	// ——后两者由各自的入口拒收（CLI / agentd step），冻结身份按 B398 原样透传。
+	RejectLegacyAlias func(target string) error
+
 	// ProbeBaseAttachments 是首个节点派发前的基线附件探针（B400）。首个非审阅
 	// 派发、卡无显式基线、且有 spec/plan 可查附件时，ViaTemplate 调它确认附件
 	// 路径确实在解析出的基线远端提交树上；缺则拒发。nil = 不检查（旧调用/裸派发）。
@@ -239,6 +245,16 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 	if err != nil {
 		slog.Default().Warn("取模板失败", "card", c.ID, "template", req.Template, "cause", err)
 		return zero, fmt.Errorf("取模板: %w", err)
+	}
+	// B439 S6：模板声明的 target 是旧别名（local/本机/hostname）且本机已配自名时
+	// 前置拒发，点名模板与要改成的名字。只判模板缺省 target——请求覆盖与冻结身份
+	// 各由自己的入口处置（CLI / agentd step / B398 透传），不在这里误杀。
+	if d.RejectLegacyAlias != nil {
+		if aerr := d.RejectLegacyAlias(tpl.Def.Target); aerr != nil {
+			slog.Default().Warn("模板派发拒绝本机旧别名", "card", c.ID, "template", tpl.Name,
+				"target", tpl.Def.Target, "cause", aerr)
+			return zero, fmt.Errorf("模板 %s 的 target=%q: %w", tpl.Name, tpl.Def.Target, aerr)
+		}
 	}
 	// 有效目标机与纪律角色名：请求覆盖 > 模板缺省。两个调用方装配处的缝 1
 	// 解析必须与这里完全同序（共用 PreflightDiscipline → disciplineAndTarget），
