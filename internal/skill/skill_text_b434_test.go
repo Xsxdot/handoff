@@ -83,15 +83,21 @@ func fencedBlockAfter(t *testing.T, section, marker string) string {
 	return ""
 }
 
-// 条 277：「占座」节含授权规则逐字。
+// 条 277（B435 契约 §7「改写」、O2 plan Q4 甲）：规则的承载节改为「组织者」节（「占座」节整节归 X 删）。
+// 测试名沿用；「占座」节 :456 引用块随常量同步换文，仍须逐字含规则（O2→X 窗口内 SKILL 不得自相矛盾）。
 func TestB434SkillSeatHasAuthorizationRule(t *testing.T) {
-	sec := skillSection(t, readHandoffSkill(t), "### 占座")
-	if !strings.Contains(sec, DesktopLetterAuthorizationRule) {
-		t.Fatal("「占座」节必须逐字含 DesktopLetterAuthorizationRule")
+	text := readHandoffSkill(t)
+	if sec := skillSection(t, text, "### 组织者"); !strings.Contains(sec, DesktopLetterAuthorizationRule) {
+		t.Fatal("「组织者」节必须逐字含 DesktopLetterAuthorizationRule")
+	}
+	if sec := skillSection(t, text, "### 占座"); !strings.Contains(sec, DesktopLetterAuthorizationRule) {
+		t.Fatal("「占座」节的授权规则引用块须随常量同步为新文（X 删节前）")
 	}
 }
 
-// 条 278：「主 agent 回路」的 CLAUDE.md 常设授权片段（围栏块）含授权规则逐字与 [handoff] 标记。
+// 条 278：「主 agent 回路」的 CLAUDE.md 常设授权片段（围栏块）含授权规则逐字与 [handoff] 标记；B435 O2
+// 起另含门铃取信句：照信第二行跑 `handoff session wait`，且带 `--timeout`（plan N1：裸命令在两封门铃
+// 排队时会无限期阻塞）。
 func TestB434SkillClaudeMDSnippetHasAuthorizationRule(t *testing.T) {
 	sec := skillSection(t, readHandoffSkill(t), "### 主 agent 回路")
 	block := fencedBlockAfter(t, sec, "CLAUDE.md 常设授权片段")
@@ -106,6 +112,9 @@ func TestB434SkillClaudeMDSnippetHasAuthorizationRule(t *testing.T) {
 	}
 	if !strings.Contains(block, "[handoff]") {
 		t.Fatalf("常设授权片段应点名 [handoff] 来信标记，得:\n%s", block)
+	}
+	if !strings.Contains(block, OrganizerDoorbellTakeRule) {
+		t.Fatalf("常设授权片段应逐字含门铃取信句 OrganizerDoorbellTakeRule，得:\n%s", block)
 	}
 }
 
