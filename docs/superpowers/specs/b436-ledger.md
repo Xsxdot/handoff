@@ -125,3 +125,7 @@
   2. `docs/roadmap.md` `## 来自「修图」实测（2026-08-24，B233 前置排查）` 整节（现 `:398-420` 一带，五条：容器粒度假读数 / 阴性结果一二 / 探测器不能当裁判 / …）——全节讨论的是代码图自身的粒度与归属读数（`best.json 不该动`），但 plan 表「保留」且其结论「B232 是 B233 的前置」仍是架构排序依据；按表保留。
   以上两项不影响第 8、9 步（纯文档），故继续执行而非中断回合；交回报告中原文列出。
 - `CHANGELOG.md` `[Unreleased]` 在 `### 变更` 之后、`### 修复` 之前新增 `### 移除` 小节一条（plan 原文）。
+
+### 第 8 步：依赖收口
+
+- `go mod tidy` → exit 0；`(cd desktop && go mod tidy)` → exit 0。`git diff --stat go.mod go.sum desktop/go.mod desktop/go.sum` → `desktop/go.sum | 2 --`、`go.sum | 2 --`，共 4 行删除：恰为两个文件里 `github.com/Xsxdot/charter/graph v0.10.2` 的 h1 与 go.mod 两行；`go.mod` / `desktop/go.mod` 无变化，无 indirect 连带。
