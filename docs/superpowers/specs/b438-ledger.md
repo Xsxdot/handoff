@@ -6,3 +6,4 @@
 - 2026-10-19 依赖可得性：`go list -m -versions` 得 pion/ice/v4 至 v4.4.7、pion/sctp 至 v1.12.0、pion/transport/v3 至 v3.1.1、pion/stun/v3 至 v3.1.7。
 - 2026-10-19 判断：候选不入库（运行时经 relay 交换）；relay 先通后台升级（甲）；可靠层 pion/sctp；真机 NAT 用 linux-01 netns 而非 KVM（mkvm 是 br0 桥接、不是 NAT，见 `~/.claude/infra/machines.md`；netns + MASQUERADE 可同时造端点无关与 `--random-fully` 对称两种）。
 - 2026-10-19 协调会话批准 r1，并补两条并入正文：代理语义（UDP 不经 proxy，启动 INFO 提示，新增 S8）；缺省 STUN 列表放 config 缺省值、空列表只 host 候选零 STUN。
+- 2026-10-19 plan P5 拍板：代理语义一句按事实更正（proxy 键不管 coordinator↔agentd；relay WSS 只受 HTTPS_PROXY 影响），S8 判据与文案不变。
