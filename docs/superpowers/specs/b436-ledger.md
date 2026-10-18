@@ -52,3 +52,9 @@
 
 - 2026-10-18 用户经主会话（local_4e712e78）回复「你推进吧，不用再问我了」：spec r0 与六项自主决定一并批准；授权 plan→implement→review→finish 一路推进、finish 本地 `--no-ff` 合 main；只有破坏性不可逆或超出 B436 范围的决定才回问。批准判决已回写 spec 头部状态行。
 - 账本流 v14 已缩为六列；B436 钉 v13，按 v13 列序走到底，不 migrate。
+
+## 2026-10-18 plan 节点（协调者本会话出稿，L2）
+
+- 补核 `internal/agentd/b23317_boundary_test.go:264-300`：`TestB23317AssemblyFilesHaveNoHandlerDefs` 经 `b23317AssemblyFiles` 读 `codegraph/target.json` 的 `assembly`，现值 `['main.go','internal/agentd/server.go','cmd/agentd.go']`（`python3 -c "json.load(open('codegraph/target.json'))['assembly']"`）。plan 决定名单改由测试持有。
+- `grep -n -i -E 'codegraph|recon|图对账|代码图|graph check|baseline\.json|best\.json|target\.json|absorb|图覆盖债|重扫' docs/roadmap.md` → 60 余行，逐条分类进 plan 第 7 步表格（删节 3、删条 29、改词 3、保留其余）。
+- plan 落盘 `docs/superpowers/plans/b436-plan.md`；相对 spec 的偏离四条写在 plan 首节（不加含 `codegraph` 字面量的锁测试；S5 例外补 `CHANGELOG.md`；平台不变量测试改断「查图」；roadmap 裁剪逐条点名）。
