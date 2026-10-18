@@ -322,10 +322,10 @@ func (s *Server) launchCoordinatorRoundWithExpect(ctx context.Context, card, sou
 		return zero, fmt.Errorf("编码协调者席位身份: %w", err)
 	}
 	if rebind {
-		err = s.ledger.RebindSeat(card, identity, proto.SeatSourceCoordinate, expect,
+		err = s.ledger.RebindSeatMode(card, identity, proto.SeatSourceCoordinate, proto.SeatModePush, expect,
 			coordinatorBearing(binding, carrier, spec))
 	} else {
-		err = s.ledger.BindSeat(card, identity, proto.SeatSourceCoordinate,
+		err = s.ledger.BindSeatMode(card, identity, proto.SeatSourceCoordinate, proto.SeatModePush,
 			coordinatorBearing(binding, carrier, spec))
 	}
 	if err != nil {
@@ -605,7 +605,7 @@ func (s *Server) wakeCoordinatorRoundID(ctx context.Context, card string,
 			s.writeWakeRoundFail(card, roundID, wakeFailClassOther, fmt.Sprintf("重建后编码新席位失败: %v", encodeErr))
 			return result, fmt.Errorf("重建后编码新席位: %w", encodeErr)
 		}
-		if rebindErr := s.ledger.RebindSeat(card, identity, proto.SeatSourceCoordinate, current.DriverSession,
+		if rebindErr := s.ledger.RebindSeatMode(card, identity, proto.SeatSourceCoordinate, proto.SeatModePush, current.DriverSession,
 			coordinatorBearing(binding, carrier, spec)); rebindErr != nil {
 			if errors.Is(rebindErr, ledger.ErrCASConflict) {
 				s.log.Error("协调者重建后席位 CAS 冲突，新会话保留待人工回收", "card", card,

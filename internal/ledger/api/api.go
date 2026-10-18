@@ -294,6 +294,7 @@ func cardWire(v ledger.CardView) proto.Card {
 		Following:          v.Following,
 		DriverSession:      c.DriverSession,
 		DriverSource:       c.DriverSource,
+		DriverMode:         c.DriverMode,
 		DriverHeartbeatAt:  c.DriverHeartbeatAt,
 		CreatedAt:          c.CreatedAt,
 		UpdatedAt:          c.UpdatedAt,

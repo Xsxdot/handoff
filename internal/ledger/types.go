@@ -155,6 +155,7 @@ type Card struct {
 	BaseBranch         string       `json:"base_branch,omitempty"` // 空 = 继承祖先/项目主线（EffectiveBaseBranch 解析）
 	DriverSession      string       `json:"driver_session,omitempty"`
 	DriverSource       string       `json:"driver_source,omitempty"`
+	DriverMode         string       `json:"driver_mode,omitempty"` // B435：'' 空座 | push | pull；起不起回合只读本列
 	DriverHeartbeatAt  time.Time    `json:"driver_heartbeat_at,omitempty"` // 兼容列名；语义是认领时刻，不是续租心跳
 	CreatedAt          time.Time    `json:"created_at"`
 	UpdatedAt          time.Time    `json:"updated_at"`
