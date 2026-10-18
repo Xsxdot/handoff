@@ -297,9 +297,18 @@ type appListener struct {
 	session *yamux.Session
 }
 
-func (l *appListener) Accept() (net.Conn, error) { return l.session.Accept() }
-func (l *appListener) Close() error              { return l.session.Close() }
-func (l *appListener) Addr() net.Addr            { return relayAddr("relay-app") }
+// Accept 把会话结束的错误包成非 net.Error：http.Serve 对 Temporary 的 net.Error
+// 每秒重试、永不返回。打洞直连死亡时 yamux 的 shutdownErr 是底层 ICE 连接的
+// 「i/o timeout」（Temporary=true），不包一层会让 serveApp 卡死、Listener 无法退出。
+func (l *appListener) Accept() (net.Conn, error) {
+	conn, err := l.session.Accept()
+	if err != nil {
+		return nil, fmt.Errorf("relay app 会话已结束: %w", err)
+	}
+	return conn, nil
+}
+func (l *appListener) Close() error   { return l.session.Close() }
+func (l *appListener) Addr() net.Addr { return relayAddr("relay-app") }
 
 type relayAddr string
 

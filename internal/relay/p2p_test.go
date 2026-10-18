@@ -357,7 +357,8 @@ func newP2PHarness(t *testing.T, o harnessOpts) *p2pHarness {
 		select {
 		case <-h.lnDone:
 		case <-time.After(10 * time.Second):
-			t.Errorf("listener 10s 内未退出")
+			buf := make([]byte, 8<<20)
+			t.Errorf("listener 10s 内未退出:\n%s", buf[:runtime.Stack(buf, true)])
 		}
 	})
 	return h
