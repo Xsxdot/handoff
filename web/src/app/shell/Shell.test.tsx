@@ -3504,3 +3504,20 @@ describe('desktop selected machine terminal routing', () => {
     await waitFor(() => expect(createPtySession).toHaveBeenCalledWith(expect.objectContaining({ base_kind: 'workspace', base_path: '/remote' }), 'linux-01'))
   })
 })
+
+// B435 Q7（C-510）：桌面左栏项目树的会话归属走 sessionModel.sessionProjects——零卡项目房间
+// 按 summary.project 归到项目节点下；普通零卡会话仍落「其他会话」（不回归）。
+describe('B435 项目房间入口（桌面树）', () => {
+  it('零卡项目房间归到项目节点下，普通零卡会话仍归未关联', async () => {
+    vi.mocked(fetchSessions).mockResolvedValue([
+      sessionSummary({ id: 'session:5', title: 'handoff 项目房间', project: 'handoff' }),
+      sessionSummary({ id: 'session:3', title: '普通零卡会话' }),
+    ] as never)
+    renderShell()
+    const project = await screen.findByTestId('project-node-p1')
+    expect(await within(project).findByText('handoff 项目房间')).toBeInTheDocument()
+    expect(within(project).queryByText('普通零卡会话')).toBeNull()
+    expect(await screen.findByTestId('unassociated-sessions')).toHaveTextContent('普通零卡会话')
+    expect(screen.getByTestId('unassociated-sessions')).not.toHaveTextContent('handoff 项目房间')
+  })
+})

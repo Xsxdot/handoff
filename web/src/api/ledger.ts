@@ -4,6 +4,56 @@ import { deleteJSON, patchJSON, postJSON, putJSON, request } from './client'
 
 export type SeatSource = 'bind' | 'coordinate'
 
+/**
+ * 席位驱动模式（B435 C-305/306；与 proto.SeatMode 逐值同序，B435Vocab.json 夹具对照）。
+ * push = agentd 收到寻址消息即起回合；pull = 坐席者自己 card wait 取。空座不出键。
+ */
+export type SeatMode = 'push' | 'pull'
+
+/** SeatMode 词表（只读，顺序 = Go 常量声明序）。 */
+export const SEAT_MODES: readonly SeatMode[] = ['push', 'pull']
+
+/**
+ * isSeatMode 判 wire 值是否在 SeatMode 词表内；空串、大小写变体、非字符串一律 false。
+ * JSON 不做运行期校验，读 driver_mode / seat_mode 的生产代码一律经它收窄（不用 as）。
+ */
+export function isSeatMode(value: unknown): value is SeatMode {
+  return typeof value === 'string' && (SEAT_MODES as readonly string[]).includes(value)
+}
+
+/** 席位模式的悬停说明（W plan Q5 裁定稿；值本身原样显示 push/pull，与 card show 同词）。 */
+export const SEAT_MODE_HINT: Readonly<Record<SeatMode, string>> = {
+  push: 'agentd 收到寻址消息即起回合',
+  pull: '由坐席者自己 card wait 取',
+}
+
+/** 坐着却读不到合法 driver_mode / seat_mode（缺键或空串）时的显示（Q5 裁定稿）。 */
+export const SEAT_MODE_UNKNOWN_LABEL = '模式未知'
+
+/** seatModeView 的结果：text 是要显示的值，hint 只在词表内值时给出。 */
+export interface SeatModeView { text: string; hint?: string }
+
+// 已告警过的词表外席位模式值：同值只告警一次，轮询重渲染不刷屏。
+const warnedSeatModes = new Set<string>()
+
+/**
+ * seatModeView 把**坐着的**席位上的 wire 模式值投影成显示读数（卡抽屉、卡列表、会话卡行共用）。
+ *
+ * 参数 raw：wire 原值（driver_mode 或 seat_mode）；key：wire 键名，只进告警字段。
+ * 返回：词表内 → 原值 + 悬停说明；缺键/空串 → 「模式未知」；词表外字符串 → 原样透传（无说明）
+ * 并 console.warn 一次带键名与原值。调用方只在 driver_session / seat 非空时调用——空座不显示模式。
+ */
+export function seatModeView(raw: unknown, key: 'driver_mode' | 'seat_mode'): SeatModeView {
+  if (isSeatMode(raw)) return { text: raw, hint: SEAT_MODE_HINT[raw] }
+  if (raw === undefined || raw === '') return { text: SEAT_MODE_UNKNOWN_LABEL }
+  const value = String(raw)
+  if (!warnedSeatModes.has(value)) {
+    warnedSeatModes.add(value)
+    console.warn({ subsystem: 'cards', event: 'seat_mode_unknown', key, value })
+  }
+  return typeof raw === 'string' ? { text: raw } : { text: SEAT_MODE_UNKNOWN_LABEL }
+}
+
 export interface CardView {
   id: string
   title: string
@@ -30,6 +80,8 @@ export interface CardView {
   open_tickets: number
   driver_session?: string
   driver_source?: SeatSource
+  /** B435：席位驱动模式；空座不出键（与 driver_session 同缺）。 */
+  driver_mode?: SeatMode
 }
 
 export interface Attachment {
@@ -52,6 +104,8 @@ export interface Card {
   base_branch?: string
   driver_session?: string
   driver_source?: SeatSource
+  /** B435：席位驱动模式；空座不出键。 */
+  driver_mode?: SeatMode
   driver_heartbeat_at?: string
   created_at: string
   updated_at: string

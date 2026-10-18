@@ -263,33 +263,6 @@ export const rebindCoordinatorLaunch = (cardId: string) =>
     { mode: 'launch' } satisfies CoordinatorRebindReq,
   )
 
-/** B434 拉起材料（GET /api/cards/{id}/coordinator/desktop-launch）；与 proto.DesktopLaunchMaterial 逐字段对应。 */
-export interface DesktopLaunchMaterial {
-  card: string
-  folder: string
-  brief: string
-  /** 已登记拉起器的桌面端会话 id；缺键 = 未登记（不显示「让拉起器代开」）。 */
-  launcher?: string
-}
-
-/** B434 拉起器代开回执（POST /api/cards/{id}/coordinator/desktop-launch）；与 proto.DesktopLauncherOpenResp 对应。 */
-export interface DesktopLauncherOpenResp {
-  launcher: string
-  machine: string
-  handled_by: string
-}
-
-/** 参数：完整 cardId；返回：拉起材料；项目无本机位置时服务端 409，错误文本即禁用原因。 */
-export const getDesktopLaunchMaterial = (cardId: string) =>
-  request<DesktopLaunchMaterial>(`/api/cards/${encodeURIComponent(cardId)}/coordinator/desktop-launch`)
-
-/** 参数：完整 cardId；返回：拉起器代开回执；无拉起器时服务端 409 且卡已打 needs_human。 */
-export const openViaDesktopLauncher = (cardId: string) =>
-  postJSON<DesktopLauncherOpenResp>(
-    `/api/cards/${encodeURIComponent(cardId)}/coordinator/desktop-launch`,
-    {},
-  )
-
 /** 参数：完整 cardId；返回：GET coordinator wire；路径段必须 encodeURIComponent。 */
 export const getCoordinatorStatus = (cardId: string) =>
   request<CoordinatorStatus>(`/api/cards/${encodeURIComponent(cardId)}/coordinator`)

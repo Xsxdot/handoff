@@ -1,7 +1,7 @@
 {
   "view": "cards/B435-charter-1",
   "base": "7f860685752a5d4dea43d38b96441be9437a0565",
-  "summary": "B435 contract Ticket 0：席位驱动模式词表 SeatMode/ParseSeatMode 与 Card/CardView.driver_mode、SessionCard.seat_mode 投影键（③）；收件地址 DeliveryAddress/DeliveryAddressKind、游标键 DeliveryCursorKey、无收件人原因 NoRecipientReason、匹配结果 Delivery、人类作者判据 IsHumanAuthor（②）；匹配函数空壳 collab.Service.Recipients/Matches/defaultRecipient（恒报未实现）；驻场者 DTO SessionResident 与出站接口 LedgerClient.SessionResident（Facade 空壳恒报未实现）；驻场者来信正文 ResidentLetter/RenderResidentLetter（④，正文即 wire 定义）；r3 补签⑤投递投影：房间历史行 RoomHistoryItem（LedgerEvent 平铺 + no_recipient 可省略键）与 SessionSummary.project 可省略键。常量与哨兵不入图。 B435.1（K0）：席位模式列与显式写面 BindSeatMode/RebindSeatMode、迁移 migrateDriverMode；匹配函数落码（Recipients 直调 proto.IsHumanAuthor）；驻场者只读面 Store.SessionResident；agentd 房间唤醒改接 Recipients + seatAddressWake（删 room.IsSessionRoom / MessageWakeTargets 两条旧边）；card wait 房间命中段（SeatMessageCandidatesContext / 游标行 / 坐下下界 + Matches）；删 Service.AddressesCard。图覆盖债：Store.SeatRevisionContext、Store.AdvanceSessionDeliveryCursor 未入基线，相关边未登记。 B435.2（R）：驻场者写面 Store.SitResident/StandResident → Facade → collab.Service.SitResident/StandResident（mapResidentError、书写者集 sessionWriters ∪ 驻场者）；CLI session sit/stand 与 session wait <session>（runSessionWait → sessionWaitRun → sessionWaitPage → sessionWaitMatch → Matches，候选读 ResidentMessageCandidatesContext，与席位读共用 addressCandidatesSQL）；F-RM1：coordinatorRunner.Resume → seatEnv、CoordSessionRef/SessionRef.Env 对称字段、简报 briefingSessionSend/briefingRoomResume/briefingWakeEvents；删 resumeTurnRequest。MessageWakeTargets 保留（Q12 乙）。图覆盖债：session 命令族其余子命令与 buildSessionWake、Service.sendToSession、bumpSeatRevisionTx、rebuildAfterResumeFailure 未入基线，相关边未登记；collab → LedgerClient 接口方法调用不入图。 B435.3（O1）：项目房间 Store.EnsureProjectRoom（首句无操作写取写锁 claimProjectRoomWriteLockTx，与 CreateSession 共用 createSessionTx）/ProjectRoom/SessionProject → Facade → collab.Service.EnsureProjectRoom；agentd 消费循环 → notifyProjectRoom（projectNoticeTargetOf/projectNoticeAlreadySent/finishProjectNotice/holdProjectNotifyClaim/settleInapplicableNotice）→ collab.Service.Send；handleRoomMessages 读时经 Recipients 投影 no_recipient（roomHistoryBySystemNull）；CLI project room、session sit --project、card show 无组织者提示（cardShowOrganizerHint）。图覆盖债：Store.ClaimWake/CompleteWake/CursorWatermark/MentionCandidatesContext 与 Service.HistoryContext 未入基线，相关边未登记；summarizeSession → LedgerClient.SessionProject 为接口方法调用不入图。 B435.4（O2）：消费循环 consumeAutomationEventsOnce → ringResidentDoorbells（residentDoorbellIneligible / residentDoorbellAttempt / residentDoorbellUndelivered）→ collab.Service.Recipients、ledger api Facade.SessionResident、scheduling.IsLocalMachine、Server.IsSelfTarget、proto.RenderResidentLetter/DeliveryCursorKey 与 desktopwake.go 保留六组（writeDesktopLetter、claudeContinueURL、desktopMailboxHome、sweepDesktopLetterTmp、desktopClock、opener 字段调用不入图）。图覆盖债：门铃状态类型 residentWakeState / residentDoorbellBatch / residentDoorbellRound 及其方法（isRung、markRung、pruneUpTo、takeRetry、putRetry、retryKeys、add、merge、skip）未入图（视图 diff 无容器新增面，与 O1 projectNotifyHandled 同处置）；Server.desktopOpen 为函数字段调用不入图。",
+  "summary": "B435 contract Ticket 0：席位驱动模式词表 SeatMode/ParseSeatMode 与 Card/CardView.driver_mode、SessionCard.seat_mode 投影键（③）；收件地址 DeliveryAddress/DeliveryAddressKind、游标键 DeliveryCursorKey、无收件人原因 NoRecipientReason、匹配结果 Delivery、人类作者判据 IsHumanAuthor（②）；匹配函数空壳 collab.Service.Recipients/Matches/defaultRecipient（恒报未实现）；驻场者 DTO SessionResident 与出站接口 LedgerClient.SessionResident（Facade 空壳恒报未实现）；驻场者来信正文 ResidentLetter/RenderResidentLetter（④，正文即 wire 定义）；r3 补签⑤投递投影：房间历史行 RoomHistoryItem（LedgerEvent 平铺 + no_recipient 可省略键）与 SessionSummary.project 可省略键。常量与哨兵不入图。 B435.1（K0）：席位模式列与显式写面 BindSeatMode/RebindSeatMode、迁移 migrateDriverMode；匹配函数落码（Recipients 直调 proto.IsHumanAuthor）；驻场者只读面 Store.SessionResident；agentd 房间唤醒改接 Recipients + seatAddressWake（删 room.IsSessionRoom / MessageWakeTargets 两条旧边）；card wait 房间命中段（SeatMessageCandidatesContext / 游标行 / 坐下下界 + Matches）；删 Service.AddressesCard。图覆盖债：Store.SeatRevisionContext、Store.AdvanceSessionDeliveryCursor 未入基线，相关边未登记。 B435.2（R）：驻场者写面 Store.SitResident/StandResident → Facade → collab.Service.SitResident/StandResident（mapResidentError、书写者集 sessionWriters ∪ 驻场者）；CLI session sit/stand 与 session wait <session>（runSessionWait → sessionWaitRun → sessionWaitPage → sessionWaitMatch → Matches，候选读 ResidentMessageCandidatesContext，与席位读共用 addressCandidatesSQL）；F-RM1：coordinatorRunner.Resume → seatEnv、CoordSessionRef/SessionRef.Env 对称字段、简报 briefingSessionSend/briefingRoomResume/briefingWakeEvents；删 resumeTurnRequest。MessageWakeTargets 保留（Q12 乙）。图覆盖债：session 命令族其余子命令与 buildSessionWake、Service.sendToSession、bumpSeatRevisionTx、rebuildAfterResumeFailure 未入基线，相关边未登记；collab → LedgerClient 接口方法调用不入图。 B435.3（O1）：项目房间 Store.EnsureProjectRoom（首句无操作写取写锁 claimProjectRoomWriteLockTx，与 CreateSession 共用 createSessionTx）/ProjectRoom/SessionProject → Facade → collab.Service.EnsureProjectRoom；agentd 消费循环 → notifyProjectRoom（projectNoticeTargetOf/projectNoticeAlreadySent/finishProjectNotice/holdProjectNotifyClaim/settleInapplicableNotice）→ collab.Service.Send；handleRoomMessages 读时经 Recipients 投影 no_recipient（roomHistoryBySystemNull）；CLI project room、session sit --project、card show 无组织者提示（cardShowOrganizerHint）。图覆盖债：Store.ClaimWake/CompleteWake/CursorWatermark/MentionCandidatesContext 与 Service.HistoryContext 未入基线，相关边未登记；summarizeSession → LedgerClient.SessionProject 为接口方法调用不入图。 B435.4（O2）：消费循环 consumeAutomationEventsOnce → ringResidentDoorbells（residentDoorbellIneligible / residentDoorbellAttempt / residentDoorbellUndelivered）→ collab.Service.Recipients、ledger api Facade.SessionResident、scheduling.IsLocalMachine、Server.IsSelfTarget、proto.RenderResidentLetter/DeliveryCursorKey 与 desktopwake.go 保留六组（writeDesktopLetter、claudeContinueURL、desktopMailboxHome、sweepDesktopLetterTmp、desktopClock、opener 字段调用不入图）。图覆盖债：门铃状态类型 residentWakeState / residentDoorbellBatch / residentDoorbellRound 及其方法（isRung、markRung、pruneUpTo、takeRetry、putRetry、retryKeys、add、merge、skip）未入图（视图 diff 无容器新增面，与 O1 projectNotifyHandled 同处置）；Server.desktopOpen 为函数字段调用不入图。 B435.6（W）：控制台退役 B434 坐席入口——删 claudeDeepLink.ts / desktopSeatCopy.ts 全部节点、CoordinatorPanel 的坐席状态与三个处理函数、scheduling 拉起器两函数与两 DTO、desktopShell.requestOpenDeepLink；RoomHistoryItem TS 孪生改为 interface（+no_recipient）。图覆盖债：新符号 deliveryCopy.ts（NO_RECIPIENT_COPY / NEEDS_MENTION_COPY / DELIVERY_READ_TIME_HINT / noRecipientLabel）、ledger.ts（SeatMode / SEAT_MODES / isSeatMode / SEAT_MODE_HINT / SEAT_MODE_UNKNOWN_LABEL / seatModeView）、rooms.ts（NoRecipientReason / NO_RECIPIENT_REASONS / isNoRecipientReason / SESSION_MEMBER_KINDS / isSessionMemberKind）、sessionModel.ts（sessionProjects / memberRoleLabel / RESIDENT_ORGANIZER_LABEL / PROJECT_ROOM_BADGE）未入图（web 会话侧本不在基线，plan §10 R #27 记法，不补扫）。",
   "nodesAdded": {
     "m_proto_SeatMode": {
       "kind": "model",
@@ -1831,11 +1831,46 @@
         ]
       ],
       "returns": "int, bool, error"
+    },
+    "m_web_api_rooms_RoomHistoryItem": {
+      "kind": "model",
+      "container": "k_web_api_rooms_model",
+      "order": 18,
+      "name": "RoomHistoryItem",
+      "file": "web/src/api/rooms.ts",
+      "line": 114,
+      "signature": "export interface RoomHistoryItem extends LedgerEvent {",
+      "modelKind": "dto",
+      "summary": "房间历史视图一行：账本事件平铺 + 可省略的 no_recipient（B435 ⑤ C-509）。"
     }
   },
   "nodesDeleted": [
     "n_agentd_resumeTurnRequest",
-    "n_collab_Service_AddressesCard"
+    "n_collab_Service_AddressesCard",
+    "m_web_app_lib_CLAUDE_Q_MAX_CHARS",
+    "m_web_app_lib_CLAUDE_NEW_SESSION_URL_PREFIX",
+    "m_web_app_lib_ClaudeDeepLinkRejectReason",
+    "m_web_app_lib_ClaudeDeepLinkResult",
+    "n_web_app_lib_buildClaudeNewSessionURL",
+    "m_web_app_cards_DESKTOP_SEAT_BUTTON",
+    "m_web_app_cards_DESKTOP_COPY_BRIEF_BUTTON",
+    "m_web_app_cards_DESKTOP_COPY_BRIEF_HINT",
+    "m_web_app_cards_DESKTOP_TRUST_HINT",
+    "m_web_app_cards_DESKTOP_LAUNCHER_BUTTON",
+    "m_web_app_cards_DESKTOP_LAUNCHER_SENT",
+    "m_web_app_cards_DesktopMaterialState",
+    "m_web_app_cards_DesktopOpenState",
+    "m_web_app_cards_MATERIAL_LOADING",
+    "m_web_app_cards_OPEN_IDLE",
+    "n_web_app_cards_rejectLogDetail",
+    "n_web_app_cards_seatWithClaudeCode",
+    "n_web_app_cards_copyBrief",
+    "n_web_app_cards_openLauncher",
+    "n_web_api_scheduling_getDesktopLaunchMaterial",
+    "n_web_api_scheduling_openViaDesktopLauncher",
+    "n_web_app_lib_requestOpenDeepLink",
+    "m_web_api_scheduling_DesktopLaunchMaterial",
+    "m_web_api_scheduling_DesktopLauncherOpenResp"
   ],
   "edgesAdded": [
     [
@@ -2515,6 +2550,10 @@
     [
       "n_ledger_Store_CreateSession",
       "n_ledger_Store_timeNow"
+    ],
+    [
+      "n_web_app_cards_seatWithClaudeCode",
+      "n_web_app_cards_rejectLogDetail"
     ]
   ],
   "projectionsAdded": [],

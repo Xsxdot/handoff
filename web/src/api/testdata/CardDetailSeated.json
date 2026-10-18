@@ -1,0 +1,25 @@
+{
+  "card": {
+    "id": "B169",
+    "title": "已叫机器人",
+    "status": "进行中",
+    "priority": "高",
+    "project": "handoff",
+    "parent": "",
+    "workflow": "triage",
+    "workflow_version": 1,
+    "driver_session": "cli:opencode#sess-b169",
+    "driver_source": "coordinate",
+    "driver_mode": "push",
+    "driver_heartbeat_at": "2026-08-11T10:30:00+08:00",
+    "created_at": "2026-08-11T10:30:00+08:00",
+    "updated_at": "2026-08-11T10:30:00+08:00"
+  },
+  "relations": [],
+  "events": [],
+  "task_states": [],
+  "effective_base_branch": "main",
+  "decisions": [],
+  "needs": "",
+  "children": []
+}

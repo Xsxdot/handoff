@@ -1,4 +1,10 @@
-import type { CardView } from '../../api/ledger'
+import { seatModeView, type CardView } from '../../api/ledger'
+
+// seatModeCell 席位列的模式行（B435 Q5）：只对坐着的卡出，值原样 push/pull + 悬停说明。
+function seatModeCell(card: CardView) {
+  const mode = seatModeView(card.driver_mode, 'driver_mode')
+  return <div data-testid="list-seat-mode" title={mode.hint} className="font-mono text-[11px] text-muted-foreground">{mode.text}</div>
+}
 
 export function ListView({
   cards,
@@ -35,7 +41,7 @@ export function ListView({
                 {card.following && <div className="text-[11px] text-muted-foreground">跟随 {card.following}</div>}
               </td>
               <td className="whitespace-nowrap px-2 py-2">{card.status}</td>
-              <td className="max-w-[16rem] px-2 py-2">{card.driver_session ? <><div className="truncate font-mono text-[11px]">{card.driver_session}</div><div className="text-[11px] text-muted-foreground">{card.driver_source === 'bind' ? '坐下' : card.driver_source === 'coordinate' ? '叫机器人' : '席位异常'}</div></> : <span className="text-muted-foreground">空座</span>}</td>
+              <td className="max-w-[16rem] px-2 py-2">{card.driver_session ? <><div className="truncate font-mono text-[11px]">{card.driver_session}</div><div className="text-[11px] text-muted-foreground">{card.driver_source === 'bind' ? '坐下' : card.driver_source === 'coordinate' ? '叫机器人' : '席位异常'}</div>{seatModeCell(card)}</> : <span className="text-muted-foreground">空座</span>}</td>
               <td className="whitespace-nowrap px-2 py-2 text-muted-foreground">待真机验</td>
               <td className="whitespace-nowrap px-2 py-2">{card.priority || '—'}</td>
               <td className="whitespace-nowrap px-2 py-2 text-muted-foreground">{card.attachments?.length || '—'}</td>
