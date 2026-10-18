@@ -213,8 +213,10 @@ func TestB353CardWaitFollowFiltersAndContinues(t *testing.T) {
 		}
 		got = append(got, event)
 	}
+	// B435 C-111：卡房间 room_message 不再是可动作事件（寻址命中 pull 席位的会话房间消息
+	// 改由房间命中段交付）；本测试写的卡房间「真人消息」从期望序列中去掉（拆解 §2.2 授权）。
 	wantTypes := []string{ledger.EvNeedsHuman, ledger.EvNeedsCleared,
-		ledger.EvDecisionOpened, ledger.EvDecisionAnswered, ledger.EvRoomMessage,
+		ledger.EvDecisionOpened, ledger.EvDecisionAnswered,
 		ledger.EvTaskMirrored}
 	if len(got) != len(wantTypes) {
 		t.Fatalf("follow 输出 %d 行，want %d: %+v", len(got), len(wantTypes), got)

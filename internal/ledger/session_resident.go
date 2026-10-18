@@ -43,7 +43,7 @@ func (s *Store) SessionResident(session string) (SessionResident, bool, error) {
 	}
 	if err != nil {
 		log().Warn("读驻场者失败", "session", session, "cause", err)
-		return SessionResident{}, false, fmt.Errorf("读会话 %s 驻场者: %w", session, err)
+		return SessionResident{}, false, fmt.Errorf("session_residents 查询 session=%s: %w", session, err)
 	}
 	r.SatAt = toTime(satAt)
 	log().Debug("读驻场者完成", "session", session, "identity", r.Identity, "has_desktop", r.DesktopSession != "")

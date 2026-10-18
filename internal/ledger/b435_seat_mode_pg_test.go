@@ -3,10 +3,30 @@
 package ledger
 
 import (
+	"context"
+	"reflect"
 	"testing"
 
 	"github.com/Xsxdot/handoff/internal/proto"
 )
+
+// C-151：席位候选新支两方言同集同序（PG 孪生；隔离 schema，门控）。
+func TestB435SeatCandidatesPG(t *testing.T) {
+	f := newU5FixturePG(t)
+	const sess = "session:1"
+	missing := f.u5Send(t, f.run, sess, proto.RoomMsgUser, nil, 0, false)
+	badReply := f.u5Send(t, f.run, sess, proto.RoomMsgUser, nil, 999999999, false)
+	atCard := f.u5Send(t, f.run, sess, proto.RoomMsgUser, []string{f.card1}, 0, false)
+	f.u5Send(t, f.run, "session:2", proto.RoomMsgUser, nil, 0, false)
+	f.u5Send(t, f.run, sess, proto.RoomMsgUser, []string{"user:other"}, 0, false)
+	got, err := f.s.SeatMessageCandidatesContext(context.Background(), u5MemberSeat, sess, 0, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []int64{missing, badReply, atCard}; !reflect.DeepEqual(seqsOf(got), want) {
+		t.Fatalf("PG 席位候选不符: got=%v want=%v", seqsOf(got), want)
+	}
+}
 
 func TestB435DriverModeMigrationPG(t *testing.T) {
 	s := newPGStore(t)
