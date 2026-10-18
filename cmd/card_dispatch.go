@@ -170,13 +170,17 @@ func swapDispatchTransportWithOpts(fn func(dispatchRequest) (string, string, err
 //
 // resolveCLITarget 把 CLI 的目标输入解析成（身份值, 是否本机）。
 //
-// 有自名：省略或 == 自名 → 本机（身份值=自名）；其余保留原值。无自名：
-// 回退地址判据（S5，行为与今天一致），本机身份值为空串。未知的非本机名保留
-// 原名并返回可行动错误，不增加“本机”或“localhost”魔法别名。
+// 有自名：省略或 == 自名 → 本机（身份值=自名）；local/本机/hostname 是旧别名，
+// 拒收并点名改成自名（S6）。无自名：回退地址判据（S5，行为与今天一致），本机
+// 身份值为空串。未知的非本机名保留原名并返回可行动错误，不增加“本机”或
+// “localhost”魔法别名。
 func resolveCLITarget(target string) (identity string, isLocal bool, err error) {
 	cfg, err := config.Load(effectiveConfigPath())
 	if err != nil {
 		return "", false, fmt.Errorf("加载配置: %w", err)
+	}
+	if aerr := cfg.LegacyLocalAliasError(target); aerr != nil {
+		return "", false, aerr
 	}
 	identity, isLocal = cfg.ResolveTarget(target)
 	if isLocal {
@@ -186,6 +190,17 @@ func resolveCLITarget(target string) (identity string, isLocal bool, err error) 
 		return target, false, fmt.Errorf("目标机 %s 未登记（handoff init/机器登记先行）", target)
 	}
 	return identity, false, nil
+}
+
+// legacyAliasError 是 CLI 侧 S6 拒收判据：本机旧别名（local/本机/hostname）且
+// 已配自名 → 可行动错误。配置读不了时返回 nil（放行）——配置错误会由
+// resolveCLITarget 先报出来，这里不重复报、也不因读配置失败误杀模板派发。
+func legacyAliasError(target string) error {
+	cfg, err := config.Load(effectiveConfigPath())
+	if err != nil {
+		return nil
+	}
+	return cfg.LegacyLocalAliasError(target)
 }
 
 // canonicalCLITarget 返回一次目标输入的**路由值**：本机归一为空串，远端保留
@@ -378,6 +393,7 @@ var cardDispatchCmd = &cobra.Command{
 			},
 			DisciplineText:    resolved.Text,
 			DisciplineVersion: resolved.Version,
+			RejectLegacyAlias: legacyAliasError,
 			ResolveTarget: func(target string) (string, bool) {
 				identity, isLocal, err := resolveCLITarget(target)
 				if err != nil {

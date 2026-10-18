@@ -1097,7 +1097,16 @@ func (s *Server) handleLedgerHealth(w http.ResponseWriter, r *http.Request) {
 		ledgerErr(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"enabled": true, "mirror": rows})
+	// B439 S7：加性字段报「无归属在飞挂账 N 条」——存量 target='' 的非终态挂账
+	// 只在持有者本机时可镜像，健康面显性化它，不让它继续藏在正常健康行后面。
+	unattributed, err := s.ledger.UnattributedInflightCount()
+	if err != nil {
+		ledgerErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"enabled": true, "mirror": rows, "unattributed_inflight": unattributed,
+	})
 }
 
 // attachmentKinds 是允许的附件类型。收窄成白名单不是洁癖：附件 kind 是

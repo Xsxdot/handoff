@@ -22,19 +22,10 @@ func mirrorTaskTerminal(typ string) bool {
 	return typ == "archived" || typ == "failed"
 }
 
-// LiveMirrorTargets 仍有非终态挂账的 target 集合。
-//
-// 一条挂账算「在飞」当且仅当：还从未镜像过，或最后一条镜像事件不是
-// archived/failed。看板用它把「全归档后的静默」从「断链滞后」里剔出去；
-// 镜像对账用它决定要不要空 touch 心跳。
-func (s *Store) LiveMirrorTargets() (map[string]bool, error) {
-	links, err := s.AllTaskLinks()
-	if err != nil {
-		return nil, err
-	}
-	if len(links) == 0 {
-		return map[string]bool{}, nil
-	}
+// lastMirroredType 读每个 (target, task) 的最后一条镜像事件类型，键为
+// target+"/"+taskID。LiveMirrorTargets / NonTerminalLinks / UnattributedInflightCount
+// 三个派生读共用它，避免三份 SQL 漂移。
+func (s *Store) lastMirroredType() (map[string]string, error) {
 	rows, err := s.db.Query(s.q(`SELECT e.source_target, e.source_task, e.payload
 		FROM card_events e
 		INNER JOIN (
@@ -66,6 +57,26 @@ func (s *Store) LiveMirrorTargets() (map[string]bool, error) {
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("读各 task 末条镜像: %w", err)
 	}
+	return lastType, nil
+}
+
+// LiveMirrorTargets 仍有非终态挂账的 target 集合。
+//
+// 一条挂账算「在飞」当且仅当：还从未镜像过，或最后一条镜像事件不是
+// archived/failed。看板用它把「全归档后的静默」从「断链滞后」里剔出去；
+// 镜像对账用它决定要不要空 touch 心跳。
+func (s *Store) LiveMirrorTargets() (map[string]bool, error) {
+	links, err := s.AllTaskLinks()
+	if err != nil {
+		return nil, err
+	}
+	if len(links) == 0 {
+		return map[string]bool{}, nil
+	}
+	lastType, err := s.lastMirroredType()
+	if err != nil {
+		return nil, err
+	}
 	live := map[string]bool{}
 	for _, link := range links {
 		typ, ok := lastType[link.Target+"/"+link.TaskID]
@@ -74,6 +85,56 @@ func (s *Store) LiveMirrorTargets() (map[string]bool, error) {
 		}
 	}
 	return live, nil
+}
+
+// NonTerminalLinks 返回仍有非终态镜像的挂账键集合（键 = target+"/"+taskID）。
+// 供镜像对账逐条判定「历史无归属 ” 挂账」是否要每轮打一次 WARN（B439 S7）：
+// 目标集合是 per-target 的，S7 的 WARN 与计数要 per-link 粒度。
+func (s *Store) NonTerminalLinks() (map[string]bool, error) {
+	links, err := s.AllTaskLinks()
+	if err != nil {
+		return nil, err
+	}
+	lastType, err := s.lastMirroredType()
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]bool{}
+	for _, link := range links {
+		typ, ok := lastType[link.Target+"/"+link.TaskID]
+		if !ok || !mirrorTaskTerminal(typ) {
+			out[link.Target+"/"+link.TaskID] = true
+		}
+	}
+	return out, nil
+}
+
+// UnattributedInflightCount 返回 target 为空（历史无归属）且非终态的挂账条数
+// （B439 S7 健康面「无归属在飞挂账 N 条」）。终态（已 archived/failed）的 ”
+// 挂账不计——它们没有可镜像的东西，不该继续亮灯。
+func (s *Store) UnattributedInflightCount() (int, error) {
+	links, err := s.AllTaskLinks()
+	if err != nil {
+		return 0, err
+	}
+	if len(links) == 0 {
+		return 0, nil
+	}
+	lastType, err := s.lastMirroredType()
+	if err != nil {
+		return 0, err
+	}
+	count := 0
+	for _, link := range links {
+		if link.Target != "" {
+			continue
+		}
+		typ, ok := lastType[link.Target+"/"+link.TaskID]
+		if !ok || !mirrorTaskTerminal(typ) {
+			count++
+		}
+	}
+	return count, nil
 }
 
 // LatestTaskStates 一张卡全部挂账 task 的实况。
