@@ -1,0 +1,34 @@
+# B439 plan 台账
+
+- 2026-10-18 环境：worktree `3a55ce86`，分支 `cards/B439-charter`，起手 HEAD `63858ae9`（spec 改名入卡号提交），工作树起手干净。
+- 2026-10-18 读 spec `docs/superpowers/specs/b439.md`（r1 已批准，93 行）与 spec 台账 `b439-ledger.md`（11 行）全量。
+- 2026-10-18 图查询环境：本 worktree 无 `codegraph/baseline.json`；图数据在主仓 `/root/.handoff/repos/handoff/codegraph/`。全部图查询用 `codegraph --repo /root/.handoff/repos/handoff <子命令>`，view=baseline。`codegraph --version` 报 unknown flag，该命令叫 `codegraph version`（未跑，不影响结论）。
+- 2026-10-18 图命中：`canonicalCLITarget`（cmd/card_dispatch.go:175，与 spec 引用一致）、`Server.CanonicalTarget`（internal/agentd/server.go:552，图行号偏移 2 行，worktree 实读 550-555）、`config.IsSelfTarget`（internal/config/listenclass.go:80）、`scheduling.IsLocalMachine`（internal/scheduling/scheduling.go:182）、`agentd.isLocalMachineName`（machineupgrade.go:331）、`cmd.probeLauncherMachine`（launcher.go:242）、`targetclient.Pool`（pool.go:47）、`Store.WorkBranch`（ledger/events.go:686）、`Store.RecordDispatchAndLinkTask`（ledger/events.go:179）、`TaskLink`（ledger/tasks.go:16）、`Store.AllTaskLinks`（tasks.go:120）。
+- 2026-10-18 **图覆盖债**：`NormalizeTarget`、`FrozenTarget` 不在图中（近似候选为空）——回落 grep 验证：`NormalizeTarget` 定义于 `internal/ledgerstep/dispatch.go:37-41`（Dispatcher 字段）与调用点 `dispatch.go:249-251`、装配点 `internal/agentd/cardstep.go:218`、`cmd/card_dispatch.go:370`；`FrozenTarget` 定义于 `internal/ledgerstep/dispatch.go:37-41,108-111`、装配 `cmd/card_dispatch.go:103,129`、`cardstep.go:410,431`。
+- 2026-10-18 亲读缺陷链（worktree 现状行号，全部逐行读到）：
+  - `cmd/card_dispatch.go:175-191` `canonicalCLITarget`：登记名指向本机（`config.IsSelfTarget(cfg.Listen, t)`）→ 归一 `''`；`:335` 裸卡派发先归一再探活；`:370-377` CLI 侧 `NormalizeTarget` 缝把归一值送进 `ViaTemplate`。
+  - `internal/agentd/server.go:550-555` `CanonicalTarget`：`IsSelfTarget(name) || scheduling.IsLocalMachine(name)` → `''`。
+  - `internal/agentd/cardstep.go:218` `NormalizeTarget: s.CanonicalTarget`（step 派发同缝）；`:324-330` `resolveStepDiscipline` 归一后 `isLocalMachine` 再短路空串；`:392-403` `stepTransport`：`canonical` 只决定 client，`opts.Carrier != ""` 时 wire 用 `opts.Target`（B398 语义）。
+  - `internal/ledgerstep/dispatch.go:244-257` `ViaTemplate`：`req.Target` 空回落模板 → `rawTarget` → `NormalizeTarget` → 归一值进快照与挂账；`:279-303` WorkBranch 跨机判据比对 `previousTarget`（归一后）与 `target`（归一后）。
+  - `internal/ledgerstep/dispatch.go:482` `RecordDispatchAndLinkTask` 是**唯一生产调用方**（grep 全仓核实）；`ledger.RecordDispatch`（events.go:162）无生产调用方。
+  - `internal/ledgermirror/mirror.go:240-241` `isLocalTarget`：`target == ""` → 本机；`:335` want 过滤对 `''` 放行；`:345,368,497` `''` → `LocalSource`（持有者自己的 store）。
+  - `cmd/agentd.go:542-544` 镜像 `Holder: host`（**hostname**）；`:546` `IsSelfTarget: srv.IsSelfTarget`。
+  - 四套本机判法（spec 问题陈述 3 逐条核实）：`config.IsSelfTarget`（地址判，listenclass.go:80）；`scheduling.IsLocalMachine`（''/local/本机/hostname，scheduling.go:182-189）；`agentd.isLocalMachineName`（''/本机/hostname，machineupgrade.go:331-337）；`cmd.probeLauncherMachine`（launcher.go:242-265，同词表+target 表）。另 `internal/agentd/schedapi.go:364-366` `isLocalMachine` 是 scheduling.IsLocalMachine 的转发。
+- 2026-10-18 亲读数据面：
+  - `internal/ledger/store.go:224-227` `card_tasks (card_id, target, task_id, …, PRIMARY KEY (target, task_id))`；`:235-238` `card_events`（source_target/source_task/source_seq）；`:308-310` `mirror_lease.holder`；`:311-313` `mirror_cursors.target`；`:382-387` `registry(kind,id,version,seq,body JSONB,…)`（PG 与 SQLite 双 DDL 分支，`:390+` SQLite 映射）。
+  - `internal/ledger/registry.go` 通用 KV + CAS 版本语义；文件头注记「消费方只有 internal/ledger/api 门面」。
+  - `internal/ledger/mirror.go:189-215` `MirrorHealth()`（`mirror_cursors` + `LiveMirrorTargets`）；`taskstate.go:25-45` `LiveMirrorTargets`（`source_target IS NOT NULL` 分组）。
+  - `internal/agentd/ledgerapi.go:1085-1094` `handleLedgerHealth`：`{"enabled", "mirror": rows}`——S7 健康面的挂点（加性字段）。
+  - `internal/targetclient/pool.go:90-98` `Names()` 读 `p.conf().Targets`；`:110-147` `For()` 读 `p.conf().Targets`、实例判等 `e.target == t`（B163 ②）；`p.conf()` 仅这两处用（grep 核实）。`NewPool` 唯一生产调用方 `internal/agentd/server.go:344`。
+  - `internal/agentd/machineadmin.go:38-101` 增删机器 = `swapConf`→`config.Save` 写本地 targets；`machines.go:206-214` 注释：控制台只支持直连形态新增，relay 形态是另一张单（spec 引用 `machines.go:211-212` 核实）。
+  - `cmd/machines.go:1-66` CLI 只读投影；`:49-51` 空串名显示「本机」。
+  - `internal/proto/projects.go:119-139` `proto.Machine`（无 Token 字段，类型级保证令牌不出）。
+  - `internal/config/config.go:310-317` `config.Target{Addr,Token,User,Relay,Credential,Node}`——**只有 yaml tag，无 json tag**（设备表 JSONB 投影的手写转换点）；`:45-133` Config 顶层键（KnownFields(true) 严格解析，B59 同款 omitempty 纪律，注释在 :68-71/:86-89）；`:177-185` `LedgerConfig.DSN`；`:186-192` `RelayConfig{URL,Credential,Node}`（执行机 relay 出站形态）。
+  - `cmd/init.go:49-191` init 流程：`initflow.AskAll`（字段表驱动，Key 一经发布不得更名，`internal/initflow/form.go:36-38`）；`printPairing` 用 `advertiseAddr(cfg.Listen)`（cmd/advertise.go:80）。
+  - `internal/agentd/handlers.go:520-560` 接收端：`binding.Target` → B233.27 准入（`:583-589` `CanonicalTarget(binding.Target)` 空串=本机）→ `orchestration.DispatchReq.Target = binding.Target` → **wire Target 即执行机 task.Target**（cmd/pull.go:70 `task.Target==""` = 本机任务的读者面不变）。
+  - `internal/ledgerstep/node.go:430-460` pass 后 WorkBranch 推 origin：`info.Target == ""` → 回落本轮 target（存量口径）。
+  - `cmd/pull.go:70-80`、`internal/agentd/roomsapi.go:246,275,399`：`''` 读者面（本机任务解释）——机内 store 上的 `''` 语义不变。
+  - `docs/roadmap.md`：B334 段「`IsLocalMachine("mac-02")` 为假…hostname 是 `sycmdeMacBook-Air.local`」（约 :709，spec 引用核实）；B398 段「冻结绑定存量盘点」（约 :756-758，核实）。
+- 2026-10-18 基线亲跑：`go build ./...` → 退出 0。`go test ./internal/ledgermirror/ ./internal/config/ ./internal/targetclient/ -count=1 -timeout 300s` → 三包全 ok（4.536s / 0.021s / 5.161s）。`go test ./internal/agentd/ -run 'TestAddMachine|TestRemoveMachine|TestMachine|TestValidateAddMachine|TestCanonicalTarget|TestSelfTarget' -count=1` → ok 2.473s。`go test ./cmd/ -run 'TestMachines|TestLauncher|TestProbeLauncher|TestCardDispatch' -count=1` → ok 5.753s。
+- 2026-10-18 检索过的既有测试夹具：`internal/ledgermirror/mirror_test.go` `newFakeMachines`、`testLedger`、`TestMirrorLocalTargetUsesLocalSource`（本机源竖切样板，:486-593）。
+- 2026-10-18 plan 写作过程中的判断（正文 §0/§4 有完整依据）：扇出不扇（单卡三片顺序）改判为**扇出**（首故事子卡 + 一批两张）；设备表独立表（不挂 registry kind）；缺 advertise 直连形态按 fail-closed 处置（待拍板）；缺自名时共享 DSN 不打开、整组子系统不挂载（S2 的机制化）；S6 门控按「有无 name:」不按 DSN。
