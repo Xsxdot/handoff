@@ -60,12 +60,14 @@ func (p *Pool) Warm(ctx context.Context) {
 
 // warmOnce 跑一轮预热：对每台处于「可以重试」状态的 relay 机器建一次隧道。
 func (p *Pool) warmOnce(ctx context.Context, states map[string]*warmState) {
-	targets := p.conf().Targets
 	now := time.Now()
 	warmed, skipped, failed := 0, 0, 0
 
 	for _, name := range p.Names() {
-		t := targets[name]
+		t, ok := p.targetOf(name)
+		if !ok {
+			continue // 名字在 Names 与 Target 之间被删：下一轮自然收敛
+		}
 		if !t.IsRelay() {
 			continue // 直连没有隧道可预热
 		}

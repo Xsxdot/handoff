@@ -508,7 +508,27 @@ func setupLedger(cfg *config.Config, srv *agentd.Server, taskStore *store.Store,
 		logger.Error("打开账本库失败", "dsn_configured", shared, "cause", err)
 		return nil, fmt.Errorf("打开账本库: %w", err)
 	}
+	// B439 S3/S8：自登记（账本打开后、镜像挂载前同步执行）与本地 targets 一次性导入。
+	// 撞名（异实例）→ 账本子系统不挂载，agentd 照常起（与 S2 挂载门同款 fail-closed）。
+	if shared {
+		if err := agentd.SelfRegister(lst, cfg, logger); err != nil {
+			logger.Error("机器自登记失败，账本子系统不挂载（agentd 照常提供服务）",
+				"cause", err, "action", "改 config.yaml 的 name: 或清理设备表冲突行后重启")
+			_ = lst.Close()
+			return func() {}, nil
+		}
+		if err := agentd.ImportLocalTargets(lst, cfg, logger); err != nil {
+			logger.Error("本地 targets 导入设备表失败，账本子系统不挂载", "cause", err)
+			_ = lst.Close()
+			return func() {}, nil
+		}
+	}
 	srv.SetLedger(lst)
+	// B439 F5：有 DSN 的机器把池的选路数据源切到设备表；无 DSN 保持活配置（S5）。
+	// 必须在镜像/调度/探活之前注入——它们都经池取机器清单。
+	if shared {
+		srv.SetDeviceSource(agentd.NewDeviceTableSource(lst, logger.With("component", "devices")))
+	}
 	// B156.3 自动化层装配。B233.18：SetupAutomation 收缩为账本门面 / automation
 	// cursor / ptyGate 的纯装配；房间/keystone/hostapi 三域构造上移本组装点
 	// （target.json assembly 登记点语义随之由 cmd 承接）——先备 facade，再构造注入。
@@ -541,8 +561,13 @@ func setupLedger(cfg *config.Config, srv *agentd.Server, taskStore *store.Store,
 		return nil, fmt.Errorf("编制域装配：SchedulingRegistry 为空（SetupAutomation 未装配账本门面）")
 	}
 	sched := scheduling.New(reg)
-	// 保留控制台改机器清单不必重启 agentd：闭包经 Conf() 读活配置。
+	// 保留控制台改机器清单不必重启 agentd：有 DSN 时判据是设备表（经快照源现读），
+	// 无 DSN 时回落活配置 targets:（S5）。
 	sched.SetKnownMachines(func(name string) bool {
+		if src := srv.DeviceSource(); src != nil {
+			_, ok := src.Target(name)
+			return ok
+		}
 		cfg := srv.Conf()()
 		if cfg == nil {
 			return false

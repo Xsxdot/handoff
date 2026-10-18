@@ -72,6 +72,40 @@ func TestMachinesTableContract(t *testing.T) {
 	}
 }
 
+// TestMachinesSelfMarkerAndNoCredentialFields B439：有自名的本机行标「（本机）」，
+// 且 --json 输出不含任何凭据键（F8 的 CLI 读面）。
+func TestMachinesSelfMarkerAndNoCredentialFields(t *testing.T) {
+	resetW3aFlags(t)
+	fixture := proto.MachinesResp{Machines: []proto.Machine{
+		{Name: "linux-01", Addr: "100.81.114.119:7777", Self: true, Reachable: true},
+		{Name: "mac-02", Addr: "", Relay: "macbook-pro", Reachable: true},
+	}}
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(fixture)
+	}))
+	t.Cleanup(ts.Close)
+
+	var stdout bytes.Buffer
+	if err := runSubcommandForTest(t, &stdout, ts.URL, "测试令牌", []string{"machines"}); err != nil {
+		t.Fatalf("machines: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "linux-01（本机）") {
+		t.Errorf("本机行应标「（本机）」：\n%s", stdout.String())
+	}
+
+	stdout.Reset()
+	if err := runSubcommandForTest(t, &stdout, ts.URL, "测试令牌", []string{"machines", "--json"}); err != nil {
+		t.Fatalf("machines --json: %v", err)
+	}
+	out := stdout.String()
+	for _, banned := range []string{`"token"`, `"credential"`} {
+		if strings.Contains(out, banned) {
+			t.Errorf("machines --json 不得含凭据键 %s：\n%s", banned, out)
+		}
+	}
+}
+
 // TestMachinesJSON 断言 --json 输出可解析为 proto.MachinesResp 的单行 JSON。
 func TestMachinesJSON(t *testing.T) {
 	resetW3aFlags(t)

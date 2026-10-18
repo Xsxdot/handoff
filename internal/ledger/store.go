@@ -402,6 +402,15 @@ func ddlStatements(pg bool) []string {
 				actor TEXT NOT NULL, updated_at TIMESTAMPTZ NOT NULL,
 				PRIMARY KEY (kind, id))`,
 			`CREATE INDEX IF NOT EXISTS idx_registry_kind_seq ON registry(kind, seq)`,
+			// B439 全队共享设备表：身份键 = 机器名（唯一）；连接块与可追加属性
+			// 都放 JSONB，加字段不加列（B437 审批链 / B438 端点候选未来落 attrs）。
+			`CREATE TABLE IF NOT EXISTS devices (
+				name TEXT PRIMARY KEY,
+				target JSONB NOT NULL,
+				instance_id TEXT NOT NULL DEFAULT '',
+				registered_at TIMESTAMPTZ NOT NULL,
+				updated_at TIMESTAMPTZ NOT NULL,
+				attrs JSONB NOT NULL DEFAULT '{}')`,
 			`INSERT INTO card_prefixes (project, prefix) VALUES ('handoff', 'B')
 				ON CONFLICT (project) DO NOTHING`,
 		}
@@ -578,6 +587,14 @@ func ddlStatements(pg bool) []string {
 				actor TEXT NOT NULL, updated_at TEXT NOT NULL,
 				PRIMARY KEY (kind, id))`,
 			`CREATE INDEX IF NOT EXISTS idx_registry_kind_seq ON registry(kind, seq)`,
+			// B439 全队共享设备表（SQLite 回退）：JSONB→TEXT，与 PG 分支同表同列。
+			`CREATE TABLE IF NOT EXISTS devices (
+				name TEXT PRIMARY KEY,
+				target TEXT NOT NULL,
+				instance_id TEXT NOT NULL DEFAULT '',
+				registered_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL,
+				attrs TEXT NOT NULL DEFAULT '{}')`,
 			`INSERT INTO card_prefixes (project, prefix) VALUES ('handoff', 'B')
 				ON CONFLICT (project) DO NOTHING`,
 		}

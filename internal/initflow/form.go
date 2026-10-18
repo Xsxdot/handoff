@@ -176,6 +176,8 @@ func Apply(cfg *config.Config, fields []Field, answers map[string]string) error 
 				return err
 			}
 			cfg.Name = ans
+		case "advertise":
+			cfg.Advertise = ans
 		case "repo_root":
 			cfg.RepoRoot = ans
 		case "approver_executor":
@@ -266,6 +268,11 @@ func Form(cfg *config.Config, rs []toolchain.Result, goos string, cfgExisted boo
 			Notice: "机器名 name 是这台机器在全队的唯一身份（落共享账本、按名路由）。" +
 				"有账本 DSN 时必须设置；留空时 agentd 照常起，但账本/镜像/卡派发/调度不挂载。" +
 				"不能是 local/本机，不能含空白或 /。"},
+		{Key: "advertise", Kind: KindInput, Title: "对外直连地址 advertise（host:port；relay 形态留空）",
+			Default: cfg.Advertise, Roles: []string{RoleExecutor, RoleBoth},
+			Notice: "advertise 是直连形态下本机对外可达地址，供别的机器按名从设备表取连接方式。" +
+				"有账本 DSN 的直连机器必填；relay 形态留空（用 relay: 段）。留空时 agentd 照常起，" +
+				"但账本子系统不挂载（与缺 name 同款 fail-closed）。"},
 		{Key: "executor_default", Kind: KindSelect, Title: "默认执行者",
 			Default: execDef, Options: ExecutorOptions(rs), Roles: []string{RoleExecutor, RoleBoth},
 			Advanced: true},
