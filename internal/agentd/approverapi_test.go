@@ -17,6 +17,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/executor"
@@ -32,17 +33,20 @@ type fakeRingProvider struct {
 	reply string
 	err   error
 
-	mu   sync.Mutex
-	last executor.OneShotReq
+	mu          sync.Mutex
+	last        executor.OneShotReq
+	hadDeadline bool
 }
 
 func (p *fakeRingProvider) Name() string { return p.name }
 func (p *fakeRingProvider) Report() executor.CapabilityReport {
 	return executor.CapabilityReport{Harness: p.name}
 }
-func (p *fakeRingProvider) Invoke(_ context.Context, req executor.OneShotReq) (executor.OneShotReply, error) {
+func (p *fakeRingProvider) Invoke(ctx context.Context, req executor.OneShotReq) (executor.OneShotReply, error) {
+	_, hadDeadline := ctx.Deadline()
 	p.mu.Lock()
 	p.last = req
+	p.hadDeadline = hadDeadline
 	p.mu.Unlock()
 	if p.err != nil {
 		return executor.OneShotReply{}, p.err
@@ -55,6 +59,13 @@ func (p *fakeRingProvider) lastPrompt() string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.last.Prompt
+}
+
+// lastHadDeadline 报告最近一次 OneShot 调用的 ctx 是否带截止（端点封顶探针）。
+func (p *fakeRingProvider) lastHadDeadline() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.hadDeadline
 }
 
 // extractPromptNonce 从裁决 prompt 里取 nonce 值（模板里形如 nonce=<hex>）。
@@ -291,4 +302,191 @@ type staticChainReader struct{ chain orchestration.ApproverChain }
 
 func (r *staticChainReader) Current(context.Context) (orchestration.ApproverChain, error) {
 	return r.chain, nil
+}
+
+// TestApproverDecideEndpointDoesNotCapChainTimeout 钉住本次补充 (2)：端点不得对
+// OneShot 施加自身封顶，只依赖 r.Context()（发起方链级时限经 HTTP 取消传播）。
+// 若端点硬编码 60s 封顶，OneShot 会看到一个人造截止——断言「无截止」即可证伪。
+func TestApproverDecideEndpointDoesNotCapChainTimeout(t *testing.T) {
+	p := &fakeRingProvider{name: "codex", reply: `{"decision":"approve","nonce":"NONCE"}`}
+	env := newApproverEndpointEnv(t, p)
+	code, out := postApproverDecide(t, env, `{"permission":"x","executor":"codex"}`, true)
+	if code != http.StatusOK || out.Decision != "approve" {
+		t.Fatalf("应 approve: %d %+v", code, out)
+	}
+	if p.lastHadDeadline() {
+		t.Fatal("端点不得对 OneShot 施加自身封顶（应只依赖 r.Context()，不掐断用户配置的链级时限）")
+	}
+}
+
+// ---- DecideRemote 五分类（本次补充 (4)：表驱动 + 拨号超时回归钉）----
+
+// dialTimeoutNetError 模拟「拨号超时形态的 net.Error」：满足 net.Error 且
+// errors.Is(err, context.DeadlineExceeded) 为真（真实拨号超时在部分路径上如此），
+// 但整体截止并未到点——按 §4.6 必须判「不可达」而非「超时」。
+type dialTimeoutNetError struct{}
+
+func (dialTimeoutNetError) Error() string   { return "dial tcp 100.64.0.1:443: i/o timeout" }
+func (dialTimeoutNetError) Timeout() bool   { return true }
+func (dialTimeoutNetError) Temporary() bool { return true }
+func (dialTimeoutNetError) Is(target error) bool {
+	return target == context.DeadlineExceeded
+}
+
+// fakeDecideCaller 是 approverDecideCaller 的故障替身。
+type fakeDecideCaller struct {
+	err  error
+	resp *proto.ApproverDecideResp
+}
+
+func (f *fakeDecideCaller) ApproverDecide(context.Context, proto.ApproverDecideReq) (*proto.ApproverDecideResp, error) {
+	return f.resp, f.err
+}
+
+// newServerWithTarget 起一个把 target 名指向 addr 的 agentd 组装点。
+func newServerWithTarget(t *testing.T, name, addr string) *Server {
+	t.Helper()
+	dir := t.TempDir()
+	cfg := &config.Config{Token: testToken, DataDir: dir, Listen: "127.0.0.1:0",
+		Targets: map[string]config.Target{name: {Addr: strings.TrimPrefix(addr, "http://"), Token: testToken}}}
+	st, err := store.Open(filepath.Join(dir, "handoff.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	return NewServer(cfg, st, slog.New(slog.NewTextHandler(io.Discard, nil)))
+}
+
+// runRingFailover 跑一条 [坏环(他机 badMachine), 本机好环] 的共享链，返回首环
+// attempt 与整链是否放行——验证「坏环失败后转下一环」。
+func runRingFailover(t *testing.T, badMachine string, chainTO time.Duration, rd orchestration.RemoteDecider) (orchestration.ApproverAttempt, bool) {
+	t.Helper()
+	local := &fakeRingProvider{name: "codex", reply: `{"decision":"approve","reason":"本机放行","nonce":"NONCE"}`}
+	ap, err := orchestration.NewApproverForShared(config.ApproverConfig{}, nil, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ap.SetSelfMachine(func(name string) bool { return name == "self" })
+	ap.SetLocalShot(func(string) (executor.OneShot, error) { return local, nil })
+	ap.SetRemoteDecider(rd)
+	ap.SetChainReader(&staticChainReader{chain: orchestration.ApproverChain{
+		Timeout: chainTO,
+		Rings: []orchestration.ApproverRing{
+			{Machine: badMachine, Executor: "codex"},
+			{Machine: "self", Executor: "codex"},
+		},
+	}})
+	d := ap.Decide(context.Background(), "Bash: ls", "摘要")
+	if len(d.Attempts) < 2 {
+		t.Fatalf("应至少有两条 attempt（坏环 + 好环）: %+v", d.Attempts)
+	}
+	return d.Attempts[0], d.Approve
+}
+
+func TestDecideRemoteFailureClassification(t *testing.T) {
+	discard := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	// 真实端点对端：无 providers → no_executor
+	_, _, tsNoExec, _ := newBareServer(t)
+	// 真实端点对端：垃圾输出 → invalid_output
+	_, _, tsInvalid, _ := newBareServer(t, &fakeRingProvider{name: "codex", reply: "我觉得可以批"})
+	// 挂起对端：连上后一直不回，超过链截止 → 超时
+	hangRelease := make(chan struct{})
+	tsHang := testhttp.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+		case <-hangRelease:
+		}
+	}))
+	t.Cleanup(func() { close(hangRelease) })
+	// 404 对端：旧版无此端点 → 不支持
+	tsNotFound := testhttp.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	// 未知 error_kind 对端 → internal
+	tsWeird := testhttp.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"decision":"error","reason":"对端怪错","model":"默认","elapsed_ms":1,"error_kind":"weird"}`)
+	}))
+
+	cases := []struct {
+		name       string
+		machine    string
+		chainTO    time.Duration
+		decider    func(t *testing.T) orchestration.RemoteDecider
+		wantKind   string
+		wantReason string
+	}{
+		{
+			name: "设备表无此名→不可达", machine: "ghost", chainTO: 2 * time.Second,
+			decider: func(t *testing.T) orchestration.RemoteDecider {
+				srv, _, _, _ := newBareServer(t)
+				return srv.ApproverRemoteDecider()
+			},
+			wantKind: orchestration.ApproverFailUnreachable, wantReason: "机器不可达",
+		},
+		{
+			name: "拨号超时形态且整体截止未到→不可达", machine: "linux-01", chainTO: 2 * time.Second,
+			decider: func(t *testing.T) orchestration.RemoteDecider {
+				return &remoteApproverDecider{log: discard, clientFor: func(string) (approverDecideCaller, error) {
+					return &fakeDecideCaller{err: dialTimeoutNetError{}}, nil
+				}}
+			},
+			wantKind: orchestration.ApproverFailUnreachable, wantReason: "机器不可达",
+		},
+		{
+			name: "404→不支持", machine: "linux-01", chainTO: 2 * time.Second,
+			decider: func(t *testing.T) orchestration.RemoteDecider {
+				return newServerWithTarget(t, "linux-01", tsNotFound.URL).ApproverRemoteDecider()
+			},
+			wantKind: orchestration.ApproverFailUnsupported, wantReason: "对端不支持",
+		},
+		{
+			name: "no_executor→对端无此执行器", machine: "linux-01", chainTO: 2 * time.Second,
+			decider: func(t *testing.T) orchestration.RemoteDecider {
+				return newServerWithTarget(t, "linux-01", tsNoExec.URL).ApproverRemoteDecider()
+			},
+			wantKind: orchestration.ApproverFailNoExecutor, wantReason: "对端无此执行器",
+		},
+		{
+			name: "对端挂起超过链截止→超时", machine: "linux-01", chainTO: 400 * time.Millisecond,
+			decider: func(t *testing.T) orchestration.RemoteDecider {
+				return newServerWithTarget(t, "linux-01", tsHang.URL).ApproverRemoteDecider()
+			},
+			wantKind: orchestration.ApproverFailTimeout, wantReason: "超时",
+		},
+		{
+			name: "invalid_output→裁决无效", machine: "linux-01", chainTO: 2 * time.Second,
+			decider: func(t *testing.T) orchestration.RemoteDecider {
+				return newServerWithTarget(t, "linux-01", tsInvalid.URL).ApproverRemoteDecider()
+			},
+			wantKind: orchestration.ApproverFailInvalidOutput, wantReason: "裁决无效",
+		},
+		{
+			name: "未知 error_kind→internal", machine: "linux-01", chainTO: 2 * time.Second,
+			decider: func(t *testing.T) orchestration.RemoteDecider {
+				return newServerWithTarget(t, "linux-01", tsWeird.URL).ApproverRemoteDecider()
+			},
+			wantKind: orchestration.ApproverFailInternal, wantReason: "对端怪错",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rd := tc.decider(t)
+			// (a) 分类
+			out := rd.DecideRemote(context.Background(),
+				orchestration.ApproverRing{Machine: tc.machine, Executor: "codex"}, "Bash: ls", "摘要", tc.chainTO)
+			if out.ErrorKind != tc.wantKind {
+				t.Fatalf("应分类 %s，得到 %s（reason=%q）", tc.wantKind, out.ErrorKind, out.Reason)
+			}
+			// (b) 坏环失败后转下一环
+			at, approved := runRingFailover(t, tc.machine, tc.chainTO, rd)
+			if !approved {
+				t.Fatalf("坏环失败后应转本机好环放行: %+v", at)
+			}
+			if at.Reason != tc.wantReason {
+				t.Fatalf("首环审计理由应 %q，得到 %q", tc.wantReason, at.Reason)
+			}
+		})
+	}
 }

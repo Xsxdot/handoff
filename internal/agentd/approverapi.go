@@ -75,8 +75,12 @@ func (s *Server) handleApproverDecide(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	// timeout=0：端点不施加自身裁决封顶，只依赖 r.Context()——发起方把链级时限
+	// 施加在 HTTP 请求上（DecideRemote 的 context.WithTimeout），截止经 HTTP 取消
+	// 传播到此处的 r.Context()。若这里再硬编码一个封顶，就会掐断用户配置的链级时限
+	// （本次补充 (2)）。
 	out := orchestration.RunLocalRing(r.Context(), shot, req.Executor, req.Model,
-		req.Permission, req.TaskSummary, orchestration.DefaultApproverChainTimeout, s.approverEnv, s.log)
+		req.Permission, req.TaskSummary, 0, s.approverEnv, s.log)
 	resp := proto.ApproverDecideResp{
 		Decision:  out.Decision,
 		Reason:    out.Reason,
@@ -112,19 +116,44 @@ func (s *Server) ApproverRemoteDecider() orchestration.RemoteDecider {
 	return &remoteApproverDecider{srv: s, log: s.log}
 }
 
+// approverDecideCaller 是 DecideRemote 依赖的对端裁决调用面。
+//
+// 生产实现是 *client.Client；测试注入故障替身，以确定性地钉住失败分类
+// （尤其「拨号超时形态的 net.Error」这类难以在秒级内真实复现的传输错误）。
+type approverDecideCaller interface {
+	ApproverDecide(ctx context.Context, req proto.ApproverDecideReq) (*proto.ApproverDecideResp, error)
+}
+
 type remoteApproverDecider struct {
 	srv *Server
 	log *slog.Logger
+	// clientFor 是取对端裁决调用面的缝：nil = 经 srv.clientForTarget（生产路径）；
+	// 测试注入故障替身（见 approverapi_test.go 的失败分类表驱动）。
+	clientFor func(machine string) (approverDecideCaller, error)
+}
+
+// deciderFor 解析某台机器的对端裁决调用面。
+func (r *remoteApproverDecider) deciderFor(machine string) (approverDecideCaller, error) {
+	if r.clientFor != nil {
+		return r.clientFor(machine)
+	}
+	c, err := r.srv.clientForTarget(machine)
+	if err != nil {
+		return nil, err
+	}
+	return c, nil
 }
 
 // DecideRemote 请一台他机的 agentd 代跑一个环（B437 §4.3）。
 //
-// 失败归类（§4.6）：404 → 不支持；整体截止已到 → 超时；其余传输错误 → 不可达；
-// 应答 decision=error → 归一 error_kind（未知 → internal）；应答无法解码 → 裁决无效。
+// 失败归类（§4.6）：404 → 不支持；整体截止（链 timeout）到点 → 超时；其余传输
+// 错误（含拨号超时）→ 不可达；应答 decision=error → 归一 error_kind（未知 →
+// internal）；应答无法解码 → 裁决无效。判「超时」只看 cctx.Err()，不看错误链——
+// net 拨号超时错误也会满足 errors.Is(err, context.DeadlineExceeded)（本次补充 (3)）。
 func (r *remoteApproverDecider) DecideRemote(ctx context.Context, ring orchestration.ApproverRing,
 	permission, taskSummary string, timeout time.Duration) orchestration.RemoteOutcome {
 	start := time.Now()
-	c, err := r.srv.clientForTarget(ring.Machine)
+	c, err := r.deciderFor(ring.Machine)
 	if err != nil {
 		r.log.Warn("代他机裁决：取对端客户端失败", "machine", ring.Machine, "cause", err)
 		return orchestration.RemoteOutcome{Decision: proto.ApproverDecisionError,
@@ -145,7 +174,12 @@ func (r *remoteApproverDecider) DecideRemote(ctx context.Context, ring orchestra
 		switch {
 		case errors.Is(err, client.ErrApproverUnsupported):
 			kind = orchestration.ApproverFailUnsupported
-		case errors.Is(err, context.DeadlineExceeded), errors.Is(cctx.Err(), context.DeadlineExceeded):
+		case cctx.Err() == context.DeadlineExceeded:
+			// 只以整体截止（链 timeout 到点）判「超时」（§4.6）。不能用
+			// errors.Is(err, context.DeadlineExceeded)：net 拨号超时错误在部分路径上
+			// 也满足它，会把「拨号 10s 超时但链截止未到」误判成「超时」——真机上同一
+			// 黑洞环并发 4 次曾出现 2 次判超时、2 次判不可达的非确定分类（本次补充 (3)）。
+			// 其余传输错误（含拨号超时）一律判「不可达」。
 			kind = orchestration.ApproverFailTimeout
 		}
 		r.log.Warn("代他机裁决请求失败", "machine", ring.Machine, "executor", ring.Executor,

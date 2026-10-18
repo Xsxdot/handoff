@@ -7,8 +7,10 @@ package orchestration
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -146,18 +148,54 @@ func TestApproverChainBodyRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 冻结 F5 键名
-	for _, key := range []string{`"timeout"`, `"rings"`, `"machine"`, `"executor"`} {
-		if !strings.Contains(string(body), key) {
-			t.Fatalf("body 应含键 %s: %s", key, body)
-		}
+	// 冻结 F5：body 顶层与每环的键集逐键精确一致（多键少键都红）。
+	assertApproverBodyKeys(t, "body 顶层", approverBodyKeys(t, body), []string{"rings", "timeout"})
+	var top struct {
+		Rings []json.RawMessage `json:"rings"`
 	}
+	if err := json.Unmarshal(body, &top); err != nil {
+		t.Fatalf("body 应为可解的 JSON 对象: %v", err)
+	}
+	if len(top.Rings) != 2 {
+		t.Fatalf("应两个环: %s", body)
+	}
+	// model 有值 → 出键；省略 → 不出键（omitempty）。
+	assertApproverBodyKeys(t, "ring[0]", approverBodyKeys(t, top.Rings[0]), []string{"executor", "machine", "model"})
+	assertApproverBodyKeys(t, "ring[1]", approverBodyKeys(t, top.Rings[1]), []string{"executor", "machine"})
 	back, err := DecodeApproverChain(body)
 	if err != nil {
 		t.Fatalf("解码 body: %v", err)
 	}
 	if back.Timeout != chain.Timeout || len(back.Rings) != 2 || back.Rings[0].Model != "m1" {
 		t.Fatalf("往返不等: %+v", back)
+	}
+}
+
+// approverBodyKeys 取一个 JSON 对象的键集（升序）。
+func approverBodyKeys(t *testing.T, raw []byte) []string {
+	t.Helper()
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatalf("应为 JSON 对象: %v (%s)", err, raw)
+	}
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// assertApproverBodyKeys 断言键集逐键一致（复用 proto 侧 assertKeys 形态）。
+func assertApproverBodyKeys(t *testing.T, label string, got, want []string) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("%s 键集不符：want %v got %v", label, want, got)
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			t.Fatalf("%s 键集不符：want %v got %v", label, want, got)
+		}
 	}
 }
 
