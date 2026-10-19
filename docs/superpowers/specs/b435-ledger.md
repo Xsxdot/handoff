@@ -596,3 +596,13 @@ K0-3（其他 agent 解析 `card wait` 输出）、K0-D（装过 B434 的用户�
 - **冲突裁决**：`cmd/launcher.go`（main 改 / B435 删）→ 删（B435 X 退役拉起器；main 的 B439 S6 改动只作用于该退役面）；`codegraph/target.json`（main 删 / B435 改）→ 删，并删本分支 `codegraph/diffs/cards-B435-charter-1.json`；`docs/roadmap.md` → 两侧并存，B435 段 absorb 与图覆盖债标作废，补「驻场者 machine 取 hostname 与 B439 自名不一致」「session wait 124 附带 deadline WARN」两条。
 - **集成缺陷（跨卡接缝，父卡负责）**：main 的 B439 测试引用 B435 已退役符号（`deliverDesktopLetter`/`wakeDesktopSeat` 夹具、`probeLauncherMachine`），`go vet` 编译失败。处置：删 `TestB439_4DeliverDesktopLetterSelfNameIsLocal`、`TestB439_4WakeDesktopSeatSelfNameIsLocal`、`TestB439S6LauncherProbeLegacyAliasGate`（被测面已退役）；把「自名判本机」判据移植到替代通路新增 `TestB439_4ResidentDoorbellSelfNameIsLocal`（驻场者 machine == 自名 → 本机恰一封信 + 一次 continue）。变异：`residentwake.go` 去掉 `IsSelfTarget(r.Machine)` 认自名 → 该测试红「得 0」，还原回绿。
 - **结果树全量**（`uv/merge_full.out`）：`go build` 0、`go vet ./...` 0、`gofmt -l` 1339 文件为空；`go test ./...` **64 包 ok、0 FAIL**（main 已删图契约门禁，存量 `TestRepoContractGate` 随之消失）；desktop shell/embedbin ok；web lock 同主检出、`tsc -b` 0、vitest **145 文件 1924 用例全过**、eslint 无输出。
+
+### 17.7 薄壳补验（2026-10-19，协调者本地；用户批准下载 wails3）
+
+- **偏离与自主决定**：①构建在本工作树 detached 到 main `628d9311`（含 B435 与 B437/B438/B439）后进行，记录提交在新分支 `docs/B435-shell-verify`，未 push；②本会话无辅助功能授权、不自行授权（系统安全设置），无法在薄壳里点击，故薄壳内卡抽屉点击态未验，转用户配合项——**未用浏览器读数充抵薄壳读数**。
+- **构建**：`go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.8`（51 MB 到 `~/go/bin`）；`desktop/` 内 `npm ci` + `wails3 task build` → `desktop/bin/handoff-desktop`（18 MB）。
+- **隔离**：以 `HOME=uv/m/home` 起薄壳（`uv/shell_run.sh`）。日志：已定位配置 addr=127.0.0.1:7792；在役 launchd `dev.gosuper.handoff.agentd` running →「agentd 已在运行，无需干预」；同步对账 plan=skip decision=use-existing（`~/.local/bin/handoff` 未动）；鉴权握手 7792 成功；加载控制台。在役 7777 与生产账本未触碰。
+- **读数**：CGWindowList 取窗号 6777（1199×799，标题 handoff），`screencapture -l 6777` → `uv/shellmain.png`：薄壳渲染的是靶子 M 的控制台（其他会话：U 批工作会话 / 项目房间 handoff / T2 登录页改版），标题栏 inset 生效。
+- **W-7 薄壳半边**：控制台页由 agentd 下发，与浏览器同包；web 侧薄壳分支只有标题栏 inset、`showOpenInBrowser`（`CardsPage.tsx`）、文件拖放、剪贴板，卡抽屉空座态不读 `isDesktopShell`。浏览器读数已过（17.1）。**薄壳内点开卡抽屉的截图未取**（需点击）→ 用户配合项。
+- **X-U2 薄壳半边**：B435 W 删了 web 侧唯一的 `handoff:open-deeplink:` 生产者，现仅 `desktopShell.ts` 的 CDC 常量与壳侧 `external_deeplink.go` 消费者，UI 无入口触发——「薄壳里点 continue / 点 /new」的前提不成立，判**不适用（无生产者）**。壳侧白名单（只放 `claude://code/continue`、拒退役 `/new`）由 `go test ./internal/shell/ -run 'ExternalDeepLink|RawMessage' -count=1` → `ok 1.378s` 覆盖（含 `TestHandleExternalDeepLinkMessageRejectsRetiredNew`）。roadmap 记「壳侧深链通道零生产者，待定去留」。
+- **收尾**：停薄壳与靶子 M 进程。
