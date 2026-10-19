@@ -32,3 +32,9 @@
   - `go build ./...` ok；`go vet ./internal/...` ok；`gofmt -l` 触及目录为空。
   - `go test ./cmd/...`：首跑两条视图用例红（见偏离 4）→ 修后仅 `TestSessionSendActorResolution` 红；去掉 `CLAUDE_CODE_SESSION_ID/HANDOFF_SESSION_*` 单跑 ok（已知环境敏感，memory 有记）。
 - **未验证**：PG 腿 `TestB444ResidentPushMigrationPG`——本环境无 `LEDGER_TEST_PG_DSN`，按指令不找凭据，SKIP。真机 R1–R3 归协调者。
+
+## 协调者裁决（P1 交回，2026-10-19）
+- P1 偏离 1–10 全部认可：均落在 §6 授权内或为加法 wire；pointer_gate_test 加白名单条目属该测试自述的合法扩展，未改断言，认可。
+- 真机 R1–R3 顺延到 P2 的 `resident/launch` 落地后与 R4–R6 一并跑（协调者偏离 plan §4 第 6 步的阻塞规则）：今天没有生产入口能坐 push 驻场者，为 R1 造测试专用入口违反 implement「不得新增测试专用入口」；R1 不过则 P2 改动按需回退重议。
+- R9 约束下放 P2：SitResident(push) 必须写真实载体机器名（禁空/禁 local/本机 别名），由 P2 编排保证并加断言。
+- R3（嵌套抢名额）待真机 R3 判定后裁决。
