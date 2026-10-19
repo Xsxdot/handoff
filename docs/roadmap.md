@@ -920,3 +920,8 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 - **升级说明进发布文档**：同版本整队升级、先起 agentd 再跑 CLI、回退只在留痕。来源：`b435-contract.md` §15。
 - **驻场者 `machine` 取 hostname，与 B439 自名方向不一致**（合入 main 时发现）：`cmd/session_resident.go#residentDesktopAddress` 写 `os.Hostname()`，门铃判本机走 `scheduling.IsLocalMachine`（hostname 同源，功能正确）；B439 S6 把 hostname 视作本机旧别名、有自名（`cfg.Name`）时只认自名。待定：有自名时驻场者登记改写自名、判本机同步走自名（需迁存量行）。来源：B435 合入 main 集成。
 - **`session wait` 正常 124 超时附带 WARN「查最大 seq 失败…deadline_exceeded」**：超时出口复用了已到期的 ctx 去查最大 seq，日志噪声误导排障。来源：B435 补验组织者回报（17.5 后）。
+
+## 2026-10-19 整队升级时发现（协调者）
+
+- **relay 形态自登记发布的凭据不能用于连接**：`SelfTarget` 把本机 `relay:` 段的注册凭据写进设备表，而 relay 服务端 CONNECT 要求连接角色凭据（handoff-server `internal/relay/server.go` `handleConnect` 以 `RoleConnect` 认证），对端拿设备表条目拨号一律 `AUTH_FAILED`（linux-01 升级实测）。已先改为「配了 advertise: 即登记直连」止血；纯 relay 机器（没有直连地址的开源用户、手机）仍需设计：设备表只发布 relay URL + node + token，拨号方用自己配置里的连接凭据。来源：2026-10-19 linux-01 升级。
+- **池对本机条目也做 relay 隧道预热**：linux-01 升级后日志 `relay 隧道预热失败 target=linux-01 node=linux`——池按设备表预热时没跳过自名条目。宜在预热与镜像发现前统一按自名过滤。来源：同上。

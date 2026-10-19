@@ -70,11 +70,20 @@ func LoadOrCreateMachineID(dataDir string, log *slog.Logger) (string, error) {
 
 // SelfTarget 依据配置构造本机的设备表连接块。
 //
-// relay 形态（cfg.Relay != nil）：relay 五元组；直连形态：advertise 地址 + token。
-// 两者都没有时返回错误——调用方应已在挂载门（cfgHasLedgerIdentity）拦下。
+// 直连优先：配了 advertise: 即登记直连形态（advertise 地址 + token），即使同时配了
+// relay: 段——relay: 是本机向 relay 的出站注册，不代表对端应改走 relay（B438：直连
+// 可达的照旧直连）。只有没有 advertise: 时才登记 relay 五元组。两者都没有时返回错误
+// ——调用方应已在挂载门（cfgHasLedgerIdentity）拦下。
+//
+// 注意：relay 形态登记的 Credential 是本机 relay: 段的注册凭据，relay 服务端的
+// CONNECT 要求连接角色凭据，对端拿它拨号会 AUTH_FAILED；relay 形态该发布什么凭据
+// 另行设计（见 roadmap），在那之前直连可达的机器务必配 advertise:。
 func SelfTarget(cfg *config.Config) (config.Target, error) {
 	if cfg == nil {
 		return config.Target{}, errors.New("自登记：配置为空")
+	}
+	if cfg.Advertise != "" {
+		return config.Target{Addr: cfg.Advertise, Token: cfg.Token}, nil
 	}
 	if cfg.Relay != nil {
 		return config.Target{
@@ -82,10 +91,7 @@ func SelfTarget(cfg *config.Config) (config.Target, error) {
 			Node: cfg.Relay.Node, Token: cfg.Token,
 		}, nil
 	}
-	if cfg.Advertise == "" {
-		return config.Target{}, errors.New("自登记：直连形态缺 advertise:（在 config.yaml 设置对外可达地址）")
-	}
-	return config.Target{Addr: cfg.Advertise, Token: cfg.Token}, nil
+	return config.Target{}, errors.New("自登记：直连形态缺 advertise:（在 config.yaml 设置对外可达地址）")
 }
 
 // SelfRegister 把本机登记进共享设备表。撞名（异实例）返回包装 ledger.ErrDeviceConflict

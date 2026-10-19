@@ -135,4 +135,13 @@ func TestB439SelfTargetForms(t *testing.T) {
 	if _, err := SelfTarget(&config.Config{Name: "x", Token: "t"}); err == nil {
 		t.Fatal("无 advertise 无 relay 应报错")
 	}
+	// 同时配了 advertise: 与 relay: 出站注册：直连优先，不发布 relay 注册凭据。
+	both, err := SelfTarget(&config.Config{Name: "linux-01", Token: "t", Advertise: "10.0.0.1:7777",
+		Relay: &config.RelayConfig{URL: "wss://r", Credential: "reg-cred", Node: "linux"}})
+	if err != nil {
+		t.Fatalf("advertise+relay SelfTarget: %v", err)
+	}
+	if both.IsRelay() || both.Addr != "10.0.0.1:7777" || both.Credential != "" {
+		t.Fatalf("advertise 与 relay 并存时应登记直连形态: %+v", both)
+	}
 }
