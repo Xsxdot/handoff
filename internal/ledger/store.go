@@ -4,6 +4,7 @@
 package ledger
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"net/url"
@@ -12,8 +13,9 @@ import (
 	"sync"
 	"time"
 
-	_ "github.com/jackc/pgx/v5/stdlib" // PG driver: "pgx"
-	_ "modernc.org/sqlite"             // SQLite driver: "sqlite"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/stdlib" // 同时注册 PG driver: "pgx"
+	_ "modernc.org/sqlite"           // SQLite driver: "sqlite"
 )
 
 type dialect int
@@ -28,7 +30,10 @@ type Store struct {
 	db      *sql.DB
 	dialect dialect
 	path    string // 仅 SQLite：文件路径（测试用）
-	dsn     string // 原始 DSN（Follow 的 PG LISTEN 需要开第二条裸连接）
+	dsn     string // 原始 DSN
+	// pgCfg 是解析后的 PG 连接配置（含 connect_timeout 缺省值）；Follow 的
+	// LISTEN 裸连接也用它建连，与池同一套超时。SQLite 为 nil。
+	pgCfg *pgx.ConnConfig
 	// shared 标记这是全队共享账本（B439）。共享账本上的新派发快照 target
 	// 必须是全队机器名，不得为空串——'' 在全队账本里无法归属到具体机器。
 	// 本机/单机账本（无 DSN）允许 ''，单机语义下它无歧义（S5）。
@@ -68,30 +73,31 @@ func OpenShared(dsn string) (*Store, error) { return openStore(dsn, true) }
 // openStore 是 Open / OpenShared 的共用实现，shared 决定 target=” 是否被拒。
 func openStore(dsn string, shared bool) (*Store, error) {
 	s := &Store{dsn: dsn, shared: shared}
-	var err error
 	if strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://") {
-		s.dialect = dialectPG
-		s.db, err = sql.Open("pgx", dsn)
+		if err := s.openPG(dsn); err != nil {
+			return nil, err
+		}
 	} else {
 		s.dialect = dialectSQLite
 		s.path = dsn
-		s.db, err = sql.Open("sqlite", dsn+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(on)")
+		db, err := sql.Open("sqlite", dsn+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(on)")
+		if err != nil {
+			return nil, fmt.Errorf("打开账本库: %w", err)
+		}
+		s.db = db
 		// database/sql 默认会开多个连接；SQLite 文件锁只保证最终写入互斥，
 		// 不能阻止两个事务同时读到同一个 B 号水位。单连接把账本的“读-判-写”
 		// 串成真正的单写者，兑现 mutate 的并发模型。
 		s.db.SetMaxOpenConns(1)
 		s.db.SetMaxIdleConns(1)
-	}
-	if err != nil {
-		return nil, fmt.Errorf("打开账本库: %w", err)
-	}
-	if err := s.db.Ping(); err != nil {
-		s.db.Close()
-		return nil, fmt.Errorf("连接账本库: %w", err)
-	}
-	if err := s.ensureSchema(); err != nil {
-		s.db.Close()
-		return nil, fmt.Errorf("建账本 schema: %w", err)
+		if err := s.db.Ping(); err != nil {
+			s.db.Close()
+			return nil, fmt.Errorf("连接账本库: %w", err)
+		}
+		if err := s.ensureSchema(); err != nil {
+			s.db.Close()
+			return nil, fmt.Errorf("建账本 schema: %w", err)
+		}
 	}
 	dialectName := "postgres"
 	if s.dialect == dialectSQLite {
@@ -99,6 +105,53 @@ func openStore(dsn string, shared bool) (*Store, error) {
 	}
 	log().Info("账本库已打开", "dialect", dialectName, "database", databaseLabel(dsn, s.dialect), "shared", shared)
 	return s, nil
+}
+
+// openPG 打开 PG 账本：先在建库专用的短命小池上跑 ensureSchema（带锁等待与
+// 语句上限），关掉后再开带连接上限的运行期池。成功时 s.db/s.pgCfg/s.dialect
+// 就位；失败时不留任何打开的连接。错误经 IsTransientOpenError 可分瞬时/配置性。
+//
+// 为什么建库单独一个池：lock_timeout 只该约束建库 DDL（不让 Open 无限挂在
+// cards 排他锁上），运行期 mutate 的写锁等待语义不变；database/sql 池里无法
+// 保证 SET 落在同一会话，只能用 RuntimeParams 给整池定参。
+func (s *Store) openPG(dsn string) error {
+	s.dialect = dialectPG
+	cfg, err := pgx.ParseConfig(dsn)
+	if err != nil {
+		return fmt.Errorf("解析账本 DSN: %w", err)
+	}
+	if cfg.ConnectTimeout == 0 {
+		cfg.ConnectTimeout = pgConnectTimeout
+	}
+	s.pgCfg = cfg
+
+	schemaCfg := cfg.Copy()
+	schemaCfg.RuntimeParams["lock_timeout"] = fmt.Sprintf("%dms", schemaLockTimeout.Milliseconds())
+	schemaCfg.RuntimeParams["statement_timeout"] = fmt.Sprintf("%dms", schemaStatementTimeout.Milliseconds())
+	s.db = stdlib.OpenDB(*schemaCfg)
+	s.db.SetMaxOpenConns(2)
+	pingCtx, cancel := context.WithTimeout(context.Background(), cfg.ConnectTimeout+5*time.Second)
+	err = s.db.PingContext(pingCtx)
+	cancel()
+	if err != nil {
+		s.db.Close()
+		return fmt.Errorf("连接账本库: %w", err)
+	}
+	if err := s.ensureSchema(); err != nil {
+		s.db.Close()
+		return fmt.Errorf("建账本 schema: %w", err)
+	}
+	if err := s.db.Close(); err != nil {
+		log().Warn("关闭建库连接失败（不影响打开）", "cause", err)
+	}
+
+	s.db = stdlib.OpenDB(*cfg)
+	s.db.SetMaxOpenConns(PGMaxOpenConns)
+	s.db.SetMaxIdleConns(pgMaxIdleConns)
+	s.db.SetConnMaxIdleTime(pgConnMaxIdleTime)
+	log().Info("账本连接池已配置", "max_open", PGMaxOpenConns, "max_idle", pgMaxIdleConns,
+		"connect_timeout", cfg.ConnectTimeout, "schema_lock_timeout", schemaLockTimeout)
+	return nil
 }
 
 // databaseLabel 只保留本地数据库名，不让连接串、主机或凭据进入日志。

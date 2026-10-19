@@ -37,7 +37,7 @@ func TestSetupLedgerInjectsConsoleHumanIntoProjectRoomWriters(t *testing.T) {
 	srv := agentd.NewServer(cfg, taskStore, discardLogger())
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	stop, err := setupLedger(cfg, srv, taskStore, ctx, discardLogger())
+	stop, err := setupLedger(cfg, srv, taskStore, ctx, discardLogger(), ledgerBoot{})
 	if err != nil {
 		t.Fatalf("setupLedger: %v", err)
 	}
