@@ -949,3 +949,8 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 - **PG 迁移腿未跑**：`TestB444ResidentPushMigrationPG`、`TestB444SessionHomeProjectMigrationPG`、驻场/席位互斥 PG 孪生在无 `LEDGER_TEST_PG_DSN` 环境 SKIP；上 fleet（Supabase PG）前须在 linux-01 临时测试库跑一次。来源：B444 台账。
 - **续轮失败指针行未真机复现**：拉起失败→指针行→重试已真机（session:1 seq 7）；续轮（resume）失败的指针行只有单测与变异覆盖，隔离 M 上未能造出载体不可达。来源：B444 真机 R3 下半。
 - **建会话 / 叫机器人只接受本机载体**：`runOnCoordinatorCarrier`（`internal/agentd/scheddrain.go`）对远端载体 fail-closed，Web 请求发往控制台所在机；控制台所在机 ≠ 协调小队载体所在机时（生产：控制台 mac-mini，小队 leader 成员 mbp 在 macbook-pro）建会话得 `resident.error`、叫机器人失败。需定按载体机转发（B441 `?machine=` 转发面）还是前端按载体机路由。来源：B444 finish 前核对（与卡路径同约束，非 B444 回归）。
+
+## 2026-10-19 账本 schema 版本闸残余（spec ledger-schema-version）
+
+- **Go 侧迁移纳入防漏升检测**：`TestSchemaVersionPinsDDL` 只钉 ddlStatements 两支，ensureSchema 闸内新增 ALTER/回填不升 `ledgerSchemaVersion` 测不出，目前靠注释与审查。来源：spec ledger-schema-version OOS。
+- **PG 测试库两条既有红（与本改动无关，main 基线同红）**：`TestB439DevicesPG` attrs 经 JSONB 往返成 `{"k": "v"}`（断言按字节比）；`TestPGSmokeEndToEnd` 在 handoff_b409_test 库撞残留项目 "p" 占前缀 P。来源：2026-10-19 schema 版本闸 PG 全集对跑。

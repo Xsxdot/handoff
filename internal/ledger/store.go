@@ -814,10 +814,45 @@ func (s *Store) isBaseTable(table string) (bool, error) {
 	return err == nil && kind == "table", err
 }
 
-// ensureSchema 幂等建表。与 internal/store 相同的策略：CREATE IF NOT
-// EXISTS 列表顺序执行，无版本号——幂等即契约；后续加列走「ALTER +
-// 容忍 duplicate column」。
+// ensureSchema 打开时保证 schema 可用，再检查未决工单投影水位。
+//
+// PG 过 schema 版本闸（schema_version.go）：库内标记 ≥ ledgerSchemaVersion 时跳过
+// 闸内建库——闸内的 ALTER TABLE cards 列已存在也要排 AccessExclusiveLock，每次
+// CLI 调用都跑会在共享库上排出锁护航。标记过期/缺失时跑闸内段，全部成功后才写标记；
+// 两个首次 Open 并发时都会跑闸内段，幂等，可接受。SQLite 不过闸，每次照跑。
+// 投影水位检查留在闸外：它是数据水位不是 schema，稳态只有两条 SELECT。
 func (s *Store) ensureSchema() error {
+	if s.dialect == dialectPG {
+		stored, current, err := s.pgSchemaCurrent()
+		if err != nil {
+			return err
+		}
+		if current {
+			log().Info("账本 schema 已是当前版本，跳过建库", "stored_version", stored, "code_version", ledgerSchemaVersion)
+		} else {
+			log().Info("账本 schema 版本过期，执行建库与迁移", "from", stored, "to", ledgerSchemaVersion)
+			if err := s.applySchema(); err != nil {
+				return err
+			}
+			if err := s.writePGSchemaVersion(); err != nil {
+				return err
+			}
+			log().Info("账本 schema 已升到当前版本", "version", ledgerSchemaVersion)
+		}
+	} else if err := s.applySchema(); err != nil {
+		return err
+	}
+	if err := s.ensureOpenTicketProjection(); err != nil {
+		return fmt.Errorf("初始化未决工单投影: %w", err)
+	}
+	return nil
+}
+
+// applySchema 是 schema 版本闸的闸内段：幂等建表与一次性迁移。CREATE IF NOT
+// EXISTS 列表顺序执行，后续加列走「ALTER + 容忍 duplicate column」。
+// 在这里新增任何 DDL 或迁移都必须同时把 ledgerSchemaVersion 加 1，否则已在旧
+// 标记上的 PG 库永远跑不到它。
+func (s *Store) applySchema() error {
 	// B389 修订轮：旧库的 wake_claims 是 seq 单键表，必须先于 DDL 列表重建成
 	// (card,seq) 复合键——否则 CREATE TABLE IF NOT EXISTS 对旧表是 no-op，
 	// 后续三个方法用 WHERE card=? 会静默错配到无 card 主键的旧表（契约 §4-36）。
@@ -873,11 +908,5 @@ func (s *Store) ensureSchema() error {
 	if err := s.migrateResidentPushColumns(); err != nil {
 		return err
 	}
-	if err := s.migrateSessionHomeProject(); err != nil {
-		return err
-	}
-	if err := s.ensureOpenTicketProjection(); err != nil {
-		return fmt.Errorf("初始化未决工单投影: %w", err)
-	}
-	return nil
+	return s.migrateSessionHomeProject()
 }
