@@ -309,6 +309,9 @@ func (s *Server) bindLaunchedCoordinator(ctx context.Context, card, source, expe
 		err = s.ledger.BindSeatMode(card, identity, proto.SeatSourceCoordinate, proto.SeatModePush,
 			coordinatorBearing(binding, carrier, spec))
 	}
+	if err != nil && errors.Is(err, ledger.ErrCASConflict) {
+		err = s.adoptSelfSeatedCoordinator(card, identity, binding, carrier, spec, err)
+	}
 	if err != nil {
 		// 席位没落 = 这个会话永远不会被唤醒（空座在 wakeCoordinatorRound 里直接跳过），
 		// 因此不能静默成功：留 needs_human + 把新会话身份带回给调用方（409 体里有 session_id），
@@ -322,6 +325,34 @@ func (s *Server) bindLaunchedCoordinator(ctx context.Context, card, source, expe
 	s.log.Info("自动化拉起协调者回合结束", "card", card, "source", source,
 		"session", result.SessionID, "seat", identity, "rebind", rebind)
 	return keystone.RoundResult{Woke: true, SessionID: result.SessionID}, nil
+}
+
+// adoptSelfSeatedCoordinator 是 launch 收尾撞席后的兜底（B446，真机 B444 R6 卡 D5）：协调者在首轮里自己
+// `card bind` / `card rebind --self` 坐下时，席位已是本回合会话、但落成 bind/pull 零承载——pull 席位不会被
+// push 唤醒，等于叫不醒。席位身份恰为本回合会话时，以它为 expect 原子改写成 coordinate/push + 承载并视为
+// 成功；别的会话占着（或重读失败、改写失败）一律返回错误，交回调用方走 409 + needs_human。
+// 参数 cause 是收尾坐下的原始 CAS 错误，非本会话时原样返回。
+func (s *Server) adoptSelfSeatedCoordinator(card, identity string, binding scheduling.Binding,
+	carrier scheduling.Carrier, spec keysclient.SessionSpec, cause error) error {
+	current, err := s.ledger.GetCard(card)
+	if err != nil {
+		s.log.Error("收尾撞席后重读卡失败", "card", card, "seat", identity, "cause", err)
+		return cause
+	}
+	if current.DriverSession != identity {
+		s.log.Warn("收尾撞席：席位被别的会话占着，不接管", "card", card,
+			"seat", identity, "holder", current.DriverSession, "cause", cause)
+		return cause
+	}
+	s.log.Warn("协调者首轮已自己坐下，收尾改写为机器人席位", "card", card, "seat", identity,
+		"old_source", current.DriverSource, "old_mode", current.DriverMode)
+	if err := s.ledger.RebindSeatMode(card, identity, proto.SeatSourceCoordinate, proto.SeatModePush, identity,
+		coordinatorBearing(binding, carrier, spec)); err != nil {
+		s.log.Error("收尾改写自坐席位失败", "card", card, "seat", identity, "cause", err)
+		return err
+	}
+	s.log.Info("收尾已接管自坐席位", "card", card, "seat", identity)
+	return nil
 }
 
 // coordinatorCarrierRound 是协调小队一次拉起回合在名额窗口内可用的材料：准入出的 binding、读出的载体登记、

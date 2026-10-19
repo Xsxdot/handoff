@@ -954,3 +954,8 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 
 - **Go 侧迁移纳入防漏升检测**：`TestSchemaVersionPinsDDL` 只钉 ddlStatements 两支，ensureSchema 闸内新增 ALTER/回填不升 `ledgerSchemaVersion` 测不出，目前靠注释与审查。来源：spec ledger-schema-version OOS。
 - **PG 测试库两条既有红（与本改动无关，main 基线同红）**：`TestB439DevicesPG` attrs 经 JSONB 往返成 `{"k": "v"}`（断言按字节比）；`TestPGSmokeEndToEnd` 在 handoff_b409_test 库撞残留项目 "p" 占前缀 P。来源：2026-10-19 schema 版本闸 PG 全集对跑。
+
+## 来自 B446 finish（2026-10-19）
+
+- 重建唤醒回合（`wakeCoordinatorRoundRaw` 的 `Rebuilt` 分支，expect=旧会话）没有「同会话自坐」兜底：重建首轮若协调者自跑 `card rebind --self`，仍会 CAS 冲突 → `coordinatorSeatConflict`。首轮简报已禁自坐，概率低；需要时照 `adoptSelfSeatedCoordinator` 补。
+- `TestB446LaunchFinalizeAdoptsSelfSeat` 未钉「同会话 id、异 CLI 前缀」不被接管（构造上靠 `EncodeSeatIdentity` 前缀保证）。

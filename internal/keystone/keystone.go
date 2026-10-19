@@ -365,7 +365,12 @@ const briefingAskOrganizer = "要问组织者（项目房间驻场者）：先 `
 // briefingFirstRound 是 launch 回合（含重建）的首轮句（B435.2 R plan Q3 甲）：会话 id 在回合中
 // 才生成、席位在回合结束后才落，本轮不注入 HANDOFF 席位环境键，`session send` 必然被拒——
 // 明说「下一轮再说」，不让协调者照旧命令撞墙后自造身份。
-const briefingFirstRound = "本轮为首轮，席位尚未落定，本轮发不了房间消息；有话下一轮再说（下一轮简报会给出带席位的发言命令）。"
+// B446（真机 B444 R6，卡 D5）：只说「尚未落定」不说谁来落，协调者读成「该我去坐」，翻出自己的会话 id
+// 跑 `card bind` 落成 bind/pull 席位，launch 收尾的坐下随即撞「席位非空」→ 409 + needs_human；
+// 故写明落座方与时机，并禁本轮自己坐下。
+const briefingFirstRound = "本轮为首轮，席位尚未落定：席位在本轮结束后由 agentd 替你落定（机器人席位），" +
+	"你**不要自己坐下**——不跑 `handoff card bind` / `handoff card rebind`，也不要去找自己的会话 id，" +
+	"自己坐下会和收尾落座撞车、把卡标成需要人。本轮发不了房间消息；有话下一轮再说（下一轮简报会给出带席位的发言命令）。"
 
 // briefingSessionSendEnvForm 是解析不到席位值时的回退形态（R plan Q1 乙）：引用 agentd 在
 // resume 回合注入的 HANDOFF 席位对；只作兜底，字面值优先（不把回房间押在工具子进程继承环境上）。
