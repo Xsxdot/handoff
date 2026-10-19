@@ -180,6 +180,12 @@ func TestB444SessionCreateWithCardsSeatsPushResident(t *testing.T) {
 	if len(launches) != 1 || launches[0].Workdir != "/repo/handoff" {
 		t.Fatalf("应恰一次首轮拉起且 workdir 取所属项目位置: %+v", launches)
 	}
+	// 返工三 裁决 1（真机 R6）：驻场首轮不带卡席位对。
+	for _, kv := range launches[0].Env {
+		if strings.HasPrefix(kv, "HANDOFF_SESSION_") {
+			t.Fatalf("驻场首轮 spec.Env 不得含卡席位键，得 %v", launches[0].Env)
+		}
+	}
 	if !strings.Contains(prompts[0], "--agent coord") || !strings.Contains(prompts[0], resp.ID) ||
 		strings.Contains(prompts[0], "--expect-title") {
 		t.Fatalf("有卡会话的首轮简报应带发言命令、不带改名指令: %q", prompts[0])
@@ -195,6 +201,9 @@ func TestB444SessionCreateWithCardsSeatsPushResident(t *testing.T) {
 	_, _, resumes := runner.snapshot()
 	if len(resumes) != 1 || resumes[0].SessionID != "ses_b444_create_1" {
 		t.Fatalf("建会话后人无 @ 发言应续到驻场者同一会话，得 %+v", resumes)
+	}
+	if !resumes[0].Resident {
+		t.Fatalf("驻场续轮 ref 应标 Resident=true（不注入卡席位对），得 %+v", resumes[0])
 	}
 }
 

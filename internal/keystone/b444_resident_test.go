@@ -39,6 +39,10 @@ func TestB444WakeResidentResumesGivenRef(t *testing.T) {
 	if len(rec.launches) != 0 {
 		t.Fatalf("驻场续轮不得 Launch，得 %d", len(rec.launches))
 	}
+	// B444 P2 返工三 裁决 1（真机 R6）：驻场续轮必须标为驻场回合，Runner 据此不注入卡席位对。
+	if !rec.resumes[0].Resident {
+		t.Fatalf("驻场续轮 ref 应标 Resident=true（Runner 不注入席位 env），得 %+v", rec.resumes[0])
+	}
 	// R1：驻场键与卡键分表——同名字符串的 Forget(卡) 不清驻场 ref。
 	svc.Forget("session:7")
 	svc.mu.Lock()
@@ -146,6 +150,12 @@ func TestB444ResidentBriefing(t *testing.T) {
 				for _, banned := range []string{"send --cli", "--cli opencode", "HANDOFF_SESSION_"} {
 					if strings.Contains(p, banned) {
 						t.Fatalf("%s 驻场简报不得含卡席位句 %q:\n%s", mode, banned, p)
+					}
+				}
+				// B444 P2 返工三 裁决 3（真机 R6）：驻场者自己绝不绑/坐卡席位、绝不亲手做卡的活。
+				for _, want := range []string{"绝不自己坐卡席位", "card bind", "card seat", "绝不亲手做卡的活", "只经 `handoff card coordinate <卡号>`"} {
+					if !strings.Contains(p, want) {
+						t.Fatalf("%s 驻场简报缺「不坐卡席位」句 %q:\n%s", mode, want, p)
 					}
 				}
 				if !strings.Contains(p, "绝不用 `--cli/--session`") {

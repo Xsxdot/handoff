@@ -41,6 +41,8 @@ func (s *Service) WakeResident(ctx context.Context, ref keysclient.SessionRef, b
 	if len(evs) == 0 {
 		return RoundResult{}, errors.New("keystone: 驻场者续轮没有事件")
 	}
+	// 返工三 裁决 1（真机 R6）：标驻场回合，Runner 据此不注入卡席位对——无论调用方是否置位。
+	ref.Resident = true
 	s.mu.Lock()
 	s.residents[brief.Session] = ref
 	s.mu.Unlock()
@@ -73,6 +75,7 @@ func (s *Service) LaunchForResident(ctx context.Context, spec keysclient.Session
 	s.mu.Lock()
 	s.residents[brief.Session] = keysclient.SessionRef{
 		CLI: spec.CLI, SessionID: result.SessionID, HomeDir: spec.HomeDir, Workdir: spec.Workdir, Model: spec.Model,
+		Resident: true,
 	}
 	s.mu.Unlock()
 	log().Info("驻场者首轮拉起完成", "session", brief.Session, "push_session", result.SessionID)
@@ -93,7 +96,14 @@ const residentBriefingRole = "你是本会话的驻场者（会话 agent）：�
 
 // residentBriefingCoordinate 指路「为卡叫协调者」（S6，既有 card coordinate；不改代码）。
 const residentBriefingCoordinate = "会话里的卡需要推进时，为它叫协调者：`handoff card coordinate <卡号>`" +
-	"（卡协调者一卡一个，按卡工作；你不接管卡席位）。" + residentBriefingCoordinateSync
+	"（卡协调者一卡一个，按卡工作；你不接管卡席位）。" + residentBriefingCoordinateSync + residentBriefingNoSeat
+
+// residentBriefingNoSeat 禁驻场者自己坐卡席位（B444 P2 返工三 裁决 3，真机 R6：驻场者 `card bind` 把自己绑成
+// D4 的席位、亲手跑完整条流——违反 spec「永不做：会话 agent 直接接管卡席位」）。账本侧另有硬拒（裁决 2），
+// 本句是让模型别去撞那道墙。
+const residentBriefingNoSeat = "你**绝不自己坐卡席位**：不跑 `handoff card bind` / `handoff card rebind` / " +
+	"`handoff card takeover` / `handoff card seat …`，也**绝不亲手做卡的活**（spec、plan、实现、评审、收尾都不碰）；" +
+	"卡的活只经 `handoff card coordinate <卡号>` 交给该卡的协调者。"
 
 // residentBriefingCoordinateSync 说明 card coordinate 的同步与耗时（B444 P2 返工 F2，真机 R4：它要等该卡协调者
 // 首轮跑完，可能好几分钟；载体 shell 工具 120s 默认超时杀掉后模型误报失败、可能重复叫）。

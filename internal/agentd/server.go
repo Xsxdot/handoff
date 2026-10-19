@@ -1621,14 +1621,20 @@ func (r coordinatorRunner) Resume(ref keysclient.SessionRef, prompt string) (key
 	if r.coord == nil {
 		return keysclient.TurnResult{}, executor.UnsupportedError(name, executor.CapCoordination)
 	}
-	// F-RM1（B435.2 R plan Q2 甲）：resume 回合注入本卡席位对，协调者按简报以席位身份回房间。
+	// F-RM1（B435.2 R plan Q2 甲）：卡的 resume 回合注入本卡席位对，协调者按简报以席位身份回房间。
 	// launch 回合不注入（Q3 甲：会话 id 回合中才生成，半注入是 currentSeatIdentity 的硬错误）。
-	ref.Env = seatEnv(ref.CLI, ref.SessionID)
+	// 驻场续轮（ref.Resident）一律不注入（B444 P2 返工三 裁决 1，真机 R6：驻场者拿注入的对把自己绑成了
+	// 卡席位）；驻场者只用 --agent 发言，不需要也不该拿到席位身份。
+	if ref.Resident {
+		ref.Env = nil
+	} else {
+		ref.Env = seatEnv(ref.CLI, ref.SessionID)
+	}
 	ctx, cancel := readyCtx()
 	defer cancel()
 	slog.Default().Log(ctx, wakeRoundLogLevel, "协调者回合开始", "cli", ref.CLI,
 		"mode", "resume", "session", ref.SessionID, "home_dir", ref.HomeDir,
-		"workdir", ref.Workdir, "seat_env", len(ref.Env) > 0, "timeout", coordWakeTurnTimeout.String())
+		"workdir", ref.Workdir, "resident", ref.Resident, "seat_env", len(ref.Env) > 0, "timeout", coordWakeTurnTimeout.String())
 	got, err := r.coord.Resume(ctx, executor.CoordSessionRef{
 		CLI: ref.CLI, SessionID: ref.SessionID, HomeDir: ref.HomeDir,
 		Workdir: ref.Workdir, Model: ref.Model, Env: ref.Env,

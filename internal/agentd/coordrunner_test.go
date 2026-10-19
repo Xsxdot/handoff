@@ -227,3 +227,34 @@ func TestB435LaunchTurnHasNoPartialSeatEnv(t *testing.T) {
 		}
 	}
 }
+
+// TestB444ResidentResumeHasNoSeatEnv 锁 B444 P2 返工三 裁决 1（真机 R6：驻场者拿注入的席位对把自己
+// 绑成了卡席位）：驻场续轮（ref.Resident=true）子进程两键都缺；同一 runner 的卡续轮照旧注入（不回归 F-RM1）。
+func TestB444ResidentResumeHasNoSeatEnv(t *testing.T) {
+	b435UnsetSeatEnv(t)
+	capture := installCoordinatorFakeCLI(t)
+	home := t.TempDir()
+	runner := testCoordRunner(hostapi.NewWithCredentialPathFor(toolchain.CredRelPathFor),
+		func(keysclient.SessionSpec) (string, error) { return home, nil })
+	if _, err := runner.Resume(keysclient.SessionRef{
+		CLI: "opencode", SessionID: "ses_resident", HomeDir: home, Workdir: t.TempDir(), Resident: true,
+	}, "resident resume"); err != nil {
+		t.Fatalf("runner.Resume(resident): %v", err)
+	}
+	for _, key := range []string{"HANDOFF_SESSION_CLI", "HANDOFF_SESSION_ID"} {
+		if got, _ := b435CapturedEnv(t, capture, key); got != "<unset>" {
+			t.Fatalf("驻场续轮子进程 %s=%q，want <unset>（驻场回合不注入卡席位对）", key, got)
+		}
+	}
+	if err := os.Remove(capture); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runner.Resume(keysclient.SessionRef{
+		CLI: "opencode", SessionID: "ses_card", HomeDir: home, Workdir: t.TempDir(),
+	}, "card resume"); err != nil {
+		t.Fatalf("runner.Resume(card): %v", err)
+	}
+	if got, _ := b435CapturedEnv(t, capture, "HANDOFF_SESSION_ID"); got != "ses_card" {
+		t.Fatalf("卡续轮子进程 HANDOFF_SESSION_ID=%q，want ses_card（卡回合照旧注入）", got)
+	}
+}
