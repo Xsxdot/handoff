@@ -218,7 +218,7 @@ func TestHostWakeAndProbeForwardPreserveCredentialAndRejectUnknownMachine(t *tes
 	unknown := newDirectSchedEnv(t, &config.Config{Token: testToken, DataDir: t.TempDir()})
 	code, body = schedReq(t, unknown, http.MethodPost, "/api/host/probe?machine=missing",
 		`{"cli":"opencode","path":"/tmp/c1"}`)
-	if code != http.StatusBadRequest || !strings.Contains(body, "未在") {
+	if code != http.StatusBadRequest || !strings.Contains(body, "missing 未登记") {
 		t.Fatalf("未知机器应 400: %d %s", code, body)
 	}
 }

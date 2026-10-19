@@ -265,9 +265,9 @@ func (s *Server) handleCarrierDetect(w http.ResponseWriter, r *http.Request) {
 		}
 		wake = proto.HomeWakeResp{Outcome: string(reply.Outcome), Detail: reply.Detail}
 	} else {
-		target, ok := s.conf().Targets[carrier.Machine]
+		target, ok := s.remoteTarget(carrier.Machine)
 		if !ok {
-			err := fmt.Errorf("载体 %s 的机器 %q 未在 targets 中定义", name, carrier.Machine)
+			err := fmt.Errorf("载体 %s 的机器 %q 未登记（设备表/配置中均无此名）", name, carrier.Machine)
 			s.log.Error("远程载体检测失败：目标未定义", "name", name, "machine", carrier.Machine, "cause", err)
 			writeErr(w, http.StatusBadGateway, err)
 			return

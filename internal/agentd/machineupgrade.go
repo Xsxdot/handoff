@@ -130,11 +130,11 @@ func (s *Server) handleMachineUpgrade(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	target, ok := s.conf().Targets[name]
+	target, ok := s.remoteTarget(name)
 	if !ok {
 		s.log.Warn("升级未知执行机", "name", name)
 		writeJSON(w, http.StatusNotFound, proto.MachineUpgradeResp{
-			Verdict: "unknown", Reason: "机器不在配置中",
+			Verdict: "unknown", Reason: "机器未登记（设备表/配置中均无此名）",
 		})
 		return
 	}

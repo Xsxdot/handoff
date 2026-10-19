@@ -56,11 +56,15 @@ func (s *Server) forwardIfRequested(w http.ResponseWriter, r *http.Request) bool
 	if name == "" || isForwarded(r) {
 		return false
 	}
-	t, ok := s.conf().Targets[name]
+	if s.IsSelfTarget(name) {
+		// 自名（或指向本机的登记名）就是本机：本地处理，不经网络绕回自己（B441）
+		s.log.Debug("转发目标是本机，本地处理", "machine", name, "path", r.URL.Path)
+		return false
+	}
+	t, ok := s.remoteTarget(name)
 	if !ok {
-		s.log.Warn("转发被拒：机器名未在配置中定义", "machine", name, "path", r.URL.Path)
-		writeJSON(w, http.StatusBadRequest, map[string]string{
-			"error": "机器 " + name + " 未在本机配置的 targets 中定义"})
+		s.log.Warn("转发被拒：机器未登记", "machine", name, "path", r.URL.Path)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": unknownMachineMsg(name)})
 		return true
 	}
 	c, err := s.pool.For(name)
@@ -163,11 +167,15 @@ func (s *Server) forwardWorktreeIfRequested(w http.ResponseWriter, r *http.Reque
 	if name == "" || isForwarded(r) {
 		return false, nil, nil
 	}
+	if s.IsSelfTarget(name) {
+		s.log.Debug("建树目标是本机，本地处理", "machine", name, "path", r.URL.Path)
+		return false, nil, nil
+	}
 	s.log.Info("建树请求开始专用转发", "machine", name, "path", r.URL.Path)
-	target, ok := s.conf().Targets[name]
+	target, ok := s.remoteTarget(name)
 	if !ok {
-		s.log.Warn("建树专用转发被拒：机器未定义", "machine", name)
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "机器 " + name + " 未定义"})
+		s.log.Warn("建树专用转发被拒：机器未登记", "machine", name)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": unknownMachineMsg(name)})
 		return true, nil, nil
 	}
 	c, err := s.pool.For(name)

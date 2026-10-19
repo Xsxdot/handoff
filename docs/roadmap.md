@@ -927,3 +927,10 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 
 - **relay 形态自登记发布的凭据不能用于连接**：`SelfTarget` 把本机 `relay:` 段的注册凭据写进设备表，而 relay 服务端 CONNECT 要求连接角色凭据（handoff-server `internal/relay/server.go` `handleConnect` 以 `RoleConnect` 认证），对端拿设备表条目拨号一律 `AUTH_FAILED`（linux-01 升级实测）。已先改为「配了 advertise: 即登记直连」止血；纯 relay 机器（没有直连地址的开源用户、手机）仍需设计：设备表只发布 relay URL + node + token，拨号方用自己配置里的连接凭据。来源：2026-10-19 linux-01 升级。
 - **池对本机条目也做 relay 隧道预热**：linux-01 升级后日志 `relay 隧道预热失败 target=linux-01 node=linux`——池按设备表预热时没跳过自名条目。宜在预热与镜像发现前统一按自名过滤。来源：同上。
+
+## B441 残余（2026-10-19，机器解析统一走设备表）
+
+- **CLI `--target` 仍只认配置 `targets:`**（`cmd/root.go#TargetEndpoint`/`newTargetClientNamed`、`cmd/pull.go`、`cmd/card_dispatch.go`、`cmd/agentd.go`）：B439 启动提示「本地 targets 已被设备表取代，请删除」，照做后 CLI `--target <机器>` 即报「未在配置中定义」。需定 CLI 取设备表的方式（读账本 / 经本机 agentd 转发），再删提示或改文案。来源：`docs/superpowers/plans/b441-plan.md`。
+- **「未挂账 target 摘要」只遍历配置 `targets:`**（`internal/agentd/ledgerapi.go#unlinkedSummary`）：设备表机器不进摘要；缓存一致性判据按 `conf()` 指针与 Targets 快照比对，改源要一并重定。来源同上。
+- **B439 启动提示与现状矛盾**：上两条修完之前，「请从 config.yaml 删除这些条目」会把人引向破坏 CLI 的操作；修完前应改为不建议删除。来源同上。
+- **控制台增机查重只看配置 `targets:`**（`internal/agentd/machines.go:210`、`machineadmin.go:76` 的 `validateAddMachine`）：与设备表同名机器查不出冲突；`machineadmin.go:119` 已用 `pool.Names()`，两处判法不一致。来源：B441 独立审查 M4。

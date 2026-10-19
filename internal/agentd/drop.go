@@ -169,11 +169,15 @@ func (s *Server) forwardDropIfRequested(w http.ResponseWriter, r *http.Request) 
 	if name == "" || isForwarded(r) {
 		return false
 	}
+	if s.IsSelfTarget(name) {
+		s.log.Debug("drop 目标是本机，本地处理", "machine", name)
+		return false
+	}
 	s.log.Info("drop 开始专用转发", "machine", name, "file", r.URL.Query().Get("name"))
-	target, ok := s.conf().Targets[name]
+	target, ok := s.remoteTarget(name)
 	if !ok {
-		s.log.Warn("drop 转发被拒：机器未定义", "machine", name)
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "机器 " + name + " 未在本机配置的 targets 中定义"})
+		s.log.Warn("drop 转发被拒：机器未登记", "machine", name)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": unknownMachineMsg(name)})
 		return true
 	}
 	c, err := s.pool.For(name)

@@ -26,8 +26,12 @@ import (
 // handlePtyWS 处理 GET /ws/pty?session=<id>&since=<n>[&machine=]。
 func (s *Server) handlePtyWS(w http.ResponseWriter, r *http.Request) {
 	if machine := r.URL.Query().Get("machine"); machine != "" && !isForwarded(r) {
-		s.forwardWS(w, r, machine)
-		return
+		if !s.IsSelfTarget(machine) {
+			s.forwardWS(w, r, machine)
+			return
+		}
+		// 自名（或指向本机的登记名）就是本机：本地接 PTY，不经网络绕回自己（B441）
+		s.log.Debug("终端 WS 目标是本机，本地处理", "machine", machine)
 	}
 	id := r.URL.Query().Get("session")
 	since, _ := strconv.ParseUint(r.URL.Query().Get("since"), 10, 64)

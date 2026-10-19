@@ -42,9 +42,16 @@ func (s *Server) tasksAll(ctx context.Context) proto.TasksResp {
 		s.log.Error("任务汇总：查询镜像快照失败", "cause", err)
 		mirrors = []store.MirrorTask{}
 	}
-	// 有哪些机器，判据只有一个：活配置。已删机器遗留在镜像表里的快照不再展示
-	//（副本不是真相；库里的行不删，删行是破坏性操作，读时判据正确就够）。
-	targets := s.conf().Targets
+	// 有哪些机器，判据只有一个：与 pool.For 同源的机器名单（有设备表源读设备表，否则读
+	// 活配置 targets:，B441）。已删机器遗留在镜像表里的快照不再展示（副本不是真相；库里
+	// 的行不删，删行是破坏性操作，读时判据正确就够）。本机（自名）不算远端机器行。
+	targets := map[string]struct{}{}
+	for _, name := range s.pool.Names() {
+		if s.IsSelfTarget(name) {
+			continue
+		}
+		targets[name] = struct{}{}
+	}
 	skipped := 0
 	// target → 该机最新一条快照的时刻（机器应答行的数据新旧）
 	fetched := map[string]time.Time{}

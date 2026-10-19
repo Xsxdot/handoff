@@ -563,6 +563,22 @@ func (s *Server) IsSelfTarget(name string) bool {
 	return ok && config.IsSelfTarget(cfg.Listen, target)
 }
 
+// remoteTarget 解析一台远端机器的连接方式，与 pool.For **同源**（有设备表源时读设备表，
+// 否则读活配置 targets:）。
+//
+// 返回：ok=false 表示设备表/配置中均无此名。
+//
+// 为什么不再直读 conf().Targets（B441）：B439 起池改读设备表，agentd 启动还会提示
+// 「本地 targets 已被设备表取代，请从 config.yaml 删除」；照做之后各转发入口仍按配置
+// 判「机器未定义」，设备表里在线的机器一律 400。判据与取客户端必须同一个来源。
+// 注意：本机不在此列——调用方须先用 IsSelfTarget 把本机（含自名）留在本地处理。
+func (s *Server) remoteTarget(name string) (config.Target, bool) { return s.pool.Target(name) }
+
+// unknownMachineMsg 是「设备表/配置中均无此名」的统一报错文案（点名机器）。
+func unknownMachineMsg(name string) string {
+	return "机器 " + name + " 未登记（设备表/配置中均无此名）"
+}
+
 // IsSelfMachine 报告 name 是否指本机（B439 身份判据，与路由值无关）。
 //
 // 有自名（S6 收敛）：唯一名字判据——省略或 == 自名。local/本机/hostname 不再是

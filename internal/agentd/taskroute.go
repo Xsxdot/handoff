@@ -54,13 +54,13 @@ func (s *Server) byTask(next http.HandlerFunc) http.HandlerFunc {
 			next(w, r) // 两处都没有：让 handler 给出与今天一致的 404
 			return
 		}
-		t, defined := s.conf().Targets[target]
+		t, defined := s.remoteTarget(target)
 		if !defined {
-			// 镜像里记着一台配置里已经没有的机器：如实报告，别假装 404
-			s.log.Warn("任务路由：镜像指向的机器已不在配置中",
+			// 镜像里记着一台设备表/配置里都已没有的机器：如实报告，别假装 404
+			s.log.Warn("任务路由：镜像指向的机器已未登记",
 				"task", id, "machine", target)
 			writeJSON(w, http.StatusBadGateway, map[string]string{
-				"error": "任务在机器 " + target + " 上，但它已不在本机配置的 targets 中"})
+				"error": "任务在机器 " + target + " 上，但它已未登记（设备表/配置中均无此名）"})
 			return
 		}
 		// relay 机器没有 addr，传输必须复用池里的选路结果（与各扇出同一条纪律）
