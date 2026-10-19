@@ -13,9 +13,14 @@ import (
 // 事故形状：ensureSchema 的 ALTER TABLE cards 要 AccessExclusiveLock，任一
 // 会话持 cards 上的锁时 Open 无限等待、零日志。修复后 Open 必须在锁等待上限
 // 内返回，且错误判为瞬时（交给 agentd 退避重试，而不是 fail 快或挂死）。
+// schema 版本闸之后只有标记过期（升级当次）才会跑 ALTER，故先删标记模拟旧库
+// （spec ledger-schema-version S2）；放锁后 Open 补跑并写回标记。
 func TestPGOpenBoundedWhenCardsLocked(t *testing.T) {
 	dsn := os.Getenv("LEDGER_TEST_PG_DSN")
-	newPGStore(t) // 先建 schema，保证 cards 表存在
+	s0 := newPGStore(t) // 先建 schema，保证 cards 表存在
+	if _, err := s0.db.Exec(`DELETE FROM ledger_meta WHERE key = $1`, schemaVersionKey); err != nil {
+		t.Fatalf("删 schema 版本标记: %v", err)
+	}
 
 	holder, err := sql.Open("pgx", dsn)
 	if err != nil {
@@ -49,6 +54,21 @@ func TestPGOpenBoundedWhenCardsLocked(t *testing.T) {
 		}
 	case <-time.After(schemaLockTimeout + 20*time.Second):
 		t.Fatalf("cards 被锁时 Open 超过 %v 仍未返回（无界等待）", schemaLockTimeout+20*time.Second)
+	}
+	if got := readSchemaMarker(t, s0.db); got != -1 {
+		t.Fatalf("建库失败时不应写标记，得 %d", got)
+	}
+
+	if err := tx.Rollback(); err != nil {
+		t.Fatalf("放 cards 锁: %v", err)
+	}
+	s, err := OpenShared(dsn)
+	if err != nil {
+		t.Fatalf("放锁后 Open: %v", err)
+	}
+	s.Close()
+	if got := readSchemaMarker(t, s0.db); got != ledgerSchemaVersion {
+		t.Fatalf("放锁后 Open 应写回标记 %d，得 %d", ledgerSchemaVersion, got)
 	}
 }
 

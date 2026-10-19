@@ -927,3 +927,8 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 
 - **relay 形态自登记发布的凭据不能用于连接**：`SelfTarget` 把本机 `relay:` 段的注册凭据写进设备表，而 relay 服务端 CONNECT 要求连接角色凭据（handoff-server `internal/relay/server.go` `handleConnect` 以 `RoleConnect` 认证），对端拿设备表条目拨号一律 `AUTH_FAILED`（linux-01 升级实测）。已先改为「配了 advertise: 即登记直连」止血；纯 relay 机器（没有直连地址的开源用户、手机）仍需设计：设备表只发布 relay URL + node + token，拨号方用自己配置里的连接凭据。来源：2026-10-19 linux-01 升级。
 - **池对本机条目也做 relay 隧道预热**：linux-01 升级后日志 `relay 隧道预热失败 target=linux-01 node=linux`——池按设备表预热时没跳过自名条目。宜在预热与镜像发现前统一按自名过滤。来源：同上。
+
+## 2026-10-19 账本 schema 版本闸残余（spec ledger-schema-version）
+
+- **Go 侧迁移纳入防漏升检测**：`TestSchemaVersionPinsDDL` 只钉 ddlStatements 两支，ensureSchema 闸内新增 ALTER/回填不升 `ledgerSchemaVersion` 测不出，目前靠注释与审查。来源：spec ledger-schema-version OOS。
+- **PG 测试库两条既有红（与本改动无关，main 基线同红）**：`TestB439DevicesPG` attrs 经 JSONB 往返成 `{"k": "v"}`（断言按字节比）；`TestPGSmokeEndToEnd` 在 handoff_b409_test 库撞残留项目 "p" 占前缀 P。来源：2026-10-19 schema 版本闸 PG 全集对跑。

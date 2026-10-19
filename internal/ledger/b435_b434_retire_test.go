@@ -77,6 +77,10 @@ func (e *b435RetireEnv) createLegacyTables(db *sql.DB) {
 			e.t.Fatalf("建旧表: %v", err)
 		}
 	}
+	// 真实的旧库没有 schema 版本标记；夹具先经 Open 写过标记，不清掉 PG 会跳过迁移。
+	if _, err := db.Exec(e.q(`DELETE FROM ledger_meta WHERE key = ?`), schemaVersionKey); err != nil {
+		e.t.Fatalf("清 schema 版本标记: %v", err)
+	}
 }
 
 // legacyTime 把夹具时间按方言写成旧二进制会写出的形态：SQLite 列是 TEXT（raw 为
