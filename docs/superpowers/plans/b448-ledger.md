@@ -209,3 +209,36 @@
 - 防环：执行机会打 `转交来的协调者首轮载体不在本机，防环拒绝且不再转交`（WARN），受理机入口 502，文案「转交到本机的协调者首轮，但载体 X 不在本机（设备表不一致？）」。
 - R8 老版本：老执行机回 404，受理机报「<机器> 的 agentd 版本过旧，不支持首轮转交，请升级」。老受理机不会发起转交，仍是旧的 fail-closed 文案。
 - R4：对端停机时入口文案为「协调者载体 t448-oc 在 t448-linux，转交到该机失败：…」，会话里指针行恰一条，由受理机写入。
+
+## 协调者裁决与真机记录（2026-10-19/20，主会话）
+
+### 交回物「偏离与自主决定」裁决
+
+- 1、2（先红纪律偏离，已披露）：认账；F35 的牙交独立 review 变异复验。
+- 3（不可达文案追加「若请求已送达…请刷新查看」）：保留——如实覆盖部分失败。真机 R4 发现 connection refused（必未送达）也带这句，记 Minor 落 roadmap，不阻塞。
+- 4（请求类错不落指针行）、5（防环拒绝由执行机写指针行）、6（受理端失败入口措辞）、7（V3 透传代理构造）：授权内或合理，认账。
+
+### 真机靶子
+
+- PG 测试库 `handoff_b448`（linux-01，专属账号已登记 credentials.md「已分配」）；两台隔离 agentd 共库：`t448-linux` = 100.81.114.119:7794（HOME/datadir `/root/b448-iso`），`t448-mac` = 100.91.215.29:7795（HOME/datadir 在会话 scratchpad）；构建 `05aff9dc`（mac `9527c56a…`，linux `9ad77510…`）。未碰在役 7777 与生产账本。
+- 载体 `t448-oc`（machine=t448-linux，opencode，`opencode/deepseek-v4.1-flash-free`），协调小队 `t448-coord`；演示项目 `t448demo`（linux 侧假 origin 仓），卡 T1–T9。
+
+### R1–R10 读数
+
+- R1：两端 `/api/machines` 互见、均 `05aff9dc3edd`；载体须先在载体机 `POST /api/squads/carriers/t448-oc/detect` 才 online（首次叫机器人 400「小队内没有已上线且有空的载体」，探测后正常）。
+- R2 S1：mac `POST /api/cards/T1/coordinator/launch` 30s 返回 `{"woke":true,"session_id":"ses_eab555562ffe…"}`；T1 `driver_mode=push`；`seat_bearings` T1 carrier=t448-oc machine=t448-linux；mac「受理机发出/收到回执」与 linux「执行机收件/完成」四行按 card/accepted_by/handled_by 对上；续轮：会话 session:3（含 T1）里 `@T1` 人话 → linux「唤醒回合开始 card=T1 … 结束 session=ses_eab555562ffe…」13s，同一 CLI 会话；计数 `carrier/t448-oc`、`squad/t448-coord/t448-oc` 均 0。（卡房间自 B358 起只读归档，续轮须从会话房间 @ 卡。）
+- R3 S2：mac `POST /api/sessions`（squad t448-coord，卡 T2）返回 resident `carrier_machine=t448-linux`；驻场行 push、push_session 已补写；首轮发言 #11 可见；人无 @ 发言 → linux「驻场者续轮完成」、名额归还。驻场者首轮里自行 `card coordinate T2`（另起一席，B444 设计内，非自坐）。
+- R4 S2 失败：停 linux 实例后建会话 session:5 → `resident.error`「协调者载体 t448-oc 在 t448-linux，转交到该机失败：对端 agentd 够不着 … connection refused（若请求已送达…）」；会话里恰一条 `system:pointer`（#27）；会话与 T4 保留；恢复后 `session resident launch session:5` 成功，驻场者 @t448-linux。
+- R5 S3：mac CLI `card coordinate T3` 88s woke；`session create --project t448demo --squad t448-coord` 成功 resident@t448-linux；`session resident launch session:5` 成功（见 R4）。
+- R6 S6：成员名额改 1，两张新卡 T5/T6 并行叫机器人 → T6 200 woke，T5 409「协调者并发已满（小队 t448-coord）…」；结束计数 0/0。
+- R7 执行机重启：session:6 首轮在途时停 linux 实例（重启脚本撞 15s 优雅退出的 datadir 锁未起，随后手起）→ mac 侧 `resident.error` …EOF；受理机按 Q3 重读驻场行仍在途 → 不写指针（正确）；linux 启动清扫「已请下被重启打断的在途行」→ 会话恰一条指针行 #37「首轮被 agentd 重启打断…重试：handoff session resident launch session:6 …」。
+  - **发现（既有缺陷，非 B448 引入）**：被杀实例的两个 opencode 子进程成孤儿跑完，名额计数永久停在 2；启动对账「保留无本机 owner 的运行计数（跨机占用不得清零）」。本机拉起路径同样会漏（计数无 owner），spec S6 失败子句「执行机既有启动对账照常 → 不留永久占用」的假设不成立。测试库内手工清零后继续。待人裁决。
+- R8a 老版本：mac 实例换在役 `f44646ec` 二进制（只拷贝、不动在役进程），载体临时改登记 t448-mac，linux 叫 T8 → 502「t448-mac 的 agentd 版本过旧，不支持首轮转交，请升级」；T8 无席位，计数 0。
+- R8b 防环：linux 实例 name 临时改 t448-linux-x 重启（设备表并存 t448-linux / t448-linux-x 同地址），mac 叫 T8 → 502「转交到本机的协调者首轮，但载体 t448-oc 不在本机（设备表不一致？）（执行机 t448-linux）」；linux 只有「执行机收件 → 防环拒绝 → 执行机失败 kind=not_local」，无出站行。已改回原名。
+- R9 PG 腿（DSN 改用专用测试库，见下）：`handoff_b448` 正被靶子使用且 PG 用例会建表，改在 `handoff_b409_test`（多个 PG 用例硬性要求此库名）上 DROP 重建后跑 `go test ./internal/ledger/`：
+  - B444 PG：`TestB444ResidentPushMigrationPG` 首跑红（夹具直写 session:1 绕过会话号计数器，CreateSession 再分到 session:1 撞主键），修夹具（7fef97de）后与 `TestB444ResidentSeatExclusionPG`、`TestB444SessionHomeProjectMigrationPG` 全 PASS。
+  - schema 版本闸：`TestPGOpenSkipsSchemaWhenVersionCurrent`、`TestPGOpenFreshSchemaWritesMarker`、`TestSchemaVersionPinsDDL` PASS。
+  - 既有、与 B448 无关（本分支未改 `internal/ledger` 业务代码）：`TestB439DevicesPG` 恒红（attrs 字节比对，PG jsonb 规范化成 `{"k": "v"}`）；`TestPGSmokeEndToEnd` / `TestB435DriverModeMigrationPG` 顺序相关红（共享 public schema 里项目自动前缀 P 互相占用，单跑通过）。落 roadmap。
+  - `go test ./internal/agentd/ -run PG` ok。
+- R10 长回合：linux 侧 opencode shim 先睡 720s，mac 叫 T9：转交出站 12m13s 后 mac「受理机收到回执」、T9 push 落座、计数 0——**跨机一跳（Tailscale 直连）撑过 11 分钟成立**；但调用方 curl→mac 既有入口在同刻断连 `[000]`（入口 server 写超时 ~11 分钟，Q4 甲已明定不改、落 roadmap），首轮结果照落、人刷新可见。shim 已删。
+- R11（生产复核）：待合入、推送、换版获批后执行。

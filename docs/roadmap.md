@@ -964,3 +964,8 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 
 - 转交途中受理机已向调用方超时、执行机仍在跑时的结果找回（本机路径同样没有：调用方断开后首轮照跑、席位照落，人刷新可见）。来源：`docs/superpowers/specs/b448.md`。
 - 小队成员跨多台机时的「就近选载体」偏好（LaunchAdmit 选择规则本期不变）。来源同上。
+- 不可达文案在「connection refused」这类必未送达的失败上也带「若请求已送达，首轮可能仍在该机执行或已完成，请刷新查看」，应只在发出后失败（EOF/超时）时追加。来源：B448 真机 R4（`docs/superpowers/plans/b448-ledger.md`）。
+- 调度名额计数无 owner：agentd 在回合中被杀（含优雅退出 15s 超时后），在途回合的名额永不归还，启动对账按「跨机占用不得清零」保留；本机与转交路径同病。需要计数带持有机/租约。来源：B448 真机 R7。
+- 叫机器人 / 建会话的既有 HTTP 入口在首轮超过 ~11 分钟时调用方连接被 server 写超时切断（首轮结果照落），见 plan Q4。来源：B448 真机 R10。
+- PG 测试腿既有缺陷：`TestB439DevicesPG` 对 jsonb attrs 做字节比对（PG 规范化空格）恒红；`TestPGSmokeEndToEnd`、`TestB435DriverModeMigrationPG` 等共用 public schema，项目自动前缀互占导致顺序相关红。来源：B448 真机 R9。
+- 载体登记后须在载体机跑一次 detect 才 online，否则叫机器人报「小队内没有已上线且有空的载体」，文案未提示去探测。来源：B448 真机 R1。
