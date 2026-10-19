@@ -130,6 +130,10 @@
 13. **改写的 `TestCoordLaunchRejectsRemoteCarrier` 额外断言受理机 Runner 零次 Launch。** 在授权内（唯一允许改写的既有测试，计数断言保留）。
 14. 未改 `cmd/`、`web/`、scheduling / ledger / collab / keystone、`cmd/agentd.go` 超时；`handleCoordLaunch` / `handleCoordRebind` /
     `handleSessionResidentLaunch` 的错误映射一字未改；§8 冻结条目未改。
+15. **补报原漏报：F20 中「会话不存在」实现为 409 `kind=no_room`，不是 plan 原文的 not_found。** 收件端 `launchSessionResidentOn`
+    在会话不存在时返回 `collab.ErrNoRoom`，`firstRoundErrorKind` 映射为 no_room（即 F26），受理端还原为 `collab.ErrNoRoom`
+    → 入口 404，与本机路径 `sessionsapi.go` 一致。原交回物漏报此项；协调者已裁决取 no_room 并回写 plan §8 F20 修订 r1
+    （6a32d2e8）。review 修复轮补了 wire 断言，见文末「review 修复轮」节。
 
 ## 提交列表
 
@@ -242,3 +246,70 @@
   - `go test ./internal/agentd/ -run PG` ok。
 - R10 长回合：linux 侧 opencode shim 先睡 720s，mac 叫 T9：转交出站 12m13s 后 mac「受理机收到回执」、T9 push 落座、计数 0——**跨机一跳（Tailscale 直连）撑过 11 分钟成立**；但调用方 curl→mac 既有入口在同刻断连 `[000]`（入口 server 写超时 ~11 分钟，Q4 甲已明定不改、落 roadmap），首轮结果照落、人刷新可见。shim 已删。
 - R11（生产复核）：待合入、推送、换版获批后执行。
+
+## review 修复轮（I-2 / I-3 / M-1）
+
+基线 HEAD `6a32d2e8`。本轮只加测试，不改生产代码。变异验牙都是临时用 `sed` 改生产文件，跑完立即还原；还原后
+`git status` 只剩 `internal/agentd/b448_card_test.go`（改）和 `internal/agentd/b448_review_test.go`（新）。
+
+### 偏离与自主决定
+
+1. **测试命令没有执行 `unset CLAUDE_CODE_SESSION_ID`。** 沙箱拒绝 `env -u …` 和 `cd … && unset …` 这类复合命令，只能直接运行
+   `go test`。整包仍全绿，已知两条环境敏感用例这次没有触发，如实记录。
+2. **I-2 的夹具构造（自主决定，属测试设计）：** 小队改为 `[Y, X]`，两个成员都在 B、上限都是 1。X = `t448-oc`，HOME 为
+   `/home/t448`，模型为 `prov/model-x`；Y = `t448-oc-y`，HOME 为 `/home/t448-y`，模型为 `prov/model-y`。A 准入前先占住 Y 的名额，
+   让 A 的 `LaunchAdmit` 跳过 Y、选中 X 转交。在 B 前面挂透传代理，等 A 已归还名额、B 尚未准入时释放 Y，使 B 若用 `LaunchAdmit`
+   就必然按声明顺序改选 Y。反例在同一时机把 X 置为离线（`ApplyDetect Reachable=false`）或占满。
+3. **I-3 的验牙多做了一次变异：** 除了把收件端的映射改成 not_found，还单独变异了受理端还原表（`firstround.go:101` 的 case），
+   证明 client 还原这条断言也有区分力。
+
+### 新测试
+
+- `TestB448FrozenCarrierNotReselectedInTwoMemberSquad`（`b448_review_test.go`）：在 I-2 正例构造下，A 入口返回 200，转交体
+  `carrier=t448-oc`；B 的 Runner 恰好拉起一次，HOME 和模型都是 X 的；回合中 Y 的计数为 0/0；承载记为 X；两级计数归零。
+- `TestB448FrozenCarrierUnavailableRejectsWithoutReselect`（`b448_review_test.go`，两个子例）：X 离线时 B 回
+  admission_rejected，A 入口 400，文案含 `t448-oc`；X 满员时 B 回 no_slot，A 入口 409「协调者并发已满（小队 t448-coord）」。
+  两个子例都零拉起、零席位，Y 的计数为 0。
+- `TestB448FirstRoundWireValidation`（`b448_card_test.go`）追加两条断言：向 B 发 `POST /api/sessions/S99999/resident/first-round`，
+  得 409 `kind=no_room`；A 经 `clientForTarget(t448-linux).MarkForwarded().ResidentFirstRound` 拿到错误后，经 `firstRoundFailure`
+  还原，满足 `errors.Is(err, collab.ErrNoRoom)`。
+- `TestB448ResidentReceiptOutlivesServerWriteTimeout`（`b448_review_test.go`）：B 的 WriteTimeout 为 200ms，回合耗时 600ms，
+  `coordWakeTurnTimeout` 为 3s。建会话入口的 `resident` 成功，`carrier_machine=t448-linux`，计数归零。
+
+### 验牙记录
+
+- **I-2**：把 `scheddrain.go:448` 的 `s.scheduling.AdmitSeatCarrier(squad, plan.frozenCarrier)` 改为 `s.scheduling.LaunchAdmit(squad)`，
+  执行 `go test ./internal/agentd/ -run 'B448FrozenCarrier' -count=1`，结果为红：
+  ```
+  --- FAIL: TestB448FrozenCarrierNotReselectedInTwoMemberSquad (0.03s)
+      b448_review_test.go:121: 执行机应只用冻结载体 X（HOME /home/t448 / 模型 prov/model-x）拉起，不改选 Y: [{CLI:opencode HomeDir:/home/t448-y Model:prov/model-y Workdir:/repo/t448-linux Env:[]}]
+      --- FAIL: TestB448FrozenCarrierUnavailableRejectsWithoutReselect/X_离线 (0.02s)
+          b448_review_test.go:176: 冻结载体 X 不可用应 400 含 "t448-oc"（不改用 Y），得 200 {"woke":true,"session_id":"ses_t448-linux_1","rebuilt":false,"escalated":false}
+      --- FAIL: TestB448FrozenCarrierUnavailableRejectsWithoutReselect/X_满员 (0.02s)
+          b448_review_test.go:176: 冻结载体 X 不可用应 409 含 "协调者并发已满（小队 t448-coord）"（不改用 Y），得 200 {"woke":true,"session_id":"ses_t448-linux_1","rebuilt":false,"escalated":false}
+  ```
+  同一变异下，既有用例 `go test ./internal/agentd/ -run 'B448' -skip 'B448FrozenCarrier' -count=1` 全部为 `ok`，复现了 review 指出的
+  「F15 无牙」。还原后重跑，结果为绿。
+- **I-3（收件端）**：把 `firstround.go:253` 的 `proto.FirstRoundKindNoRoom` 改为 `proto.FirstRoundKindNotFound`，执行
+  `-run 'B448FirstRoundWireValidation'`，结果为红：
+  ```
+  b448_card_test.go:410: 会话不存在应 409 no_room（F20 r1 不回 404），得 409 {"error":"会话 S99999: collab: 房间不存在","kind":"not_found"}
+  ```
+- **I-3（受理端还原）**：把 `firstround.go:101` 的 `case proto.FirstRoundKindNoRoom:` 改为 `case "mutated-no-room":`，结果为红：
+  ```
+  b448_card_test.go:419: 会话不存在经 client 还原应满足 errors.Is(collab.ErrNoRoom)，得 wire=首轮转交被拒（HTTP 409，no_room）：会话 S99999: collab: 房间不存在 restored=执行机 t448-linux 回 HTTP 409：会话 S99999: collab: 房间不存在
+  ```
+  两处都已还原，重跑为绿。
+- **M-1**：把 `firstround.go:306` 的 `s.extendFirstRoundWriteDeadline(w, "session", id)` 删掉，执行
+  `-run 'B448ResidentReceipt|B448ReceiptOutlives'`，结果为红（卡端点的同形用例不受影响）：
+  ```
+  b448_review_test.go:200: 驻场首轮长于执行机 WriteTimeout 时回执仍应送达，得 &{Identity: Carrier: CarrierMachine: Error:协调者载体 t448-oc 在 t448-linux，转交到该机失败：对端 agentd 够不着: POST /api/sessions/session:1/resident/first-round: Post "http://127.0.0.1:60876/api/sessions/session:1/resident/first-round": read tcp 127.0.0.1:60879->127.0.0.1:60876: read: connection reset by peer（若请求已送达，首轮可能仍在该机执行或已完成，请刷新查看）}
+  ```
+  还原后重跑，结果为绿。这一条也补上了原偏离 2「F35 红未观测」的驻场端点那一半。
+
+### 收尾复跑（生产代码已还原）
+
+- `go test ./internal/agentd/ -run 'B448|CoordLaunch|B444|B446' -count=1`：`ok`（4.4s）
+- `go test ./internal/agentd/ -count=1`：`ok`（88.6s）
+- `go build ./...`、`go vet ./...`：无输出
+- `gofmt -l internal/agentd/b448_card_test.go internal/agentd/b448_review_test.go`：空

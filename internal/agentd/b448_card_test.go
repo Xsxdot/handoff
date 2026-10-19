@@ -20,6 +20,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/Xsxdot/handoff/internal/collab"
 	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/keysclient"
 	"github.com/Xsxdot/handoff/internal/ledger"
@@ -399,6 +400,23 @@ func TestB448FirstRoundWireValidation(t *testing.T) {
 	_ = json.Unmarshal([]byte(body), &e)
 	if code != http.StatusConflict || e.Kind != proto.FirstRoundKindNotFound {
 		t.Fatalf("卡不存在应 409 not_found（F20 不回 404），得 %d %s", code, body)
+	}
+	// F20 修订 r1：会话不存在 → 409 no_room（即 F26），受理端经 client 还原为 collab.ErrNoRoom（入口 404）。
+	code, body = b448Raw(t, p.b, "/api/sessions/S99999/resident/first-round",
+		`{"squad":"t448-coord","carrier":"t448-oc"}`, true)
+	e = proto.FirstRoundTransferError{}
+	_ = json.Unmarshal([]byte(body), &e)
+	if code != http.StatusConflict || e.Kind != proto.FirstRoundKindNoRoom {
+		t.Fatalf("会话不存在应 409 no_room（F20 r1 不回 404），得 %d %s", code, body)
+	}
+	cl, err := p.a.srv.clientForTarget(b448MachineB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, wireErr := cl.MarkForwarded().ResidentFirstRound(context.Background(), "S99999",
+		proto.FirstRoundTransferReq{Squad: b448Squad, Carrier: b448Carrier, AcceptedBy: b448MachineA})
+	if restored := firstRoundFailure(b448Squad, b448Carrier, b448MachineB, wireErr); !errors.Is(restored, collab.ErrNoRoom) {
+		t.Fatalf("会话不存在经 client 还原应满足 errors.Is(collab.ErrNoRoom)，得 wire=%v restored=%v", wireErr, restored)
 	}
 	b448AssertEmptySeat(t, p, card)
 	if _, ok, err := p.a.ledger.SessionResident(sess.ID); err != nil || ok {
