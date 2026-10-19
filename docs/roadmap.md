@@ -941,3 +941,10 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 - 驻场者换人/换载体的 Web 操作（今天只有 CLI `session stand` 后重新叫驻场者）。来源同上。
 - 会话改项目归属。来源同上。
 - 旧的无项目会话批量归属工具。来源同上。
+- **Web「叫驻场者」重试按钮**：本期只有 HTTP `POST /api/sessions/{id}/resident/launch` 与 CLI `session resident launch`，Web 只在指针行指路 CLI（plan Q4 甲）。来源：`docs/superpowers/plans/b444-plan.md`。
+- **Web 人工改名入口**：`web/src/api/rooms.ts#renameSession` 已导出、无生产调用方；人手改名今天走 CLI/HTTP（S7 承诺面）。来源：B444 独立审查 M2。
+- **驻场回合嵌套 `card coordinate` 抢同一小队名额**：驻场回合占一个载体名额，回合内同步叫协调者再占一个；小队并发上限 1 时必 409（真机 R3 实证），驻场者如实告知人。本期保持语义（驻场回合真实占载体），协调小队需 ≥2 名额才能由驻场者叫协调者。可选方向：card coordinate 异步排队（202 + 名额回收后拉起）。来源：B444 真机 R3、协调者裁决。
+- **自动化消费循环同步跑回合**：卡唤醒回合（既有）与驻场续轮都在消费循环里同步执行；驻场回合内再同步叫协调者时，整机项目房间通知、其他唤醒被挡到回合结束（真机 R6：D4 换列通知在驻场回合结束后才批量落）。需定回合异步化与水位语义。来源：B444 真机 R6。
+- **R9 多机共库未在 fleet 上验**：push 驻场者唤醒只在 bearing 所在机认领，非本机零认领；只在单机隔离靶子验过，三机共库行为与「宿主机 agentd 停时会话里无提示」未真机验。来源：`docs/superpowers/plans/b444-plan.md` §7 R9。
+- **PG 迁移腿未跑**：`TestB444ResidentPushMigrationPG`、`TestB444SessionHomeProjectMigrationPG`、驻场/席位互斥 PG 孪生在无 `LEDGER_TEST_PG_DSN` 环境 SKIP；上 fleet（Supabase PG）前须在 linux-01 临时测试库跑一次。来源：B444 台账。
+- **续轮失败指针行未真机复现**：拉起失败→指针行→重试已真机（session:1 seq 7）；续轮（resume）失败的指针行只有单测与变异覆盖，隔离 M 上未能造出载体不可达。来源：B444 真机 R3 下半。

@@ -196,3 +196,26 @@
 - **未验证**：PG 腿（无 `LEDGER_TEST_PG_DSN`）；真机复跑 R6。
 - 残余：agentd 进程自身若带 `HANDOFF_SESSION_*` 环境会经 `os.Environ()` 继承给驻场子进程（本次只停注入，未主动剥离继承值；在役 agentd 由服务管理器拉起，正常不带）。
 - 提交：`28388b40 fix(B444): 驻场回合不注入卡席位对，简报禁驻场者自坐卡席位（真机 R6，返工三 裁决 1/3）`；`83d7ec6b fix(B444): 账本执法同一 CLI 会话不能既是 push 驻场者又坐卡席位（真机 R6，返工三 裁决 2）`（本行随后 amend 收进后者，hash 会变）。
+
+
+## 偏离与自主决定（协调者，最终验收前汇总，2026-10-19）
+
+- **P3 偏离 1 改写既有测试断言**（B358.9 Shell 两条、NewSessionDialog 重写、rooms.fetch、timeline 八值→九值）：协调者批准。理由：均为已批准 plan §3 契约变更（`createSession` 改签名、标题可空、新增 `renamed` kind、撤 B442/SessionSidebar 入口）的直接后果；保留了 B358.9 不变式（无群主输入、无 owner 记忆、未配 console_user 禁用）。
+- **P2 偏离 7 / P1 偏离 3 的 pointer_gate 白名单两行**：协调者批准（指针行正文全由服务端拼，请求方不能注入；B444 独立审查 M5 同读）。
+- **协调者 inline 返工**：f6113731（首轮不改名）、d4a107d0（sessionProjects home_project 为主）、f7d89494（review C1 断言对齐、M4 注释）——均改断言或新增断言，协调者自批；新鲜复跑见下「验收复跑」。
+- **R1 真机顺延**：P1 完成后未立刻真机（无生产入口能坐 push 驻场者，不造测试专用入口），顺延至 P2 `resident/launch` 落地后与 R4–R8 一并跑。
+- **R3 裁决**：驻场回合嵌套叫协调者在小队并发 1 时 409——本期保持语义，落 roadmap。
+- **plan §5 证据目录 `docs/superpowers/evidence/b444/` 未建**：真机证据（命令与原始输出摘录）改记本台账下节，截图只在会话里，未入库。
+
+## 真机验收记录（协调者执行，隔离靶子 M：linux-01 127.0.0.1:7792，独立 HOME/datadir/SQLite，载体 opencode/deepseek-v4.1-flash-free；生产 7777 未碰）
+
+- 环境：`/root/b444-iso`（setup.sh、m.sh）；小队 lead（coordinator）成员 free；项目 b444demo（`/root/b444-iso/proj/b444demo`）。二进制按提交逐次重部署：fc2f9e23 → 6de79f13 → f6113731 → d4a107d0 → 3051d2b2。
+- **R4 首跑（fc2f9e23）**：`POST /api/sessions {project,cards:[D1,D2]}` → 200，标题「演示卡一：给 README 加一行说明 等 2 张」，`resident.error`「小队内没有已上线且有空的载体」（载体未 detect），会话 seq 7 系统指针行含重试命令；detect 后 `resident/launch` → 200 `{identity:agent:lead,carrier:free,carrier_machine:linux-01}`（5m32s）。**发现 F1**：首轮 `session send --agent lead` 被拒「书写者被拒：非会话成员」，模型改用 D1 席位 `--cli/--session` 冒名发言 → 返工（先坐下后拉起）。**发现 F2**：`card coordinate` 同步超 120s 被载体 shell 杀 → 简报补超时与查席位。
+- **R5（f6113731 后）**：零卡建会话 session:5 → 标题保持「新会话」；人发「帮我看下 b444demo 仓库里现在有哪些文件…」→ seq 33 `agent:lead` 回话，标题改为「b444demo 仓库文件盘点」。f6113731 前两次（session:3/4）首轮即自起名「驻场值班会话/驻场待命会话」→ 修。人先手改 session:7「人手起的名字」→ 驻场者未覆盖，timeline `renamed {from:新会话}`。
+- **R1**：同 R5，人无 @ 发言 → push 驻场者续轮回话（`agent:lead`）。
+- **R2**：session:1 人发 `@D1`（`mentions:["D1"]`，seq 50）→ 驻场者零回合（3 分钟无 `agent:lead` 消息）；D1 已终态，卡唤醒按终态闸跳过。正向半：驻场者 seq 36 `@D1` → D1 push 席位 seq 48 回话。注：HTTP 发言不自动解析 @，须带 mentions（Web 编辑器即如此）。
+- **R3**：载体并发 1，session:6 人叫「帮 D3 叫个协调者」→ seq 56 驻场者如实报 409「协调者并发已满（小队 lead）」未重试。下半（续轮失败指针行）未造出，见 roadmap。
+- **R6（3051d2b2）**：session:9 建会话带 D5 → 驻场者首轮 `card coordinate D5` → 协调者会话 ses_eac5ea14 坐席并推完到「已完成」；驻场者未自坐席位（D5 driver_session = 协调者会话）。返工前（d4a107d0）session:8 实测驻场者 `card bind` 自坐 D4 席位并亲自做完卡 → 返工三（不注入席位环境、账本互斥、简报禁止）。项目房间坐组织者 agent:org 后，D4 六次换列 + needs_human 通知 @agent:org 全数落项目房间（seq 83–89，于驻场回合结束后批量到达，见 roadmap「消费循环同步跑回合」）。协调者首轮自坐后 launch 收尾撞席 → 驻场者收 409 + needs_human，属 B446。
+- **R7**：桌面 1280 宽：项目行「在 b444demo 新建会话」icon → 对话框（项目只读、标题占位「留空则自动命名」、卡只列 D4、小队预填 lead）→ 创建中「正在拉起驻场者…」→ 会话出现在 b444demo 下并开 tab；左栏底部仅「归档会话」。手机 360 宽：项目 ⋯ 操作面板含「新建会话」，对话框适配。发现带终态卡的项目内会话落「其他会话」→ d4a107d0 修，复看 session:1 归 b444demo。
+- **R8**：在役版 8d10ea74 于隔离 HOME/7793 造旧库（会话「旧会话甲」+ desktop 驻场者 agent:old-desk）→ 3051d2b2 前一版 d4a107d0 打开：200，摘要无 `home_project` 键，驻场成员无 `driver_mode` 键；二次打开 200。
+- 范围外另立卡：B445（opencode 回合不在 SessionSpec.Workdir）、B446（协调者首轮自坐后 launch 收尾撞席）。
