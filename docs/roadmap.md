@@ -959,3 +959,8 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 
 - 重建唤醒回合（`wakeCoordinatorRoundRaw` 的 `Rebuilt` 分支，expect=旧会话）没有「同会话自坐」兜底：重建首轮若协调者自跑 `card rebind --self`，仍会 CAS 冲突 → `coordinatorSeatConflict`。首轮简报已禁自坐，概率低；需要时照 `adoptSelfSeatedCoordinator` 补。
 - `TestB446LaunchFinalizeAdoptsSelfSeat` 未钉「同会话 id、异 CLI 前缀」不被接管（构造上靠 `EncodeSeatIdentity` 前缀保证）。
+
+## B448 残余（2026-10-19，协调者首轮按载体机转发 spec Out of Scope「本期不做、后续要做」）
+
+- 转交途中受理机已向调用方超时、执行机仍在跑时的结果找回（本机路径同样没有：调用方断开后首轮照跑、席位照落，人刷新可见）。来源：`docs/superpowers/specs/b448.md`。
+- 小队成员跨多台机时的「就近选载体」偏好（LaunchAdmit 选择规则本期不变）。来源同上。
