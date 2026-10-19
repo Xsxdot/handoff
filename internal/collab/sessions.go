@@ -231,14 +231,55 @@ func (s *Service) SitResident(r proto.SessionResident) (proto.SessionResident, e
 		log().Warn("登记驻场者被拒：系统发信身份不得驻场", "session", r.Session, "identity", r.Identity)
 		return proto.SessionResident{}, fmt.Errorf("%s 是系统发信身份，不能当驻场者: %w", r.Identity, ErrResidentIdentity)
 	}
+	if err := validateResidentDriver(r); err != nil {
+		log().Warn("登记驻场者被拒：驱动形态与载体落点不成形", "session", r.Session, "identity", r.Identity,
+			"driver_mode", r.DriverMode, "cause", err)
+		return proto.SessionResident{}, err
+	}
 	got, err := s.lc.SitResident(r)
 	if err != nil {
 		mapped := mapResidentError(err)
 		log().Warn("登记驻场者失败", "session", r.Session, "identity", r.Identity, "cause", err)
 		return proto.SessionResident{}, mapped
 	}
-	log().Info("驻场者已登记", "session", r.Session, "identity", r.Identity, "has_desktop", r.DesktopSession != "")
+	log().Info("驻场者已登记", "session", r.Session, "identity", r.Identity, "has_desktop", r.DesktopSession != "",
+		"driver_mode", r.DriverMode, "carrier", r.Carrier)
 	return got, nil
+}
+
+// validateResidentDriver 校验驻场者行的驱动形态与载体落点成形（B444 P1，plan A1.7）：
+//   - push：身份必须是 agent:（push 驻场者记 agent:<小队名>；user: 是人，不能由载体冒用）；
+//     push_cli、push_session、carrier 必填（续轮 resume 的最小三元）；不得同时带桌面端两列——
+//     门铃只看 cli_session，带上就会门铃与 keystone 双重唤醒（缺陷族 R2）；
+//   - desktop（空串）：不得带任何 push/bearing 字段（同理：半个 bearing 不是可续轮的落点）；
+//   - 其余值：词表外，拒。
+//
+// 返回 nil 或包 ErrResidentIdentity 的错误（与身份记法错同一哨兵，HTTP/CLI 映射不新增分支）。
+func validateResidentDriver(r proto.SessionResident) error {
+	hasBearing := r.PushCLI != "" || r.PushSession != "" || r.Carrier != "" || r.CarrierMachine != "" ||
+		r.HomeDir != "" || r.Workdir != "" || r.Model != ""
+	switch r.DriverMode {
+	case proto.ResidentDriverDesktop:
+		if hasBearing {
+			return fmt.Errorf("桌面端驻场者不得带 push 载体落点字段: %w", ErrResidentIdentity)
+		}
+		return nil
+	case proto.ResidentDriverPush:
+		kind, _, err := proto.ParseMemberIdentity(r.Identity)
+		if err != nil || kind != proto.IdentityKindAgent {
+			return fmt.Errorf("push 驻场者身份须为 agent:<小队名>，收到 %q: %w", r.Identity, ErrResidentIdentity)
+		}
+		if r.PushCLI == "" || r.PushSession == "" || r.Carrier == "" {
+			return fmt.Errorf("push 驻场者须带 push_cli、push_session、carrier（得 cli=%q session=%q carrier=%q）: %w",
+				r.PushCLI, r.PushSession, r.Carrier, ErrResidentIdentity)
+		}
+		if r.DesktopSession != "" || r.CLISession != "" {
+			return fmt.Errorf("push 驻场者不得同时登记桌面端地址（会与门铃双重唤醒）: %w", ErrResidentIdentity)
+		}
+		return nil
+	default:
+		return fmt.Errorf("驻场者驱动形态 %q 不在词表（空=desktop | push）: %w", r.DriverMode, ErrResidentIdentity)
+	}
 }
 
 // StandResident 请下会话房间驻场者（`session stand`，Q7 甲）：identity 须等于现驻场者，否则
@@ -501,6 +542,8 @@ func (s *Service) sessionMembers(session proto.Session, byCard map[string]proto.
 		}
 		members = append(members, proto.SessionMember{
 			Identity: resident.Identity, Kind: proto.SessionMemberResident, Status: status, LastActive: lastActive,
+			DriverMode: resident.DriverMode, Carrier: resident.Carrier,
+			CarrierMachine: resident.CarrierMachine, Model: resident.Model,
 		})
 	}
 	for _, cardID := range session.Cards {

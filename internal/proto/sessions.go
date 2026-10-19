@@ -62,6 +62,13 @@ type SessionMember struct {
 	Status string `json:"status"`
 	// LastActive 最后活跃时刻（不可续租成员的可证实读数）；零值=无。
 	LastActive time.Time `json:"last_active,omitempty"`
+	// B444 P1：驻场者成员（kind=resident）的驱动形态与载体落点摘要，取自 SessionResident；
+	// 桌面端驻场者与其他成员全部缺键（omitempty），消费方把缺键当 desktop。只投影「谁在哪跑」
+	// 四键，不投影 HOME/workdir/会话 id 等执行细节。
+	DriverMode     string `json:"driver_mode,omitempty"`
+	Carrier        string `json:"carrier,omitempty"`
+	CarrierMachine string `json:"carrier_machine,omitempty"`
+	Model          string `json:"model,omitempty"`
 }
 
 // SessionCard 是会话里的一张工作项卡。Seat 为空 = 空座（进群 ≠ 配人）。
@@ -91,7 +98,39 @@ type SessionResident struct {
 	Machine string `json:"machine,omitempty"`
 	// SatAt 登记时刻。
 	SatAt time.Time `json:"sat_at"`
+	// B444 P1 驱动形态与载体落点（plan Q2 甲；全部 omitempty——旧 desktop 行的 JSON **无**这些键，
+	// 消费方须把缺键当 desktop 处理）。push 行的机器在 CarrierMachine，**不复用** Machine/CLISession
+	// （那两列是桌面端门铃的地址，复用会造成门铃与 keystone 双重唤醒）。
+	// DriverMode 见 ResidentDriver* 词表；空串 = desktop。
+	DriverMode string `json:"driver_mode,omitempty"`
+	// PushCLI push 载体的 CLI 名（opencode/claude…）。
+	PushCLI string `json:"push_cli,omitempty"`
+	// PushSession push 载体的 CLI 会话 id：每次续轮 resume 的目标。
+	PushSession string `json:"push_session,omitempty"`
+	// Carrier 载体登记名（scheduling）。
+	Carrier string `json:"carrier,omitempty"`
+	// CarrierMachine 载体所在机器；空串 = 本机。
+	CarrierMachine string `json:"carrier_machine,omitempty"`
+	// HomeDir 载体隔离 HOME。
+	HomeDir string `json:"home_dir,omitempty"`
+	// Workdir 回合工作目录。
+	Workdir string `json:"workdir,omitempty"`
+	// Model 载体模型。
+	Model string `json:"model,omitempty"`
 }
+
+// SessionUntitledTitle 是零卡、标题留空的会话的占位名（B444 spec「自动命名规则」）。驻场者首轮以它
+// 作改名 CAS 的期望值：标题仍等于它才改，人先手改过就保留人的名字（plan Q6 甲）。
+const SessionUntitledTitle = "新会话"
+
+// 驻场者驱动形态词表（B444 P1）。空串是旧行与桌面端驻场者的共同读数，不另设 "desktop" 字面值，
+// 免得同义两值并存。
+const (
+	// ResidentDriverDesktop 桌面端驻场者：门铃信 + continue 深链驱动（B435 O2）。
+	ResidentDriverDesktop = ""
+	// ResidentDriverPush handoff 拉起的载体担任驻场者：唤醒走 keystone 续轮（B444）。
+	ResidentDriverPush = "push"
+)
 
 // SessionSummary 是会话列表（谁需要我）的一行。
 type SessionSummary struct {

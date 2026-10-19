@@ -6,6 +6,7 @@ package ledger
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"net/url"
 	"path/filepath"
@@ -437,7 +438,15 @@ func ddlStatements(pg bool) []string {
 				desktop_session TEXT NOT NULL DEFAULT '',
 				cli_session TEXT NOT NULL DEFAULT '',
 				machine TEXT NOT NULL DEFAULT '',
-				sat_at TIMESTAMPTZ NOT NULL)`,
+				sat_at TIMESTAMPTZ NOT NULL,
+				driver_mode TEXT NOT NULL DEFAULT '',
+				push_cli TEXT NOT NULL DEFAULT '',
+				push_session TEXT NOT NULL DEFAULT '',
+				carrier TEXT NOT NULL DEFAULT '',
+				carrier_machine TEXT NOT NULL DEFAULT '',
+				home_dir TEXT NOT NULL DEFAULT '',
+				workdir TEXT NOT NULL DEFAULT '',
+				model TEXT NOT NULL DEFAULT '')`,
 			// B435 O1 项目房间绑定（D6）：project 主键兑现「每项目至多一场」，session 唯一兑现
 			// 「每场至多一个项目」（C-513）——库层兑现，无先查后写窗口。
 			`CREATE TABLE IF NOT EXISTS project_rooms (
@@ -623,7 +632,15 @@ func ddlStatements(pg bool) []string {
 				desktop_session TEXT NOT NULL DEFAULT '',
 				cli_session TEXT NOT NULL DEFAULT '',
 				machine TEXT NOT NULL DEFAULT '',
-				sat_at TEXT NOT NULL)`,
+				sat_at TEXT NOT NULL,
+				driver_mode TEXT NOT NULL DEFAULT '',
+				push_cli TEXT NOT NULL DEFAULT '',
+				push_session TEXT NOT NULL DEFAULT '',
+				carrier TEXT NOT NULL DEFAULT '',
+				carrier_machine TEXT NOT NULL DEFAULT '',
+				home_dir TEXT NOT NULL DEFAULT '',
+				workdir TEXT NOT NULL DEFAULT '',
+				model TEXT NOT NULL DEFAULT '')`,
 			`CREATE TABLE IF NOT EXISTS project_rooms (
 				project TEXT PRIMARY KEY,
 				session TEXT NOT NULL UNIQUE REFERENCES sessions(id),
@@ -698,6 +715,68 @@ func (s *Store) migrateDriverMode() error {
 	return nil
 }
 
+// residentPushColumns 是 B444 P1 给 session_residents 补的驱动形态与 bearing 列（plan Q2 甲），
+// 顺序即迁移顺序。全部 TEXT NOT NULL 缺省空串：旧行零回填，空串即 desktop（无 bearing）。
+var residentPushColumns = []string{
+	"driver_mode", "push_cli", "push_session", "carrier", "carrier_machine", "home_dir", "workdir", "model",
+}
+
+// migrateResidentPushColumns B444 加列迁移：旧库的 session_residents（B435 形状）逐列补齐
+// residentPushColumns（新库已内联建列）。容忍两方言的重复列文案（migrateDriverMode 先例）；
+// 不回填、不改写存量行（plan §6：回填须升级）。任一列失败即返回错误，Open 失败不带病起来。
+func (s *Store) migrateResidentPushColumns() error {
+	dialectName := map[bool]string{true: "postgres", false: "sqlite"}[s.dialect == dialectPG]
+	base, err := s.isBaseTable("session_residents")
+	if err != nil {
+		log().Warn("驻场者 push 列迁移前读表类型失败", "table", "session_residents", "dialect", dialectName, "cause", err)
+		return fmt.Errorf("迁移 session_residents 前读表类型: %w", err)
+	}
+	if !base {
+		// 同名对象不是基表（被替换成视图等）：加列迁移只改本库建的基表，不碰别的对象。读面会在查询期
+		// 报错（C-228 口径：读失败上抛，不当作无驻场者），与 B435 读失败用例的既有约定一致——Open 不因
+		// 一张读面表损坏而整体拒启。
+		log().Warn("session_residents 不是基表，跳过驻场者 push 列迁移（读面将在查询期报错）", "dialect", dialectName)
+		return nil
+	}
+	added := 0
+	for _, col := range residentPushColumns {
+		_, err := s.db.Exec(`ALTER TABLE session_residents ADD COLUMN ` + col + ` TEXT NOT NULL DEFAULT ''`)
+		if err == nil {
+			added++
+			log().Info("账本加列迁移完成", "table", "session_residents", "column", col, "dialect", dialectName)
+			continue
+		}
+		msg := err.Error()
+		if !strings.Contains(msg, "duplicate column") && !strings.Contains(msg, "already exists") {
+			log().Warn("账本加列迁移失败", "table", "session_residents", "column", col, "dialect", dialectName, "cause", err)
+			return fmt.Errorf("迁移 session_residents.%s: %w", col, err)
+		}
+	}
+	log().Info("驻场者 push 列迁移检查完成", "added", added, "columns", len(residentPushColumns), "dialect", dialectName)
+	return nil
+}
+
+// isBaseTable 报告本库当前 schema 里名为 table 的对象是否为基表（不存在 → false）。两方言各读自己的
+// 目录：SQLite 读 sqlite_master.type，PG 读 information_schema.tables（限 current_schema，与连接的
+// search_path 一致）。
+func (s *Store) isBaseTable(table string) (bool, error) {
+	var kind string
+	var err error
+	if s.dialect == dialectPG {
+		err = s.db.QueryRow(`SELECT table_type FROM information_schema.tables
+			WHERE table_schema = current_schema() AND table_name = $1`, table).Scan(&kind)
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		return err == nil && kind == "BASE TABLE", err
+	}
+	err = s.db.QueryRow(`SELECT type FROM sqlite_master WHERE name = ?`, table).Scan(&kind)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	return err == nil && kind == "table", err
+}
+
 // ensureSchema 幂等建表。与 internal/store 相同的策略：CREATE IF NOT
 // EXISTS 列表顺序执行，无版本号——幂等即契约；后续加列走「ALTER +
 // 容忍 duplicate column」。
@@ -752,6 +831,9 @@ func (s *Store) ensureSchema() error {
 		log().Info("账本加列迁移完成", "table", "cards", "column", "driver_source")
 	}
 	if err := s.migrateDriverMode(); err != nil {
+		return err
+	}
+	if err := s.migrateResidentPushColumns(); err != nil {
 		return err
 	}
 	if err := s.ensureOpenTicketProjection(); err != nil {

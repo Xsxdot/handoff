@@ -232,6 +232,12 @@ func (f *Facade) SessionResident(sessionID string) (proto.SessionResident, bool,
 	if err != nil || !ok {
 		return proto.SessionResident{}, ok, err
 	}
+	return residentWire(r), true, nil
+}
+
+// residentWire 是驻场行 → wire 的唯一逐字段映射（序列化边界，B444 P1 A1.6）：读面与写面回执共用，
+// 新增列只改这一处。B444 驱动形态与 bearing 原样透传（空串经 proto 的 omitempty 出 wire 即缺键）。
+func residentWire(r ledger.SessionResident) proto.SessionResident {
 	return proto.SessionResident{
 		Session:        r.Session,
 		Identity:       r.Identity,
@@ -239,7 +245,15 @@ func (f *Facade) SessionResident(sessionID string) (proto.SessionResident, bool,
 		CLISession:     r.CLISession,
 		Machine:        r.Machine,
 		SatAt:          r.SatAt,
-	}, true, nil
+		DriverMode:     r.DriverMode,
+		PushCLI:        r.PushCLI,
+		PushSession:    r.PushSession,
+		Carrier:        r.Carrier,
+		CarrierMachine: r.CarrierMachine,
+		HomeDir:        r.HomeDir,
+		Workdir:        r.Workdir,
+		Model:          r.Model,
+	}
 }
 
 // SitResident 登记会话驻场者（B435 R）：wire DTO 逐字段映射成账本本地行，写后把账本填写的
@@ -248,14 +262,14 @@ func (f *Facade) SitResident(r proto.SessionResident) (proto.SessionResident, er
 	got, err := f.st.SitResident(ledger.SessionResident{
 		Session: r.Session, Identity: r.Identity, DesktopSession: r.DesktopSession,
 		CLISession: r.CLISession, Machine: r.Machine,
+		DriverMode: r.DriverMode, PushCLI: r.PushCLI, PushSession: r.PushSession,
+		Carrier: r.Carrier, CarrierMachine: r.CarrierMachine,
+		HomeDir: r.HomeDir, Workdir: r.Workdir, Model: r.Model,
 	})
 	if err != nil {
 		return proto.SessionResident{}, translateResidentErr(err)
 	}
-	return proto.SessionResident{
-		Session: got.Session, Identity: got.Identity, DesktopSession: got.DesktopSession,
-		CLISession: got.CLISession, Machine: got.Machine, SatAt: got.SatAt,
-	}, nil
+	return residentWire(got), nil
 }
 
 // StandResident 请下会话驻场者（条件删除，身份须等于现驻场者）。

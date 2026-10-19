@@ -16,7 +16,17 @@ import (
 	"time"
 )
 
+// 驻场者驱动形态词表（B444 P1，plan Q2 甲）：空串 = desktop（旧行零回填即此义，门铃信驱动）；
+// push = 由 handoff 拉起的载体担任，唤醒走 keystone 续轮。与 proto.ResidentDriver* 同值（本包不
+// import proto 的包级符号以守 d_ledger→d_protocol 预算，wire 映射在 internal/ledger/api）。
+const (
+	ResidentDriverDesktop = ""
+	ResidentDriverPush    = "push"
+)
+
 // SessionResident 是驻场者登记一行。桌面端三列同空 = 无桌面端地址（只靠 session wait 收件）。
+// push 驻场者（DriverMode=push）的载体落点存在独立的 bearing 列里，**不复用** cli_session/machine
+// （plan Q2 甲：门铃只靠 cli_session 判可按，复用会造成门铃与 keystone 双重唤醒）。
 type SessionResident struct {
 	Session        string // 会话房间 id（session:<n>），主键
 	Identity       string // 驻场者成员身份（user:/agent: 统一记法）
@@ -24,6 +34,15 @@ type SessionResident struct {
 	CLISession     string // 桌面端会话的 CLI 会话 id（信箱文件名键）；空 = 无
 	Machine        string // 桌面端所在机器；空 = 登记时的本机
 	SatAt          time.Time
+	// B444 push 驱动形态与载体落点（与 seat_bearings 同形）；desktop 行全空。
+	DriverMode     string // ResidentDriverDesktop | ResidentDriverPush
+	PushCLI        string // push 载体 CLI（opencode/claude…）
+	PushSession    string // push 载体的 CLI 会话 id（续轮 resume 的目标）
+	Carrier        string // 载体名（scheduling 登记名）
+	CarrierMachine string // 载体所在机器；空 = 本机
+	HomeDir        string // 载体隔离 HOME
+	Workdir        string // 回合工作目录
+	Model          string // 载体模型
 }
 
 // SessionResident 读会话的驻场者。参数 session 为会话房间 id。返回：无登记 → ok=false、
@@ -36,9 +55,11 @@ func (s *Store) SessionResident(session string) (SessionResident, bool, error) {
 	}
 	var r SessionResident
 	var satAt any
-	err := s.db.QueryRow(s.q(`SELECT session, identity, desktop_session, cli_session, machine, sat_at
+	err := s.db.QueryRow(s.q(`SELECT session, identity, desktop_session, cli_session, machine, sat_at,
+		driver_mode, push_cli, push_session, carrier, carrier_machine, home_dir, workdir, model
 		FROM session_residents WHERE session = ?`), session).
-		Scan(&r.Session, &r.Identity, &r.DesktopSession, &r.CLISession, &r.Machine, &satAt)
+		Scan(&r.Session, &r.Identity, &r.DesktopSession, &r.CLISession, &r.Machine, &satAt,
+			&r.DriverMode, &r.PushCLI, &r.PushSession, &r.Carrier, &r.CarrierMachine, &r.HomeDir, &r.Workdir, &r.Model)
 	if errors.Is(err, sql.ErrNoRows) {
 		log().Debug("会话无驻场者", "session", session)
 		return SessionResident{}, false, nil
@@ -48,7 +69,8 @@ func (s *Store) SessionResident(session string) (SessionResident, bool, error) {
 		return SessionResident{}, false, fmt.Errorf("session_residents 查询 session=%s: %w", session, err)
 	}
 	r.SatAt = toTime(satAt)
-	log().Debug("读驻场者完成", "session", session, "identity", r.Identity, "has_desktop", r.DesktopSession != "")
+	log().Debug("读驻场者完成", "session", session, "identity", r.Identity, "has_desktop", r.DesktopSession != "",
+		"driver_mode", r.DriverMode)
 	return r, true, nil
 }
 
@@ -59,7 +81,8 @@ var ErrResidentOccupied = errors.New("ledger: 会话已有驻场者")
 var ErrResidentNotSeated = errors.New("ledger: 该身份不是会话驻场者")
 
 // SitResident 登记会话驻场者（B435 R，`session sit` 的账本半边）。参数 r：Session、Identity
-// 必填；桌面端三列可空（空 = 无桌面端地址）；SatAt 由账本按本库时钟填写，入参值忽略。
+// 必填；桌面端三列可空（空 = 无桌面端地址）；B444 驱动形态与 bearing 列原样落库（形状校验在
+// collab.Service.SitResident）；SatAt 由账本按本库时钟填写，入参值忽略。
 // 返回：写下的一行（含 SatAt）。错误：入参为空 → ErrBadState；会话不存在 → ErrNotFound；
 // 已归档 → ErrBadState；已有驻场者（不论身份，C-414 / Q8 甲）→ ErrResidentOccupied，原登记不变。
 //
@@ -78,9 +101,12 @@ func (s *Store) SitResident(r SessionResident) (SessionResident, error) {
 	r.SatAt = s.timeNow()
 	err := s.mutate(func(tx *sql.Tx, _ *eventSink) error {
 		res, err := tx.Exec(s.q(`INSERT INTO session_residents
-			(session, identity, desktop_session, cli_session, machine, sat_at) VALUES (?, ?, ?, ?, ?, ?)
+			(session, identity, desktop_session, cli_session, machine, sat_at,
+			 driver_mode, push_cli, push_session, carrier, carrier_machine, home_dir, workdir, model)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT (session) DO NOTHING`),
-			r.Session, r.Identity, r.DesktopSession, r.CLISession, r.Machine, s.tval(r.SatAt))
+			r.Session, r.Identity, r.DesktopSession, r.CLISession, r.Machine, s.tval(r.SatAt),
+			r.DriverMode, r.PushCLI, r.PushSession, r.Carrier, r.CarrierMachine, r.HomeDir, r.Workdir, r.Model)
 		if err != nil {
 			return fmt.Errorf("写驻场者 session=%s: %w", r.Session, err)
 		}
@@ -108,7 +134,8 @@ func (s *Store) SitResident(r SessionResident) (SessionResident, error) {
 		}
 		return SessionResident{}, err
 	}
-	log().Info("驻场者已登记", "session", r.Session, "identity", r.Identity, "has_desktop", r.DesktopSession != "")
+	log().Info("驻场者已登记", "session", r.Session, "identity", r.Identity, "has_desktop", r.DesktopSession != "",
+		"driver_mode", r.DriverMode, "carrier", r.Carrier, "carrier_machine", r.CarrierMachine)
 	return r, nil
 }
 
