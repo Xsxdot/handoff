@@ -567,3 +567,13 @@ K0-3（其他 agent 解析 `card wait` 输出）、K0-D（装过 B434 的用户�
 - 预测「用户机账本是 SQLite」：**错**——PG。
 - 预测「组织者照简报加 `--timeout`」（N1 风险）：**对**——每次 wait 都带 `--timeout 30s`，124 处置正确。
 - 预测「模型可能照抄 flag 出错」（R-5b）：**对的反面**——模型照抄字面值无误，且主动 `--help` 后补合法 flag。
+
+### 17.4 修复：`room read --after` 语义反了（17.2-1，2026-10-19，协调者本地，implement 排查节）
+
+- **偏离与自主决定**：①修在 CLI 侧翻页，不给 collab/ledger 门面加「after」查询——`History(beforeSeq)` 是 B156.2 冻结的排他上界接口（控制台向上翻页用），沿用它不触碰冻结物、无契约回写；②未给 `--after` 时保持原行为（只读最新一页 200 条），给了 `--after` 才读完 N 之后全部；③新增包级变量 `roomReadPageSize`（默认 200）仅供测试压小页逼出跨页路径。三条均为单工作单元内部可逆选择。
+- **第 0 步 身份**：工作树 `cards+B435-charter-1` @ `2993c947`；被验二进制为当前树 `go build`（`dab2fb34e20f1ac3`）与修复前 `uv/handoff`（`425af5ca68b7db59`）。
+- **根因**：`cmd/room.go#roomReadCmd` 自 B156.2.7 `5582a6ce` 起把 `--after` 传给 `collab.Service.HistoryContext` 的 `beforeSeq`；`ledger.Store.RoomMessagesBeforeContext` 把它当 `seq < ?` 上界。既有 `TestRoomReadStdoutSeqPrefix` 只断言「`--after` 最新 seq → 空」，上界语义下同样为空，测试没有牙。
+- **红**：新增 `TestRoomReadAfterIsExclusiveLowerBound`（五条消息，`--after` 取 0/首条/第三条/末条，页大小默认与 2 两档）；首红为编译红（`roomReadPageSize` 未定义），补空变量后断言红 `--after 2：want [#3 #4 #5 #6]，got []`。
+- **绿**：`readRoomAfter` 从最新页向前翻，某页越过 N 或不满页即停，只留 `seq > after`，升序输出；Debug 日志记页数与行数，失败日志带 `pages`。`go test -run TestRoomRead ./cmd/` ok；`go build ./...` 0、`go vet ./cmd/` 0、`gofmt -l` 空；`go test ./cmd/` 唯一 FAIL 为存量 `TestRepoContractGate`（三处 over-budget 逐字同基线）。
+- **变异**：边界 `<= after` → `< after`：新测试红（`got [#2 #3 #4 #5 #6]`），还原回绿；去掉「越过 N 即停」条件：测试仍绿——只多翻页、输出不变，属效率行为，信息性记录。
+- **真机复核**（靶子 M 原数据 session:2，CLI 直读 SQLite）：修复后 `--after 6` → `#8 … #50`、`--after 9` → `#10 … #50`、`--after 44` → `#46 #48 #50`、`--after 0` 与不带参数 → 全部 17 条；修复前二进制 `--after 6` → 空。

@@ -1001,7 +1001,7 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 ### B435 finish 残余（2026-10-19；来源各子卡 impl-ledger 与 `b435-ledger.md` 十五）
 
 - **用户机待验（2026-10-19 补验后剩余）**：K0-3、K0-D、R-5b、O2-U1…U6、O2-M1、X-U1、W-7 控制台半边、X-U2 的 mod/CLAUDE.md 半边已补验（`b435-ledger.md` 十七）。仍未验：**R-1m / W-0 真手机**（无设备，控制台仅做过移动端模拟）；**薄壳内 W-7 与 X-U2 `/new` 拒绝**（薄壳未装，构建需 `go install` wails3）；K0-D 的 `card wait` 收房间行（生产副本无非终态在会话 pull 卡）；O2-U3 桌面端是否实际回收会话未独立观测。来源：`b435-ledger.md` 十七 17.1。
-- **`handoff room read --after N` 语义反了**（存量缺陷，B156.2.7 `5582a6ce` 起，已在 main）：`cmd/room.go#roomReadCmd` 把 `--after` 传进 `HistoryContext` 的 `beforeSeq`；组织者「答前先查」取证命令因此读错区间。修法：CLI 走排他 after 的账本查询（或改 flag 名并同步 SKILL），补一支 `--after` 穿 CLI 的回归测试。来源：`b435-ledger.md` 17.2-1。
+- ~~**`handoff room read --after N` 语义反了**~~ **已修**（2026-10-19，CLI 侧翻页，`b435-ledger.md` 17.4）。
 - **人类不在项目房间书写者集**：项目房间群主 `agent:handoff`，控制台用户在项目房间发言被拒（`书写者与房间身份不符`），与 SKILL「人在项目房间无 @ 发言 → 门铃」不符。待裁决：项目房间书写者集并入 `console_user`（或建房时把人加为成员），或改 SKILL 文案。来源：`b435-ledger.md` 17.2-2。
 - **组织者授权规则 vs 用户「不在电脑前也能沟通」**（需用户裁决、会改冻结契约 Q4 与 SKILL 逐字）：备选——只认作者为 `user:<本人>` 的房间发言为授权（组织者真机提议，已用其拒绝了 agent 冒称同意）。来源：`b435-ledger.md` 17.2-3。
 - **SKILL `card wait` 可动作事件清单补 `room_message`**（Minor）。来源：`b435-ledger.md` 17.2-4。

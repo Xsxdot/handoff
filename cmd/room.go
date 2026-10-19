@@ -88,6 +88,9 @@ var roomListCmd = &cobra.Command{
 
 var roomReadAfter int64
 
+// roomReadPageSize 是 room read 每次向账本取的页大小；只有测试改它（逼出跨页路径）。
+var roomReadPageSize = 200
+
 var roomReadCmd = &cobra.Command{
 	Use:   "read <room>",
 	Short: "读房间历史（stdout 每行以 #<seq> 开头；--after 排他）",
@@ -104,10 +107,10 @@ var roomReadCmd = &cobra.Command{
 		counter := &countingWriter{w: cmd.OutOrStdout()}
 		// B409.6：经 HistoryContext 让 op id 贯通到账本查询日志（History 的
 		// background 包装看不到 CLI 上下文）。
-		events, err := svc.HistoryContext(ctx, args[0], roomReadAfter, 0)
+		events, pages, err := readRoomAfter(ctx, svc, args[0], roomReadAfter, cmd.Flags().Changed("after"))
 		if err != nil {
 			slog.Default().Warn("CLI 读房间历史失败", append(diag.Attrs(ctx), "room", args[0],
-				"after", roomReadAfter, "cause", err)...)
+				"after", roomReadAfter, "pages", pages, "cause", err)...)
 			return fmt.Errorf("读房间历史: %w", err)
 		}
 		for _, ev := range events {
@@ -123,6 +126,45 @@ var roomReadCmd = &cobra.Command{
 			"outcome", outcome, "elapsed_ns", time.Since(started).Nanoseconds())...)
 		return nil
 	},
+}
+
+// readRoomAfter 取房间里 seq > after 的全部消息（升序）。
+//
+// 为什么在 CLI 侧翻页：collab.History 的分页参数是排他**上界** beforeSeq（B156.2
+// 冻结，控制台向上翻历史用），而 `--after` 是排他**下界**。早先把 --after 直接当
+// beforeSeq 传，读出的是 N 之前的消息（B435 真机 O2-U4/U6）。这里沿用冻结的上界
+// 接口从最新页往回翻，翻到某页越过 N（或到房间开头）即停，只保留 seq > after 的行。
+//
+// 参数：explicit=false（未给 --after）保持原行为——只读最新一页；explicit=true 读
+// 完 N 之后的全部。返回值 pages 是实际查询的页数，供日志对质。
+func readRoomAfter(ctx context.Context, svc *collab.Service, room string, after int64, explicit bool) ([]proto.LedgerEvent, int, error) {
+	pageSize := roomReadPageSize
+	var pagesNewestFirst [][]proto.LedgerEvent
+	before := int64(0)
+	pages := 0
+	for {
+		page, err := svc.HistoryContext(ctx, room, before, pageSize)
+		pages++
+		if err != nil {
+			return nil, pages, err
+		}
+		cut := 0
+		for cut < len(page) && page[cut].Seq <= after {
+			cut++
+		}
+		pagesNewestFirst = append(pagesNewestFirst, page[cut:])
+		if !explicit || cut > 0 || len(page) < pageSize {
+			break
+		}
+		before = page[0].Seq
+	}
+	var events []proto.LedgerEvent
+	for i := len(pagesNewestFirst) - 1; i >= 0; i-- {
+		events = append(events, pagesNewestFirst[i]...)
+	}
+	slog.Default().Debug("CLI room read 翻页完成", append(diag.Attrs(ctx), "room", room,
+		"after", after, "explicit", explicit, "pages", pages, "rows", len(events))...)
+	return events, pages, nil
 }
 
 // roomMessageBody 解出事件正文；非 room_message 或解码失败返回空串。
