@@ -1,6 +1,6 @@
 # 账本 schema 版本闸：PG Open 版本一致时跳过建库
 
-> 状态：待批准（2026-10-19 起草；r2 并入委托会话五条意见）
+> 状态：**已批准**（2026-10-19，用户批准 r2；r2 并入委托会话五条意见）
 > 级别：**L1**（单子系统 internal/ledger，不动契约；实现决定见末尾三行，验收一眼可核：pg_locks / 持锁下 Open 成功）
 > 来源：2026-10-19 agentd 打开账本挂死事故的续篇（fix/ledger-open-retry 已合入 main a429b193）
 > 台账：[ledger-schema-version-ledger.md](ledger-schema-version-ledger.md)
