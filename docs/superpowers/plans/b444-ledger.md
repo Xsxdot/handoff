@@ -85,3 +85,40 @@
 - 叫驻场者（CLI）：`handoff [--target <机>] session resident launch <session:N> [--squad <小队>]`。
 - 改名（HTTP，控制台身份）：`POST /api/sessions/{id}/rename` 体 `{"title":"<新名>","expect_title":"新会话"}`（expect_title 可省）→ 200 `Session`；400 空标题、403 非群主非驻场者、404、409 CAS 不符或已归档。
 - 改名（CLI）：驻场者 `handoff session rename <session:N> <新名> --agent <小队> --expect-title 新会话`（本地账本）；人 `handoff [--target <机>] session rename <session:N> <新名> [--expect-title X]`（经 agentd）。
+
+## P3（S1/S2/S8/S9 Web）——实现者 subagent，2026-10-19
+
+### 偏离与自主决定
+
+1. **改写既有测试断言（plan §6「必须升级」项，逐条列出提请审查确认）**：
+   - `Shell.test.tsx` B442 两条（桌面左栏「新建会话」、移动「⋯」菜单「新建会话」）→ 改写为 B444 缺席断言 + 项目入口断言（`describe('B444 新建会话入口在项目上')`）。**协调者已批准**（spec S9）。
+   - `Shell.test.tsx` B358.9 两条（「对话框只有标题，createSession 只收标题」「建会话后不调用 addSessionMember」）：入口改为项目行 icon，第一条改为断言 `createSession({project, squad, cards, title})`；B358.9 不变式（无群主输入、无 owner 记忆、不补员）原样保留。理由：plan §3 P3 明定 `createSession` 改签名、对话框重写为四字段，旧断言与已批准 plan 直接矛盾。**未经单独授权，提请确认。**
+   - `NewSessionDialog.test.tsx` 整体重写（旧「提交只带标题」「空标题禁用创建」与 spec「标题可空」矛盾）；B358.9 两条不变式（无群主输入、未配 console_user 禁用）保留。**提请确认。**
+   - `rooms.fetch.test.ts`「createSession POST {title}」→ 改为新形态 `{project, squad, cards?, title?}`，「不带 owner」不变式保留。**提请确认。**
+   - `sessionModel.test.ts`「timeline 词表恰八值」→ 九值（加 `renamed`）。必然推论（S7 改名事件进 timeline）。**提请确认。**
+   - `SessionSidebar.test.tsx` 只从 `defaultProps` 删掉 `onCreate`（非断言）。
+2. **`SessionSidebar` 删 `onCreate` 与 `archivedOnly` 两个 prop**（Q5 授权范围内）：`archivedOnly` 唯一用途是禁用那颗按钮，按钮撤掉后成死 prop，一并删除，Shell 两处调用同步去掉。
+3. **结果视图**（执行者自定，§6「Web 组件内部结构」）：建成后若有 `rejected_cards` 或 `resident.error`，对话框不关、转结果视图逐卡点名原因与驻场者失败原因，并给 CLI 重试命令 `handoff session resident launch <id>`（Web 重试按钮按 Q4 落 roadmap）；会话照样刷新并开 tab。无问题则直接关闭。
+4. **多个协调小队时不预填**：spec 只定「预填唯一协调小队」；≥2 个时下拉首项「请选择协调小队」，未选前禁用创建（不替人挑）。读小队失败显示原因并禁用创建。
+5. **卡候选过滤**放 `sessionModel.pullableCards`（纯函数）：`card.project === 项目名`（与服务端预校验口径逐字一致）、状态不在 `{已完成, 终止}`、不在会话列表快照的任何会话里（含归档）。列表外会话（人不是成员）的占用仍由服务端 `rejected_cards` 点名。
+6. **建会话请求体**：trim 后空标题、空卡列表不出键；`squad` 恒出（Web 形态必选）。
+7. **`SessionMember.driver_mode` 词表只收 `push`**（`RESIDENT_DRIVER_MODES`）：desktop 在线上是空串 → omitempty 缺键，缺键即 desktop；详情成员行仅 push 驻场者附 `· push · <carrier>@<machine>`。
+8. **sessionProjects 顺序**：`home_project, project, 卡项目`（去重保序）。项目房间 `home_project` 留空（P2 偏离 2），两者实际不并存。
+9. **项目名**：入口传 `ProjectNode.name`（与 `openProjectCards` 的 `?project=` 同口径）。
+10. **第一个 P3 提交 `52461122` 单独不过 tsc**（Shell 仍调旧签名），第二个提交 `f8396c12` 接上；两提交合起来 tsc/全量绿。
+
+### 事实与命令
+
+- 基线：`cards/B444-charter-1` @ `fc2f9e23`。P3 提交：`52461122`（wire/模型/详情）、`f8396c12`（入口/对话框/撤入口）。
+- 先红后绿：
+  - wire/模型：先写 contract/rooms.fetch/sessionModel 新测 → 10 红（守卫函数缺失、home_project 未并入、renamed 缺标签、createSession/renameSession 形状）→ 实现绿。`rooms.fetch` 两条首次红里有一处是测试自身复用 Response 体（已改 mockImplementation），修后仍红于功能缺失，再实现转绿。
+  - Shell 竖切：6 条 B444 用例先红（找不到「在 handoff 新建会话」；移动「⋯」菜单 `新建会话` 仍在）→ 入口/对话框/Shell 接线后绿。
+  - `NewSessionDialog.test.tsx` 与 `SessionDetail` B444 用例：对话框测在组件重写后写成，**未见首红**（如实记）；SessionDetail 用例先红（无 renamed 渲染/无载体落点）后绿。
+- 命令与结果：
+  - `cd web && npx tsc -b` → 无输出（通过）。
+  - `npx vitest run src/api src/app/rooms src/app/tree src/app/shell` → 39 文件 743 测全过。
+  - `npx vitest run`（全量）→ 145 文件 1950 测全过。
+  - `npx eslint .` → 2 errors（`MobileWorkspace.tsx:160` 既有、本次因上方加一行注释由 159 下移；`TerminalTab.test.tsx:37` 既有），无新增 error；`NewSessionDialog.tsx` 无告警（`pullableCards` 移入 sessionModel 以免 fast-refresh 告警）。
+- **未验证**：
+  - R4/R7 真机（隔离 M + 真载体）：建会话耗时下「正在拉起驻场者…」体感、桌面与 390px 手机宽度截图（项目行 icon 是否挤压行内计数/芯片、操作面板项、底部与「⋯」入口已撤）——归协调者。jsdom 下只断言了结构，未做像素/横向滚动检查。
+  - 原型回流 `prototypes/base/` 归 finish。
