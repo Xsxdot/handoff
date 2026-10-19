@@ -125,7 +125,7 @@ var (
 				Credential: ep.Credential,
 				Node:       ep.Node,
 				Token:      ep.Token,
-			}, slog.Default())
+			}, targetclient.P2P{}, slog.Default()) // 升级是一次性 relay 调用，不打洞
 			if err != nil {
 				slog.Default().Error("upgrade 经工厂构造 relay client 失败", "target", name, "cause", err)
 				return upgradeDialErr{err: err}

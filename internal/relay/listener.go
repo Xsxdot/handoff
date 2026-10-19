@@ -17,6 +17,8 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/hashicorp/yamux"
+
+	"github.com/Xsxdot/handoff/internal/p2p"
 )
 
 const (
@@ -34,18 +36,45 @@ type Listener struct {
 	account    string
 	handler    http.Handler
 	log        *slog.Logger
+
+	// 打洞应答（B438，见 listener_p2p.go）。直连会话归 Listener 生命周期
+	// （p2pWG + RunWithReconnect 的 ctx），不归单次 Run：relay 断线重连不被在役
+	// 直连拖住，也不拖断在役直连。
+	p2p            P2POptions
+	p2pMu          sync.Mutex
+	p2pPending     int
+	p2pEstablished int
+	p2pWG          sync.WaitGroup
+	// 上限与预算：生产取常量，测试可改。
+	p2pMaxPending     int
+	p2pMaxEstablished int
+	p2pRequestTimeout time.Duration
+	p2pConnectBudget  time.Duration
 }
+
+// ListenerOption 配置 Listener。
+type ListenerOption func(*Listener)
+
+// WithListenerP2P 开启打洞应答。不传 = 对打洞信令回 disabled（行为与 B438 之前
+// 的 relay 会话服务一致）。
+func WithListenerP2P(o P2POptions) ListenerOption { return func(l *Listener) { l.p2p = o } }
 
 // NewListener constructs an executor relay listener. account is optional when
 // the relay's REGISTERED response supplies the authenticated account ID.
-func NewListener(relayURL, credential, node, token, account string, handler http.Handler, log *slog.Logger) *Listener {
+func NewListener(relayURL, credential, node, token, account string, handler http.Handler, log *slog.Logger, opts ...ListenerOption) *Listener {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Listener{
+	l := &Listener{
 		relayURL: relayURL, credential: credential, node: node,
 		token: token, account: account, handler: handler, log: log,
+		p2pMaxPending: listenerP2PMaxPending, p2pMaxEstablished: listenerP2PMaxEstablished,
+		p2pRequestTimeout: listenerP2PRequestTimeout, p2pConnectBudget: upgradeBudget,
 	}
+	for _, opt := range opts {
+		opt(l)
+	}
+	return l
 }
 
 // Run establishes one registered relay tunnel and serves sessions until it
@@ -118,6 +147,8 @@ func (l *Listener) Run(ctx context.Context) error {
 // RunWithReconnect keeps the executor registered through transient relay
 // failures. Context cancellation stops both the current tunnel and backoff.
 func (l *Listener) RunWithReconnect(ctx context.Context) {
+	// 直连会话归 Listener 生命周期：ctx 取消后等它们全部关闭才返回。
+	defer l.p2pWG.Wait()
 	backoff := listenerInitialBackoff
 	for {
 		if ctx.Err() != nil {
@@ -156,16 +187,27 @@ func (l *Listener) serveSession(ctx context.Context, stream net.Conn) {
 	}
 	l.log.Info("e2e established", "node", l.node, "account", l.account, "role", "responder")
 	reader := bufio.NewReader(secure)
+	// 会话模式三分（两魔数等长，一次 Peek）：打洞信令 / preview raw / app。
 	prefix, err := reader.Peek(len(previewRawMagic))
 	if err != nil {
 		l.log.Warn("relay session mode read failed", "node", l.node, "account", l.account, "cause", err)
+		return
+	}
+	if bytes.Equal(prefix, []byte(p2p.SignalMagic)) {
+		l.serveSignalSession(ctx, secure, reader)
 		return
 	}
 	if bytes.Equal(prefix, []byte(previewRawMagic)) {
 		l.serveRawSession(ctx, secure, reader)
 		return
 	}
-	appMux, err := yamux.Server(&bufferedRelayConn{Conn: secure, reader: reader}, relayYamuxConfig())
+	l.serveApp(ctx, &bufferedRelayConn{Conn: secure, reader: reader}, "relay")
+}
+
+// serveApp 在一条已过 E2E 的会话上跑 app-yamux 并交给同一个 HTTP handler。relay
+// 会话与打洞直连会话共用（直连上不再做魔数判别，F1 W13）。
+func (l *Listener) serveApp(ctx context.Context, secure net.Conn, via string) {
+	appMux, err := yamux.Server(secure, relayYamuxConfig())
 	if err != nil {
 		l.log.Error("relay app yamux setup failed", "node", l.node, "cause", err)
 		return
@@ -182,7 +224,7 @@ func (l *Listener) serveSession(ctx context.Context, stream net.Conn) {
 	_ = http.Serve(app, l.handler)
 	close(serveDone)
 	_ = app.Close()
-	l.log.Info("relay session closed", "node", l.node, "account", l.account)
+	l.log.Info("relay session closed", "node", l.node, "account", l.account, "via", via)
 }
 
 type bufferedRelayConn struct {
@@ -255,9 +297,18 @@ type appListener struct {
 	session *yamux.Session
 }
 
-func (l *appListener) Accept() (net.Conn, error) { return l.session.Accept() }
-func (l *appListener) Close() error              { return l.session.Close() }
-func (l *appListener) Addr() net.Addr            { return relayAddr("relay-app") }
+// Accept 把会话结束的错误包成非 net.Error：http.Serve 对 Temporary 的 net.Error
+// 每秒重试、永不返回。打洞直连死亡时 yamux 的 shutdownErr 是底层 ICE 连接的
+// 「i/o timeout」（Temporary=true），不包一层会让 serveApp 卡死、Listener 无法退出。
+func (l *appListener) Accept() (net.Conn, error) {
+	conn, err := l.session.Accept()
+	if err != nil {
+		return nil, fmt.Errorf("relay app 会话已结束: %w", err)
+	}
+	return conn, nil
+}
+func (l *appListener) Close() error   { return l.session.Close() }
+func (l *appListener) Addr() net.Addr { return relayAddr("relay-app") }
 
 type relayAddr string
 

@@ -867,6 +867,27 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 - **opencode review 裁决块形状漂移**：B439 五轮 review 有三轮「裁决解析失败」——结论 JSON 多出自造字段、或把 handoff-verdict 块经提问工单发出且收到答复后继续提问（只能 stop 收口）。宜在纪律块/runner 侧收紧：容忍多余键、或明文禁止经 ask 交裁决。来源：B439 协调者。
 - **卡派发起点取「上一轮任务分支」，非工作分支最新合入**：B439 父卡 review 首两派起点为 cards/B439-charter-2/-3@20dca87（缺 B439.4 合入，子卡合入的是 cards/B439-charter），且每次派发（含被 stop 的）都成为下一轮起点；协调者须手工快进才对上 62ed2a22。宜让父卡工作分支 = 子卡合入目标，并让被 stop 的零提交轮不改写工作分支。来源：B439 finish。
 - **`fake` 执行器无 Profile 能力，卡派发恒带纪律块 → fake 无法走卡派发**：真机/隔离验证想用零成本执行器验镜像链路时被拒（「没有 Profile 能力」），只得改用无凭据 codex 让回合 401 失败。宜给 fake 一个空实现 Profile，或允许纪律块对 fake 跳过。来源：B439 finish 真机。
+- **relay 服务端自托管 STUN**：B438 缺省用公网 STUN（会向 STUN 运营方暴露出口 IP），宜由 relay 服务端顺带提供 STUN 并作为缺省。来源：B438 spec OOS。
+- **控制台 / `handoff machines` 显示每台机器当前通道（直连 / 打洞 / relay）**：B438 期内路径只经日志可见。来源：B438 spec OOS。
+- **打洞直连死亡时在途流跨路径迁移**：B438 只切新流，直连断时其上在途流会断。来源：B438 spec OOS。
+- **TURN / 多 relay 区域选择**：B438 不做 TURN，兜底即 relay。来源：B438 spec OOS。
+- **真手机运营商 NAT 下的打洞实测**：B438.2 无真手机/运营商网络取证。来源：B438 spec OOS。
+- **预览 raw 流（preview SOCKS）走打洞直连**：B438 P1 拍板本期留 relay，预览流量照旧计入 relay 配额。来源：B438 plan P1。
+- **打洞双方同步起跳（应对无入站防火墙的 Linux NAT 的 conntrack 冲突）**：B438.1 真机发现 INPUT 为 ACCEPT 的 Linux MASQUERADE 上，对端首个检查先到会被确认成 conntrack 条目、占住映射元组，本端出站被迫换端口，打洞失败（正确降级 relay）。家用路由器缺省 WAN 入站丢弃不受影响。改进：信令加一次 RTT 测量 + 同步起跳（DCUtR 式 RTT/2 对齐），或应答方延迟检查。来源：B438.1 真机 `docs/superpowers/evidence/b438/b438.1-realmachine.md`。
+- **打洞应答读失败的分类细化**：`p2p.ReadAnswer` 把魔数读齐前的任何读错误判成「对端不支持」（F1 W8），信令期 relay 抖断或 12 s 预算到点自关信令会话也会被误判，进 10 min 长退避并打误导 INFO。改进：本端 ctx 已到点/relay 隧道同期断线时归 timeout/signal_io（需澄清 F1）。不改 wire 的修法方向（协调者 2026-10-19）：连续 N 次（如 3 次）信令失败才判「不支持」，单次读错误按普通退避处理——一次抖动就关打洞 10 min、期间全走 relay，与 B438 目标相悖。来源：B438.1 review Minor 3。
+- **p2p 包日志级别与包注释对齐**：`internal/p2p/agent.go` 收集/建代理失败三处打 Warn，与包注释「只打 Debug」矛盾，且失败时每轮退避多一条 WARN。来源：B438.1 review Minor 2。
+- **ICE Disconnected 期间不选直连的专门断言**：`Conn.Selectable()` 目前只被变异间接锁住。来源：B438.1 review Minor 4。
+- **Android 去掉 anet 与 `-checklinkname=0`**：由 Android 壳经 gomobile 绑定接口把网卡地址列表传进 Go，作为 pion 的自定义 `transport.Net` 实现（经 `P2POptions.Net` 注入），去掉 wlynxg/anet 及其 linkname 依赖和这个链接参数（参考：Tailscale Android 的网卡信息由 Java 侧提供）。现状风险：升级 Go 可能令 anet 运行时出错，靠升级时重跑 bind 测试与模拟器取证兜底。来源：B438.2（协调者 2026-10-19）。
+- **锁住 spec 冻结的 p2p 用户可见日志级别**：现有断言只比消息文本，`p2p 直连已建立` 等 INFO 降成 Debug 时 relay 与 mobilecore 测试照绿（B438.1 起即有的缺口）。改进：捕获 handler 记录级别并断言 INFO/WARN。来源：B438.2 review 第 2 轮 Minor 3。
+- **审批链黑名单全队共享**：B437 共享审批链只共享候选环与时限，`approver.blacklist` 仍各机本地（permgate 启动装配、不热更新）。共享需 permgate 支持热更新。来源：B437 spec Out of Scope。
+- **控制台只读展示共享审批链**：B437 只给 CLI `handoff approver show|set|clear`；编辑仍不进控制台（B160 安全链口径）。来源：B437 spec Out of Scope。
+- **审批链环健康探测与跳过**：B437 每次裁决对不可达的环都要等到连接失败或时限；宜记住近期不可达的环直接跳过。来源：B437 spec Out of Scope。
+- **审批链本机环超时收尾慢、审计理由未归一**：B437 真机，链 timeout=3s 时本机环 codex OneShot `context deadline exceeded` 实际 7592ms 才返回（取消后进程收尾约 4.6s），审计理由是原始错误串而非「超时」；他机环已按五分类归一。宜让本机 OneShot 取消后限时强杀、本机环失败理由同走五分类。来源：B437 finish 真机。
+- **B437 真机残余**：plan §9-6 relay 冷隧道环在连接时限（10s）内能否成功——未验（无授权在 relay 部署、隔离实例占不到 relay 节点名）；§9-7 真实负载下每请求读注册表与对端并发 OneShot 量级——未验；S6「运行中账本不可达 → last-good」只有单测（TestSharedChainReadTimeoutUsesLastGood），隔离实例无法单独掐断到测试库的连接。来源：B437 finish。
+- **协调者 handoff stop 卡派发轮被标成「裁决解析失败」**：B437 两次主动 stop 零提交的 implement 轮，卡上落 comment「裁决解析失败，报文原文：协调者主动中止（handoff stop）」+ needs_human(裁决解析失败)，需手工 needs --clear；应识别主动中止、给独立 reason。来源：B437 协调者。
+- **Mac mini 的 claude CLI 未登录**：`claude -p` → Not logged in，该机 claude 不能当任务执行者或审批环；B437 真机改由 macbook-pro 的 codex 承担他机正面裁决。来源：B437 finish 真机（环境事实，非代码缺陷）。
+- **桌面打洞组装点补测试锁**：`targetclient/pool.go` 的 `P2P{Options: P2PFromConfig(...)}` 换成 `P2P{}`，或 `cmd/agentd.go` 去掉 `relay.WithListenerP2P`，现有测试都不会红（行为只由真机 R1/R5/R6 证实；退化方向是安全的，悄悄全走 relay）。改进：补 Pool 级与 agentd 组装级断言，例如出现第二条 CONNECT（信令），口径同 mobilecore 的 `TestDefaultDialStartsUpgrade`。来源：B438 父卡 review Minor-1。
+- **B437 远程裁决 × 打洞直连的组合覆盖**：长挂的 ApproverDecide 若跑在直连上，直连判死时会断开、被归为「不可达」，链条转到下一环（与「在途流失败同 relay 断线」同形态）。此组合尚无测试或真机覆盖。来源：B438 父卡 review Minor-2。
 
 ## 2026-10-18 B435 协调者统一模型残余（本期不做、后续要做）
 

@@ -52,6 +52,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/relay"
 	"github.com/Xsxdot/handoff/internal/scheduling"
 	"github.com/Xsxdot/handoff/internal/store"
+	"github.com/Xsxdot/handoff/internal/targetclient"
 	"github.com/Xsxdot/handoff/internal/toolchain"
 	"github.com/Xsxdot/handoff/internal/workspace"
 	"github.com/spf13/cobra"
@@ -158,8 +159,16 @@ var agentdCmd = &cobra.Command{
 		envRes.Preflight()
 
 		// 审批链接线：配置启用了 approver 时构造裁决器；黑名单正则等配置错误
-		// 直接启动失败（属配置错误，改配置重启即可，不该带病运行）
-		ap, err := orchestration.NewApprover(cfg.Approver, envRes, logger)
+		// 直接启动失败（属配置错误，改配置重启即可，不该带病运行）。
+		// B437 §4.2：共享挂载机（有 DSN 且有机器身份）即使本地 approver 为空也
+		// 恒构造 Approver——否则共享链在「本地链为空」的机器上永远走不到（启用门缺口）。
+		sharedApproverMachine := cfg.Ledger.DSN != "" && cfgHasLedgerIdentity(cfg)
+		var ap *orchestration.Approver
+		if sharedApproverMachine {
+			ap, err = orchestration.NewApproverForShared(cfg.Approver, envRes, logger)
+		} else {
+			ap, err = orchestration.NewApprover(cfg.Approver, envRes, logger)
+		}
 		if err != nil {
 			return fmt.Errorf("初始化审批链: %w", err)
 		}
@@ -249,6 +258,30 @@ var agentdCmd = &cobra.Command{
 		}
 		defer stopLedger()
 
+		// B437：把共享审批链读取口 / 远程裁决口 / 本机环解析缝 / 自名判据注入审批者。
+		// 注入在账本挂载之后、对外服务之前——运行期每次裁决都能现读当前链。
+		srv.SetApproverEnv(envRes)
+		if ap != nil {
+			ap.SetSelfMachine(srv.IsSelfMachine)
+			ap.SetLocalShot(func(name string) (executor.OneShot, error) {
+				ad, ok := ads[name]
+				if !ok {
+					return nil, fmt.Errorf("执行器 %q 未注册", name)
+				}
+				shot, ok := ad.(executor.OneShot)
+				if !ok {
+					return nil, fmt.Errorf("执行器 %q 未实现 OneShot", name)
+				}
+				return shot, nil
+			})
+			if srv.LedgerMounted() {
+				cr := newLedgerChainReader(srv.AutoLedger())
+				ap.SetChainReader(cr)
+				ap.SetRemoteDecider(srv.ApproverRemoteDecider())
+				warnLocalApproverSuperseded(cr, cfg.Approver, logger)
+			}
+		}
+
 		// 启动恢复（spec §8）：在对外服务前，把 agentd 崩溃前未终结的任务拉回正轨——
 		// 执行器存活的任务经 mgr.ResumeTask 重建 SSE 订阅并重启中介循环，已不在的
 		// 任务转 failed/waiting_review 交协调者裁决。探活与「重建订阅」封装在同一个
@@ -265,10 +298,18 @@ var agentdCmd = &cobra.Command{
 		if err := srv.StartPreviewServices(wdCtx); err != nil {
 			return fmt.Errorf("启动预览服务: %w", err)
 		}
+		// B438 S8：打洞是 UDP，proxy 设置与 HTTPS_PROXY 都不承载它——配了代理的机器
+		// 启动时明说一次（INFO，不是 WARN：这是知会，不是故障）。
+		if cfg.P2PProxyNotice() {
+			logger.Info(config.P2PProxyNoticeMessage)
+		}
 		if cfg.Relay != nil {
 			// relay 出站与本地 listen 并存，是附加通道；不改变现有 agentd 路由。
+			// 打洞应答（B438）：p2p 开时在 relay 信令会话上应答，直连流交同一 handler。
+			p2pOpts := targetclient.P2PFromConfig(cfg)
 			listener := relay.NewListener(cfg.Relay.URL, cfg.Relay.Credential, cfg.Relay.Node,
-				cfg.Token, "", srv.Handler(), logger)
+				cfg.Token, "", srv.Handler(), logger, relay.WithListenerP2P(p2pOpts))
+			logger.Info("relay 出站已启动", "node", cfg.Relay.Node, "p2p", p2pOpts.Enabled, "stun_servers", len(p2pOpts.STUN))
 			go listener.RunWithReconnect(wdCtx)
 		}
 		// relay 隧道预热：探活只有 3s 预算，首次建隧道（WSS + CONNECT + E2E）

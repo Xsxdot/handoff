@@ -168,6 +168,9 @@ type Config struct {
 	// 旧版 agentd **启动失败**（path_dirs / proxy 同款教训）。空 PushConfig
 	// （五个键全零）必须整节不落盘。
 	Push PushConfig `yaml:"push,omitempty"`
+	// P2P 是 relay 形态 target 的 NAT 打洞配置（B438，见 p2p.go）。全空 = 缺省
+	// （开启 + 内置 STUN 列表），整节不落盘——omitempty 理由同 Push。
+	P2P P2PConfig `yaml:"p2p,omitempty"`
 }
 
 // PlatformInvariantsEnabled 返回本机是否注入平台不变量恒在层。
@@ -612,6 +615,9 @@ func (c *Config) validate() error {
 	if err := proxycfg.Validate(c.Proxy); err != nil {
 		return err
 	}
+	if err := c.validateP2P(); err != nil {
+		return err
+	}
 	if err := c.Relay.Validate(); err != nil {
 		return fmt.Errorf("relay 配置校验失败: %w", err)
 	}
@@ -689,7 +695,7 @@ func decodeStrict(b []byte, cfg *Config) error {
 		}
 		// 已知键清单与 yaml 报错文本（含未知键名）一起返回；
 		// 旧版 access_key/secret_key 等键已不支持，提示直接删除或升级配置
-		return fmt.Errorf("配置包含未知字段（支持: listen/token/datadir/name/advertise/repo_root/path_dirs/proxy/env_forward/stalltimeout/console_user/relay{url,credential,node}/targets{addr,user,token,relay,credential,node}/ledger{enabled,dsn}/approver{executor,model,models,timeout,blacklist}/executor{default,model}/terminal{auto}/sync{auto}/proc_fence/env{<agent>: <文件名>}/discipline{<executor>: <文件名>}/platform_invariants）: %w；旧版 access_key/secret_key 等键已废弃，请删除未知键或升级配置", err)
+		return fmt.Errorf("配置包含未知字段（支持: listen/token/datadir/name/advertise/repo_root/path_dirs/proxy/env_forward/stalltimeout/console_user/relay{url,credential,node}/targets{addr,user,token,relay,credential,node}/ledger{enabled,dsn}/approver{executor,model,models,timeout,blacklist}/executor{default,model}/terminal{auto}/sync{auto}/proc_fence/env{<agent>: <文件名>}/discipline{<executor>: <文件名>}/platform_invariants/p2p{enabled,stun}）: %w；旧版 access_key/secret_key 等键已废弃，请删除未知键或升级配置", err)
 	}
 	return nil
 }

@@ -300,7 +300,7 @@ func TestMirrorSubscribesRelayMachine(t *testing.T) {
 		Node:       "n1",
 		Token:      strings.Repeat("ab", 20), // relay 要求 ≥32 位十六进制高熵 token
 	}
-	c, cleanup, err := targetclient.New("relay-box", relayTarget, nil)
+	c, cleanup, err := targetclient.New("relay-box", relayTarget, targetclient.P2P{}, nil)
 	if err != nil {
 		t.Fatalf("构造 relay 客户端: %v", err)
 	}

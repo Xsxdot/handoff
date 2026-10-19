@@ -67,3 +67,54 @@ func TestReadmeDocumentsTokenRotation(t *testing.T) {
 		}
 	}
 }
+
+// checklinknameFlag 是 Android 绑定产物必需的链接参数（B438.2）：pion/transport 的
+// stdnet 在 Android 上经 wlynxg/anet 枚举网卡，anet 以 //go:linkname 引用
+// net.zoneCache，Go 1.23 起链接器默认拒绝。只给 Android 开，别处一律不开。
+const checklinknameFlag = "-ldflags=-checklinkname=0"
+
+// shellFunc 截出 build.sh 里一个 shell 函数的函数体（`name() {` 到行首 `}`）。
+func shellFunc(t *testing.T, sh, name string) string {
+	t.Helper()
+	start := strings.Index(sh, name+"() {")
+	if start < 0 {
+		t.Fatalf("mobile/build.sh 缺函数 %s", name)
+	}
+	end := strings.Index(sh[start:], "\n}")
+	if end < 0 {
+		t.Fatalf("mobile/build.sh 函数 %s 未闭合", name)
+	}
+	return sh[start : start+end]
+}
+
+// TestChecklinknameOnlyOnAndroid：Android 分支带该参数（否则 AAR 链接失败），
+// iOS 分支与桌面/发布构建都不带（不把 linkname 检查的关闭扩散到不需要的产物）。
+func TestChecklinknameOnlyOnAndroid(t *testing.T) {
+	sh := readMobile(t, "build.sh")
+	if !strings.Contains(shellFunc(t, sh, "build_android"), checklinknameFlag) {
+		t.Fatalf("mobile/build.sh 的 build_android 缺 %q（anet linkname，AAR 会链接失败）", checklinknameFlag)
+	}
+	if strings.Contains(shellFunc(t, sh, "build_ios"), "checklinkname") {
+		t.Fatal("mobile/build.sh 的 build_ios 不得关闭 linkname 检查")
+	}
+	root := filepath.Dir(mobileDir(t))
+	for _, p := range []string{"desktop/Taskfile.yml", "scripts/build-release-local.sh", "scripts/build-deploy.sh"} {
+		b, err := os.ReadFile(filepath.Join(root, p))
+		if err != nil {
+			t.Fatalf("读 %s 失败: %v", p, err)
+		}
+		if strings.Contains(string(b), "checklinkname") {
+			t.Fatalf("%s 不得关闭 linkname 检查（只 Android 绑定需要）", p)
+		}
+	}
+}
+
+// TestReadmeDocumentsChecklinkname：README 必须写明该参数的原因与 Go 升级风险。
+func TestReadmeDocumentsChecklinkname(t *testing.T) {
+	readme := readMobile(t, "README.md")
+	for _, want := range []string{"checklinkname", "wlynxg/anet", "net.zoneCache", "netlink", "升级 Go", "TestGomobileSurfaceHasNoSkips", "模拟器"} {
+		if !strings.Contains(readme, want) {
+			t.Fatalf("mobile/README.md 缺 %q——checklinkname 原因/风险未写全", want)
+		}
+	}
+}

@@ -299,6 +299,11 @@ approver:                     # 分级审批链的廉价模型审批者
   timeout: 60s                # 单次裁决超时，超时按 escalate（fail-closed）
   blacklist:                  # 自定义黑名单正则；命中即跳过审批者直接升级
     - "kubectl .*delete"
+# 全队共享审批链（B437，需 ledger.dsn）：一条链跨机逐环尝试，取代每机一份 approver:
+#   handoff approver set -f chain.yaml   # 链文件：timeout + candidates[{machine,executor,model}]
+#   handoff approver show                # 任一机器看到同一条链与版本号（改链不重启即生效）
+#   handoff approver clear               # 清除共享链，各机回落本地 approver: 键
+# 有共享链时本地 approver.executor/model/models/timeout 被取代（启动打一次 WARN，可删）
 executor:                     # dispatch 未显式指定执行者时的缺省
   default: opencode
   model: ""                   # 缺省模型（dispatch --model 可逐任务覆盖）
@@ -342,6 +347,28 @@ targets:
     node: "devbox"
     token: "<executor token>"
 ```
+
+**Direct path first, relay as fallback.** A relay target is usable through the relay
+immediately; in the background handoff then tries NAT hole punching (pion/ice; candidates
+are exchanged inside the E2E-encrypted relay session, the relay server needs nothing new).
+If it succeeds, new requests go peer-to-peer (log `p2p 直连已建立`); if the direct path
+dies, new requests fall back to the relay and punching is retried with backoff. Targets
+configured with `addr:` are never affected. Configure it on both sides:
+
+```yaml
+p2p:
+  enabled: true      # default true; false = relay only (executor also declines punching)
+  stun:              # default list below; [] = host candidates only, no STUN queries
+    - stun:stun.miwifi.com:3478
+    - stun:stun.cloudflare.com:3478
+    - stun:stun.l.google.com:19302
+```
+
+STUN/ICE is UDP and does **not** go through `proxy` or `HTTPS_PROXY`: on a machine with a
+proxy configured, agentd logs an INFO line saying so at startup. Set `p2p.enabled: false`
+if everything must stay behind the proxy. **Rolling-upgrade note**: only new agentd builds
+know the `p2p:` key — an older agentd refuses to start on an unknown key. The default is on
+and the key is never written by `Save`, so only add it after the machine runs a new binary.
 
 `relay` and `addr` are mutually exclusive. Relay mode requires a high-entropy token (the
 normal `handoff init` token qualifies), and `handoff pull` uses the Bundle HTTP endpoint
@@ -468,6 +495,12 @@ approver:                     # tiered approval chain: a cheap model screens per
   timeout: 60s                # a ruling timeout is treated as escalation (fail-closed)
   blacklist:                  # a hit skips the approver and escalates straight to a human
     - "kubectl .*delete"
+# Team-shared approval chain (B437, needs ledger.dsn): one chain tried ring-by-ring across machines,
+# replacing the per-machine approver: keys:
+#   handoff approver set -f chain.yaml   # chain file: timeout + candidates[{machine,executor,model}]
+#   handoff approver show                # every machine sees the same chain + version (no restart needed)
+#   handoff approver clear               # drop the shared chain; machines fall back to local approver: keys
+# When a shared chain exists, local approver.executor/model/models/timeout are superseded (one startup WARN)
 
 env:                          # env-var files injected when the executor starts (put them in ~/.handoff/env/)
   opencode: dev.env           # value is a bare filename; executors not listed get nothing injected

@@ -78,13 +78,25 @@
     ./build.sh ios          # → ../dist/mobile/handoff-mobile.xcframework
     ./build.sh all
 
-**两条硬约束**（写死在 `build.sh` 里，改动前先读它的注释）：
+**三条硬约束**（写死在 `build.sh` 里，改动前先读它的注释）：
 
 1. **Android 必须显式 `-androidapi 21`**：NDK 30 移除了 API<21 的 platform，而
    gomobile 缺省 minsdk=16，不加会在 bind 时报 `unsupported API version 16`。
 2. **`mobile/go.mod` 必须带 `tool golang.org/x/mobile/cmd/gobind` 指令**：新版
    gomobile 要求 `golang.org/x/mobile` 在本模块依赖图内，否则报
    `missing golang.org/x/mobile dependency`。
+3. **只有 Android 加 `-ldflags=-checklinkname=0`**（B438.2）：打洞依赖 pion/transport 的
+   stdnet。Android 11 起禁止普通 App 用 netlink 枚举网卡，stdnet 在 Android 上改用
+   `wlynxg/anet`，而 anet 经 `//go:linkname` 引用 `net.zoneCache`。Go 1.23 起链接器默认
+   拒绝这种引用，不加参数时 AAR 链接失败：
+   `link: github.com/wlynxg/anet: invalid reference to net.zoneCache`。iOS 与桌面构建不加
+   （`toolchain_test.go` 锁住两头）。
+   **风险**：该参数关闭了整个 AAR 的 linkname 检查，而 anet 依赖 `net` 包的内部布局，
+   **升级 Go 后可能在运行时出错**（编译照过）。所以每次升级 Go 必须重跑
+   `go test ./bind/ -run TestGomobileSurfaceHasNoSkips`、`./build.sh android`，以及 Android
+   模拟器取证（用与 gomobile 同构建方式的取证程序验证 anet 枚举非空、host/srflx 候选正常、
+   无 panic；做法见 `docs/superpowers/evidence/b438/b438.2-mobile.md`）。长期替代见
+   `docs/roadmap.md`（由壳提供网卡信息，去掉 anet）。
 
 **`go build ./...` ≠ `gomobile bind`**：前者只证明 Go 源码可编译，不证明能产出
 AAR/XCFramework，更不证明绑定面**完整**（B386：`Pair`/`MachineNames` 被 gomobile 静默

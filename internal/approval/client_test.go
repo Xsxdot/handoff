@@ -623,6 +623,40 @@ func TestClientConsultWritesAttemptEvents(t *testing.T) {
 	}
 }
 
+// TestClientConsultAttemptEventsCarryMachine 钉住 B437：共享链的他机环 attempt
+// 落进 approver_decision 事件时带 machine 字段（加性，旧路径空串省略）。
+func TestClientConsultAttemptEventsCarryMachine(t *testing.T) {
+	st, _, client, _ := newClientFixture(t, permgate.Verdict{Action: permgate.Consult}, true,
+		func(context.Context, string, string) approval.ConsultDecision {
+			return approval.ConsultDecision{
+				Approve: true, Reason: "对端放行",
+				Attempts: []approval.ApproverAttempt{
+					{Executor: "codex", Decision: "error", Reason: "机器不可达", Machine: "linux-01"},
+					{Executor: "claude", Decision: "approve", Reason: "对端放行", Machine: "mac-mini"},
+				},
+			}
+		})
+	if _, err := client.Request(context.Background(), permissionRequest("native-machine", "python3 script.py")); err != nil {
+		t.Fatalf("Request: %v", err)
+	}
+	events, err := st.EventsFromAsc("task-client-fixture", 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []map[string]any
+	for _, ev := range events {
+		if ev.Type == proto.EventTypeApproverDecision {
+			got = append(got, payloadMap(t, ev.Payload))
+		}
+	}
+	if len(got) != 2 {
+		t.Fatalf("期望 2 条 approver_decision，得到 %d: %+v", len(got), got)
+	}
+	if got[0]["machine"] != "linux-01" || got[1]["machine"] != "mac-mini" {
+		t.Fatalf("attempt 事件应带 machine: %+v", got)
+	}
+}
+
 // TestClientJudgeEscalateKeepsReasonWhenDisabled 反锁复审边界：审批链停用时，
 // 判据自身的 Escalate（黑名单命中）理由必须保留原文，不得被停用说明掩盖。
 func TestClientJudgeEscalateKeepsReasonWhenDisabled(t *testing.T) {

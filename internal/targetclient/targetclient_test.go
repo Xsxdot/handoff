@@ -14,7 +14,7 @@ import (
 
 // TestNewDirect：直连 target → 直连 client，清理函数是 no-op。
 func TestNewDirect(t *testing.T) {
-	c, cleanup, err := New("mac-02", config.Target{Addr: "10.0.0.2:7777", Token: "tok"}, slog.Default())
+	c, cleanup, err := New("mac-02", config.Target{Addr: "10.0.0.2:7777", Token: "tok"}, P2P{}, slog.Default())
 	if err != nil {
 		t.Fatalf("直连 target 不该失败: %v", err)
 	}
@@ -38,7 +38,7 @@ func TestNewRelay(t *testing.T) {
 		Node:       "linux-01",
 		Token:      "0123456789abcdef0123456789abcdef",
 	}
-	c, cleanup, err := New("linux-01", tgt, slog.Default())
+	c, cleanup, err := New("linux-01", tgt, P2P{}, slog.Default())
 	if err != nil {
 		t.Fatalf("relay target 不该失败: %v", err)
 	}
@@ -54,7 +54,7 @@ func TestNewRelay(t *testing.T) {
 //
 // why 要点名：这个错误会原样显示在控制台的机器卡片上，不点名等于让人去猜。
 func TestNewNoEndpoint(t *testing.T) {
-	_, _, err := New("broken", config.Target{Token: "tok"}, slog.Default())
+	_, _, err := New("broken", config.Target{Token: "tok"}, P2P{}, slog.Default())
 	if !errors.Is(err, ErrNoEndpoint) {
 		t.Fatalf("要 ErrNoEndpoint，实得 %v", err)
 	}
@@ -72,7 +72,7 @@ func TestNewRelayLowEntropyToken(t *testing.T) {
 		Relay: "wss://relay.example.com/relay", Credential: "cred",
 		Node: "linux-01", Token: "123",
 	}
-	if _, _, err := New("linux-01", tgt, slog.Default()); err == nil {
+	if _, _, err := New("linux-01", tgt, P2P{}, slog.Default()); err == nil {
 		t.Fatal("弱 token 必须被拒")
 	}
 }

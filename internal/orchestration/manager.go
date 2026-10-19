@@ -2302,6 +2302,12 @@ func (m *Manager) shouldConsultApprover(taskID string) bool {
 	if m.approver == nil {
 		return false
 	}
+	// B437 启用门：本地链非空，或共享链此刻可读（DSN 机器无本地链时靠它生效）。
+	// 门 false 时除一次链读外零副作用，与今天「直接升级人工」逐字一致。
+	if !m.approver.Available() {
+		m.log.Debug("审批者无可用链，直接升级协调者", "task", taskID)
+		return false
+	}
 	m.apMu.Lock()
 	disabled := m.apDisabled[taskID]
 	m.apMu.Unlock()
@@ -2383,6 +2389,7 @@ func (m *Manager) consultApprover(ctx context.Context, taskID string, ev executo
 			if _, err := m.st.AppendEvent(taskID, proto.EventTypeApproverDecision, ApproverDecisionPayload{
 				TicketID: ticketID, Permission: permEventText(ev.Text), Decision: at.Decision,
 				Reason: atReason, ElapsedMS: at.ElapsedMS, Executor: at.Executor, Model: at.Model,
+				Machine: at.Machine,
 			}); err != nil {
 				m.log.Error("追加 approver_decision 事件失败", "task", taskID,
 					"ticket", ticketID, "executor", at.Executor, "cause", err)
