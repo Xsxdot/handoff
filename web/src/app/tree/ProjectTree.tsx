@@ -557,11 +557,22 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
   )
 
   const unassigned = filtered.unassignedTasks
+  // 未归属的终态任务与项目组同 B288 口径收进「已结束」（B443）：已注销项目的历史派发
+  // 全落在这里（真机 269 条全是 completed/failed），不收就永远摊开、没有办法收起。
+  // 未终态、30 分钟缓冲窗内的终态、已打开为 tui 的留原位。
+  const unownedNow = Date.now()
+  const openTuiTaskIds = new Set(openItems.flatMap((item) => item.kind === 'tui' && item.taskId ? [item.taskId] : []))
+  const unassignedLive = unassigned.filter((task) =>
+    !isTerminalState(task.state) || recentlyCompleted(task, unownedNow) || openTuiTaskIds.has(task.id))
+  const unassignedArchived = unassigned.filter((task) => !unassignedLive.includes(task))
+  const unownedArchiveKey = 'unowned-archive'
+  const unownedArchivedShown = unassignedArchived.length > 0 && !(prefs.hideArchived && !searching)
+  const unownedArchivedOpen = openArchived.has(unownedArchiveKey) || (searching && unassignedArchived.length > 0)
   const previewMachineErrors = previewMachines.filter((machine) => !machine.ok || machine.error !== '')
   const visiblePreviewMachineErrors = searching
     ? previewMachineErrors.filter((machine) => `${machine.name} ${machine.error}`.toLowerCase().includes(filtered.query))
     : previewMachineErrors
-  const hasUnowned = unassigned.length > 0 || filtered.unownedNames.length > 0 || filtered.unassignedPreviews.length > 0 || visiblePreviewMachineErrors.length > 0
+  const hasUnowned = unassignedLive.length > 0 || unownedArchivedShown || filtered.unownedNames.length > 0 || filtered.unassignedPreviews.length > 0 || visiblePreviewMachineErrors.length > 0
 
   // 行名与 tab 标题同源：统一走 taskDisplayName（name → branch → plan_summary），
   // 不再留本地副本——三处口径分叉正是「派发行认不出谁是谁」的帮凶之一。
@@ -1355,7 +1366,7 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
             </p>
           ))}
           {/* 与任务组同一排序键：未归属也是任务行，聚合序一样不可信 */}
-          {[...unassigned].sort(createdDesc).map((t) => (
+          {[...unassignedLive].sort(createdDesc).map((t) => (
             <TaskRow
               key={t.id}
               kind="tui"
@@ -1373,6 +1384,42 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
             compact={compact}
             />
           ))}
+          {unownedArchivedShown && (
+            <div className="mt-[7px]">
+              <button
+                type="button"
+                data-testid="unowned-archived-row"
+                aria-expanded={unownedArchivedOpen}
+                title={ARCHIVED_TITLE}
+                onClick={() => toggleArchived(unownedArchiveKey)}
+                className="flex min-h-[30px] w-full min-w-0 items-center gap-1.5 rounded-lg px-2 py-1 text-left text-[12px] text-muted-foreground hover:bg-accent/60"
+              >
+                <Archive className="size-3.5 shrink-0 opacity-70" />
+                <span className="min-w-0 flex-1 truncate">{ARCHIVED_LABEL}</span>
+                <span className="shrink-0 font-mono text-[11px] tabular-nums">{unassignedArchived.length}</span>
+                <Arrow open={unownedArchivedOpen} onToggle={() => toggleArchived(unownedArchiveKey)} />
+              </button>
+              {unownedArchivedOpen && [...unassignedArchived].sort(createdDesc).map((t) => (
+                <TaskRow
+                  key={'unowned-archived:' + t.id}
+                  kind="tui"
+                  label={taskDisplayName(t)}
+                  machine={t.machine}
+                  dotTone={stateTone(t.state)}
+                  indent
+                  draggable
+                  dragPayload={(e) => {
+                    e.dataTransfer.setData(DRAG_TASK_MIME, t.id)
+                    e.dataTransfer.setData(DRAG_BASE_MIME, 'null')
+                    e.dataTransfer.effectAllowed = 'copy'
+                    console.debug('project_tree.drag.task', { taskId: t.id, project: '', machine: t.machine, path: '' })
+                  }}
+                  onClick={() => onOpenTask(null, t.id)}
+                  compact={compact}
+                />
+              ))}
+            </div>
+          )}
           {filtered.unownedNames.map((name) => (
             <p key={name} className="py-1 pr-2 text-[13px] text-muted-foreground" style={{ paddingLeft: 8 + 16 }}>
               {name}（未登记为项目）

@@ -1651,3 +1651,43 @@ describe('B431 管理工作树 toggle 与终端菜单机器行拖拽', () => {
     expect(setData).not.toHaveBeenCalled()
   })
 })
+
+// B443：已注销项目遗留的终态任务落在「未归属」后永远摊开、无法收起（真机 269 条全是
+// completed/failed）。与项目组同 B288 口径：未终态与 30 分钟缓冲窗内的终态留原位，
+// 其余收进默认收起的「已结束」行。
+describe('B443 未归属折叠已结束', () => {
+  const renderUnowned = (tasks: Task[], extra: Partial<Parameters<typeof ProjectTree>[0]> = {}) => render(
+    <ProjectTree
+      tree={{ projects: [], unowned: [] }} tasks={tasks} selectedKey={null} ticketCount={0} ticketsByDir={new Map()}
+      openItems={[]} focusedTaskId={null} onFocusOpenItem={vi.fn()} onOpenTerminalAt={vi.fn()}
+      onOpenDirectory={vi.fn()} onOpenTask={vi.fn()} onOpenBoard={vi.fn()} onOpenTickets={vi.fn()} onOpenSettings={vi.fn()}
+      {...extra}
+    />,
+  )
+  const old = '2026-08-01T00:00:00Z'
+
+  it('终态旧任务默认收进「已结束 N」，未终态留原位；点开才显示', () => {
+    renderUnowned([
+      task({ id: 'u-run', project_id: '', name: '在跑的游离任务', state: 'running', created_at: old, updated_at: old }),
+      task({ id: 'u-done', project_id: '', name: '旧完成任务', state: 'completed', created_at: old, updated_at: old }),
+      task({ id: 'u-fail', project_id: '', name: '旧失败任务', state: 'failed', created_at: old, updated_at: old }),
+    ])
+    expect(screen.getByText('在跑的游离任务')).toBeInTheDocument()
+    expect(screen.queryByText('旧完成任务')).toBeNull()
+    expect(screen.queryByText('旧失败任务')).toBeNull()
+    const row = screen.getByTestId('unowned-archived-row')
+    expect(row).toHaveAttribute('aria-expanded', 'false')
+    expect(row).toHaveTextContent('已结束')
+    expect(row).toHaveTextContent('2')
+    fireEvent.click(row)
+    expect(screen.getByText('旧完成任务')).toBeInTheDocument()
+    expect(screen.getByText('旧失败任务')).toBeInTheDocument()
+  })
+
+  it('30 分钟缓冲窗内刚结束的任务留原位，不进已结束', () => {
+    const recent = new Date(Date.now() - 60 * 1000).toISOString()
+    renderUnowned([task({ id: 'u-recent', project_id: '', name: '刚完成', state: 'completed', created_at: recent, updated_at: recent })])
+    expect(screen.getByText('刚完成')).toBeInTheDocument()
+    expect(screen.queryByTestId('unowned-archived-row')).toBeNull()
+  })
+})
