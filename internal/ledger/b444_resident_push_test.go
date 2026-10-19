@@ -71,6 +71,33 @@ func TestB444SetResidentPushSessionCAS(t *testing.T) {
 	}
 }
 
+// B444 P2 启动清扫的读面：只列 push 且 push_session 空的行（首轮在途），按会话序；desktop 行与已补写的
+// push 行不列。
+func TestB444ListInflightPushResidents(t *testing.T) {
+	s := newTestStore(t)
+	inflight := b435ResidentSession(t, s)
+	filled := b435ResidentSession(t, s)
+	desktop := b435ResidentSession(t, s)
+	row := b444PushResident(inflight)
+	row.PushSession = ""
+	if _, err := s.SitResident(row); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SitResident(b444PushResident(filled)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SitResident(SessionResident{Session: desktop, Identity: "agent:org", CLISession: "c"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.ListInflightPushResidents()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Session != inflight || got[0].CarrierMachine != "linux-01" || got[0].Identity != "agent:coord" {
+		t.Fatalf("应只列首轮在途的 push 行，得 %+v", got)
+	}
+}
+
 // A1.6 / R4 SQLite 腿：旧库 session_residents 无新列且有存量 desktop 行 → Open 迁移加列成功，
 // 旧行 driver_mode=="" 且 bearing 全空（零回填）；第二次 Open 幂等。
 func TestB444ResidentPushMigrationOldDB(t *testing.T) {

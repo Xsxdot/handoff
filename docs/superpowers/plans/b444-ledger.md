@@ -150,3 +150,20 @@
   - F2：keystone `TestB444ResidentBriefing`（新增必含：至少 20 分钟、`handoff card show <卡号>`、driver_session、同一张卡绝不重复、只用 `--agent coord` 发言、点名禁止 `--cli/--session`；CAS 改名句保留）。
 - 命令：`go build ./...` ok；`go vet ./internal/... ./cmd/...` ok；`gofmt -l` 触及目录空；`unset CLAUDE_CODE_SESSION_ID && go test -count=1 ./internal/{ledger,collab,keystone,agentd,proto,client}/... ./cmd/...` 9 包全 ok（agentd 69.8s、cmd 76.6s）；`go test -count=1 -v -run TestB444`（ledger/collab/keystone/agentd/cmd）43 PASS、2 SKIP（PG 腿）、0 FAIL。proto 无改动，契约夹具未重生成；web/ 未动。
 - **未验证**：PG 腿（无 `LEDGER_TEST_PG_DSN`）；真机复跑 R4/R5（首轮发言与改名、card coordinate 长超时行为）归协调者。
+
+## P2 返工二（启动清扫首轮在途行）——实现者 subagent，2026-10-19
+
+### 偏离与自主决定
+
+1. **清扫放在自动化循环 goroutine 的开头**（`StartAutomation` 的 Once 内 `go func(){ sweep; automationLoop }`），而非同步跑在启动路径上：清扫再慢也不阻断启动，且首个消费轮在清扫之后。
+2. **与本进程真在跑的首轮防撞**：裁决未提。HTTP 可能先于循环开始服务，清扫若撞上本进程刚拉起的首轮会误请下真在途行。处置：每行 `TryLock` 会话的 `coordinatorLock`（`launchSessionResident` 全程持有它）——拿不到即跳过；拿到后重读驻场行，确认仍是同身份 push 在途行才请下。
+3. **指针行复用 `pointResidentLaunchFailure`**，原因串为「首轮被 agentd 重启打断（…不会再补写会话 id）」，正文自带 `handoff session resident launch <会话> --squad <小队>` 重试命令；因此 `pointer_gate_test` 白名单无需新增条目。小队名取驻场身份 `agent:<名>` 的名字段。
+4. **测试直调 `sweepInterruptedResidents`**，未经 `StartAutomation` 起真循环（避免测试里并发的消费轮/清队轮引入时序噪声）；接线只有一行，未单测。
+5. 读面 `ListInflightPushResidents` 不按机器过滤，机器归属由 agentd 用 `IsLocalMachine`/`IsSelfTarget` 判（collab 只存事实）。
+
+### 事实与命令
+
+- 新增：ledger `Store.ListInflightPushResidents` → `api.Facade.InflightPushResidents` → `client.LedgerClient.InflightPushResidents` → `collab.Service.InflightPushResidents`；agentd `sweepInterruptedResidents`/`standInterruptedResident`（`internal/agentd/sessioncreate.go`）。
+- 红绿：ledger `TestB444ListInflightPushResidents` 空壳断言红 → 绿；agentd `TestB444StartupSweepStandsInterruptedInflightResidents` 空壳断言红（「本机在途行应被请下」）→ 绿。后者覆盖：本机在途 → 请下 + 恰一条含「重启」与重试命令的指针行；别机在途（R9）→ 不动零指针；已补写本机 push 行 → 不动零指针；再扫幂等。
+- 命令：`go build ./...`、`go vet ./internal/... ./cmd/...` ok，`gofmt -l internal cmd` 空；`unset CLAUDE_CODE_SESSION_ID && go test -count=1` 触及 9 包全 ok（agentd 85.1s、cmd 76.7s）。
+- 未验证：真机「agentd 首轮中途重启 → 清扫」路径。

@@ -61,7 +61,12 @@ func (s *Server) StartAutomation(ctx context.Context) {
 	s.automationStartOnce.Do(func() {
 		s.log.Info("自动化清队与事件唤醒循环启动",
 			"poll", automationPollInterval, "queue_kinds", scheduling.QueueKinds)
-		go s.automationLoop(ctx)
+		go func() {
+			// B444：先清扫上次进程留下的首轮在途驻场行（本机的），再进循环——放在循环 goroutine 里，
+			// 清扫再慢也不阻断启动；首个消费轮在清扫之后，不会把被打断的在途行当「暂缓」无限挂住。
+			s.sweepInterruptedResidents()
+			s.automationLoop(ctx)
+		}()
 	})
 }
 

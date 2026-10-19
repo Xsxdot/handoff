@@ -311,6 +311,19 @@ func (f *Facade) SetResidentPushSession(sessionID, identity, pushSession string)
 	return translateResidentErr(err)
 }
 
+// InflightPushResidents 直通 Store.ListInflightPushResidents（B444）并逐行映射 wire。
+func (f *Facade) InflightPushResidents() ([]proto.SessionResident, error) {
+	rows, err := f.st.ListInflightPushResidents()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]proto.SessionResident, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, residentWire(r))
+	}
+	return out, nil
+}
+
 // StandResident 请下会话驻场者（条件删除，身份须等于现驻场者）。
 func (f *Facade) StandResident(sessionID, identity string) error {
 	return translateResidentErr(f.st.StandResident(sessionID, identity))

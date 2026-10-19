@@ -461,6 +461,54 @@ func TestB444ResidentCarrierMachineKeepsRegisteredName(t *testing.T) {
 
 var b444SessionIDPattern = regexp.MustCompile(`session:\d+`)
 
+// 启动清扫（协调者裁决：agentd 崩溃留下的首轮在途行）：本机在途行 → 请下 + 一条「被重启打断」指针行（带重试
+// 命令）；别机在途行（R9）与已补写的本机 push 行 → 原样不动、零指针行。
+func TestB444StartupSweepStandsInterruptedInflightResidents(t *testing.T) {
+	env, _ := newB444CreateEnv(t, true)
+	mk := func(title string) string {
+		t.Helper()
+		s, err := env.srv.rooms.CreateSessionInProject(title, consoleMember, "handoff", consoleMember)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s.ID
+	}
+	self, other, filled := mk("本机在途"), mk("别机在途"), mk("本机已补写")
+	sit := func(session, machine, push string) {
+		t.Helper()
+		if _, err := env.srv.rooms.SitResident(proto.SessionResident{Session: session, Identity: b444Identity,
+			DriverMode: proto.ResidentDriverPush, PushCLI: "opencode", PushSession: push,
+			Carrier: "coord-carrier", CarrierMachine: machine}); err != nil {
+			t.Fatalf("坐驻场行 %s: %v", session, err)
+		}
+	}
+	sit(self, b444WantMachine(t, env), "")
+	sit(other, "linux-99-elsewhere", "")
+	sit(filled, b444WantMachine(t, env), "ses_live")
+
+	env.srv.sweepInterruptedResidents()
+
+	if _, ok, err := env.ledger.SessionResident(self); err != nil || ok {
+		t.Fatalf("本机在途行应被请下: ok=%v err=%v", ok, err)
+	}
+	pointers := b444Pointers(t, env, self)
+	if len(pointers) != 1 || !strings.Contains(pointers[0], "重启") ||
+		!strings.Contains(pointers[0], "handoff session resident launch "+self+" --squad coord") {
+		t.Fatalf("本机在途会话应恰一条「被重启打断」指针行并给重试命令，得 %q", pointers)
+	}
+	if r, ok, _ := env.ledger.SessionResident(other); !ok || r.PushSession != "" || len(b444Pointers(t, env, other)) != 0 {
+		t.Fatalf("别机在途行不得动（R9）: ok=%v %+v", ok, r)
+	}
+	if r, ok, _ := env.ledger.SessionResident(filled); !ok || r.PushSession != "ses_live" || len(b444Pointers(t, env, filled)) != 0 {
+		t.Fatalf("已补写的 push 行不得动: ok=%v %+v", ok, r)
+	}
+	// 幂等：再扫一次不重复落指针行。
+	env.srv.sweepInterruptedResidents()
+	if n := len(b444Pointers(t, env, self)); n != 1 {
+		t.Fatalf("再扫不得重复落指针行，得 %d", n)
+	}
+}
+
 // F1 竖切（真机 R4 回归）：首轮「正在跑」时驻场者已坐下（push_session 空 = 在途），能以 agent:<小队> 经
 // 真实 collab 写面在会话里发言、按占位名 CAS 改名；首轮返回后 push_session 被补写。
 // 注意：钩子跑在 HTTP handler 的 goroutine 里，只记录不 Fatal。

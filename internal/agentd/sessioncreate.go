@@ -317,6 +317,77 @@ func (s *Server) residentCarrierMachine(registered string) (string, error) {
 	return host, nil
 }
 
+// errResidentRoundInterrupted 是启动清扫写进指针行的原因（首轮回合由拉起它的 agentd 进程执行，进程重启后
+// 首轮结果丢失，push_session 永远不会补写）。
+var errResidentRoundInterrupted = errors.New("首轮被 agentd 重启打断（重启前在途的首轮不会再补写会话 id）")
+
+// sweepInterruptedResidents 是 agentd 启动清扫（B444 P2，协调者裁决：agentd 崩溃留下的首轮在途行）：列出 push
+// 且 push_session 空的驻场行，只处置载体机器是**本机**的（R9：别机的行归别机，绝不碰）——逐行请下并落一条
+// 「首轮被重启打断」指针行（带 `handoff session resident launch` 重试命令）。每行一条 Info、末尾一条汇总；
+// 任何错误只记带上下文的日志，绝不阻断启动。
+//
+// 与本进程内真在跑的首轮不冲突：launchSessionResident 全程持会话的 coordinatorLock；本函数对每行 TryLock，
+// 拿不到 = 本进程正在拉起它（真在途），跳过；拿到后重读一次驻场行，确认仍是同身份的在途行才请下。
+func (s *Server) sweepInterruptedResidents() {
+	if s.rooms == nil || s.autoLedger == nil {
+		s.log.Warn("驻场者启动清扫跳过：collab 服务或账本门面未装配", "has_rooms", s.rooms != nil,
+			"has_ledger", s.autoLedger != nil)
+		return
+	}
+	rows, err := s.rooms.InflightPushResidents()
+	if err != nil {
+		s.log.Error("驻场者启动清扫失败：列首轮在途行出错（不阻断启动）", "cause", err)
+		return
+	}
+	stood, foreign, skipped := 0, 0, 0
+	for _, r := range rows {
+		if !scheduling.IsLocalMachine(r.CarrierMachine) && !s.IsSelfTarget(r.CarrierMachine) {
+			foreign++
+			s.log.Info("驻场者启动清扫：在途行属别机，不碰", "session", r.Session, "identity", r.Identity,
+				"carrier_machine", r.CarrierMachine)
+			continue
+		}
+		if s.standInterruptedResident(r) {
+			stood++
+		} else {
+			skipped++
+		}
+	}
+	s.log.Info("驻场者启动清扫完成", "inflight_rows", len(rows), "stood", stood, "foreign", foreign, "skipped", skipped)
+}
+
+// standInterruptedResident 处置一行本机首轮在途驻场行：TryLock → 重读确认 → 请下 → 指针行。返回是否已请下。
+func (s *Server) standInterruptedResident(r proto.SessionResident) bool {
+	lock := s.coordinatorLock(residentClaimKey(r.Session))
+	if !lock.TryLock() {
+		s.log.Info("驻场者启动清扫：本进程正在拉起该会话的驻场者，跳过", "session", r.Session, "identity", r.Identity)
+		return false
+	}
+	defer lock.Unlock()
+	current, ok, err := s.autoLedger.SessionResident(r.Session)
+	if err != nil {
+		s.log.Error("驻场者启动清扫：重读驻场行失败，跳过", "session", r.Session, "identity", r.Identity, "cause", err)
+		return false
+	}
+	if !ok || current.Identity != r.Identity || current.DriverMode != proto.ResidentDriverPush || current.PushSession != "" {
+		s.log.Info("驻场者启动清扫：驻场行已变化，跳过", "session", r.Session, "identity", r.Identity, "resident_present", ok)
+		return false
+	}
+	if err := s.rooms.StandResident(r.Session, r.Identity); err != nil {
+		s.log.Error("驻场者启动清扫：请下在途行失败，需人工 session stand", "session", r.Session, "identity", r.Identity,
+			"cause", err)
+		return false
+	}
+	if s.keystone != nil {
+		s.keystone.ForgetResident(r.Session)
+	}
+	squad := strings.TrimPrefix(r.Identity, "agent:")
+	s.pointResidentLaunchFailure(r.Session, r.Identity, squad, errResidentRoundInterrupted)
+	s.log.Info("驻场者启动清扫：已请下被重启打断的在途行", "session", r.Session, "identity", r.Identity,
+		"carrier", r.Carrier, "carrier_machine", r.CarrierMachine)
+	return true
+}
+
 // pointResidentLaunchFailure 在会话里落一条系统指针行：谁没叫起来、为什么、怎么重试。写失败只留 Warn。
 func (s *Server) pointResidentLaunchFailure(sessionID, identity, squad string, cause error) {
 	body := fmt.Sprintf("驻场者 %s 未能拉起：%s。会话与卡已保留；排除故障后重试：handoff session resident launch %s --squad %s",

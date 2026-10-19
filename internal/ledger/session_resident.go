@@ -115,6 +115,36 @@ func (s *Store) SetResidentPushSession(session, identity, pushSession string) er
 		session, current.DriverMode, current.PushSession != "", ErrCASConflict)
 }
 
+// ListInflightPushResidents 列首轮在途的 push 驻场行（driver_mode=push 且 push_session 空），按会话 id 升序
+// （B444 P2：agentd 启动清扫的读面——首轮回合由拉起它的 agentd 进程执行，进程重启后在途行不会再被补写）。
+// 不按机器过滤：哪台机器的行归谁处置由调用方按 carrier_machine 判（R9）。读失败带上下文上抛。
+func (s *Store) ListInflightPushResidents() ([]SessionResident, error) {
+	rows, err := s.db.Query(s.q(`SELECT session, identity, desktop_session, cli_session, machine, sat_at,
+		driver_mode, push_cli, push_session, carrier, carrier_machine, home_dir, workdir, model
+		FROM session_residents WHERE driver_mode = ? AND push_session = '' ORDER BY session ASC`), ResidentDriverPush)
+	if err != nil {
+		log().Warn("列首轮在途驻场行失败", "cause", err)
+		return nil, fmt.Errorf("session_residents 查询首轮在途行: %w", err)
+	}
+	defer rows.Close()
+	var out []SessionResident
+	for rows.Next() {
+		var r SessionResident
+		var satAt any
+		if err := rows.Scan(&r.Session, &r.Identity, &r.DesktopSession, &r.CLISession, &r.Machine, &satAt,
+			&r.DriverMode, &r.PushCLI, &r.PushSession, &r.Carrier, &r.CarrierMachine, &r.HomeDir, &r.Workdir, &r.Model); err != nil {
+			return nil, fmt.Errorf("扫首轮在途驻场行: %w", err)
+		}
+		r.SatAt = toTime(satAt)
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("遍历首轮在途驻场行: %w", err)
+	}
+	log().Debug("列首轮在途驻场行完成", "rows", len(out))
+	return out, nil
+}
+
 // ErrResidentOccupied 表示会话已有驻场者（C-414：一房间至多一名，第二次 sit 一律拒绝）。
 var ErrResidentOccupied = errors.New("ledger: 会话已有驻场者")
 

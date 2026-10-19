@@ -379,6 +379,17 @@ func (s *Service) SetResidentPushSession(sessionID, identity, pushSession string
 	return nil
 }
 
+// InflightPushResidents 列首轮在途的 push 驻场者（push_session 空，B444 启动清扫读面）。collab 只给事实，
+// 归属哪台机器、是否请下由 agentd 判定。
+func (s *Service) InflightPushResidents() ([]proto.SessionResident, error) {
+	rows, err := s.lc.InflightPushResidents()
+	if err != nil {
+		log().Warn("列首轮在途驻场者失败", "cause", err)
+		return nil, err
+	}
+	return rows, nil
+}
+
 // StandResident 请下会话房间驻场者（`session stand`，Q7 甲）：identity 须等于现驻场者，否则
 // ErrResidentNotSeated、登记不变。非会话房间 → ErrNoRoom。
 func (s *Service) StandResident(sessionID, identity string) error {
