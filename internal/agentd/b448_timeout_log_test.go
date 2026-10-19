@@ -4,11 +4,64 @@ package agentd
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/Xsxdot/handoff/internal/client"
+	"github.com/Xsxdot/handoff/internal/collab"
+	"github.com/Xsxdot/handoff/internal/ledger"
+	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/scheduling"
 )
+
+// F21–F29 受理端还原表：收件端 kind → 受理端类型化错误（入口 handler 的既有 switch 据此命中，零改）。
+// 覆盖竖切里难以构造的 kind（resident_occupied / read_only / no_room 需跨机竞态才出现）。
+func TestB448FirstRoundFailureRestoresTypedErrors(t *testing.T) {
+	fe := func(status int, kind string) error {
+		return &client.FirstRoundError{Status: status, Kind: kind, Message: "原因", SessionID: "ses-x"}
+	}
+	var admission *coordinatorAdmissionError
+	var seat *coordinatorSeatConflict
+	for _, tc := range []struct {
+		name  string
+		in    error
+		check func(error) bool
+	}{
+		{"404 版本过旧", client.ErrFirstRoundUnsupported, func(e error) bool {
+			return strings.Contains(e.Error(), "m1 的 agentd 版本过旧，不支持首轮转交，请升级")
+		}},
+		{"no_slot", fe(409, proto.FirstRoundKindNoSlot), func(e error) bool {
+			return errors.Is(e, scheduling.ErrNoSlot) && errors.As(e, &admission) && admission.squad == "q"
+		}},
+		{"admission_rejected", fe(400, proto.FirstRoundKindAdmissionRejected), func(e error) bool {
+			return errors.As(e, &admission) && !errors.Is(e, scheduling.ErrNoSlot)
+		}},
+		{"cas_conflict", fe(409, proto.FirstRoundKindCASConflict), func(e error) bool { return errors.Is(e, ledger.ErrCASConflict) }},
+		{"seat_conflict", fe(409, proto.FirstRoundKindSeatConflict), func(e error) bool {
+			return errors.As(e, &seat) && seat.result.SessionID == "ses-x"
+		}},
+		{"resident_occupied", fe(409, proto.FirstRoundKindResidentOccupied), func(e error) bool { return errors.Is(e, collab.ErrResidentOccupied) }},
+		{"read_only", fe(409, proto.FirstRoundKindReadOnly), func(e error) bool { return errors.Is(e, collab.ErrReadOnly) }},
+		{"no_room", fe(409, proto.FirstRoundKindNoRoom), func(e error) bool { return errors.Is(e, collab.ErrNoRoom) }},
+		{"invalid 不伪装成用户错误", fe(400, proto.FirstRoundKindInvalid), func(e error) bool {
+			return !errors.As(e, &admission) && strings.Contains(e.Error(), "受理机缺陷")
+		}},
+		{"未知 kind 原文透出", fe(503, ""), func(e error) bool { return strings.Contains(e.Error(), "HTTP 503：原因") }},
+		{"不可达", fmt.Errorf("%w: dial", client.ErrUnreachable), func(e error) bool {
+			return strings.Contains(e.Error(), "协调者载体 c 在 m1，转交到该机失败：")
+		}},
+	} {
+		got := firstRoundFailure("q", "c", "m1", tc.in)
+		if !tc.check(got) {
+			t.Fatalf("%s：还原不符，得 %v", tc.name, got)
+		}
+	}
+}
 
 // F34：受理端出站 ctx 的截止 ≥ 回合上界（不比本机路径更早放弃）。
 func TestB448TransferCtxDeadlineCoversTurnTimeout(t *testing.T) {

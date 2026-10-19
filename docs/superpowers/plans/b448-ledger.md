@@ -82,3 +82,130 @@
 - 复跑：`go test ./internal/agentd/ -count=1` → `ok  github.com/Xsxdot/handoff/internal/agentd 75.334s`（整包全绿）。
 - `go build ./...` → 无输出；`go vet ./...` → 无输出；`gofmt -l internal/agentd/ internal/client/ internal/proto/` → 空。
 - 残留检查：`/usr/bin/grep -rn -e "指向本机载体" -e "只支持本机载体" internal cmd web/src` 只剩改写测试头注释里的一句历史说明。
+
+### F-8 受理端还原表 + 收尾复跑
+
+- 补 `TestB448FirstRoundFailureRestoresTypedErrors`（`b448_timeout_log_test.go`）：F21–F29 的 kind → 类型化错误还原表，
+  覆盖竖切里需要跨机竞态才出现的 resident_occupied / read_only / no_room / admission_rejected / cas_conflict。实现之后补写，首跑即绿。
+- 收尾命令（本节为最终一次实跑）：
+  - `go build ./...` → `BUILD_OK`；`go vet ./...` → `VET_OK`；`gofmt -l internal/agentd/ internal/client/ internal/proto/` → 空
+  - `go test ./internal/agentd/ -run 'B448|CoordLaunch|CoordRebind|B444|B446' -count=1` → `ok  github.com/Xsxdot/handoff/internal/agentd 3.478s`
+  - `go test ./internal/client/ ./internal/proto/ -count=1` → `ok .../internal/client 9.390s`、`ok .../internal/proto 0.392s`
+  - `go test ./internal/agentd/ -run TestB448 -count=1 -v` → 17 例全 PASS
+  - 整包 `go test ./internal/agentd/ -count=1` 在 F-7 跑过一次全绿（75.334s），之后只加了一个纯函数测试。
+
+---
+
+# 交回物
+
+## 偏离与自主决定
+
+1. **纪律偏离：client 出站单测与驻场实现未按「先红」顺序。** client `firstround_test.go` 写在实现之后、未单独见红；驻场实现
+   随骨架同一提交落下，V2 系测试在分支上首跑即绿——为此在基线 `08baeae1` 的临时 worktree 上补跑了同一组驻场测试，4 例均为
+   断言红（旧 fail-closed 文案），见 F-5。不在 plan 决策权限内（这是纪律而非设计决定），如实披露。
+2. **纪律偏离：F35（写截止）用例的「红」未观测。** 想在临时副本里置空 `extendFirstRoundWriteDeadline` 看它变红，命令被沙箱拒绝，
+   没有绕。用例是否有牙留给 review 变异复验。不在授权内，如实披露。
+3. **不可达文案在 <原因> 之后追加提示**「（若请求已送达，首轮可能仍在该机执行或已完成，请刷新查看）」，只在
+   ErrUnreachable / ErrTunnelDisconnected / ctx 超时时追加。前缀与 spec 文案逐字一致；提示来自 plan §7「部分失败」行的要求。
+   **边界情形**：plan §6 规定入口文案改动须升级，除 spec 三条之外；我判断它落在 spec 文案的 <原因> 槽内，请协调者确认或要求删掉。
+4. **F31 的读法：「pointed 为假才写」理解为必要条件，不是充分条件。** 受理端拿到回执、kind 为 resident_occupied / read_only /
+   no_room（请求错）时，即使 pointed=false 也不写指针行，与 B444「请求错不落指针行」一致。不改冻结条目，只是解释它；请协调者确认。
+5. **收件端 not_local 的驻场路径由执行机写指针行**（回执 pointed=true，受理端不写），与「谁跑了骨架谁写」一致。F30 是
+   当且仅当的关系，仍然成立。属实现细节，自主决定。
+6. **受理端对 kind=not_found / round_failed / invalid / 未知 kind 的入口文案**：not_local → 收件端文案 +「（执行机 M）」；
+   round_failed →「执行机 M 首轮失败：<原因>」；invalid →「执行机 M 拒绝了不成形的首轮转交请求（受理机缺陷）：…」；
+   not_found / 未知 →「执行机 M 回 HTTP n：<原文>」，全部映射到入口 502（满足 F19/F28/F29「透出原因」）。措辞自主决定。
+7. **V3 夹具构造与 plan 字面不同。** plan 写的是「B 侧先手动 acquire 一次」，但两机共享账本，这样做 A 的 `LaunchAdmit` 在本机就
+   直接 NoSlot，根本走不到转交。改为在 B 前挂透传代理，在 A 已归还、B 准入之前 acquire，模拟跨机竞态，这样 B 侧 no_slot 的 wire
+   路径才真正走到。属测试设计，自主决定。
+8. **骨架签名改为结构体 `coordinatorCarrierPlan`；席位判定抽成 `coordinatorSeatGate`**，供首轮与收件变体共用。在授权内
+   （§6「骨架用回调还是策略结构体」「私有函数与文件拆分」）。
+9. **余量 `firstRoundTransferSlack = 1m`**，出站截止与收件写截止都取 `coordWakeTurnTimeout + 1m`。在授权内（§6 余量）。
+10. **handled_by / accepted_by 取配置自名，取不到时用 hostname**（`firstRoundSelfName`）；续轮 wake 的 handled_by 仍取 hostname，
+    没有改动。自主决定（DTO 与日志字段值的取法）。
+11. **client 错误体读取上限 64KiB**，不复用 httpError 的 4096 截断，以保证 kind 解码先于截断。落在 plan §8「依赖库既成行为」第 4 条
+    给的两个选项之内。
+12. **收件端读卡出现非 NotFound 错误时回 502 round_failed**；squad 名不能作驻场身份（lookupErr）时回 400 invalid。
+    自主决定（kind 词表内选值）。
+13. **改写的 `TestCoordLaunchRejectsRemoteCarrier` 额外断言受理机 Runner 零次 Launch。** 在授权内（唯一允许改写的既有测试，计数断言保留）。
+14. 未改 `cmd/`、`web/`、scheduling / ledger / collab / keystone、`cmd/agentd.go` 超时；`handleCoordLaunch` / `handleCoordRebind` /
+    `handleSessionResidentLaunch` 的错误映射一字未改；§8 冻结条目未改。
+
+## 提交列表
+
+- `7df9d43f` feat(B448): 首轮转交 wire DTO 与 client 出站方法
+- `ea75943f` feat(B448): 协调者首轮按载体机转交（骨架收口 + 卡/驻场收件端）
+- `b8d0e8ba` test(B448): 驻场首轮转交竖切、超时预算与两端转交日志
+- （本提交）test(B448): 受理端 kind 还原表 + 台账交回物
+
+## 故事 / 验收 → 测试（本轮实跑：`go test ./internal/agentd/ -run TestB448 -count=1 -v` 17 例 PASS；client 4 例 PASS）
+
+- S1 / V1：`TestB448CardLaunchTransfersToCarrierMachine`；V1 反例：`TestB448CardSelfSeatAdoptedOnCarrierMachine`、`TestB448CardSeatStolenOnCarrierMachine`；
+  Q1 换绑：`TestB448TransferWireShapeAndRebind`
+- S2 / V2：`TestB448ResidentCreateTransfersToCarrierMachine`（建会话）、`TestB448ResidentFailureOnCarrierPointsOnceThenRetry`
+  （V2a + resident/launch 入口 + V2c）、`TestB448ResidentUnreachablePointsOnceByAcceptor`（V2b）
+- S3：CLI 未改，三条命令都打本机 HTTP，随 S1/S2 生效；**机内未验**，交真机 R5
+- S4：`go test ./internal/agentd/ -count=1` 整包全绿；既有测试只改写了 `TestCoordLaunchRejectsRemoteCarrier`
+- S5 / V5：`TestB448CardNotLocalRejectsWithoutSecondHop`
+- S6 / V3：`TestB448CardNoSlotOnCarrierMachine`（入口 409 同文案 + launch_queue 回填 + F22 直证）；回合中计数 1/1 在 V1 断言；
+  每例收尾 `assertZeroCounts`
+- V4：`TestB448TransferWireShapeAndRebind`（4a）、`TestB448FirstRoundWireValidation`（4b/4c + F20），以及 client 的 `TestFirstRound*`
+- V6：`TestB448CardOldPeerReportsUpgrade`、`TestB448ResidentOldPeerPointsOnce`
+- V7：`TestB448TransferCtxDeadlineCoversTurnTimeout`、`TestB448ReceiptOutlivesServerWriteTimeout`、`TestB448TransferLogsOnBothEnds`
+- 承重假设：`TestB448PairSharedLedgerOverRealHTTP`；还原表：`TestB448FirstRoundFailureRestoresTypedErrors`
+- 改写的既有测试：`TestCoordLaunchRejectsRemoteCarrier`（PASS）
+
+## §8 冻结条目落点
+
+| 条目 | 代码 | 测试 |
+|---|---|---|
+| F1 | `coordapi.go` 路由 + `handleCoordFirstRound` | CardLaunch / TransferWireShape（路径）/ WireValidation |
+| F2 | `ledgerapi.go` 路由 + `handleResidentFirstRound` | Resident* / WireValidation |
+| F3 | `transfer*FirstRound` 的 `MarkForwarded()` | TransferWireShape（头为 1） |
+| F4 | `decodeFirstRoundReq` | WireValidation「缺转交头」 |
+| F5 | 路由不包 requireConsoleIdentity | B 无 console_user，Resident* 全绿 |
+| F6/F7 | `proto.FirstRoundTransferReq` 无 omitempty | client `TestFirstRoundRequestShapeAndSuccess`；TransferWireShape |
+| F8–F11 | `decodeFirstRoundReq` 指针字段 | WireValidation（缺失 / 为空 各一条，两个端点） |
+| F12 | accepted_by 不校验 | TransferWireShape（值）；WireValidation not_found 例不带该键也能过校验 |
+| F13 | `launchCoordinatorRoundWithExpect` 的 transferExpect | TransferWireShape；client RequestShape |
+| F14 | `launchCoordinatorRoundFrozen` rebind=expect!="" | TransferWireShape（第二回合落座） |
+| F15 | skeleton `frozenCarrier` → `AdmitSeatCarrier` | CardNoSlot（B 准入看到满员） |
+| F16/F17 | 两个收件 handler 回执 | CardLaunch、Resident*（经 client 解码） |
+| F18 | 受理端只返回 RoundResult / Outcome | CardLaunch、`b448CreateSession`、FailureThenRetry |
+| F19 | `firstRoundFailure` default | 还原表「未知 kind」；client `WithoutKindKeepsRawText` |
+| F20 | 收件端 not_found 回 409 | WireValidation |
+| F21 | 404 哨兵 → 版本过旧文案 | CardOldPeer、ResidentOldPeer、client 404、还原表 |
+| F22 | no_slot → AdmissionError(ErrNoSlot) | CardNoSlot、还原表 |
+| F23/F24 | admission_rejected / cas_conflict | 还原表（**无竖切**） |
+| F25 | seat_conflict + session_id；needs_human 只由 B 写 | CardSeatStolen、还原表 |
+| F26 | resident_occupied / read_only / no_room | 还原表（**无竖切**） |
+| F27/F37 | `firstRoundNotLocalError`，零出站 | CardNotLocal（hops=0） |
+| F28 | round_failed | ResidentFailureOnCarrier（文案透出） |
+| F29 | invalid → 502 | 还原表 |
+| F30/F31 | `launchSessionResidentOn` pointed + `residentFailureIsMine` | FailureThenRetry / Unreachable / OldPeer（恰一条） |
+| F32 | 远端分支先 `release()` | CardLaunch 回合中计数 1/1 |
+| F33 | 骨架 `defer release()` + released 标志 | 全部用例 `assertZeroCounts` |
+| F34 | `firstRoundTransferCtx` | TransferCtxDeadline |
+| F35 | `extendFirstRoundWriteDeadline` | ReceiptOutlivesServerWriteTimeout（红未观测，见偏离 2） |
+| F36 | 出站只调一次，无重试 | TransferWireShape（两次拉起恰两次转交） |
+
+## 未验项
+
+- 全量 `go test ./...`：按派发约束没有跑，留给 review / finish。
+- PG：`LEDGER_TEST_PG_DSN` 未设置，PG 用例没有跑，未验（本卡没有改 ledger）。
+- 真机 R1–R11（含 S3 CLI、长回合穿 Tailscale / relay、执行机重启清扫、混版本）：一律未验，由协调者执行。
+- F35 用例的区分力（偏离 2）；F23 / F24 / F26 只有映射表单测，没有竖切。
+- `IsLocalMachine` 的 hostname 分支没有被隔离靶子覆盖（Q5 甲），留给生产复核。
+
+## 给协调者的真机提示
+
+- 新端点（两台都必须是新构建）：`POST /api/cards/{id}/coordinator/first-round`、`POST /api/sessions/{id}/resident/first-round`。
+  探活方式：不带 `X-Handoff-Forwarded` 头 POST，回 400 `{"kind":"invalid"}` 说明已是新版；回 404 说明还是旧版。
+- 日志关键字均为 WARN 级，缺省级别可见：
+  - 卡：`协调者首轮转交：受理机发出`、`协调者首轮转交完成：受理机收到回执`、`协调者首轮转交失败：受理机`、`协调者首轮转交：执行机收件`、
+    `协调者首轮转交完成：执行机`、`协调者首轮转交失败：执行机`
+  - 驻场：同形的 `驻场者首轮转交…`
+  - 字段：`accepted_by` / `handled_by` / `carrier` / `card` 或 `session`，两端可按这些字段对账。
+- 防环：执行机会打 `转交来的协调者首轮载体不在本机，防环拒绝且不再转交`（WARN），受理机入口 502，文案「转交到本机的协调者首轮，但载体 X 不在本机（设备表不一致？）」。
+- R8 老版本：老执行机回 404，受理机报「<机器> 的 agentd 版本过旧，不支持首轮转交，请升级」。老受理机不会发起转交，仍是旧的 fail-closed 文案。
+- R4：对端停机时入口文案为「协调者载体 t448-oc 在 t448-linux，转交到该机失败：…」，会话里指针行恰一条，由受理机写入。
