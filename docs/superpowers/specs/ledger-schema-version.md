@@ -1,6 +1,6 @@
 # 账本 schema 版本闸：PG Open 版本一致时跳过建库
 
-> 状态：待批准（2026-10-19 起草）
+> 状态：待批准（2026-10-19 起草；r2 并入委托会话五条意见）
 > 级别：**L1**（单子系统 internal/ledger，不动契约；实现决定见末尾三行，验收一眼可核：pg_locks / 持锁下 Open 成功）
 > 来源：2026-10-19 agentd 打开账本挂死事故的续篇（fix/ledger-open-retry 已合入 main a429b193）
 > 台账：[ledger-schema-version-ledger.md](ledger-schema-version-ledger.md)
@@ -21,12 +21,16 @@ PG 账本在 `ledger_meta` 存一个整数 schema 版本标记；代码持有一
 Open（PG）在建库专用短命池上（沿用现有 lock_timeout/statement_timeout）先读标记：
 
 - **标记 ≥ 代码版本** → 跳过全部 DDL 与一次性迁移，只做下文「闸外」一项。
-- **标记缺失 / 表不存在 / 标记 < 代码版本 / 标记不可解析（Warn）** → 照旧跑完整 ensureSchema，
-  全部成功后把标记写成代码版本（只升不降：已有更大值则不覆盖）。失败不写标记，下次 Open 重跑。
+- **标记缺失 / ledger_meta 表不存在（42P01，新库或极老库）/ 标记 < 代码版本 / 标记不可解析（Warn）** → 照旧跑完整
+  ensureSchema；42P01 视为「标记缺失」，不是 Open 失败。闸内**全部**成功后才写标记：单条只升 upsert
+  （`INSERT … ON CONFLICT (key) DO UPDATE … WHERE ledger_meta.value::int < EXCLUDED.value::int`），不取 advisory 915601。
+  失败不写标记，下次 Open 重跑。
+- 两个首次 Open 并发时都会跑完整 DDL——与现状相同、幂等，可接受。
 
 **闸内**（版本一致即跳过）：wake_claims 复合键迁移、DDL 列表、B434 退役表迁移、cards 三条加列、driver_mode 回填。
 **闸外**（每次 Open 照跑）：未决工单投影水位检查 `ensureOpenTicketProjection`——它是数据水位不是 schema，
-自带 version 字段，稳态只读（AccessShare），只在投影陈旧时走 mutate 重建。
+自带 version 字段，只在投影陈旧时走 mutate 重建。稳态路径已核（ticketprojection.go:190-209 现状读数）：仅两条 SELECT
+（open_ticket_projection_state、card_events），只取 AccessShare，无更强锁。
 
 **SQLite 不加闸**，行为与现在完全一致（单机文件、无护航问题）。
 
@@ -48,9 +52,10 @@ Open（PG）在建库专用短命池上（沿用现有 lock_timeout/statement_ti
 
 - **S1（护航消除）**：PG 账本已是当前版本时，任一调用方（CLI / agentd）`Open/OpenShared` 不申请 cards 上的
   AccessExclusiveLock，也不取 advisory 915601。验证：隔离 PG 测试库上，另一会话持 `LOCK TABLE cards IN ACCESS SHARE MODE`
-  时第二次 Open **成功且远快于 lock_timeout**；并在 Open 期间观测 pg_locks 无本连接的 cards AccessExclusiveLock。
+  时第二次 Open **成功且耗时 < 1s**（证明没有 ALTER 在排队）；并在 Open 期间观测 pg_locks 无本连接的 cards AccessExclusiveLock。
 - **S2（升级照跑）**：标记缺失或低于代码版本的 PG 库，Open 跑完整建库迁移并写入标记；cards 被他人持锁时仍在
   lock_timeout 内失败且判瞬时（a429b193 的有界性保留）。验证：清标记后复现现有 `TestPGOpenBoundedWhenCardsLocked` 形状。
+- **S2b（无 ledger_meta 的库）**：ledger_meta 表不存在的 PG 库（新 schema）Open 成功，跑完整建库并写入标记。
 - **S3（SQLite 不变）**：SQLite 路径 Open 行为不变，ledger 包全部 SQLite 测试绿。
 - **S4（防漏升）**：改 DDL 列表不升版本号 → 单测红。
 
@@ -67,7 +72,7 @@ Open（PG）在建库专用短命池上（沿用现有 lock_timeout/statement_ti
 ## 测试决定
 
 - 真实入口：`ledger.Open` / `OpenShared`（生产消费者：CLI 各命令与 agentd 启动）。
-- PG 新测（LEDGER_TEST_PG_DSN 门控）：S1 持 ACCESS SHARE 下二次 Open 成功 + pg_locks 观测；S2 清标记后持锁 → 有界瞬时失败、放锁后 Open 写标记。
+- PG 新测（LEDGER_TEST_PG_DSN 门控）：S1 持 ACCESS SHARE 下二次 Open 成功且 < 1s + pg_locks 观测；S2b 空 schema 首次 Open；S2 清标记后持锁 → 有界瞬时失败、放锁后 Open 写标记。
 - 单测：S4 指纹钉版本。
 - 回归：`go test ./internal/ledger/...`（SQLite）+ 设 DSN 跑 PG 测试全集。
 

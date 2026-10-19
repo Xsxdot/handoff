@@ -5,3 +5,4 @@
 - 判断：投影水位检查留闸外（数据水位非 schema）；SQLite 不加闸（委托方要求路径不变）；整数单调标记优于 DDL 指纹（混跑不互相覆盖）。
 - 预见影响：TestPGOpenBoundedWhenCardsLocked（open_bounded_pg_test.go:16）在新语义下二次 Open 会成功，需改为清标记形状；taskstate_projection_test.go:357 DROP 投影表后重开，若走 PG 需清标记。
 - spec 起草完成，待批准。
+- r2：并入委托会话意见——42P01 视为标记缺失（S2b+测试）、只升 upsert 不取 advisory 且闸内全成功后写、并发首 Open 双跑可接受、S1 加 <1s 时限、核投影稳态仅两条 SELECT（ticketprojection.go:190-209）。
