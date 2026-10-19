@@ -105,6 +105,9 @@ export interface ProjectTreeProps {
   sessions?: ProjectSessionRow[]
   onOpenSession?: (id: string, title: string) => void
   onOpenArchive?: () => void
+  // onCreateSession 打开建会话对话框（B442）：B429 收起左栏「会话」tab 后，建会话按钮只剩
+  // 在归档列表里且被禁用；入口须在树本身可见处。未传（账本关闭）则不渲染。
+  onCreateSession?: () => void
   currentBrowseBase?: BaseDir | null
   tree: ProjectTreeResp
   tasks: Task[]
@@ -392,7 +395,7 @@ function TaskIconSlot({ kind }: { kind: 'tui' | 'terminal' | 'file' | 'preview' 
   )
 }
 
-export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDir, openItems, focusedTaskId, onFocusOpenItem, onCloseOpenItem, onOpenTerminalAt, onOpenDirectory, onOpenTask, onOpenBoard, onOpenCards, onOpenProjectCards, ledgerEnabled = false, onOpenFlows, cardNeedsCount = 0, unlinkedCount = 0, onOpenTickets, onOpenSettings, compact = false, onAddProject, onUnregister, onEdit, onOpenProjectDetail, onWorktreeCreated, previews = [], previewMachines = [], previewOpenKeys = new Set<string>(), previewOpeningKeys = new Set<string>(), onOpenPreview = () => {}, sessions = [], onOpenSession, onOpenArchive, currentBrowseBase }: ProjectTreeProps) {
+export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDir, openItems, focusedTaskId, onFocusOpenItem, onCloseOpenItem, onOpenTerminalAt, onOpenDirectory, onOpenTask, onOpenBoard, onOpenCards, onOpenProjectCards, ledgerEnabled = false, onOpenFlows, cardNeedsCount = 0, unlinkedCount = 0, onOpenTickets, onOpenSettings, compact = false, onAddProject, onUnregister, onEdit, onOpenProjectDetail, onWorktreeCreated, previews = [], previewMachines = [], previewOpenKeys = new Set<string>(), previewOpeningKeys = new Set<string>(), onOpenPreview = () => {}, sessions = [], onOpenSession, onOpenArchive, onCreateSession, currentBrowseBase }: ProjectTreeProps) {
   // collapsed：空集 = 全展开。为什么用「收起集合」而不是「展开集合」：默认全展开
   // 意味着初值空集，渲染时 `!collapsed.has(key)` 天然为真，不用为每个节点预填。
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
@@ -1411,6 +1414,7 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
           工单数为 0 时按钮仍在、角标不显示——按钮消失会让人以为功能没了。
           justify-around 而非左对齐：少了占主位的文字按钮后，一排图标挤在
           左半边会让右半边看起来像渲染缺了东西 */}
+      {!compact && onCreateSession && <button className="desktop-archive-entry" type="button" onClick={onCreateSession}><Plus size={14} />新建会话</button>}
       {!compact && onOpenArchive && <button className="desktop-archive-entry" type="button" onClick={onOpenArchive}><Archive size={14} />归档会话</button>}
 
       <div className="mt-1 flex items-center justify-around gap-0.5 border-t px-2 pt-2">

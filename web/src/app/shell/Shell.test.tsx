@@ -2012,8 +2012,8 @@ describe('B361 会话 IA', () => {
     vi.mocked(fetchSessions).mockResolvedValue([] as never)
     const user = userEvent.setup()
     renderShell()
-    await waitFor(() => expect(screen.getByRole('button', { name: '新建会话' })).toBeEnabled())
-    await user.click(await screen.findByRole('button', { name: '新建会话' }))
+    await waitFor(() => expect(visibleButtonsNamed('新建会话')[0]).toBeEnabled())
+    await user.click(visibleButtonsNamed('新建会话')[0])
     await waitFor(() => expect(screen.getByRole('textbox', { name: '会话标题' })).toBeInTheDocument())
     expect(screen.queryByRole('combobox', { name: '群主身份' })).toBeNull()
     await user.type(screen.getByRole('textbox', { name: '会话标题' }), '新场')
@@ -2029,8 +2029,8 @@ describe('B361 会话 IA', () => {
     vi.mocked(fetchSessions).mockResolvedValue([] as never)
     const user = userEvent.setup()
     renderShell()
-    await waitFor(() => expect(screen.getByRole('button', { name: '新建会话' })).toBeEnabled())
-    await user.click(screen.getByRole('button', { name: '新建会话' }))
+    await waitFor(() => expect(visibleButtonsNamed('新建会话')[0]).toBeEnabled())
+    await user.click(visibleButtonsNamed('新建会话')[0])
     await user.type(screen.getByRole('textbox', { name: '会话标题' }), '新场')
     await user.click(screen.getByRole('button', { name: '创建' }))
     await waitFor(() => expect(screen.queryByRole('dialog', { name: '新建会话' })).toBeNull())
@@ -3477,5 +3477,38 @@ describe('B435 项目房间入口（桌面树）', () => {
     expect(within(project).queryByText('普通零卡会话')).toBeNull()
     expect(await screen.findByTestId('unassociated-sessions')).toHaveTextContent('普通零卡会话')
     expect(screen.getByTestId('unassociated-sessions')).not.toHaveTextContent('handoff 项目房间')
+  })
+})
+
+// B442：新建会话入口必须在真机可见处。jsdom 不算 Tailwind 的 hidden class，旧用例在
+// 隐藏的「会话」tab 面板里照样点得到按钮——这里只认祖先链上没有 .hidden 的那颗。
+function visibleButtonsNamed(name: string): HTMLElement[] {
+  return screen.queryAllByRole('button', { name }).filter((button) => button.closest('.hidden') === null)
+}
+
+describe('B442 新建会话入口可见', () => {
+  const originalWidth = window.innerWidth
+  afterEach(() => {
+    Object.defineProperty(window, 'innerWidth', { value: originalWidth, configurable: true, writable: true })
+  })
+
+  it('桌面：左栏可见处有「新建会话」，点开即建会话对话框', async () => {
+    Object.defineProperty(window, 'innerWidth', { value: 1280, configurable: true, writable: true })
+    vi.mocked(fetchSessions).mockResolvedValue([] as never)
+    renderShell()
+    await waitFor(() => expect(visibleButtonsNamed('新建会话').length).toBeGreaterThan(0))
+    fireEvent.click(visibleButtonsNamed('新建会话')[0])
+    expect(await screen.findByRole('textbox', { name: '会话标题' })).toBeInTheDocument()
+  })
+
+  it('移动端：工作台操作菜单直接有「新建会话」，点开即建会话对话框', async () => {
+    Object.defineProperty(window, 'innerWidth', { value: 375, configurable: true, writable: true })
+    vi.mocked(fetchSessions).mockResolvedValue([] as never)
+    renderShell('/?tab=projects')
+    expect(await ensureMobileProjectCard()).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '工作台操作' }))
+    await waitFor(() => expect(visibleButtonsNamed('新建会话').length).toBeGreaterThan(0))
+    fireEvent.click(visibleButtonsNamed('新建会话')[0])
+    expect(await screen.findByRole('textbox', { name: '会话标题' })).toBeInTheDocument()
   })
 })

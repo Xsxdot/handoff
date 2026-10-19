@@ -285,6 +285,8 @@ export function Shell() {
   const [needsOnly, setNeedsOnly] = useState(false)
   const mobileArchived = new URLSearchParams(location.search).get('archive') === '1'
   const [desktopArchived, setDesktopArchived] = useState(false)
+  // openCreateSession 是建会话对话框的唯一打开动作：左栏树、移动端菜单与会话列表共用（B442）
+  const openCreateSession = () => { setCreateError(''); setCreateOpen(true) }
   const openSessionList = (archived: boolean) => {
     if (compact) navigate('/?tab=sessions' + (archived ? '&archive=1' : ''))
     else { setDesktopArchived(archived); setSidebarTab('sessions') }
@@ -1243,6 +1245,7 @@ export function Shell() {
       })}
       onOpenSession={(id) => { const found=sessions.find(s=>s.id===id);if(found)openSession(found) }}
       onOpenArchive={() => openSessionList(true)}
+      onCreateSession={ledgerEnabled ? openCreateSession : undefined}
       currentBrowseBase={fileDrawer}
       selectedKey={fileDrawer?.key ?? wb.base?.key ?? null}
       ticketCount={tickets.count}
@@ -1376,7 +1379,7 @@ export function Shell() {
               projectOptions={projectOptions}
               projectOfCard={projectOfCard}
               onOpen={openSession}
-              onCreate={() => { setCreateError(''); setCreateOpen(true) }} />
+              onCreate={openCreateSession} />
           </div>
         )}
         {/* 账本未启用时会话 tab 不渲染，任务 pane 兜底可见（hidden 恒不挂） */}
@@ -1591,7 +1594,7 @@ export function Shell() {
                       projectOptions={projectOptions}
                       projectOfCard={projectOfCard}
                       onOpen={openSession}
-                      onCreate={() => { setCreateError(''); setCreateOpen(true) }}
+                      onCreate={openCreateSession}
                       compact={compact}
                       archivedOnly={mobileArchived}
                     /></div>
@@ -1643,6 +1646,7 @@ export function Shell() {
                       onEditProject={setEditProject}
                       onAddProject={() => setWizardOpen(true)}
                       onOpenSessions={openSessionList}
+                      onCreateSession={ledgerEnabled ? openCreateSession : undefined}
                       onOpenCards={openCardsSurface}
                     />
                     </div>
