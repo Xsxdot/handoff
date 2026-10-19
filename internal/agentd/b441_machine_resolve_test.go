@@ -121,6 +121,8 @@ func TestB441TasksAllListsDeviceTableMachines(t *testing.T) {
 	env, st := newB439MachineEnv(t, &buf)
 	ensureTestManager(t, env)
 	registerB441Remote(t, st, "devbox", "http://127.0.0.1:1")
+	// 生产形态：自登记让本机自名也在设备表里（设备表源不滤自名）
+	registerB441Remote(t, st, "linux-01", "http://127.0.0.1:7777")
 	now := time.Now().UTC()
 	if err := env.st.UpsertMirrorTask("devbox", proto.Task{
 		ID: "b441-remote-task", Name: "远端任务", State: proto.TaskStateCompleted,
