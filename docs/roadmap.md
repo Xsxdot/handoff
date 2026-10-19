@@ -934,3 +934,10 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 - **「未挂账 target 摘要」只遍历配置 `targets:`**（`internal/agentd/ledgerapi.go#unlinkedSummary`）：设备表机器不进摘要；缓存一致性判据按 `conf()` 指针与 Targets 快照比对，改源要一并重定。来源同上。
 - **B439 启动提示与现状矛盾**：上两条修完之前，「请从 config.yaml 删除这些条目」会把人引向破坏 CLI 的操作；修完前应改为不建议删除。来源同上。
 - **控制台增机查重只看配置 `targets:`**（`internal/agentd/machines.go:210`、`machineadmin.go:76` 的 `validateAddMachine`）：与设备表同名机器查不出冲突；`machineadmin.go:119` 已用 `pool.Names()`，两处判法不一致。来源：B441 独立审查 M4。
+
+## B444 残余（2026-10-19，项目内新建会话 spec Out of Scope「本期不做、后续要做」）
+
+- 建会话时直接选单个载体（绕过小队）——需先定绕过小队时名额/并发如何计。来源：`docs/superpowers/specs/b444.md`。
+- 驻场者换人/换载体的 Web 操作（今天只有 CLI `session stand` 后重新叫驻场者）。来源同上。
+- 会话改项目归属。来源同上。
+- 旧的无项目会话批量归属工具。来源同上。
