@@ -1,0 +1,15 @@
+{
+  "id": "session:10",
+  "title": "新会话",
+  "owner": "user:sy",
+  "archived": false,
+  "home_project": "handoff",
+  "members": [
+    "user:sy"
+  ],
+  "created_at": "2026-08-11T10:30:00+08:00",
+  "updated_at": "2026-08-11T10:30:00+08:00",
+  "resident": {
+    "error": "拉起驻场者首轮失败: 载体登录失效"
+  }
+}

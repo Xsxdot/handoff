@@ -1,0 +1,47 @@
+[
+  {
+    "id": "session:3",
+    "kind": "session",
+    "title": "旧会话",
+    "owner": "user:sy",
+    "archived": false,
+    "unread": 0,
+    "needs_human": false,
+    "last_activity": "2026-08-11T10:30:00+08:00"
+  },
+  {
+    "id": "session:9",
+    "kind": "session",
+    "title": "登录页白屏 等 2 张",
+    "owner": "user:sy",
+    "archived": false,
+    "home_project": "handoff",
+    "unread": 0,
+    "needs_human": false,
+    "last_activity": "2026-08-11T10:30:00+08:00",
+    "members": [
+      {
+        "identity": "agent:coord",
+        "kind": "resident",
+        "status": "last_active",
+        "last_active": "0001-01-01T00:00:00Z",
+        "driver_mode": "push",
+        "carrier": "linux-01-opencode",
+        "carrier_machine": "linux-01",
+        "model": "free-model"
+      }
+    ],
+    "cards": [
+      {
+        "card_id": "B1",
+        "title": "登录页白屏",
+        "status": "待办"
+      },
+      {
+        "card_id": "B2",
+        "title": "接口超时",
+        "status": "待办"
+      }
+    ]
+  }
+]

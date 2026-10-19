@@ -1,0 +1,27 @@
+{
+  "id": "session:9",
+  "title": "登录页白屏 等 2 张",
+  "owner": "user:sy",
+  "archived": false,
+  "home_project": "handoff",
+  "members": [
+    "user:sy"
+  ],
+  "cards": [
+    "B1",
+    "B2"
+  ],
+  "created_at": "2026-08-11T10:30:00+08:00",
+  "updated_at": "2026-08-11T10:30:00+08:00",
+  "rejected_cards": [
+    {
+      "card": "B3",
+      "reason": "卡已在会话 session:4 里"
+    }
+  ],
+  "resident": {
+    "identity": "agent:coord",
+    "carrier": "linux-01-opencode",
+    "carrier_machine": "linux-01"
+  }
+}

@@ -151,6 +151,28 @@ func TestContractFixtures(t *testing.T) {
 		// 经 Go 解码再编码写进 web 夹具——金样本或 DTO 平铺/omitempty 一漂，本 case 与金样本测试同红。
 		{"RoomHistoryB435", decodeGoldenSample[roomHistoryEnvelope](t, "b435_room_history.json")},
 		{"SessionSummaryProjectB435", decodeGoldenSample[[]SessionSummary](t, "b435_session_summary_project.json")},
+		// B444（plan A2.6，S8）：会话所属项目的「缺失 vs 有值」——旧会话行无 home_project 键，新会话行有；
+		// 建会话响应内嵌 Session 并带 rejected_cards / resident（成功与首轮失败两形）；timeline 新 kind renamed。
+		{"SessionSummaryHomeProjectB444", []SessionSummary{
+			{ID: "session:3", Kind: SessionKind, Title: "旧会话", Owner: "user:sy", LastActivity: now},
+			{ID: "session:9", Kind: SessionKind, Title: "登录页白屏 等 2 张", Owner: "user:sy", HomeProject: "handoff", LastActivity: now,
+				Members: []SessionMember{{Identity: "agent:coord", Kind: SessionMemberResident, Status: SessionMemberLastActive,
+					DriverMode: ResidentDriverPush, Carrier: "linux-01-opencode", CarrierMachine: "linux-01", Model: "free-model"}},
+				Cards: []SessionCard{{CardID: "B1", Title: "登录页白屏", Status: "待办"}, {CardID: "B2", Title: "接口超时", Status: "待办"}}},
+		}},
+		{"SessionCreateRespB444", SessionCreateResp{
+			Session: Session{ID: "session:9", Title: "登录页白屏 等 2 张", Owner: "user:sy", HomeProject: "handoff",
+				Members: []string{"user:sy"}, Cards: []string{"B1", "B2"}, CreatedAt: now, UpdatedAt: now},
+			RejectedCards: []SessionRejectedCard{{Card: "B3", Reason: "卡已在会话 session:4 里"}},
+			Resident:      &SessionResidentOutcome{Identity: "agent:coord", Carrier: "linux-01-opencode", CarrierMachine: "linux-01"},
+		}},
+		{"SessionCreateRespResidentErrorB444", SessionCreateResp{
+			Session: Session{ID: "session:10", Title: SessionUntitledTitle, Owner: "user:sy", HomeProject: "handoff",
+				Members: []string{"user:sy"}, CreatedAt: now, UpdatedAt: now},
+			Resident: &SessionResidentOutcome{Error: "拉起驻场者首轮失败: 载体登录失效"},
+		}},
+		{"SessionTimelineRenamedB444", []SessionTimelineEvent{{Seq: 12, Kind: SessionEventRenamed,
+			Detail: `{"from":"新会话","session":"session:10","title":"排查登录失败"}`, Actor: "agent:coord", CreatedAt: now}}},
 		// B435 词表夹具：Go 常量逐值同序列出，TS 侧词表数组逐值比对（枚举新值过白名单）。
 		{"B435Vocab", b435VocabSample()},
 		{"NodeDef", NodeDef{
