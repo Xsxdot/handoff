@@ -199,7 +199,16 @@ func (s *Server) handleCoordWake(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadRequest, mapErr)
 			return
 		}
-		evs = append(evs, wakes...)
+		for _, wake := range wakes {
+			// B444 P1（R1/R2）：转交收件端只承接卡唤醒；同一事件映射出的驻场唤醒归驻场者所在机的
+			// 消费循环（驻场批），混进卡回合会让卡协调者替驻场者回话。
+			if wake.IsResident() {
+				s.log.Info("转交唤醒丢弃驻场唤醒：驻场者不经卡回合", "card", id, "seq", ev.Seq,
+					"session", wake.Session, "identity", wake.Resident)
+				continue
+			}
+			evs = append(evs, wake)
+		}
 	}
 	if len(evs) == 0 {
 		writeJSON(w, http.StatusOK, proto.CoordinatorWakeResp{HandledBy: s.localMachineName()})

@@ -303,6 +303,7 @@ func (s *Server) ringResidentDoorbells(from int64, events []proto.LedgerEvent) e
 
 // residentDoorbellIneligible 判驻场者地址此刻能不能按铃；返回 (原因, true) 表示跳过。
 //   - 无驻场者行或身份 ≠ 地址身份（判定后有人 stand / 换人 sit）→ 不给新驻场者按旧地址的铃；
+//   - push 驻场者（B444）→ 零写信，唤醒归 keystone 续轮（reason=push_resident）；
 //   - 无 cli_session（未登记桌面端地址）→ 零写信（C-409）；
 //   - machine 非本机（scheduling.IsLocalMachine 与 Server.IsSelfTarget 皆假）→ 零动作（C-415/C-416）；
 //     machine 空 = 登记时的本机（C-415 字面，IsLocalMachine("") 为真）。
@@ -315,6 +316,12 @@ func (s *Server) residentDoorbellIneligible(addr proto.DeliveryAddress, r proto.
 		s.log.Info("门铃跳过：驻场者已换人，不按旧地址的铃", "session", addr.Session,
 			"address_identity", addr.Identity, "resident_identity", r.Identity)
 		return "identity_mismatch", true
+	case r.DriverMode == proto.ResidentDriverPush:
+		// B444 P1（plan Q2 甲 / R2）：push 驻场者由 keystone 续轮（residentpush.go），门铃不得再写信，
+		// 否则同一条消息两路唤醒。显式判据，不依赖「push 行 cli_session 恰为空」这一巧合。
+		s.log.Info("门铃跳过：push 驻场者由 keystone 续轮", "session", addr.Session, "identity", addr.Identity,
+			"reason", "push_resident")
+		return "push_resident", true
 	case r.CLISession == "":
 		s.log.Debug("门铃跳过：驻场者未登记桌面端地址", "session", addr.Session, "identity", addr.Identity)
 		return "no_cli_session", true

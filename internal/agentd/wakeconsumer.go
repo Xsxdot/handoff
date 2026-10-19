@@ -320,7 +320,8 @@ func (s *Server) automationWakeEvents(ev proto.LedgerEvent) ([]keystone.WakeEven
 // mentions、不自带默认收件人规则）。分流：
 //   - 席位地址且该卡 mode=push → 恰一次 WakeMessage{Card:该卡}（同卡去重）；
 //   - 席位地址且 mode=pull → 零 keystone Wake（由 card wait 交付）；
-//   - 驻场者地址 → 零 keystone Wake（门铃信由 ringResidentDoorbells 另路处理），Info 可查。
+//   - 驻场者地址且驻场者 push（B444）→ 恰一次驻场唤醒 WakeEvent{Session, Resident}（residentpush.go）；
+//   - 驻场者地址且 desktop → 零 keystone Wake（门铃信由 ringResidentDoorbells 另路处理），Info 可查。
 //
 // 房间消息唤醒不沿 parent 上走（C-232）：产出的唤醒卡即命中地址的卡，消费循环对
 // WakeMessage 不调 resolveWakeCard。by_system:null 旧边界在解码层按结构行跳过
@@ -349,8 +350,13 @@ func (s *Server) roomMessageWakeEvents(ev proto.LedgerEvent) ([]keystone.WakeEve
 	seenCard := make(map[string]bool, len(delivery.Addresses))
 	for _, addr := range delivery.Addresses {
 		if addr.Kind != proto.DeliverySeat {
-			s.log.Info("会话消息命中驻场者地址：不经 keystone（门铃由 residentwake.go 另行判定）",
-				"seq", ev.Seq, "session", addr.Session, "identity", addr.Identity, "default", delivery.Default)
+			wake, ok, err := s.residentAddressWake(ev, msg, addr, delivery.Default)
+			if err != nil {
+				return nil, err
+			}
+			if ok {
+				wakes = append(wakes, wake)
+			}
 			continue
 		}
 		if seenCard[addr.Card] {
@@ -666,6 +672,8 @@ func (s *Server) consumeAutomationEventsOnce(ctx context.Context) (processed int
 		raw proto.LedgerEvent
 	}
 	pendingByCard := map[string][]pending{}
+	// B444 P1：驻场唤醒另立一批，按会话房间 id 分组；不进 pendingByCard（缺陷族 R1）。
+	pendingByResident := map[string][]residentPending{}
 	maxProcessed := from
 	for _, ev := range events {
 		if ev.Seq <= from {
@@ -723,6 +731,14 @@ func (s *Server) consumeAutomationEventsOnce(ctx context.Context) (processed int
 		if len(wakes) > 0 {
 			queued := 0
 			for _, wake := range wakes {
+				if wake.IsResident() {
+					pendingByResident[wake.Session] = append(pendingByResident[wake.Session],
+						residentPending{seq: ev.Seq, ev: wake})
+					queued++
+					s.log.Debug("自动化事件进入驻场 pending", "seq", ev.Seq, "session", wake.Session,
+						"identity", wake.Resident, "cursor", from, "cursor_candidate", maxProcessed)
+					continue
+				}
 				target := wake.Card
 				if wake.Kind != keystone.WakeMessage {
 					// 卡自动化事件沿 parent 找 push 席位；房间消息唤醒已按匹配函数地址定卡，
@@ -761,6 +777,15 @@ func (s *Server) consumeAutomationEventsOnce(ctx context.Context) (processed int
 	// B435 O2 门铃（Q2 甲）：逐事件循环之后、卡批循环（attach 暂缓会提前返回）与水位推进之前；仅判定读失败报错。
 	if bellErr := s.ringResidentDoorbells(from, events); bellErr != nil {
 		return processed, escalated, bellErr
+	}
+	// B444 P1 驻场批：门铃之后、卡批之前（卡批 attach 暂缓会提前返回，驻场批放其后会被饿死）。
+	resProcessed, resErr, fatal := s.consumeResidentBatches(ctx, pendingByResident)
+	processed += resProcessed
+	if fatal != nil {
+		return processed, escalated, fatal
+	}
+	if resErr != nil && firstWakeErr == nil {
+		firstWakeErr = resErr
 	}
 	cards := make([]string, 0, len(pendingByCard))
 	for card := range pendingByCard {

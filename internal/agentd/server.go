@@ -214,6 +214,9 @@ type Server struct {
 	// residentWake 是驻场者门铃信桥的进程内状态（B435 O2，residentwake.go）：已处置事件 seq 与「信未落盘」
 	// 的在途重试；零值可用，自带锁，不经 automationMu。
 	residentWake residentWakeState
+	// residentPush 是 push 驻场者续轮的进程内状态（B444 P1，residentpush.go）：每会话已落系统指针行的
+	// 批次水位（同一批至多一条指针行）；零值可用，自带锁，不经 automationMu。
+	residentPush residentPushState
 	// automationBackoff 记录每张卡最近一次失败唤醒的 seq 与退避截止时刻（B389
 	// §3.5.4）：同卡同 seq 在退避窗内不重复试跑，防止失败事件反复引发唤醒。
 	// 进程内存：重启后重试一次是安全方向（不丢事件）。
