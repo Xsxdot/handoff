@@ -265,44 +265,20 @@ func (s *Server) launchCoordinatorRoundWithExpect(ctx context.Context, card, sou
 	if err != nil {
 		return zero, &coordinatorLookupError{err: err}
 	}
-	binding, err := s.scheduling.LaunchAdmit(squad.Name)
-	if err != nil {
-		return zero, &coordinatorAdmissionError{squad: squad.Name, err: err}
-	}
-	// 名额在本回合结束即归还：协调者是 print 一次性回合（无窗口可挂），
-	// 不再依赖「关 tab」释放，否则一次拉起会把该载体的协调者名额永久占住。
-	defer s.releaseSchedulingBinding(card, binding)
-	carrier, err := s.scheduling.Carrier(binding.Carrier)
-	if err != nil {
-		s.log.Error("读协调者载体失败", "card", card,
-			"squad", binding.Squad, "carrier", binding.Carrier, "cause", err)
-		return zero, fmt.Errorf("读载体 %s: %w", binding.Carrier, err)
-	}
-	// 远端载体 fail-closed：print 回合由本进程的 hostapi 拉起（载体 CLI 在本机执行），
-	// 载体登记的那台机器若不是本机，会话就落在错误的机器上、且 HomeDir 是对端路径。
-	// 旧 TUI 形态有远端 PTY 分支，print 形态没有——故显式拒绝，不静默跑错机器。
-	if !scheduling.IsLocalMachine(carrier.Machine) && !s.IsSelfTarget(carrier.Machine) {
-		err := fmt.Errorf("协调者载体 %s 在机器 %s（远端）：print 协调者只支持本机载体，"+
-			"请把协调者小队的成员指向本机载体", binding.Carrier, carrier.Machine)
-		s.log.Warn("协调者载体非本机，拒绝拉起", "card", card, "carrier", binding.Carrier,
-			"machine", carrier.Machine, "cause", err)
-		return zero, err
-	}
-	spec := keysclient.SessionSpec{
-		CLI: binding.Executor, HomeDir: carrier.HomeDir, Model: binding.Model,
-		Workdir: s.resolveCoordWorkdir(card),
-	}
-	normalized, err := orchestration.NormalizeCoordinatorSpec(spec)
-	if err != nil {
-		s.log.Error("规范化协调者 SessionSpec 失败", "card", card,
-			"squad", binding.Squad, "carrier", binding.Carrier, "cause", err)
-		return zero, err
-	}
-	spec = normalized
-	s.log.Info("自动化拉起协调者回合", "card", card, "source", source,
-		"squad", binding.Squad, "carrier", binding.Carrier,
-		"cli", spec.CLI, "home_dir", spec.HomeDir, "workdir", spec.Workdir,
-		"machine", carrier.Machine, "rebind", rebind)
+	return s.runOnCoordinatorCarrier(squad.Name, card, []any{"card", card, "source", source, "rebind", rebind},
+		func() string { return s.resolveCoordWorkdir(card) },
+		func(round coordinatorCarrierRound) (keystone.RoundResult, error) {
+			return s.bindLaunchedCoordinator(ctx, card, source, expect, rebind, round)
+		})
+}
+
+// bindLaunchedCoordinator 是卡「叫机器人」在名额窗口内的卡专属半边：keystone.LaunchForCard 跑首轮 → 编码
+// 席位身份 → BindSeatMode / RebindSeatMode 落 push 席位与 bearing。席位没落时留 needs_human 并带回新会话
+// 身份（coordinatorSeatConflict）。
+func (s *Server) bindLaunchedCoordinator(ctx context.Context, card, source, expect string, rebind bool,
+	round coordinatorCarrierRound) (keystone.RoundResult, error) {
+	var zero keystone.RoundResult
+	binding, carrier, spec := round.binding, round.carrier, round.spec
 	// print 一次性回合：载体跑完这一轮即退出，会话身份由载体自报（agentd 不伪造）。
 	result, err := s.keystone.LaunchForCard(ctx, card, source, spec)
 	if err != nil {
@@ -341,6 +317,67 @@ func (s *Server) launchCoordinatorRoundWithExpect(ctx context.Context, card, sou
 	s.log.Info("自动化拉起协调者回合结束", "card", card, "source", source,
 		"session", result.SessionID, "seat", identity, "rebind", rebind)
 	return keystone.RoundResult{Woke: true, SessionID: result.SessionID}, nil
+}
+
+// coordinatorCarrierRound 是协调小队一次拉起回合在名额窗口内可用的材料：准入出的 binding、读出的载体登记、
+// 规范化后的 SessionSpec（CLI/HOME/模型来自载体与小队，Workdir 由调用方解析）。
+type coordinatorCarrierRound struct {
+	binding scheduling.Binding
+	carrier scheduling.Carrier
+	spec    keysclient.SessionSpec
+}
+
+// runOnCoordinatorCarrier 是「用协调小队拉起一轮新会话」的共用骨架（B444 P2 自卡「叫机器人」抽出，卡席位与
+// push 驻场者两个调用方共用，plan §3 P2「抽共用，不复制」）：LaunchAdmit(squad) 两级准入 → 名额在回合结束
+// 即归还（defer）→ 读载体 → 远端载体 fail-closed → 组 spec（workdir 由调用方回调解析）→ 规范化 → 在名额
+// 窗口内执行 launch（调用方的 keystone 首轮与落账）。
+//
+// 参数：squad 已由调用方选定且是协调小队；releaseKey 是名额归还日志的归属键（卡号或 resident:<会话>）；
+// attrs 是调用方的日志上下文；workdir 在本机校验之后调用；launch 在名额窗口内执行。
+// 返回 launch 的结果。错误：准入失败 → *coordinatorAdmissionError（调用方据此 409 / 排队）；载体读失败、
+// 载体非本机、spec 规范化失败 → 普通错误（文案沿用卡路径既有措辞）；launch 的错误原样返回。
+func (s *Server) runOnCoordinatorCarrier(squad, releaseKey string, attrs []any, workdir func() string,
+	launch func(coordinatorCarrierRound) (keystone.RoundResult, error)) (keystone.RoundResult, error) {
+	var zero keystone.RoundResult
+	binding, err := s.scheduling.LaunchAdmit(squad)
+	if err != nil {
+		return zero, &coordinatorAdmissionError{squad: squad, err: err}
+	}
+	// 名额在本回合结束即归还：协调者是 print 一次性回合（无窗口可挂），
+	// 不再依赖「关 tab」释放，否则一次拉起会把该载体的协调者名额永久占住。
+	defer s.releaseSchedulingBinding(releaseKey, binding)
+	carrier, err := s.scheduling.Carrier(binding.Carrier)
+	if err != nil {
+		s.log.Error("读协调者载体失败", append(attrs[:len(attrs):len(attrs)],
+			"squad", binding.Squad, "carrier", binding.Carrier, "cause", err)...)
+		return zero, fmt.Errorf("读载体 %s: %w", binding.Carrier, err)
+	}
+	// 远端载体 fail-closed：print 回合由本进程的 hostapi 拉起（载体 CLI 在本机执行），
+	// 载体登记的那台机器若不是本机，会话就落在错误的机器上、且 HomeDir 是对端路径。
+	// 旧 TUI 形态有远端 PTY 分支，print 形态没有——故显式拒绝，不静默跑错机器。
+	if !scheduling.IsLocalMachine(carrier.Machine) && !s.IsSelfTarget(carrier.Machine) {
+		err := fmt.Errorf("协调者载体 %s 在机器 %s（远端）：print 协调者只支持本机载体，"+
+			"请把协调者小队的成员指向本机载体", binding.Carrier, carrier.Machine)
+		s.log.Warn("协调者载体非本机，拒绝拉起", append(attrs[:len(attrs):len(attrs)], "carrier", binding.Carrier,
+			"machine", carrier.Machine, "cause", err)...)
+		return zero, err
+	}
+	spec := keysclient.SessionSpec{
+		CLI: binding.Executor, HomeDir: carrier.HomeDir, Model: binding.Model,
+		Workdir: workdir(),
+	}
+	normalized, err := orchestration.NormalizeCoordinatorSpec(spec)
+	if err != nil {
+		s.log.Error("规范化协调者 SessionSpec 失败", append(attrs[:len(attrs):len(attrs)],
+			"squad", binding.Squad, "carrier", binding.Carrier, "cause", err)...)
+		return zero, err
+	}
+	spec = normalized
+	s.log.Info("自动化拉起协调者回合", append(attrs[:len(attrs):len(attrs)],
+		"squad", binding.Squad, "carrier", binding.Carrier,
+		"cli", spec.CLI, "home_dir", spec.HomeDir, "workdir", spec.Workdir,
+		"machine", carrier.Machine)...)
+	return launch(coordinatorCarrierRound{binding: binding, carrier: carrier, spec: spec})
 }
 
 // localMachineName 返回本机名（与 IsLocalMachine 的 hostname 判据同源），用于

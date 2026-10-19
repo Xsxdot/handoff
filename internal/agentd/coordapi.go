@@ -321,8 +321,7 @@ func (s *Server) handleCoordForget(w http.ResponseWriter, r *http.Request) {
 
 // resolveCoordWorkdir 尽力解析卡所属项目在本机的位置根作为会话工作目录
 // （SessionSpec.Workdir=项目位置根）。解析不到不阻断拉起（置空由承载层缺省），
-// 只留日志——plan §D5.2 的 best-effort 定案。解析本身委托 resolveLocalProjectRoot
-// （项目位置的唯一解析点）。
+// 只留日志——plan §D5.2 的 best-effort 定案。解析本身委托 resolveProjectWorkdir。
 func (s *Server) resolveCoordWorkdir(cardID string) string {
 	if s.mgr == nil {
 		// best-effort 解析：缺 manager 只留空，由承载层缺省决定工作目录
@@ -332,13 +331,23 @@ func (s *Server) resolveCoordWorkdir(cardID string) string {
 	if err != nil {
 		return ""
 	}
-	root, err := s.resolveLocalProjectRoot(card)
+	return s.resolveProjectWorkdir(card.Project, "card", cardID)
+}
+
+// resolveProjectWorkdir 尽力解析项目在本机的位置根作为回合工作目录（卡协调者与 B444 push 驻场者共用；
+// 驻场者按会话所属项目解析）。解析不到返回空串（承载层缺省），只留带上下文的 Warn。attrs 是调用方的
+// 归属键值（如 "card", <卡号> 或 "session", <会话>）。
+func (s *Server) resolveProjectWorkdir(project string, attrs ...any) string {
+	if s.mgr == nil {
+		return ""
+	}
+	root, err := s.resolveLocalProjectRoot(project)
 	switch {
 	case errors.Is(err, errNoLocalProject):
-		s.log.Warn("协调者工作目录解析失败：项目未登记", "card", cardID, "project", card.Project, "cause", err)
+		s.log.Warn("协调者工作目录解析失败：项目未登记", append(attrs, "project", project, "cause", err)...)
 		return ""
 	case err != nil:
-		s.log.Warn("协调者工作目录解析失败：列项目位置出错", "card", cardID, "cause", err)
+		s.log.Warn("协调者工作目录解析失败：列项目位置出错", append(attrs, "cause", err)...)
 		return ""
 	}
 	return root
@@ -353,19 +362,19 @@ var errNoLocalProject = errors.New("项目在本机没有登记位置")
 // 没登记」，不能叫人去跑 handoff project add。
 var errProjectLocationsUnavailable = errors.New("项目位置服务未装配（SetManager 未执行）")
 
-// resolveLocalProjectRoot 解析卡所属项目在本 agentd 登记的绝对根目录，是协调者工作目录
-// （resolveCoordWorkdir）的唯一解析点（B434 契约 §3.5、§11.1 引入；B435 X 退役拉起材料后
-// 只剩这一个调用方）。
+// resolveLocalProjectRoot 解析项目在本 agentd 登记的绝对根目录，是回合工作目录
+// （resolveProjectWorkdir）的唯一解析点（B434 契约 §3.5、§11.1 引入；B444 起按项目名解析，
+// 卡与会话所属项目共用）。
 //
-// 参数：card 已读出的卡（只用 ID 与 Project）。
-// 返回：命中 → loc.Path；项目未登记或卡无项目 → 包 errNoLocalProject，文本逐字为
+// 参数：project 为卡 project 字段值（会话所属项目同口径）。
+// 返回：命中 → loc.Path；项目未登记或项目为空 → 包 errNoLocalProject，文本逐字为
 // 「项目在本机没有登记位置：<project>（handoff project add 登记后可用）」（前端原样显示）；
 // 列项目位置失败 → 原样包装、不包 errNoLocalProject（那是 I/O 故障，叫人去登记是误导，
 // 契约 r10 第 3 条窄读）；mgr 未注入 → errProjectLocationsUnavailable。
 // 注意：ListProjectLocations 必须经 s.mgr（b23328 源码守卫的执法面含本文件）；
 // 不判路径是否真实存在（与 workspace.ResolveProject 同口径）。本函数不打日志：
-// 调用方在边界记（resolveCoordWorkdir 保持 B434 前的 Warn 口径），这里再记就是同一失败两行。
-func (s *Server) resolveLocalProjectRoot(card ledger.Card) (string, error) {
+// 调用方在边界记（resolveProjectWorkdir 保持 B434 前的 Warn 口径），这里再记就是同一失败两行。
+func (s *Server) resolveLocalProjectRoot(project string) (string, error) {
 	if s.mgr == nil {
 		return "", errProjectLocationsUnavailable
 	}
@@ -373,10 +382,10 @@ func (s *Server) resolveLocalProjectRoot(card ledger.Card) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("列项目位置: %w", err)
 	}
-	loc, err := workspace.ResolveProject("", card.Project, entries)
+	loc, err := workspace.ResolveProject("", project, entries)
 	if err != nil {
 		// 对外文本按契约 §3.5 冻结，不带 ResolveProject 的原始原因。
-		return "", fmt.Errorf("%w：%s（handoff project add 登记后可用）", errNoLocalProject, card.Project)
+		return "", fmt.Errorf("%w：%s（handoff project add 登记后可用）", errNoLocalProject, project)
 	}
 	return loc.Path, nil
 }
