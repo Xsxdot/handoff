@@ -948,3 +948,4 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 - **R9 多机共库未在 fleet 上验**：push 驻场者唤醒只在 bearing 所在机认领，非本机零认领；只在单机隔离靶子验过，三机共库行为与「宿主机 agentd 停时会话里无提示」未真机验。来源：`docs/superpowers/plans/b444-plan.md` §7 R9。
 - **PG 迁移腿未跑**：`TestB444ResidentPushMigrationPG`、`TestB444SessionHomeProjectMigrationPG`、驻场/席位互斥 PG 孪生在无 `LEDGER_TEST_PG_DSN` 环境 SKIP；上 fleet（Supabase PG）前须在 linux-01 临时测试库跑一次。来源：B444 台账。
 - **续轮失败指针行未真机复现**：拉起失败→指针行→重试已真机（session:1 seq 7）；续轮（resume）失败的指针行只有单测与变异覆盖，隔离 M 上未能造出载体不可达。来源：B444 真机 R3 下半。
+- **建会话 / 叫机器人只接受本机载体**：`runOnCoordinatorCarrier`（`internal/agentd/scheddrain.go`）对远端载体 fail-closed，Web 请求发往控制台所在机；控制台所在机 ≠ 协调小队载体所在机时（生产：控制台 mac-mini，小队 leader 成员 mbp 在 macbook-pro）建会话得 `resident.error`、叫机器人失败。需定按载体机转发（B441 `?machine=` 转发面）还是前端按载体机路由。来源：B444 finish 前核对（与卡路径同约束，非 B444 回归）。
