@@ -13,7 +13,9 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // 驻场者驱动形态词表（B444 P1，plan Q2 甲）：空串 = desktop（旧行零回填即此义，门铃信驱动）；
@@ -86,16 +88,31 @@ func (s *Store) SetResidentPushSession(session, identity, pushSession string) er
 		log().Warn("补写驻场者 push_session 被拒：入参为空", "cause", err)
 		return err
 	}
-	res, err := s.db.Exec(s.q(`UPDATE session_residents SET push_session = ?
-		WHERE session = ? AND identity = ? AND driver_mode = ? AND push_session = ''`),
-		pushSession, session, identity, ResidentDriverPush)
+	// 条件 UPDATE 是事务第一条语句（SQLite 一开始就取写锁，同 SitResident）；补写成功后同事务查互斥
+	// （B444 P2 返工三 裁决 2）：push_session 正是某卡席位会话 → 回滚，原值不变。
+	var n int64
+	err := s.mutate(func(tx *sql.Tx, _ *eventSink) error {
+		res, err := tx.Exec(s.q(`UPDATE session_residents SET push_session = ?
+			WHERE session = ? AND identity = ? AND driver_mode = ? AND push_session = ''`),
+			pushSession, session, identity, ResidentDriverPush)
+		if err != nil {
+			return fmt.Errorf("补写驻场者 push_session session=%s: %w", session, err)
+		}
+		if n, err = res.RowsAffected(); err != nil {
+			return fmt.Errorf("读补写 push_session 影响行数: %w", err)
+		}
+		if n == 0 {
+			return nil
+		}
+		return s.residentHoldsSeatTx(tx, session, pushSession)
+	})
 	if err != nil {
-		log().Warn("补写驻场者 push_session 失败", "session", session, "identity", identity, "cause", err)
-		return fmt.Errorf("补写驻场者 push_session session=%s: %w", session, err)
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("读补写 push_session 影响行数: %w", err)
+		if errors.Is(err, ErrResidentSeatConflict) {
+			log().Info("补写 push_session 被拒：该会话正坐卡席位", "session", session, "identity", identity, "cause", err)
+		} else {
+			log().Warn("补写驻场者 push_session 失败", "session", session, "identity", identity, "cause", err)
+		}
+		return err
 	}
 	if n == 1 {
 		log().Info("驻场者 push_session 已补写", "session", session, "identity", identity, "push_session", pushSession)
@@ -151,6 +168,63 @@ var ErrResidentOccupied = errors.New("ledger: 会话已有驻场者")
 // ErrResidentNotSeated 表示要请下的身份不是该会话的现驻场者（含无人在座）。
 var ErrResidentNotSeated = errors.New("ledger: 该身份不是会话驻场者")
 
+// ErrResidentSeatConflict 表示同一 CLI 会话既要当 push 驻场者又要坐卡席位（B444 P2 返工三 裁决 2，真机 R6：
+// 驻场者 `card bind` 把自己绑成卡席位、亲手跑完整条流；spec「永不做：会话 agent 直接接管卡席位」）。
+// 两个方向都由账本在写事务内判：坐席位时会话 id 撞 push 驻场行，或坐驻场时 push_session 撞卡席位。
+var ErrResidentSeatConflict = errors.New("ledger: 同一 CLI 会话不能既是驻场者又坐卡席位")
+
+// seatSessionID 取席位身份 `cli:<cli>#<会话 id>` 的会话 id 段（身份已由写面校验过形状；本包不调 proto
+// 包级函数，故本地切）。无 `#` 返回空串，调用方视为无可比会话。
+func seatSessionID(identity string) string {
+	i := strings.LastIndex(identity, "#")
+	if i < 0 {
+		return ""
+	}
+	return identity[i+1:]
+}
+
+// seatHeldByResidentTx 判席位身份的会话 id 是否正是某 push 驻场行的 push_session（按会话 id 判，不看 CLI
+// 标签——会话 id 才是那条 CLI 会话本身）。是 → ErrResidentSeatConflict（文案点名驻场的会话）；否 → nil。
+// 在调用方写事务内读，PG 下 mutate 的账本咨询锁把它与驻场写面串行化，无写偏斜。
+func (s *Store) seatHeldByResidentTx(tx *sql.Tx, identity string) error {
+	sid := seatSessionID(identity)
+	if sid == "" {
+		return nil
+	}
+	var session string
+	err := tx.QueryRow(s.q(`SELECT session FROM session_residents
+		WHERE driver_mode = ? AND push_session = ? ORDER BY session LIMIT 1`), ResidentDriverPush, sid).Scan(&session)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("查席位会话是否为驻场者: %w", err)
+	}
+	return fmt.Errorf("该 CLI 会话是会话 %s 的驻场者，不能坐卡席位: %w", session, ErrResidentSeatConflict)
+}
+
+// residentHoldsSeatTx 是反方向：push_session 是否正是某卡的席位会话（driver_session 以 `#<push_session>`
+// 结尾；后缀比较不用 LIKE，会话 id 里的 `_` 是 LIKE 通配符）。是 → ErrResidentSeatConflict（点名卡）；否 → nil。
+func (s *Store) residentHoldsSeatTx(tx *sql.Tx, session, pushSession string) error {
+	if pushSession == "" {
+		return nil
+	}
+	suffix := "#" + pushSession
+	n := utf8.RuneCountInString(suffix)
+	var card string
+	err := tx.QueryRow(s.q(`SELECT id FROM cards
+		WHERE driver_session <> '' AND length(driver_session) > ?
+		  AND substr(driver_session, length(driver_session) - ? + 1) = ?
+		ORDER BY id LIMIT 1`), n, n, suffix).Scan(&card)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("查驻场会话是否坐着卡席位: %w", err)
+	}
+	return fmt.Errorf("该 CLI 会话正坐卡 %s 的席位，不能当会话 %s 的驻场者: %w", card, session, ErrResidentSeatConflict)
+}
+
 // SitResident 登记会话驻场者（B435 R，`session sit` 的账本半边）。参数 r：Session、Identity
 // 必填；桌面端三列可空（空 = 无桌面端地址）；B444 驱动形态与 bearing 列原样落库（形状校验在
 // collab.Service.SitResident）；SatAt 由账本按本库时钟填写，入参值忽略。
@@ -195,10 +269,17 @@ func (s *Store) SitResident(r SessionResident) (SessionResident, error) {
 		if n == 0 {
 			return fmt.Errorf("会话 %s: %w", r.Session, ErrResidentOccupied)
 		}
+		// B444 P2 返工三 裁决 2：push 行的 push_session 不得正坐卡席位（首轮在途行 push_session 空，补写时再判）。
+		if r.DriverMode == ResidentDriverPush {
+			if err := s.residentHoldsSeatTx(tx, r.Session, r.PushSession); err != nil {
+				return err
+			}
+		}
 		return s.bumpSeatRevisionTx(tx)
 	})
 	if err != nil {
-		if errors.Is(err, ErrResidentOccupied) || errors.Is(err, ErrNotFound) || errors.Is(err, ErrBadState) {
+		if errors.Is(err, ErrResidentOccupied) || errors.Is(err, ErrNotFound) || errors.Is(err, ErrBadState) ||
+			errors.Is(err, ErrResidentSeatConflict) {
 			log().Info("登记驻场者被拒", "session", r.Session, "identity", r.Identity, "cause", err)
 		} else {
 			log().Warn("登记驻场者失败", "session", r.Session, "identity", r.Identity, "cause", err)

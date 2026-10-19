@@ -102,6 +102,11 @@ func (s *Store) BindSeatMode(id, identity string, source proto.SeatSource, mode 
 			log().Warn("坐下被拒：席位非空", "card", id, "source", source, "cause", err)
 			return err
 		}
+		// B444 P2 返工三 裁决 2（真机 R6）：push 驻场者的 CLI 会话不能坐卡席位。
+		if err := s.seatHeldByResidentTx(tx, identity); err != nil {
+			log().Warn("坐下被拒：该会话是驻场者", "card", id, "source", source, "cause", err)
+			return err
+		}
 		if _, err := tx.Exec(s.q(`UPDATE cards SET driver_session = ?, driver_source = ?, driver_mode = ?, driver_heartbeat_at = ? WHERE id = ?`),
 			identity, source, mode, s.tval(s.timeNow()), id); err != nil {
 			return fmt.Errorf("坐下写席位 %s: %w", id, err)
@@ -171,6 +176,11 @@ func (s *Store) RebindSeatMode(id, identity string, source proto.SeatSource, mod
 		if card.DriverSession != expect {
 			err := fmt.Errorf("卡 %s 当前席位与期望不符，请重读后换绑: %w", id, ErrCASConflict)
 			log().Warn("换绑被拒：CAS 冲突", "card", id, "source", source, "cause", err)
+			return err
+		}
+		// B444 P2 返工三 裁决 2（真机 R6）：push 驻场者的 CLI 会话不能换绑成卡席位。
+		if err := s.seatHeldByResidentTx(tx, identity); err != nil {
+			log().Warn("换绑被拒：该会话是驻场者", "card", id, "source", source, "cause", err)
 			return err
 		}
 		if _, err := tx.Exec(s.q(`UPDATE cards SET driver_session = ?, driver_source = ?, driver_mode = ?, driver_heartbeat_at = ? WHERE id = ?`),

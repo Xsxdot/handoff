@@ -282,6 +282,8 @@ var (
 	ErrResidentOccupied = client.ErrResidentOccupied
 	// ErrResidentNotSeated 要请下的身份不是现驻场者。
 	ErrResidentNotSeated = client.ErrResidentNotSeated
+	// ErrResidentSeatConflict push 驻场者的 CLI 会话正坐卡席位（B444 P2 返工三 裁决 2）。
+	ErrResidentSeatConflict = client.ErrResidentSeatConflict
 )
 
 // SitResident 登记会话房间驻场者——驻场者写面的唯一入口（R plan Q11 甲；O1 的

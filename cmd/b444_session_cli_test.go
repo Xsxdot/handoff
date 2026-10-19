@@ -174,3 +174,36 @@ func TestB444SessionResidentLaunchPostsSquad(t *testing.T) {
 		t.Fatalf("409 应透传: %v %q", err, errOut)
 	}
 }
+
+// B444 P2 返工三 裁决 2（真机 R6）：push 驻场者的 CLI 会话 `card bind` 出示自己时，账本拒绝并把原因带到
+// CLI 出口（非 0、错误文案点名驻场的会话），卡席位仍空。
+func TestB444CardBindRejectsResidentSession(t *testing.T) {
+	clearSeatSourceEnv(t)
+	dir := t.TempDir()
+	id := mustAddCard(t, dir, "驻场者不得坐")
+	st, err := ledger.Open(filepath.Join(dir, "ledger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := st.CreateSession("驻场会话", "user:owner", "user:owner")
+	if err != nil {
+		st.Close()
+		t.Fatal(err)
+	}
+	if _, err := st.SitResident(ledger.SessionResident{
+		Session: session.ID, Identity: "agent:coord", DriverMode: ledger.ResidentDriverPush,
+		PushCLI: "opencode", PushSession: "ses_b444_resident", Carrier: "c1", CarrierMachine: "linux-01",
+	}); err != nil {
+		st.Close()
+		t.Fatal(err)
+	}
+	st.Close()
+	_, _, err = runLedgerCLI(t, dir, "card", "bind", id, "--cli", "opencode", "--session", "ses_b444_resident")
+	want := "该 CLI 会话是会话 " + session.ID + " 的驻场者，不能坐卡席位"
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("card bind 驻场会话应被拒且文案含 %q，得 %v", want, err)
+	}
+	if card := b435ReadCard(t, dir, id); card.DriverSession != "" || card.DriverSource != "" {
+		t.Fatalf("被拒后席位应仍空，得 session=%q source=%q", card.DriverSession, card.DriverSource)
+	}
+}

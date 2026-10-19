@@ -364,6 +364,8 @@ func translateResidentErr(err error) error {
 		sentinel = client.ErrResidentOccupied
 	case errors.Is(err, ledger.ErrResidentNotSeated):
 		sentinel = client.ErrResidentNotSeated
+	case errors.Is(err, ledger.ErrResidentSeatConflict):
+		sentinel = client.ErrResidentSeatConflict
 	case errors.Is(err, ledger.ErrBadState):
 		sentinel = client.ErrBadState
 	default:

@@ -97,3 +97,33 @@ func TestB435FacadeSitStandResident(t *testing.T) {
 		t.Fatalf("stand 后应 ok=false: %v %v", ok, err)
 	}
 }
+
+// B444 P2 返工三 裁决 2：驻场写面撞卡席位会话时，Facade 把账本 ErrResidentSeatConflict 翻成
+// client.ErrResidentSeatConflict（SitResident 与 SetResidentPushSession 两条），原文案（点名卡）保留。
+func TestB444FacadeResidentSeatConflictTranslated(t *testing.T) {
+	st, lc := newFacadeStore(t)
+	mustBugWorkflow(t, st)
+	card, err := st.CreateCard(ledger.NewCard{Title: "席位卡", Project: "p", Workflow: "bug", Actor: "t"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.BindSeatMode(card.ID, "cli:opencode#ses_seat", proto.SeatSourceBind, proto.SeatModePull, ledger.SeatBearing{}); err != nil {
+		t.Fatal(err)
+	}
+	session, err := st.CreateSession("驻场", "user:o", "user:o")
+	if err != nil {
+		t.Fatal(err)
+	}
+	push := proto.SessionResident{Session: session.ID, Identity: "agent:coord", DriverMode: proto.ResidentDriverPush,
+		PushCLI: "opencode", PushSession: "ses_seat", Carrier: "c1", CarrierMachine: "linux-01"}
+	if _, err := lc.SitResident(push); !errors.Is(err, client.ErrResidentSeatConflict) || !strings.Contains(err.Error(), card.ID) {
+		t.Fatalf("SitResident 撞卡席位应映射 client.ErrResidentSeatConflict 且点名卡 %s，得 %v", card.ID, err)
+	}
+	push.PushSession = ""
+	if _, err := lc.SitResident(push); err != nil {
+		t.Fatalf("首轮在途行应能坐下: %v", err)
+	}
+	if err := lc.SetResidentPushSession(session.ID, "agent:coord", "ses_seat"); !errors.Is(err, client.ErrResidentSeatConflict) {
+		t.Fatalf("SetResidentPushSession 撞卡席位应映射 client.ErrResidentSeatConflict，得 %v", err)
+	}
+}

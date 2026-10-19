@@ -172,3 +172,27 @@
 - R5 首跑：零卡空标题建会话，驻场者首轮（人尚未开口）即改名「驻场值班会话」——违背 S4「人发第一条消息后命名」。根因：简报对零卡未命名一律下发改名指令，含无唤醒事件的 launch 首轮。
 - 修：residentBriefing 仅在有唤醒事件时下发 CAS 改名；首轮改为「本轮不要改名」。TestB444ResidentBriefing 改断言（协调者自批：launch 不含改名、含等待句；resume 含改名），旧实现下该用例红（零卡未命名子例），新实现绿。
 - 真机 R7：带终态卡的项目内会话（session:1，home_project=b444demo，D1/D2 已完成移出卡流）在桌面左栏落「其他会话」。根因：sessionProjects 把映射缺失的卡判 hasUnknownCard，Shell/MobileWorkspace 据此判未关联。修：有 home_project 时不标未知（spec「所属项目为主」）；新增规则表用例先红后绿；rooms/tree/shell 597 绿，tsc 净。
+
+## P2 返工三（驻场者不得坐卡席位，真机 R6）——实现者 subagent，2026-10-19
+
+### 偏离与自主决定
+
+1. **撤销 P1 偏离 6**（裁决 1）。标记位选在 `keysclient.SessionRef.Resident bool json:"-"`（回合属性，同 Env 不落盘不进 wire），由 `keystone.WakeResident` **强制置位**（不论调用方是否置位），`coordinatorRunner.Resume` 见标记则 `Env=nil`、否则照旧 `seatEnv`。`LaunchForResident` 记下的驻场 ref 也带 Resident。launch 回合本就不注入（Q3 甲），未加 SessionSpec 标记，只加断言锁住。
+2. **互斥按会话 id 判，不看 CLI 标签**（裁决 2 原文「seat identity's session id equals push_session」）：`cli:claude#<驻场会话>` 同样拒。ledger 不调 proto 包级函数（既有预算约束），席位会话 id 用本地 `seatSessionID`（取最后一个 `#` 后段）。
+3. **反向查询用 `substr`/`length` 后缀比较，不用 LIKE**：会话 id 常含 `_`（LIKE 通配符）。长度按 rune 计，两方言 `length` 均按字符。
+4. **并发**：检查与写在同一 `mutate` 事务内；PG 下 mutate 取全局账本咨询锁，SQLite 单写者，故两方向无写偏斜。为此 `SetResidentPushSession` 从裸 `db.Exec` 改进 `mutate`（条件 UPDATE 仍是事务第一条语句，撞席位则回滚，原值不变）；未递增席位版本（同原行为）。
+5. 反向文案（裁决只给了正向）：「该 CLI 会话正坐卡 <卡> 的席位，不能当会话 <会话> 的驻场者」，同一哨兵 `ErrResidentSeatConflict`；facade 翻 `client.ErrResidentSeatConflict`，collab 再导出同名。卡席位写面（cmd `card bind/rebind`、agentd coordinate）直连 ledger，原文案直达 CLI 出口。
+6. 简报句（裁决 3）点名 `card bind` / `card rebind` / `card takeover` / `card seat …` 四个命令族，放在 coordinate 同步说明之后（放前面会让「这条命令是同步的」指代错位）。
+7. 首轮在途行（push_session 空）坐下时不判，补写 push_session 时判——在途行无可比会话。
+
+### 事实与命令
+
+- 席位写者盘点：`grep "driver_session *="` 只有 `BindSeatMode`、`RebindSeatMode`（另一处是 `clearSeatTx` 清空），旧名 `BindSeat/RebindSeat` 只是委托垫片——两处都已加检查。
+- 红绿：
+  - 裁决 1：agentd `TestB444ResidentResumeHasNoSeatEnv`（真 opencode.Coordinator + PATH 假 CLI）先编译红（无 Resident 字段）；实现后临时把判断改成 `ref.Resident && false` 复跑红「HANDOFF_SESSION_CLI="opencode"，want <unset>」，恢复后绿；同用例卡续轮仍注入 `ses_card`。agentd `TestB444PushResidentResumesOnHumanMessage`/`TestB444SessionCreateWithCardsSeatsPushResident` 加 Resident=true 与首轮 spec.Env 无席位键断言；`TestB444AtCardWakesSeatNotResident` 加卡续轮 Resident=false。keystone `TestB444WakeResidentResumesGivenRef` 加 Resident 断言。
+  - 裁决 2：ledger `TestB444ResidentSeatExclusion`（PG 孪生 `TestB444ResidentSeatExclusionPG`）先编译红（无哨兵）；实现后分别临时短路两个方向的检查复跑，各红在对应断言（正向「bind 坐驻场会话…得 <nil>」；反向「SitResident(push) 坐卡席位会话…得 <nil>」），恢复后绿。覆盖 bind/换 CLI 标签/coordinate/rebind 四条正向、SitResident 与 SetResidentPushSession 两条反向、请下后可坐。api `TestB444FacadeResidentSeatConflictTranslated`；cmd `TestB444CardBindRejectsResidentSession`（非 0，文案点名会话，席位仍空）。
+  - 裁决 3：keystone `TestB444ResidentBriefing` 加必含「绝不自己坐卡席位」「card bind」「card seat」「绝不亲手做卡的活」「只经 `handoff card coordinate <卡号>`」；首跑红（期望串少了 `<卡号>`，改断言串后绿——测试串笔误，非行为）。
+- 命令：`go build ./...` ok；`go vet ./internal/... ./cmd/...` ok；`gofmt -l` 触及目录空；`go test ./internal/agentd/... ./internal/ledger/... ./internal/collab/... ./internal/keystone/...` 全 ok（agentd 77.6s）；`unset CLAUDE_CODE_SESSION_ID HANDOFF_SESSION_CLI HANDOFF_SESSION_ID; go test ./cmd/...` ok（77.2s）。proto/web 未动。
+- **未验证**：PG 腿（无 `LEDGER_TEST_PG_DSN`）；真机复跑 R6。
+- 残余：agentd 进程自身若带 `HANDOFF_SESSION_*` 环境会经 `os.Environ()` 继承给驻场子进程（本次只停注入，未主动剥离继承值；在役 agentd 由服务管理器拉起，正常不带）。
+- 提交：`28388b40 fix(B444): 驻场回合不注入卡席位对，简报禁驻场者自坐卡席位（真机 R6，返工三 裁决 1/3）`；`83d7ec6b fix(B444): 账本执法同一 CLI 会话不能既是 push 驻场者又坐卡席位（真机 R6，返工三 裁决 2）`（本行随后 amend 收进后者，hash 会变）。

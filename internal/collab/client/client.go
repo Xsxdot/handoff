@@ -36,6 +36,10 @@ var ErrResidentOccupied = errors.New("collab: 会话已有驻场者")
 // ErrResidentNotSeated 表示要请下的身份不是该会话的现驻场者（含无人在座）。
 var ErrResidentNotSeated = errors.New("collab: 该身份不是会话驻场者")
 
+// ErrResidentSeatConflict 表示同一 CLI 会话不能既是 push 驻场者又坐卡席位（B444 P2 返工三 裁决 2，真机 R6）；
+// 实现侧把账本同名哨兵翻译成它，原文案（点名会话/卡）作上下文保留。
+var ErrResidentSeatConflict = errors.New("collab: 同一 CLI 会话不能既是驻场者又坐卡席位")
+
 // RoomMessageSnapshot 是账本按 room 与调用方 seq 水位汇总后的消息事实。
 // MessagesAfter 仅表示 seq > caller watermark 的行数，不代表授权或 member unread。
 type RoomMessageSnapshot struct {
