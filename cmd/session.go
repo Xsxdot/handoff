@@ -635,16 +635,29 @@ func validSessionMemberIdentity(identity string) bool {
 	return proto.ValidateMemberIdentity(identity)
 }
 
-var sessionCreateOwner string
+var (
+	sessionCreateOwner string
+	// B444：项目内建会话三 flag。任一给出即走 agentd HTTP 编排（建会话 + 拉卡 + 同步拉起驻场者首轮）；
+	// 全缺保留旧形态（本地账本直写，标题与 --owner 必填）。
+	sessionCreateProject string
+	sessionCreateCards   []string
+	sessionCreateSquad   string
+)
 
 var sessionCreateCmd = &cobra.Command{
-	Use:   "create <title>",
-	Short: "建一场会话（群）：--owner 指定群主（统一记法 user:<name>/agent:<name>）",
-	Args:  cobra.ExactArgs(1),
+	Use:   "create [title]",
+	Short: "建一场会话（群）：--project/--card/--squad 经 agentd 在项目内建会话并拉起驻场者（标题可空自动命名）；否则 --owner 必填、本地直写",
+	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		title := strings.TrimSpace(args[0])
+		title := ""
+		if len(args) == 1 {
+			title = strings.TrimSpace(args[0])
+		}
+		if cmd.Flags().Changed("project") || cmd.Flags().Changed("card") || cmd.Flags().Changed("squad") {
+			return runSessionCreateInProject(cmd, title)
+		}
 		if title == "" {
-			return fmt.Errorf("会话标题不能为空")
+			return fmt.Errorf("会话标题不能为空（项目内建会话可留空自动命名：handoff session create --project <项目> --squad <小队> [--card <卡号>]...）")
 		}
 		owner := strings.TrimSpace(sessionCreateOwner)
 		if !validSessionMemberIdentity(owner) {
@@ -663,6 +676,127 @@ var sessionCreateCmd = &cobra.Command{
 		}
 		slog.Default().Info("CLI 会话已创建", "session", session.ID, "title", title, "owner", owner, "actor", actor)
 		return json.NewEncoder(cmd.OutOrStdout()).Encode(session)
+	},
+}
+
+// runSessionCreateInProject 是 `session create --project ...` 的 HTTP 半边（B444）：组 proto.SessionCreateReq
+// 发给 agentd（群主缺省由服务端取控制台身份；--owner 给了就带上，服务端校验记法）；stdout 一行
+// SessionCreateResp JSON。驻场者首轮失败时服务端仍 200（会话与卡已建），stderr 额外提示重试命令。
+func runSessionCreateInProject(cmd *cobra.Command, title string) error {
+	project := strings.TrimSpace(sessionCreateProject)
+	if project == "" {
+		return fmt.Errorf("--card/--squad 须配 --project <项目>（会话属项目，项目建后不可改）")
+	}
+	cl, done, err := newTargetClient()
+	if err != nil {
+		return err
+	}
+	defer done()
+	req := proto.SessionCreateReq{
+		Title: title, Owner: strings.TrimSpace(sessionCreateOwner), Project: project,
+		Cards: sessionCreateCards, Squad: strings.TrimSpace(sessionCreateSquad),
+	}
+	resp, err := cl.SessionCreate(cmd.Context(), req)
+	if err != nil {
+		slog.Default().Warn("CLI 项目内建会话失败", "project", project, "cards", len(req.Cards), "squad", req.Squad, "cause", err)
+		return fmt.Errorf("项目内建会话: %w", err)
+	}
+	slog.Default().Info("CLI 项目内会话已创建", "session", resp.ID, "project", project, "title", resp.Title,
+		"rejected", len(resp.RejectedCards), "resident_ok", resp.Resident != nil && resp.Resident.Error == "")
+	if resp.Resident != nil && resp.Resident.Error != "" {
+		fmt.Fprintf(cmd.ErrOrStderr(), "驻场者未拉起：%s\n重试：handoff session resident launch %s --squad <小队>\n",
+			resp.Resident.Error, resp.ID)
+	}
+	return json.NewEncoder(cmd.OutOrStdout()).Encode(resp)
+}
+
+var (
+	sessionRenameAgent  string
+	sessionRenameExpect string
+)
+
+// sessionRenameCmd 改会话名（B444 S7）。两种身份出示：
+//   - --agent <名>：以 agent:<名> 改名（push 驻场者用；与 session send --agent 同一自报信任面），本地账本经
+//     collab.Service.RenameSession 唯一入口写；
+//   - 不带 --agent：经 agentd HTTP 以控制台身份（console_user，服务端注入）改名——与 Web 同一身份。
+//
+// 只有群主或现驻场者能改名；--expect-title 作 CAS 前值（标题已不是它 → 拒，名字不变）。
+var sessionRenameCmd = &cobra.Command{
+	Use:   "rename <session> <title>",
+	Short: "改会话名（群主或驻场者）：--agent 以驻场身份改；--expect-title 当前标题须等于它才改（CAS）",
+	Args:  cobra.MinimumNArgs(2),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		session := strings.TrimSpace(args[0])
+		title := strings.TrimSpace(strings.Join(args[1:], " "))
+		if title == "" {
+			return fmt.Errorf("新标题不能为空")
+		}
+		expect := sessionRenameExpect
+		if strings.TrimSpace(sessionRenameAgent) == "" {
+			cl, done, err := newTargetClient()
+			if err != nil {
+				return err
+			}
+			defer done()
+			renamed, err := cl.SessionRename(cmd.Context(), session, proto.SessionRenameReq{Title: title, ExpectTitle: expect})
+			if err != nil {
+				slog.Default().Warn("CLI 会话改名失败（控制台身份）", "session", session, "cause", err)
+				return fmt.Errorf("会话 %s 改名: %w", session, err)
+			}
+			slog.Default().Info("CLI 会话已改名（控制台身份）", "session", session, "title", renamed.Title)
+			return json.NewEncoder(cmd.OutOrStdout()).Encode(renamed)
+		}
+		actor, err := proto.MemberIdentity(proto.IdentityKindAgent, strings.TrimSpace(sessionRenameAgent))
+		if err != nil {
+			return fmt.Errorf("--agent 启动身份非法: %w", err)
+		}
+		svc, st, err := openRoomService()
+		if err != nil {
+			return err
+		}
+		defer st.Close()
+		renamed, err := svc.RenameSession(session, title, expect, actor)
+		if err != nil {
+			slog.Default().Warn("CLI 会话改名失败", "session", session, "actor", actor, "cause", err)
+			if errors.Is(err, collab.ErrTitleConflict) {
+				return fmt.Errorf("会话 %s 改名被拒：标题已不是 %q（多半是人已手动命名，保留即可）: %w", session, expect, err)
+			}
+			return fmt.Errorf("会话 %s 改名: %w", session, err)
+		}
+		slog.Default().Info("CLI 会话已改名", "session", session, "title", renamed.Title, "actor", actor)
+		return json.NewEncoder(cmd.OutOrStdout()).Encode(renamed)
+	},
+}
+
+var sessionResidentCmd = &cobra.Command{
+	Use:   "resident",
+	Short: "会话驻场者（handoff 拉起的 push 驻场者）：launch",
+}
+
+var sessionResidentLaunchSquad string
+
+// sessionResidentLaunchCmd 为会话叫 push 驻场者（B444 plan Q4 甲）：POST /api/sessions/{id}/resident/launch，
+// 与建会话共用服务端编排。首轮失败时会话里已有系统指针行；本命令非 0 退出并透传服务端原因。
+var sessionResidentLaunchCmd = &cobra.Command{
+	Use:   "launch <session>",
+	Short: "为会话拉起 push 驻场者（--squad 协调小队；缺省取唯一协调小队）",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		session := strings.TrimSpace(args[0])
+		cl, done, err := newTargetClient()
+		if err != nil {
+			return err
+		}
+		defer done()
+		squad := strings.TrimSpace(sessionResidentLaunchSquad)
+		outcome, err := cl.SessionResidentLaunch(cmd.Context(), session, proto.SessionResidentLaunchReq{Squad: squad})
+		if err != nil {
+			slog.Default().Warn("CLI 叫驻场者失败", "session", session, "squad", squad, "cause", err)
+			return fmt.Errorf("为 %s 叫驻场者: %w", session, err)
+		}
+		slog.Default().Info("CLI 驻场者已拉起", "session", session, "identity", outcome.Identity,
+			"carrier", outcome.Carrier, "carrier_machine", outcome.CarrierMachine)
+		return json.NewEncoder(cmd.OutOrStdout()).Encode(outcome)
 	},
 }
 
@@ -963,7 +1097,15 @@ func init() {
 	sessionWaitCmd.Flags().BoolVar(&sessionWaitFollow, "follow", false,
 		"常驻订阅：每个命中各输出一行后继续（SIGINT/SIGTERM 退出 0）")
 	sessionCmd.AddCommand(sessionWaitCmd)
-	sessionCreateCmd.Flags().StringVar(&sessionCreateOwner, "owner", "", "群主身份（统一记法 user:<name>/agent:<name>，必填）")
+	sessionCreateCmd.Flags().StringVar(&sessionCreateOwner, "owner", "", "群主身份（统一记法 user:<name>/agent:<name>；本地直写形态必填，项目内形态缺省=agentd 控制台身份）")
+	sessionCreateCmd.Flags().StringVar(&sessionCreateProject, "project", "", "会话所属项目（给出即经 agentd 项目内建会话）")
+	sessionCreateCmd.Flags().StringArrayVar(&sessionCreateCards, "card", nil, "拉进会话的卡号（可重复；只收本项目、未终态、未进会话的卡）")
+	sessionCreateCmd.Flags().StringVar(&sessionCreateSquad, "squad", "", "驻场小队（role=coordinator；缺省取唯一协调小队）")
+	sessionRenameCmd.Flags().StringVar(&sessionRenameAgent, "agent", "", "以驻场身份 agent:<名> 改名（本地账本）；缺省经 agentd 以控制台身份改名")
+	sessionRenameCmd.Flags().StringVar(&sessionRenameExpect, "expect-title", "", "CAS：当前标题须等于它才改（如 "+proto.SessionUntitledTitle+"）")
+	sessionResidentLaunchCmd.Flags().StringVar(&sessionResidentLaunchSquad, "squad", "", "驻场小队（role=coordinator；缺省取唯一协调小队）")
+	sessionResidentCmd.AddCommand(sessionResidentLaunchCmd)
+	sessionCmd.AddCommand(sessionRenameCmd, sessionResidentCmd)
 	sessionListCmd.Flags().StringVar(&sessionListMember, "member", "", "投影该成员身份的未读数（缺省不投影）")
 	sessionListCmd.Flags().BoolVar(&sessionListJSON, "json", false, "输出 SessionSummary JSON 流（每会话一行）")
 	sessionDetailCmd.Flags().BoolVar(&sessionDetailJSON, "json", false, "输出 SessionDetail JSON（一行）")
