@@ -693,6 +693,29 @@
 
         .workspace { display: none; }
       }
+      /* B444：项目行动作区（镜像 web/src/app/workbench/desktop-workspace.css 的 .desktop-project-actions）：
+         终端（＋ 与机器选择分体）→ 浏览文件 → 新建会话，常驻显示；compact/移动端不画（入口在项目「操作」面板）。 */
+      .project-row { position: relative; }
+      .project-row .project-head { padding-right: 96px; }
+      .project-actions {
+        position: absolute; top: 3px; right: 0;
+        display: flex; align-items: center; gap: 4px;
+        background: var(--background);
+      }
+      .project-actions button, .project-actions a {
+        display: flex; width: 23px; height: 24px; align-items: center; justify-content: center;
+        padding: 0; border: 0; border-radius: 4px; background: transparent; cursor: pointer;
+      }
+      .project-actions button:hover, .project-actions a:hover { background: var(--selected); }
+      .project-actions .icon, .project-actions .icon img { width: 14px; height: 14px; }
+      .terminal-control { display: flex; border: 1px solid var(--border); border-radius: 5px; overflow: hidden; }
+      .terminal-control button { height: 22px; border-radius: 0; }
+      .terminal-control button:last-child { width: 16px; border-left: 1px solid var(--border); }
+      .terminal-control .caret, .terminal-control .caret img { width: 10px; height: 10px; }
+      .new-terminal-icon { position: relative; display: flex; }
+      .new-terminal-icon .icon, .new-terminal-icon .icon img { width: 15px; height: 15px; }
+      .plus-badge { position: absolute; right: -3px; top: -5px; font-size: 10px; font-weight: 700; line-height: 1; background: var(--background); color: #525252; }
+      @media (max-width: 720px) { .project-actions { display: none; } .project-row .project-head { padding-right: 0; } }
     </style>
   </head>
   <body>
@@ -709,14 +732,25 @@
 
           <div id="project-list">
             <section class="project-group" data-project-group data-search="handoff 你是 charter 流程的节点 bash main b264 标签组与分屏 tabs.ts 本机 linux-01">
-              <button class="project-head" type="button" aria-expanded="true" data-toggle-project>
-                <span class="project-node" aria-hidden="true"></span>
-                <span class="project-head-main">
-                  <span class="icon" data-icon="folder" aria-hidden="true"></span>
-                  <span>handoff</span>
-                </span>
-                <span class="project-meta"><span class="icon project-task-icon" data-icon="dispatch-task" aria-hidden="true"></span><span class="project-number">3</span><span class="icon" data-icon="chevron-down" data-toggle-chevron aria-hidden="true"></span></span>
-              </button>
+              <div class="project-row">
+                <button class="project-head" type="button" aria-expanded="true" data-toggle-project>
+                  <span class="project-node" aria-hidden="true"></span>
+                  <span class="project-head-main">
+                    <span class="icon" data-icon="folder" aria-hidden="true"></span>
+                    <span>handoff</span>
+                  </span>
+                  <span class="project-meta"><span class="icon project-task-icon" data-icon="dispatch-task" aria-hidden="true"></span><span class="project-number">3</span><span class="icon" data-icon="chevron-down" data-toggle-chevron aria-hidden="true"></span></span>
+                </button>
+                <div class="project-actions">
+                  <div class="terminal-control" role="group" aria-label="handoff 新建终端与机器选择">
+                    <button type="button" aria-label="在 handoff 新建终端" title="新建终端 · 本机 / main；拖入工作区分屏"><span class="new-terminal-icon"><span class="icon" data-icon="square-terminal" aria-hidden="true"></span><span class="plus-badge" aria-hidden="true">+</span></span></button>
+                    <button type="button" aria-label="选择 handoff 终端位置" title="选择终端机器 · 当前 本机" aria-haspopup="menu"><span class="icon caret" data-icon="chevron-down" aria-hidden="true"></span></button>
+                  </div>
+                  <button type="button" aria-label="浏览 handoff 文件" title="浏览文件 · 本机 / main"><span class="icon" data-icon="folder-open" aria-hidden="true"></span></button>
+                  <!-- B444：项目内新建会话入口，紧跟终端、文件夹之后；对话框见 new-session.html -->
+                  <a class="new-session-btn" href="new-session.html?project=handoff" aria-label="在 handoff 新建会话" title="在 handoff 新建会话"><span class="icon" data-icon="message-square-plus" aria-hidden="true"></span></a>
+                </div>
+              </div>
               <div class="project-content">
                 <div class="tasks-stack">
                   <button class="task-row is-selected is-open" type="button" aria-current="true" data-open="true" data-search="你是 charter 流程的节点 本机">
@@ -763,14 +797,25 @@
             </section>
 
             <section class="project-group" data-project-group data-search="benchmarking linux-01 本机">
-              <button class="project-head" type="button" aria-expanded="true" data-toggle-project>
-                <span class="project-node" aria-hidden="true"></span>
-                <span class="project-head-main">
-                  <span class="icon" data-icon="folder" aria-hidden="true"></span>
-                  <span>benchmarking</span>
-                </span>
-                <span class="project-meta"><span class="icon project-task-icon" data-icon="dispatch-task" aria-hidden="true"></span><span class="project-number">0</span><span class="icon" data-icon="chevron-down" data-toggle-chevron aria-hidden="true"></span></span>
-              </button>
+              <div class="project-row">
+                <button class="project-head" type="button" aria-expanded="true" data-toggle-project>
+                  <span class="project-node" aria-hidden="true"></span>
+                  <span class="project-head-main">
+                    <span class="icon" data-icon="folder" aria-hidden="true"></span>
+                    <span>benchmarking</span>
+                  </span>
+                  <span class="project-meta"><span class="icon project-task-icon" data-icon="dispatch-task" aria-hidden="true"></span><span class="project-number">0</span><span class="icon" data-icon="chevron-down" data-toggle-chevron aria-hidden="true"></span></span>
+                </button>
+                <div class="project-actions">
+                  <div class="terminal-control" role="group" aria-label="benchmarking 新建终端与机器选择">
+                    <button type="button" aria-label="在 benchmarking 新建终端" title="新建终端 · 本机 / main；拖入工作区分屏"><span class="new-terminal-icon"><span class="icon" data-icon="square-terminal" aria-hidden="true"></span><span class="plus-badge" aria-hidden="true">+</span></span></button>
+                    <button type="button" aria-label="选择 benchmarking 终端位置" title="选择终端机器 · 当前 本机" aria-haspopup="menu"><span class="icon caret" data-icon="chevron-down" aria-hidden="true"></span></button>
+                  </div>
+                  <button type="button" aria-label="浏览 benchmarking 文件" title="浏览文件 · 本机 / main"><span class="icon" data-icon="folder-open" aria-hidden="true"></span></button>
+                  <!-- B444：项目内新建会话入口，紧跟终端、文件夹之后；对话框见 new-session.html -->
+                  <a class="new-session-btn" href="new-session.html?project=benchmarking" aria-label="在 benchmarking 新建会话" title="在 benchmarking 新建会话"><span class="icon" data-icon="message-square-plus" aria-hidden="true"></span></a>
+                </div>
+              </div>
               <div class="project-content">
                 <div class="tasks-stack">
                   <p class="task-empty">暂无进行中的任务</p>
@@ -802,14 +847,25 @@
             </section>
 
             <section class="project-group" data-project-group data-search="charter bash master 5 C1.9 图下钻 本机 linux-01">
-              <button class="project-head" type="button" aria-expanded="true" data-toggle-project>
-                <span class="project-node" aria-hidden="true"></span>
-                <span class="project-head-main">
-                  <span class="icon" data-icon="folder" aria-hidden="true"></span>
-                  <span>charter</span>
-                </span>
-                <span class="project-meta"><span class="icon project-task-icon" data-icon="dispatch-task" aria-hidden="true"></span><span class="project-number">2</span><span class="icon" data-icon="chevron-down" data-toggle-chevron aria-hidden="true"></span></span>
-              </button>
+              <div class="project-row">
+                <button class="project-head" type="button" aria-expanded="true" data-toggle-project>
+                  <span class="project-node" aria-hidden="true"></span>
+                  <span class="project-head-main">
+                    <span class="icon" data-icon="folder" aria-hidden="true"></span>
+                    <span>charter</span>
+                  </span>
+                  <span class="project-meta"><span class="icon project-task-icon" data-icon="dispatch-task" aria-hidden="true"></span><span class="project-number">2</span><span class="icon" data-icon="chevron-down" data-toggle-chevron aria-hidden="true"></span></span>
+                </button>
+                <div class="project-actions">
+                  <div class="terminal-control" role="group" aria-label="charter 新建终端与机器选择">
+                    <button type="button" aria-label="在 charter 新建终端" title="新建终端 · 本机 / main；拖入工作区分屏"><span class="new-terminal-icon"><span class="icon" data-icon="square-terminal" aria-hidden="true"></span><span class="plus-badge" aria-hidden="true">+</span></span></button>
+                    <button type="button" aria-label="选择 charter 终端位置" title="选择终端机器 · 当前 本机" aria-haspopup="menu"><span class="icon caret" data-icon="chevron-down" aria-hidden="true"></span></button>
+                  </div>
+                  <button type="button" aria-label="浏览 charter 文件" title="浏览文件 · 本机 / main"><span class="icon" data-icon="folder-open" aria-hidden="true"></span></button>
+                  <!-- B444：项目内新建会话入口，紧跟终端、文件夹之后；对话框见 new-session.html -->
+                  <a class="new-session-btn" href="new-session.html?project=charter" aria-label="在 charter 新建会话" title="在 charter 新建会话"><span class="icon" data-icon="message-square-plus" aria-hidden="true"></span></a>
+                </div>
+              </div>
               <div class="project-content">
                 <div class="tasks-stack">
                   <button class="task-row" type="button" data-search="bash master 5 本机">
@@ -917,6 +973,9 @@
         search: "search.svg",
         server: "server.svg",
         terminal: "terminal.svg",
+        "square-terminal": "square-terminal.svg",
+        "folder-open": "folder-open.svg",
+        "message-square-plus": "message-square-plus.svg",
       };
 
       // 原型只负责替换静态资源；这样浏览器离线打开时也不会依赖 React 运行时。
@@ -956,7 +1015,7 @@
 
       document.querySelectorAll("[data-toggle-project]").forEach((toggle) => {
         toggle.addEventListener("click", () => {
-          const content = toggle.nextElementSibling;
+          const content = toggle.closest("[data-project-group]").querySelector(".project-content");
           const expanded = toggle.getAttribute("aria-expanded") === "true";
           toggle.setAttribute("aria-expanded", String(!expanded));
           content.hidden = expanded;
