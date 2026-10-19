@@ -142,6 +142,9 @@ const pointerActor = "system:pointer"
 type Service struct {
 	lc     client.LedgerClient
 	cursor *cursor.Store
+	// projectRoomHuman 返回人本人的成员身份（`user:<名字>`，空串 = 未配置）；只在装配期写、
+	// 运行期只读，不加锁。nil 与返回空串同义：项目房间书写者集不并入人。
+	projectRoomHuman func() string
 }
 
 // New 组装点调用；lc 的具体实现是 internal/ledger/api.Facade。未读游标默认
@@ -155,6 +158,11 @@ func New(lc client.LedgerClient) *Service {
 // DataDir，用 cursor.New(filepath.Join(cfg.DataDir, "room-cursors.json")) 接线；
 // 不调用则保持 New 的纯内存默认——游标非权威，重启丢失无害、打开房间即自愈。
 func (s *Service) SetCursorStore(st *cursor.Store) { s.cursor = st }
+
+// SetProjectRoomHuman 注入人本人身份的取值函数（R-K1 (a‴)，B435 补验后用户裁决）：项目房间的书写者集
+// 另并入它返回的 `user:<名字>`。组装点（agentd）传读活配置 console_user 的闭包，改配置不必重启；
+// CLI 不注入（CLI 人形发言身份是 cli:，不经此路）。fn 返回空串时不扩。
+func (s *Service) SetProjectRoomHuman(fn func() string) { s.projectRoomHuman = fn }
 
 // normalizeMentions 归一化消息的显式寻址：剥去每个 mention 的可选前导 '@'
 // 与首尾空白，空项丢弃；无有效项返回 nil（保持 wire omitempty 语义）。
@@ -220,14 +228,34 @@ func (s *Service) Send(roomID string, msg proto.RoomMessage, actor string) (int6
 }
 
 // sessionWriters 组装会话房间的书写者集：显式成员（人与主 agent 的外部会话
-// 身份，P4 统一记法）∪ 会话内各卡的当前席位（席位权威在 cards.driver_session，
-// 换绑后随卡走——breakdown 缺陷族 8 的「换绑剥权」由集合重建天然获得）。空座
-// 卡不产生书写者。账本读失败向上传播（不伪装成 ErrNotWriter——一次读错不该
-// 被说成「你不是成员」，缺陷族 2）。
+// 身份，P4 统一记法）∪ 房间驻场者（B435 R Q4 甲，契约 §5 B358 条 14 修订：驻场者
+// 收到要能回复；stand 后集合重建即剥权）∪ 会话内各卡的当前席位（席位权威在
+// cards.driver_session，换绑后随卡走——breakdown 缺陷族 8 的「换绑剥权」由集合重建
+// 天然获得）。空座卡不产生书写者。项目房间（SessionProject 非空）另并入同项目各卡的
+// 当前席位（B435 拆解 §2.3 R-K1 追加裁决 (a′)）：一卡同时只属一个会话，协调者的卡挂在
+// 自己的工作房间、永远不在项目房间里，不扩集就无法兑现 spec D8「协调者自己 session send
+// 项目房间」；非项目房间不扩，他项目卡席位仍被拒。反向一半（R-K1 (a″)）：含项目 p 的卡的
+// 会话另并入 p 的项目房间驻场者——组织者是项目房间驻场者、不是卡会话成员，不扩就无法兑现
+// spec D9「组织类问题答回卡所在会话」；无项目房间或房间无驻场者不扩，寻址规则不变（组织者
+// 是非人类作者，须显式 @卡号 才唤醒协调者）。账本读失败向上传播（不伪装成
+// ErrNotWriter——一次读错不该被说成「你不是成员」，缺陷族 2）。
 func (s *Service) sessionWriters(session proto.Session) ([]string, error) {
-	writers := make([]string, 0, len(session.Members)+len(session.Cards))
+	writers := make([]string, 0, len(session.Members)+len(session.Cards)+1)
 	writers = append(writers, session.Members...)
-	if len(session.Cards) == 0 {
+	resident, seated, err := s.lc.SessionResident(session.ID)
+	if err != nil {
+		log().Warn("会话书写者集组装失败：读驻场者", "session", session.ID, "cause", err)
+		return nil, err
+	}
+	if seated {
+		writers = append(writers, resident.Identity)
+	}
+	project, err := s.lc.SessionProject(session.ID)
+	if err != nil {
+		log().Warn("会话书写者集组装失败：读项目绑定", "session", session.ID, "cause", err)
+		return nil, err
+	}
+	if len(session.Cards) == 0 && project == "" {
 		return writers, nil
 	}
 	cards, err := s.lc.ListAllCards("")
@@ -242,6 +270,54 @@ func (s *Service) sessionWriters(session proto.Session) ([]string, error) {
 	for _, cardID := range session.Cards {
 		if c, ok := byID[cardID]; ok && c.DriverSession != "" {
 			writers = append(writers, c.DriverSession)
+		}
+	}
+	if project != "" {
+		projectSeats := 0
+		for _, c := range cards {
+			if c.Project == project && c.DriverSession != "" {
+				writers = append(writers, c.DriverSession)
+				projectSeats++
+			}
+		}
+		log().Debug("项目房间书写者集已并入同项目卡席位", "session", session.ID,
+			"project", project, "seats", projectSeats)
+		// R-K1 (a‴)：人本人（console_user）可在项目房间发言——人无 @ 发言按 D4 落驻场者叫醒组织者，
+		// 也是授权规则「只认作者为 user:<本人> 的房间发言」的前提。只并入注入的那一个身份。
+		if s.projectRoomHuman != nil {
+			if human := s.projectRoomHuman(); human != "" {
+				writers = append(writers, human)
+				log().Debug("项目房间书写者集已并入人本人", "session", session.ID,
+					"project", project, "human", human)
+			}
+		}
+	}
+	// R-K1 (a″)：会话内卡所属各项目的项目房间驻场者（组织者）并入；项目按首见去重，一项目只读一次。
+	seenProject := make(map[string]bool, len(session.Cards))
+	for _, cardID := range session.Cards {
+		c, ok := byID[cardID]
+		if !ok || c.Project == "" || seenProject[c.Project] {
+			continue
+		}
+		seenProject[c.Project] = true
+		roomID, has, err := s.lc.ProjectRoom(c.Project)
+		if err != nil {
+			log().Warn("会话书写者集组装失败：读项目房间", "session", session.ID, "project", c.Project, "cause", err)
+			return nil, err
+		}
+		if !has {
+			continue
+		}
+		organizer, seated, err := s.lc.SessionResident(roomID)
+		if err != nil {
+			log().Warn("会话书写者集组装失败：读项目房间驻场者", "session", session.ID,
+				"project", c.Project, "project_room", roomID, "cause", err)
+			return nil, err
+		}
+		if seated {
+			writers = append(writers, organizer.Identity)
+			log().Debug("卡会话书写者集已并入项目房间驻场者", "session", session.ID,
+				"project", c.Project, "resident", organizer.Identity)
 		}
 	}
 	return writers, nil

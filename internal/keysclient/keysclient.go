@@ -40,6 +40,10 @@ type SessionRef struct {
 	HomeDir   string `json:"home_dir,omitempty"`
 	Workdir   string `json:"workdir,omitempty"`
 	Model     string `json:"model,omitempty"`
+	// Env 是本回合追加给子进程的环境 KEY=VALUE（与 SessionSpec.Env 对称；B435.2 R plan Q2 甲）。
+	// 由 Runner 实现方按回合填写（agentd coordinatorRunner.Resume 填 HANDOFF 席位对），
+	// 不是会话持久属性，故 json:"-" 不落盘、不进 wire；值不得进日志。
+	Env []string `json:"-"`
 }
 
 // TurnResult 是一个唤醒回合的产出。

@@ -2,9 +2,12 @@
 // 五块内容齐收：成员（群主标识）、会话卡（原 chips 数据改列表行）、协调者派发的
 // 任务节点、会话 timeline、归档入口。detail 载荷原样透传（可对质，不二次解释）；
 // 未知 kind 原样显示不白屏（sessionModel 兜底）。
+// B435 Q6：成员行带 kind 标签（resident 在项目房间标组织者、否则驻场者）；席位行与
+// 会话卡行附 seat_mode（同一身份的驻场者行与席位行并列，服务端本就不去重——S9）。
 import type { SessionDetail as SessionDetailDTO } from '../../api/rooms'
+import { seatModeView } from '../../api/ledger'
 import { formatRelative } from '../lib/format'
-import { memberStatusText, timelineKindLabel } from './sessionModel'
+import { memberRoleLabel, memberStatusText, timelineKindLabel } from './sessionModel'
 
 export function SessionDetail({ detail, onOpenCard, onArchive, archiveBusy, archiveError, compact = false }: {
   detail: SessionDetailDTO
@@ -21,6 +24,11 @@ export function SessionDetail({ detail, onOpenCard, onArchive, archiveBusy, arch
   // describe recorded dispatches, not proof of currently running work.
   const executionRecords = nodes
   const structureEvents = timeline
+  // renderSeatMode 坐着的席位附模式读数（push/pull 原值 + 悬停说明；缺键「模式未知」）。
+  const renderSeatMode = (raw: unknown, testId: string, layout: string) => {
+    const mode = seatModeView(raw, 'seat_mode')
+    return <span data-testid={testId} title={mode.hint} className={`${layout} font-mono text-xs text-muted-foreground`}>· {mode.text}</span>
+  }
   const renderTimelineRow = (row: typeof timeline[number], index: number, prefix = 'timeline') => (
     <div key={row.seq} data-testid={`${prefix}-row-${index}`} className="flex items-baseline gap-2 py-1 text-xs">
       <span className="shrink-0 font-mono text-[10px] text-muted-foreground">{formatRelative(row.created_at)}</span>
@@ -44,18 +52,24 @@ export function SessionDetail({ detail, onOpenCard, onArchive, archiveBusy, arch
     <div className="min-h-0 flex-1 overflow-y-auto p-3" aria-label="会话详情">
       <section aria-label="成员" className="mb-4 rounded-xl border bg-white/65 p-3 shadow-sm">
         <h3 className="mb-2 text-xs font-semibold text-muted-foreground">成员</h3>
-        {members.length === 0 ? <p className="text-xs text-muted-foreground">（暂无成员）</p> : members.map((member, index) => (
-          <div key={`${member.identity}:${member.card_id ?? ''}:${index}`} className="flex items-center gap-2 border-b py-2 text-sm last:border-b-0">
+        {members.length === 0 ? <p className="text-xs text-muted-foreground">（暂无成员）</p> : members.map((member, index) => {
+          // 席位行的模式取自同卡的 SessionCard.seat_mode（成员投影本身不带 mode）。
+          const seatCard = member.kind === 'seat' && member.identity !== '' ? cards.find((card) => card.card_id === member.card_id) : undefined
+          return (
+          <div key={`${member.identity}:${member.card_id ?? ''}:${index}`} data-testid={`member-row-${index}`} className="flex items-center gap-2 border-b py-2 text-sm last:border-b-0">
             <span className="min-w-0 flex-1 truncate">
               {member.identity !== '' ? member.identity : `（${member.card_title ?? member.card_id ?? ''} 无人推）`}
               {member.kind === 'seat' && member.identity !== '' && <span className="ml-1 text-xs text-muted-foreground">· {member.card_title ?? member.card_id}</span>}
+              {seatCard?.seat && renderSeatMode(seatCard.seat_mode, `member-seat-mode-${index}`, 'ml-1')}
             </span>
+            <span data-testid={`member-kind-${index}`} className="shrink-0 rounded-full border px-1.5 text-[10px] text-muted-foreground">{memberRoleLabel(member, summary)}</span>
             {member.identity !== '' && member.identity === summary.owner && (
               <span data-testid={`member-owner-${index}`} className="shrink-0 rounded-full border bg-slate-100 px-1.5 text-[10px] font-semibold text-slate-700">群主</span>
             )}
             <span data-testid={`member-status-${index}`} className="shrink-0 text-xs text-muted-foreground">{memberStatusText(member)}</span>
           </div>
-        ))}
+          )
+        })}
       </section>
       <section aria-label="会话卡" className="mb-4 rounded-xl border bg-white/65 p-3 shadow-sm">
         <h3 className="mb-2 text-xs font-semibold text-muted-foreground">会话卡</h3>
@@ -66,6 +80,7 @@ export function SessionDetail({ detail, onOpenCard, onArchive, archiveBusy, arch
             <span className="min-w-0 flex-1 truncate">{card.title ?? ''}</span>
             {card.status && <span className="shrink-0 text-xs text-muted-foreground">{card.status}</span>}
             <span className={`shrink-0 text-xs ${card.seat ? 'text-muted-foreground' : 'text-amber-700'}`}>{card.seat ?? '空座 · 还没配人'}</span>
+            {card.seat && renderSeatMode(card.seat_mode, 'session-card-seat-mode', 'shrink-0')}
           </button>
         ))}
       </section>

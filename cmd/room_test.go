@@ -307,6 +307,69 @@ func TestRoomReadStdoutSeqPrefix(t *testing.T) {
 	}
 }
 
+// TestRoomReadAfterIsExclusiveLowerBound 锁 `room read --after N` 的承重语义：
+// 只返回 seq > N 的消息、升序、不截掉 N 之后的任何一条（B435 真机 O2-U4/U6 撞出：
+// --after 曾被当成 History 的排他上界，--after 6 返回空、--after 9 返回 #6/#8）。
+// 分页用例把 roomReadPageSize 压到 2，逼 CLI 跨页向前翻、在越过 N 处停下。
+func TestRoomReadAfterIsExclusiveLowerBound(t *testing.T) {
+	for _, page := range []int{0, 2} {
+		t.Run(fmt.Sprintf("page=%d", page), func(t *testing.T) {
+			if page > 0 {
+				old := roomReadPageSize
+				roomReadPageSize = page
+				t.Cleanup(func() { roomReadPageSize = old })
+			}
+			dir := t.TempDir()
+			_, _, _, sessionID, _ := mustSendFixture(t, dir, "after 场")
+			var seqs []int64
+			for i := 1; i <= 5; i++ {
+				out, _, err := runLedgerCLI(t, dir, "session", "send", sessionID, fmt.Sprintf("第%d条", i))
+				if err != nil {
+					t.Fatalf("session send %d: %v", i, err)
+				}
+				var resp struct {
+					Seq int64 `json:"seq"`
+				}
+				if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &resp); err != nil {
+					t.Fatalf("解析 send 输出: %v", err)
+				}
+				seqs = append(seqs, resp.Seq)
+			}
+			readSeqs := func(after int64) []string {
+				t.Helper()
+				out, _, err := runLedgerCLI(t, dir, "room", "read", sessionID, "--after", fmt.Sprint(after))
+				if err != nil {
+					t.Fatalf("room read --after %d: %v", after, err)
+				}
+				var got []string
+				for _, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
+					if line == "" {
+						continue
+					}
+					got = append(got, strings.SplitN(line, "\t", 2)[0])
+				}
+				return got
+			}
+			want := func(from int) []string {
+				var w []string
+				for _, s := range seqs[from:] {
+					w = append(w, "#"+fmt.Sprint(s))
+				}
+				return w
+			}
+			for _, tc := range []struct {
+				after int64
+				from  int
+			}{{0, 0}, {seqs[0], 1}, {seqs[2], 3}, {seqs[4], 5}} {
+				got := readSeqs(tc.after)
+				if fmt.Sprint(got) != fmt.Sprint(want(tc.from)) {
+					t.Fatalf("--after %d：want %v，got %v", tc.after, want(tc.from), got)
+				}
+			}
+		})
+	}
+}
+
 // TestRoomListSortedByActivity（B358.5 红窗改写）：活动降序断言迁 session list
 // （旧 room list 不含会话行、且发言面只在会话——0.2 表 #20，旧列表无法经发言
 // 复现排序场）。cmd 层呈现排序（b358.5-plan §2.1）：后发言的会话排前。

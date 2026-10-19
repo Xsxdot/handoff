@@ -2,7 +2,7 @@
 // @分段、未读聚合。边界：不发请求、不碰 React；两张词表是「看板不说谎」
 // （proto 四值词表）与「未知值不白屏」（透传兜底）的前端半边，词表漂移由
 // sessionModel.test 与孪生金样本双侧拦截。
-import type { SessionMember, SessionSummary } from '../../api/rooms'
+import type { SessionMember, SessionMemberKind, SessionSummary } from '../../api/rooms'
 import { formatRelative, isUnrecordedTime } from '../lib/format'
 
 // 恰四值（proto.SessionMember* 词表）；listening 生产零载体（B358.2 澄清③），
@@ -72,14 +72,28 @@ export function segmentBody(body: string, mentions?: string[]): BodySegment[] {
     .map((token) => ({ text: token, mention: token.startsWith('@') && set.has(token.slice(1)) }))
 }
 
-// 恰三值（proto.SessionMemberKind 词表）：详情成员行与 @ 候选面板共用的 kind 标签。
+// 与 proto.SessionMember* 种类词表逐值一致（B435 增 resident）：详情成员行与 @ 候选面板共用的 kind 标签。
+// satisfies 让 SessionMemberKind 新增取值而这里未登记时编译失败。
 export const MEMBER_KIND_LABEL: Readonly<Record<string, string>> = {
-  human: '成员', agent: '代理', seat: '席位',
-}
+  human: '成员', agent: '代理', seat: '席位', resident: '驻场者',
+} satisfies Record<SessionMemberKind, string>
+
+// RESIDENT_ORGANIZER_LABEL 项目房间里的驻场者称「组织者」（spec 术语，W plan Q6）。
+export const RESIDENT_ORGANIZER_LABEL = '组织者'
 
 // memberKindLabel 成员 kind 渲染：词表内出中文标签，词表外原样透传。
 export function memberKindLabel(kind: string): string {
   return MEMBER_KIND_LABEL[kind] ?? kind
+}
+
+// memberRoleLabel 成员行/候选的角色标签：resident 在项目房间（summary.project 非空）标
+// 「组织者」，否则同 memberKindLabel。只看 kind 与所在会话的 project，席位行不受影响。
+export function memberRoleLabel(
+  member: Pick<SessionMember, 'kind'>,
+  summary: Pick<SessionSummary, 'project'> | null | undefined,
+): string {
+  if (member.kind === 'resident' && summary?.project) return RESIDENT_ORGANIZER_LABEL
+  return memberKindLabel(member.kind)
 }
 
 // MENTION_TOKEN_RE 草稿末尾的进行中 mention token（@ 开头到空白前）。
@@ -112,15 +126,35 @@ export function applyMention(draft: string, identity: string): string {
   return draft.replace(MENTION_TOKEN_RE, `@${identity} `)
 }
 
+// PROJECT_ROOM_BADGE 会话列表行上项目房间的徽章（W plan Q7 裁定稿）。
+export const PROJECT_ROOM_BADGE = '项目房间'
+
+// SessionProjects 会话的项目归属读数：names 去重保序（项目房间标记在前，卡项目随后）；
+// hasUnknownCard = 有卡在 projectOfCard 里查不到项目（归属不可证实，调用方不得编造项目）。
+export interface SessionProjects { names: string[]; hasUnknownCard: boolean }
+
+// sessionProjects 会话 → 所属项目名集合（B435 Q7，C-510）= summary.project ∪ 卡项目。
+// 这是「会话属于哪个项目」的唯一规则：桌面项目树（Shell）、移动工作台（MobileWorkspace）
+// 与侧栏筛选（filterSessionsByProject）共用；项目房间零卡也归属其项目。
+export function sessionProjects(
+  session: Pick<SessionSummary, 'project' | 'cards'>,
+  projectOfCard: (cardId: string) => string,
+): SessionProjects {
+  const cardProjects = (session.cards ?? []).map((card) => projectOfCard(card.card_id))
+  const names = [...new Set([session.project ?? '', ...cardProjects].filter(Boolean))]
+  return { names, hasUnknownCard: cardProjects.some((name) => !name) }
+}
+
 // filterSessionsByProject 按项目筛选会话列表（B358.8 #6）：project='' 为「全部」
-// 缺省全显；选中项目时会话任一锚定卡的 project 命中才显示；无卡会话只归「全部」。
+// 缺省全显；选中项目时会话所属项目集合（sessionProjects：项目房间标记 ∪ 锚定卡项目）
+// 命中才显示；无卡且非项目房间的会话只归「全部」。
 export function filterSessionsByProject(
   sessions: SessionSummary[],
   projectOfCard: (cardId: string) => string,
   project: string,
 ): SessionSummary[] {
   if (project === '') return sessions
-  return sessions.filter((session) => (session.cards ?? []).some((card) => projectOfCard(card.card_id) === project))
+  return sessions.filter((session) => sessionProjects(session, projectOfCard).names.includes(project))
 }
 
 // totalUnread 会话 tab 徽章的聚合读数（Σ unread）。

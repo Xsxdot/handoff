@@ -117,6 +117,7 @@ func installFakeCLI(t *testing.T) {
 if [ -n "$FAKECLI_ARGV_FILE" ]; then
   for a in "$@"; do printf '%s\n' "$a" >>"$FAKECLI_ARGV_FILE"; done
   printf 'env:HOME=%s\n' "$HOME" >>"$FAKECLI_ARGV_FILE"
+  printf 'env:FAKECLI_PROBE=%s\n' "${FAKECLI_PROBE-<unset>}" >>"$FAKECLI_ARGV_FILE"
 fi
 SID=""; prev=""
 for a in "$@"; do
@@ -175,5 +176,39 @@ func waitSessionTurnStarted(t *testing.T, argvFile string, ids ...string) {
 			t.Fatalf("等待回合在途超时（10s）：%s 里未出现全部 %v", argvFile, ids)
 		}
 		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// TestCoordinatorResumeForwardsEnv 锁 B435.2 R plan Q2 甲：Resume 把 ref.Env 原样透传进
+// TurnRequest.Env（原硬编码 Env: nil 吞掉 agentd 注入的席位对，F-RM1）。观察点是真 hostapi
+// 拉起的假 CLI 子进程读到的环境；对照 Env 为空时探针键缺省。
+func TestCoordinatorResumeForwardsEnv(t *testing.T) {
+	installFakeCLI(t)
+	argv := os.Getenv("FAKECLI_ARGV_FILE")
+	c := NewCoordinator(hostapi.New(), slog.Default())
+	if _, err := c.Resume(context.Background(), executor.CoordSessionRef{
+		CLI: "opencode", SessionID: "ses-env", HomeDir: t.TempDir(), Workdir: t.TempDir(),
+		Env: []string{"FAKECLI_PROBE=forwarded"},
+	}, "hello"); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	raw, err := os.ReadFile(argv)
+	if err != nil {
+		t.Fatalf("读捕获: %v", err)
+	}
+	if !strings.Contains(string(raw), "env:FAKECLI_PROBE=forwarded\n") {
+		t.Fatalf("ref.Env 未透传进子进程环境:\n%s", raw)
+	}
+	if err := os.WriteFile(argv, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Resume(context.Background(), executor.CoordSessionRef{
+		CLI: "opencode", SessionID: "ses-env", HomeDir: t.TempDir(), Workdir: t.TempDir(),
+	}, "hello"); err != nil {
+		t.Fatalf("Resume（无 Env）: %v", err)
+	}
+	raw, _ = os.ReadFile(argv)
+	if !strings.Contains(string(raw), "env:FAKECLI_PROBE=<unset>\n") {
+		t.Fatalf("Env 为空时探针键应缺省:\n%s", raw)
 	}
 }

@@ -1,13 +1,15 @@
-// desktopwake_mailbox_test.go —— B434 G2：信箱写入补强（契约 §3.6、条 67–70；拆解稿 r4 ③；
-// V review m3 时钟缝与临时文件残留清理）。
+// desktopwake_mailbox_test.go —— 信箱写入底座的保留行为（b434-contract.md 保留条 67–70、81–82；
+// V review m3 时钟缝与临时文件残留清理；契约 r10 第 11 条 / r12 第 6、10 条）。
 //
-// 职责：经声明缝（消费循环 / wakeDesktopSeat）锁「同会话同纳秒或并发写信不覆盖、并发读者
-// 永不读到半封信、崩溃残留的 tmp 按年龄清理」。时钟用 Server.desktopNow 固定。
-// 边界：来信内容见 desktopwake_letter_test；夹具来自 desktopwake_slice_test / _letter_test。
+// 职责：经现行唯一生产调用方——O2 驻场者门铃（consumeAutomationEventsOnce →
+// ringResidentDoorbells → residentDoorbellAttempt）——锁「同会话同纳秒或并发写信不覆盖、
+// 并发读者永不读到半封信、信箱目录 0o700、崩溃残留的 tmp 按年龄清理」，以及
+// writeDesktopLetter 的不安全键哨兵与 desktopMailboxHome 的 HOME 规则。时钟用 Server.desktopNow 固定。
+// 边界：B435 X 退役 B434 卡级桌面端席位后由原「卡级来信」载体改坐到门铃载体（plan b435.5 段 1、
+// H4：改坐前后同一组变异同红，读数见 b435.5-impl-ledger.md）；门铃自身的语义锁在 residentwake_test.go。
 package agentd
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -34,12 +36,6 @@ func (c *desktopTestClock) Now() time.Time {
 	return c.now
 }
 
-func (c *desktopTestClock) Advance(d time.Duration) {
-	c.mu.Lock()
-	c.now = c.now.Add(d)
-	c.mu.Unlock()
-}
-
 // fixDesktopClock 把 env 的桌面端时钟固定在一个纳秒精度的时刻并返回它。
 func fixDesktopClock(env *ledgerEnv) *desktopTestClock {
 	c := &desktopTestClock{now: time.Unix(0, 1_760_000_000_123_456_789)}
@@ -47,28 +43,30 @@ func fixDesktopClock(env *ledgerEnv) *desktopTestClock {
 	return c
 }
 
-// TestB434DesktopMailboxSameInstantTwoLetters 锁条 68（拆解稿 r4 ③）：时钟固定在同一纳秒，
-// 同一 CLI 会话连续两轮唤醒写出两个不同文件，均可读回且各含本轮 seq；第二封序号顺延 +1。
+// TestB434DesktopMailboxSameInstantTwoLetters 锁条 68（同纳秒顺延）与条 70（信箱目录 0o700）：
+// 时钟固定在同一纳秒，同一驻场者连续两轮门铃写出两个不同文件，各是本轮的门铃信；第二封序号 +1。
 func TestB434DesktopMailboxSameInstantTwoLetters(t *testing.T) {
-	env, _, _, home := newDesktopSliceEnv(t)
+	env, _, sessionID, _, home, _ := o2ResidentEnv(t)
 	clock := fixDesktopClock(env)
-	cardID := createCoordCard(t, env)
-	const cliID = "same-instant"
-	bindDesktopSeat(t, env, cardID, cliID, "local_same-instant")
 	var seqs []int64
 	for i := 0; i < 2; i++ {
-		seqs = append(seqs, openDecisionSeq(t, env, cardID, fmt.Sprintf("第 %d 问", i+1)))
-		if _, _, err := env.srv.consumeAutomationEventsOnce(context.Background()); err != nil {
-			t.Fatalf("第 %d 轮消费: %v", i+1, err)
-		}
+		seqs = append(seqs, sendSessionMessage(t, env.srv.rooms, sessionID, "user:tester", fmt.Sprintf("第 %d 问", i+1), nil, 0))
+		o2Consume(t, env.srv)
 	}
 	dir := filepath.Join(home, proto.DesktopWakeDirRel)
+	info, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("信箱目录 %s 未建（条 70）: %v", dir, err)
+	}
+	if info.Mode().Perm() != 0o700 {
+		t.Fatalf("信箱目录权限 = %v，want 0700（条 70）", info.Mode().Perm())
+	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	base := clock.Now().UnixNano()
-	want := []string{fmt.Sprintf("%s.%019d.md", cliID, base), fmt.Sprintf("%s.%019d.md", cliID, base+1)}
+	want := []string{fmt.Sprintf("%s.%019d.md", o2CLISession, base), fmt.Sprintf("%s.%019d.md", o2CLISession, base+1)}
 	var names []string
 	for _, e := range entries {
 		names = append(names, e.Name())
@@ -78,28 +76,37 @@ func TestB434DesktopMailboxSameInstantTwoLetters(t *testing.T) {
 	}
 	for i, name := range want {
 		data, err := os.ReadFile(filepath.Join(dir, name))
-		if err != nil || !strings.Contains(string(data), fmt.Sprintf(" seq=%d kind=", seqs[i])) {
-			t.Fatalf("第 %d 封应含 seq %d：err=%v\n%s", i+1, seqs[i], err, data)
+		if err != nil || string(data) != o2WantLetter(sessionID, 1, seqs[i], seqs[i]) {
+			t.Fatalf("第 %d 封应是 seq %d 的门铃信：err=%v\n%s", i+1, seqs[i], err, data)
 		}
 	}
 }
 
-// TestB434DesktopMailboxConcurrentWritersAndReaders 锁条 68/69：时钟固定，8 个写者并发经
-// wakeDesktopSeat 给同一 CLI 会话写信，同时一个读者反复列目录读最终名——读者从不见到不完整
-// 的信；结束时恰 8 封、各含自己的 seq。建议带 -race 跑。
+// TestB434DesktopMailboxConcurrentWritersAndReaders 锁条 68/69：时钟固定，8 个写者并发经门铃
+// 写信路径（residentDoorbellAttempt）给同一 CLI 会话各写 6 封，同时一个读者反复列目录读最终名——
+// 读者读到的每封都与某封预期信逐字相等（从不见半封）；结束时恰 48 封、各恰一次。建议带 -race 跑。
+// 为什么每个写者写多封：「半封」只在建名到写完之间的窗口可见，窗口极短；多封放大命中概率
+// （48 < desktopLetterNameRetries=64，同纳秒顺延不会撞上限）。
 func TestB434DesktopMailboxConcurrentWritersAndReaders(t *testing.T) {
-	env, _, _, home := newDesktopSliceEnv(t)
+	env, _, sessionID, _, home, _ := o2ResidentEnv(t)
 	fixDesktopClock(env)
-	cardID := createCoordCard(t, env)
-	seat := bindDesktopSeat(t, env, cardID, "concurrent", "local_concurrent")
-	desk := localDesk(t, env, cardID)
-	const writers = 8
-	seqs := make([]int64, writers)
-	for i := range seqs {
-		seqs[i] = openDecisionSeq(t, env, cardID, fmt.Sprintf("并发 %d", i))
+	resident := proto.SessionResident{Session: sessionID, Identity: o2Resident,
+		DesktopSession: o2DesktopSession, CLISession: o2CLISession}
+	addr := proto.DeliveryAddress{Kind: proto.DeliveryResident, Session: sessionID, Identity: o2Resident}
+	const writers, perWriter = 8, 6
+	wantLetters := map[string]int{}
+	batches := make([][]*residentDoorbellBatch, writers)
+	for i := range batches {
+		for k := 0; k < perWriter; k++ {
+			b := &residentDoorbellBatch{addr: addr}
+			seq := int64(9000 + i*perWriter + k)
+			b.add(seq)
+			batches[i] = append(batches[i], b)
+			wantLetters[o2WantLetter(sessionID, 1, seq, seq)] = 0
+		}
 	}
 	dir := filepath.Join(home, proto.DesktopWakeDirRel)
-	finalName := regexp.MustCompile(`^concurrent\.[0-9]{19}\.md$`)
+	finalName := regexp.MustCompile(`^` + regexp.QuoteMeta(o2CLISession) + `\.[0-9]{19}\.md$`)
 	var stop atomic.Bool
 	readerErr := make(chan error, 1)
 	go func() {
@@ -114,22 +121,22 @@ func TestB434DesktopMailboxConcurrentWritersAndReaders(t *testing.T) {
 				if err != nil {
 					continue // 读到与删除竞态的名字可忽略；本测试无删除者
 				}
-				s := string(data)
-				if !strings.HasPrefix(s, proto.DesktopWakeMarker+" ") || !strings.HasSuffix(s, "有事会再叫醒你。\n") {
-					readerErr <- fmt.Errorf("读到不完整的信 %s：%q", e.Name(), s)
+				if _, ok := wantLetters[string(data)]; !ok {
+					readerErr <- fmt.Errorf("读到不完整的信 %s：%q", e.Name(), data)
 					return
 				}
 			}
 		}
 	}()
 	var wg sync.WaitGroup
-	errs := make([]error, writers)
+	rounds := make([]residentDoorbellRound, writers)
 	for i := 0; i < writers; i++ {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			_, errs[i] = env.srv.wakeDesktopSeat(context.Background(), cardID, seat, desk, nil,
-				[]proto.LedgerEvent{rawEventAt(t, env, seqs[i])}, fmt.Sprintf("rid-%d", i))
+			for _, b := range batches[i] {
+				env.srv.residentDoorbellAttempt(fmt.Sprintf("k-%d", i), b, resident, env.srv.desktopClock(), &rounds[i])
+			}
 		}(i)
 	}
 	wg.Wait()
@@ -137,43 +144,42 @@ func TestB434DesktopMailboxConcurrentWritersAndReaders(t *testing.T) {
 	if err := <-readerErr; err != nil {
 		t.Fatalf("条 69：%v", err)
 	}
-	for i, err := range errs {
-		if err != nil {
-			t.Fatalf("写者 %d: %v", i, err)
+	for i, r := range rounds {
+		if r.rung != perWriter || r.undelivered != 0 || r.unopened != 0 {
+			t.Fatalf("写者 %d 应恰 %d 次按铃成功，得 %+v", i, perWriter, r)
 		}
 	}
-	letters := desktopLettersIn(t, home)
-	if len(letters) != writers {
-		t.Fatalf("条 68：%d 个并发写者应得 %d 封信，实得 %d", writers, writers, len(letters))
+	letters := o2Letters(t, home)
+	if len(letters) != writers*perWriter {
+		t.Fatalf("条 68：%d 个并发写者应得 %d 封信，实得 %d", writers, writers*perWriter, len(letters))
 	}
-	for _, seq := range seqs {
-		hits := 0
-		for _, l := range letters {
-			if strings.Contains(l, fmt.Sprintf(" seq=%d kind=", seq)) {
-				hits++
-			}
+	for _, l := range letters {
+		if _, ok := wantLetters[l.body]; !ok {
+			t.Fatalf("出现非预期信件 %s：%q", l.name, l.body)
 		}
-		if hits != 1 {
-			t.Fatalf("seq %d 应恰在一封信里，实得 %d", seq, hits)
+		wantLetters[l.body]++
+	}
+	for body, n := range wantLetters {
+		if n != 1 {
+			t.Fatalf("每封应恰一次，%q 出现 %d 次", body, n)
 		}
 	}
 }
 
-// TestB434DesktopMailboxSweepsStaleTmp 锁临时文件残留清理（V review 遗留项，plan 定，不改冻结面）：
-// 一封信成功落盘后，本会话超过一小时的 tmp 被删；本会话新 tmp 与他会话旧 tmp 保留。
+// TestB434DesktopMailboxSweepsStaleTmp 锁临时文件残留清理（V review 遗留项）：一封门铃信成功落盘后，
+// 本会话超过一小时的 tmp 被删；本会话新 tmp 与他会话旧 tmp 保留。
 func TestB434DesktopMailboxSweepsStaleTmp(t *testing.T) {
-	env, _, _, home := newDesktopSliceEnv(t)
-	cardID := createCoordCard(t, env)
-	bindDesktopSeat(t, env, cardID, "sweep", "local_sweep")
+	env, _, sessionID, _, home, _ := o2ResidentEnv(t)
 	dir := filepath.Join(home, proto.DesktopWakeDirRel)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	old := time.Now().Add(-2 * time.Hour)
+	self := "." + o2CLISession
 	files := map[string]bool{ // 名字 → 期望保留
-		".sweep.0000000000000000001.md.tmp": false, // 本会话、旧 → 删
-		".sweep.0000000000000000002.md.tmp": true,  // 本会话、新 → 留
-		".other.0000000000000000001.md.tmp": true,  // 他会话、旧 → 留
+		self + ".0000000000000000001.md.tmp": false, // 本会话、旧 → 删
+		self + ".0000000000000000002.md.tmp": true,  // 本会话、新 → 留
+		".other.0000000000000000001.md.tmp":  true,  // 他会话、旧 → 留
 	}
 	for name, keep := range files {
 		p := filepath.Join(dir, name)
@@ -186,24 +192,22 @@ func TestB434DesktopMailboxSweepsStaleTmp(t *testing.T) {
 			}
 		}
 	}
-	openDecisionSeq(t, env, cardID, "触发写信")
-	if _, _, err := env.srv.consumeAutomationEventsOnce(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	sendSessionMessage(t, env.srv.rooms, sessionID, "user:tester", "触发写信", nil, 0)
+	o2Consume(t, env.srv)
 	for name, keep := range files {
 		_, err := os.Stat(filepath.Join(dir, name))
 		if exists := err == nil; exists != keep {
 			t.Errorf("%s：存在=%v，want %v", name, exists, keep)
 		}
 	}
-	if len(desktopLettersIn(t, home)) != 1 {
+	if len(o2Letters(t, home)) != 1 {
 		t.Fatal("应恰一封新信")
 	}
 }
 
 // TestB434DesktopMailboxUnsafeKeySentinel 锁契约 r12 第 6 条：writeDesktopLetter 对不安全信箱键
-// （空、含 '/' 或 '\'、以 '.' 开头）返回包 errDesktopMailboxKeyUnsafe 的错误（G3 收件机据此映射
-// 400），且不碰文件系统；HOME 为空不是信箱键问题，不得被归为该哨兵。
+// （空、含 '/' 或 '\'、以 '.' 开头）返回包 errDesktopMailboxKeyUnsafe 的错误（门铃据此不重试），
+// 且不碰文件系统；HOME 为空不是信箱键问题，不得被归为该哨兵。
 func TestB434DesktopMailboxUnsafeKeySentinel(t *testing.T) {
 	for _, key := range []string{"", "a/b", `a\b`, ".hidden"} {
 		home := t.TempDir()
@@ -217,5 +221,20 @@ func TestB434DesktopMailboxUnsafeKeySentinel(t *testing.T) {
 	}
 	if _, err := writeDesktopLetter(" ", "ok-key", "信", time.Unix(0, 1)); err == nil || errors.Is(err, errDesktopMailboxKeyUnsafe) {
 		t.Fatalf("HOME 为空应报错但不是信箱键哨兵，实得 %v", err)
+	}
+}
+
+// TestB434DesktopMailboxHomeRule 锁契约 r12 第 10 条「信箱 HOME 规则唯一定义」：
+// desktopMailboxHome 在 desktopHome 非空时原样返回，为空时取 os.UserHomeDir()。
+func TestB434DesktopMailboxHomeRule(t *testing.T) {
+	env := newNoPTYLedgerEnv(t)
+	home, _ := o2Wire(t, env.srv)
+	if got, err := env.srv.desktopMailboxHome(); err != nil || got != home {
+		t.Fatalf("desktopHome=%q 时应原样返回，实得 %q err=%v", home, got, err)
+	}
+	env.srv.desktopHome = ""
+	want, wantErr := os.UserHomeDir()
+	if got, err := env.srv.desktopMailboxHome(); got != want || (err == nil) != (wantErr == nil) {
+		t.Fatalf("desktopHome 为空时应取 os.UserHomeDir()=%q（err=%v），实得 %q err=%v", want, wantErr, got, err)
 	}
 }

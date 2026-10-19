@@ -1,6 +1,6 @@
 // Real workspace projection guards: card association and directory identity, not machine proximity.
 import { beforeEach, describe, it, expect, vi } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, within } from '@testing-library/react'
 import type { ProjectNode } from '../../api/types'
 import type { SessionSummary } from '../../api/rooms'
 import { MobileWorkspace } from './MobileWorkspace'
@@ -47,6 +47,16 @@ describe('MobileWorkspace',()=>{
  })
  it('groups by linked cards; cross-project and unknown association never invent a project',()=>{
   render(<MobileWorkspace {...props()}/>); expect(screen.getByText('same-project')).toBeInTheDocument(); fireEvent.click(screen.getByRole('button',{name:'展开 跨项目协作'})); expect(screen.getByText('cross-project')).toBeInTheDocument(); fireEvent.click(screen.getByRole('button',{name:'展开 其他工作'})); expect(screen.getByText('unmapped')).toBeInTheDocument()
+ })
+ // B435 Q7（C-510）：零卡项目房间按 summary.project 归到项目下，不落「其他工作」（#other）。
+ it('places a zero-card project room under its project instead of 其他工作',()=>{
+  const projectRoom: SessionSummary = { ...room('org-room',[]), project:'handoff' }
+  render(<MobileWorkspace {...props()} sessions={[projectRoom, room('plain-zero',[])]}/>)
+  const projectSection = screen.getByTestId('mobile-project-card').closest('.mobile-project-group') as HTMLElement
+  expect(within(projectSection).getByText('org-room')).toBeInTheDocument()
+  expect(within(projectSection).queryByText('plain-zero')).not.toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button',{name:'展开 其他工作'}))
+  expect(screen.getByText('plain-zero')).toBeInTheDocument()
  })
  it('does not expose another project terminal just because machine matches',()=>{
   render(<MobileWorkspace {...props()} ptySessions={[{id:'foreign',machine:'',base_kind:'workspace',base_path:'/other',shell:'bash'}, {id:'mine',machine:'',base_kind:'workspace',base_path:'/repo',shell:'zsh'}] as never}/>); expect(screen.getByText('zsh · main')).toBeInTheDocument(); expect(screen.queryByText('bash · main')).not.toBeInTheDocument()

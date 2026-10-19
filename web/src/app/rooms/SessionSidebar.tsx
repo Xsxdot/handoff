@@ -3,6 +3,7 @@
 // 与回调；行点击 = 开工作台 tab 的入口，新建走 Shell 的 NewSessionDialog。
 // B358.8 #1：行可拖——dragstart 写 DRAG_SESSION_MIME，落点语义由 WorkbenchPage/
 // TabBar 的既有拖放面承接（拖出即分屏/开组），本组件只负责发载荷与拖源提示。
+// B435 Q7：项目房间（summary.project 非空）行带「项目房间」徽章；按项目筛选随 sessionProjects。
 import { useState } from 'react'
 import { Archive, MessageSquare } from 'lucide-react'
 import type { DragEvent } from 'react'
@@ -10,7 +11,7 @@ import type { SessionSummary } from '../../api/rooms'
 import { formatRelative } from '../lib/format'
 import { SessionExpiredBanner } from '../lib/Banners'
 import { DRAG_SESSION_MIME } from '../workbench/paneDrop'
-import { filterSessionsByProject, totalUnread } from './sessionModel'
+import { PROJECT_ROOM_BADGE, filterSessionsByProject, totalUnread } from './sessionModel'
 
 export interface SessionSidebarProps {
   sessions: SessionSummary[]
@@ -118,6 +119,7 @@ export function SessionSidebar({ sessions, loading, errorText, expired = false, 
               <span className="mt-0.5 flex items-center gap-1 text-xs text-muted-foreground">
                 {session.needs_human && <span className="shrink-0 rounded-full border border-amber-200 bg-amber-100 px-1.5 text-[10px] font-semibold text-amber-700">需要你</span>}
                 {session.archived && <span className="shrink-0 rounded-full border px-1.5 text-[10px] text-muted-foreground">已归档</span>}
+                {session.project && <span data-testid="session-project-room" title={session.project} className="shrink-0 rounded-full border border-sky-200 bg-sky-50 px-1.5 text-[10px] text-sky-700">{PROJECT_ROOM_BADGE}</span>}
                 <span className="truncate">{session.preview?.body ?? '暂无预览'}</span>
               </span>
 

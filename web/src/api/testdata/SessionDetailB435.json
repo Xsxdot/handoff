@@ -1,0 +1,57 @@
+{
+  "summary": {
+    "id": "session:5",
+    "kind": "session",
+    "title": "handoff 项目房间",
+    "owner": "user:sy",
+    "archived": false,
+    "project": "handoff",
+    "unread": 1,
+    "needs_human": false,
+    "last_activity": "2026-08-11T10:30:00+08:00",
+    "members": [
+      {
+        "identity": "user:sy",
+        "kind": "human",
+        "status": "last_active",
+        "last_active": "2026-08-11T10:30:00+08:00"
+      },
+      {
+        "identity": "agent:org",
+        "kind": "resident",
+        "status": "listening",
+        "last_active": "2026-08-11T10:30:00+08:00"
+      },
+      {
+        "identity": "cli:claude#sess-b7",
+        "kind": "seat",
+        "card_id": "B7",
+        "card_title": "拆解",
+        "status": "working",
+        "last_active": "2026-08-11T10:30:00+08:00"
+      },
+      {
+        "identity": "",
+        "kind": "seat",
+        "card_id": "B9",
+        "card_title": "实现",
+        "status": "empty",
+        "last_active": "0001-01-01T00:00:00Z"
+      }
+    ],
+    "cards": [
+      {
+        "card_id": "B7",
+        "title": "拆解",
+        "status": "进行中",
+        "seat": "cli:claude#sess-b7",
+        "seat_mode": "pull"
+      },
+      {
+        "card_id": "B9",
+        "title": "实现",
+        "status": "待办"
+      }
+    ]
+  }
+}

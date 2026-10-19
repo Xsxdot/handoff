@@ -10,6 +10,7 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/Xsxdot/handoff/internal/collab/client"
@@ -224,6 +225,87 @@ func (f *Facade) AddSessionMember(sessionID, identity, actor string) error {
 	return translateNotFound(f.st.AddSessionMember(sessionID, identity, actor))
 }
 
+// SessionResident 读会话房间的驻场者登记（B435）：直通 Store.SessionResident 并逐字段
+// 映射 wire DTO。无登记 → ok=false、err=nil；读失败原样上抛（调用方不得当作无驻场者）。
+func (f *Facade) SessionResident(sessionID string) (proto.SessionResident, bool, error) {
+	r, ok, err := f.st.SessionResident(sessionID)
+	if err != nil || !ok {
+		return proto.SessionResident{}, ok, err
+	}
+	return proto.SessionResident{
+		Session:        r.Session,
+		Identity:       r.Identity,
+		DesktopSession: r.DesktopSession,
+		CLISession:     r.CLISession,
+		Machine:        r.Machine,
+		SatAt:          r.SatAt,
+	}, true, nil
+}
+
+// SitResident 登记会话驻场者（B435 R）：wire DTO 逐字段映射成账本本地行，写后把账本填写的
+// SatAt 随返回值带回。账本哨兵翻成使用方哨兵（translateResidentErr）；其余错误原样透传。
+func (f *Facade) SitResident(r proto.SessionResident) (proto.SessionResident, error) {
+	got, err := f.st.SitResident(ledger.SessionResident{
+		Session: r.Session, Identity: r.Identity, DesktopSession: r.DesktopSession,
+		CLISession: r.CLISession, Machine: r.Machine,
+	})
+	if err != nil {
+		return proto.SessionResident{}, translateResidentErr(err)
+	}
+	return proto.SessionResident{
+		Session: got.Session, Identity: got.Identity, DesktopSession: got.DesktopSession,
+		CLISession: got.CLISession, Machine: got.Machine, SatAt: got.SatAt,
+	}, nil
+}
+
+// StandResident 请下会话驻场者（条件删除，身份须等于现驻场者）。
+func (f *Facade) StandResident(sessionID, identity string) error {
+	return translateResidentErr(f.st.StandResident(sessionID, identity))
+}
+
+// EnsureProjectRoom 取项目的项目房间，不存在则创建（B435 O1）：直通 Store.EnsureProjectRoom 并映射
+// wire 会话。账本 ErrBadState（入参为空）翻成 client.ErrBadState；其余错误原样透传。
+func (f *Facade) EnsureProjectRoom(project, owner, actor string) (proto.Session, bool, error) {
+	session, created, err := f.st.EnsureProjectRoom(project, owner, actor)
+	if err != nil {
+		if errors.Is(err, ledger.ErrBadState) {
+			return proto.Session{}, false, fmt.Errorf("%w（%s）", client.ErrBadState, err.Error())
+		}
+		return proto.Session{}, false, err
+	}
+	return sessionWire(session), created, nil
+}
+
+// SessionProject 读会话绑定的项目名（直通 Store.SessionProject）；非项目房间返回空串。
+func (f *Facade) SessionProject(sessionID string) (string, error) {
+	return f.st.SessionProject(sessionID)
+}
+
+// ProjectRoom 读项目的项目房间会话 id（直通 Store.ProjectRoom）；无项目房间 → ok=false、err=nil。
+func (f *Facade) ProjectRoom(project string) (string, bool, error) {
+	return f.st.ProjectRoom(project)
+}
+
+// translateResidentErr 把驻场者写面的账本哨兵翻成 collab/client 侧哨兵，保留原错误文案作上下文。
+func translateResidentErr(err error) error {
+	var sentinel error
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, ledger.ErrNotFound):
+		sentinel = client.ErrNotFound
+	case errors.Is(err, ledger.ErrResidentOccupied):
+		sentinel = client.ErrResidentOccupied
+	case errors.Is(err, ledger.ErrResidentNotSeated):
+		sentinel = client.ErrResidentNotSeated
+	case errors.Is(err, ledger.ErrBadState):
+		sentinel = client.ErrBadState
+	default:
+		return err
+	}
+	return fmt.Errorf("%w（%s）", sentinel, err.Error())
+}
+
 // translateNotFound 把账本 ErrNotFound 翻成使用方哨兵 client.ErrNotFound；
 // 其它错误原样透传。接口归属使用方（架构法第九条），实现侧负责翻译。
 func translateNotFound(err error) error {
@@ -285,6 +367,7 @@ func cardWire(v ledger.CardView) proto.Card {
 		Following:          v.Following,
 		DriverSession:      c.DriverSession,
 		DriverSource:       c.DriverSource,
+		DriverMode:         c.DriverMode,
 		DriverHeartbeatAt:  c.DriverHeartbeatAt,
 		CreatedAt:          c.CreatedAt,
 		UpdatedAt:          c.UpdatedAt,

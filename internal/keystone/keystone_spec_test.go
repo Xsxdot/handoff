@@ -31,7 +31,7 @@ func (r *specRecorder) Resume(ref keysclient.SessionRef, prompt string) (keyscli
 type stubLedgerView struct{}
 
 func (stubLedgerView) GetCard(string) (proto.Card, error) {
-	return proto.Card{DriverSession: "cli:opencode#sess-new", DriverSource: "coordinate"}, nil
+	return proto.Card{DriverSession: "cli:opencode#sess-new", DriverSource: "coordinate", DriverMode: "push"}, nil
 }
 func (stubLedgerView) EventsFromAsc([]string, int64, int) ([]proto.LedgerEvent, error) {
 	return nil, nil
@@ -147,7 +147,7 @@ func TestWakeResumeOverlaysCurrentCarrierHome(t *testing.T) {
 type bindLedgerView struct{}
 
 func (bindLedgerView) GetCard(string) (proto.Card, error) {
-	return proto.Card{DriverSession: "cli:codex#thread-01", DriverSource: "bind"}, nil
+	return proto.Card{DriverSession: "cli:codex#thread-01", DriverSource: "bind", DriverMode: "pull"}, nil
 }
 func (bindLedgerView) EventsFromAsc([]string, int64, int) ([]proto.LedgerEvent, error) {
 	return nil, nil

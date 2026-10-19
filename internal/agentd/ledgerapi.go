@@ -121,8 +121,9 @@ func ledgerCardWire(card ledger.Card) proto.Card {
 		Priority: card.Priority, Project: card.Project, ParentID: card.ParentID,
 		WorkflowName: card.WorkflowName, WorkflowVersion: card.WorkflowVersion, Attachments: attachments,
 		AcceptanceCriteria: card.AcceptanceCriteria, BaseBranch: card.BaseBranch,
-		DriverSession: card.DriverSession, DriverSource: card.DriverSource, DriverHeartbeatAt: card.DriverHeartbeatAt,
-		CreatedAt: card.CreatedAt, UpdatedAt: card.UpdatedAt,
+		DriverSession: card.DriverSession, DriverSource: card.DriverSource, DriverMode: card.DriverMode,
+		DriverHeartbeatAt: card.DriverHeartbeatAt,
+		CreatedAt:         card.CreatedAt, UpdatedAt: card.UpdatedAt,
 	}
 }
 
@@ -177,7 +178,7 @@ func ledgerCardViewWire(view ledger.CardView, conflict bool, openTickets int) pr
 		BaseFrozen: view.BaseFrozen, BlockedBy: view.BlockedBy, MergedCount: view.MergedCount, Needs: view.NeedsReason,
 		OpenDecisions: view.OpenDecisions, ChildrenTotal: view.ChildrenTotal, ChildrenDone: view.ChildrenDone,
 		Conflict: conflict, OpenTickets: openTickets,
-		DriverSession: view.DriverSession, DriverSource: view.DriverSource,
+		DriverSession: view.DriverSession, DriverSource: view.DriverSource, DriverMode: view.DriverMode,
 	}
 }
 

@@ -60,19 +60,21 @@ func TestB434NewServerLeavesDesktopOpenerNil(t *testing.T) {
 }
 
 // TestB434SetDesktopOpenerWiresWake 锁注入入口：经 SetDesktopOpener 装上的平台 opener 被
-// wakeDesktopSeat 使用——非 darwin opener 下信照常落盘、错误按「未打开」且原因为平台不支持。
+// 写信路径（现行唯一调用方 = O2 驻场者门铃）使用——非 darwin opener 下信照常落盘、按「continue
+// 未发出」处置且原因为平台不支持；夹具 spy 已被替换，不再被调。
 func TestB434SetDesktopOpenerWiresWake(t *testing.T) {
-	env, _, spy, home := newDesktopSliceEnv(t)
+	env, _, sessionID, _, home, spy := o2ResidentEnv(t)
 	env.srv.SetDesktopOpener(PlatformDesktopOpener("linux"))
-	cardID := createCoordCard(t, env)
-	bindDesktopSeat(t, env, cardID, "set-opener", "local_set-opener")
-	drainAutomation(t, env)
-	openDecisionSeq(t, env, cardID, "经注入入口的 opener")
-	_, _, err := env.srv.consumeAutomationEventsOnce(context.Background())
-	if !desktopUnopened(err) || !errors.Is(err, errDesktopDeepLinkUnsupported) {
-		t.Fatalf("应按未打开处置且原因为平台不支持，实得 %v", err)
+	logs := o2CaptureLog(env.srv)
+	sendSessionMessage(t, env.srv.rooms, sessionID, "user:tester", "经注入入口的 opener", nil, 0)
+	if _, _, err := env.srv.consumeAutomationEventsOnce(context.Background()); err != nil {
+		t.Fatalf("门铃未打开不挡消费轮: %v", err)
 	}
-	if n := len(desktopLettersIn(t, home)); n != 1 || len(spy.calls()) != 0 {
+	out := logs.String()
+	if !strings.Contains(out, "continue 未发出") || !strings.Contains(out, errDesktopDeepLinkUnsupported.Error()) {
+		t.Fatalf("应按未打开处置且原因为平台不支持: %s", out)
+	}
+	if n := len(o2Letters(t, home)); n != 1 || len(spy.calls()) != 0 {
 		t.Fatalf("信应照常落盘、夹具 spy 已被替换不应再被调：信 %d 封、spy %v", n, spy.calls())
 	}
 }

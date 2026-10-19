@@ -1,0 +1,20 @@
+{
+  "no_recipient_reasons": [
+    "structural",
+    "not_session_room",
+    "non_human_unaddressed",
+    "addressed_unresolved",
+    "root_no_seat",
+    "needs_mention"
+  ],
+  "seat_modes": [
+    "push",
+    "pull"
+  ],
+  "session_member_kinds": [
+    "human",
+    "agent",
+    "seat",
+    "resident"
+  ]
+}

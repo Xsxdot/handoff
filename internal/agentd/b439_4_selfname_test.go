@@ -10,12 +10,9 @@
 package agentd
 
 import (
-	"bytes"
 	"context"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -211,42 +208,6 @@ func TestB439_4PtyFanoutSkipsSelfName(t *testing.T) {
 	}
 }
 
-// TestB439_4DeliverDesktopLetterSelfNameIsLocal 锁 desktopwake.go:deliverDesktopLetter 的
-// 本机判断认自名：machine == 自名 → 直接走本机写信分支，不转发（不产生一次自环 HTTP 投递）。
-//
-// 为什么断言日志而不是回执：判错时 clientForTarget 会按 ResolveTarget 把自名短路成本机
-// client，转发仍会绕回本机、回执照常 written=true——只凭结果区分不出分支。转发的独有
-// 日志「拉起器投递转交到拉起器所在机器」是能分辨分支的可观察量。
-func TestB439_4DeliverDesktopLetterSelfNameIsLocal(t *testing.T) {
-	env := newB434MaterialEnv(t)
-	spy, _ := b434ArmDesktop(t, env)
-	var logs bytes.Buffer
-	env.srv.log = slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	env.srv.conf().Name = b439SelfName
-	card := b434BareCard(t, env, b434MaterialProject)
-
-	resp, err := env.srv.deliverDesktopLetter(context.Background(), b439SelfName, proto.DesktopDeliverReq{
-		CLISession:     b434MaterialCLI,
-		DesktopSession: b434MaterialLauncher,
-		Card:           card,
-	})
-	if err != nil {
-		t.Fatalf("自名机器应判本机写信，实得错误: %v", err)
-	}
-	if !resp.Written {
-		t.Fatalf("本机分支应落盘来信，实得回执 %+v", resp)
-	}
-	if got := spy.calls(); len(got) != 1 {
-		t.Fatalf("本机分支应恰发一次 continue 深链，实得 %v", got)
-	}
-	if !strings.Contains(logs.String(), "拉起器来信已落盘") {
-		t.Fatalf("本机分支应落「拉起器来信已落盘」日志，实得:\n%s", logs.String())
-	}
-	if strings.Contains(logs.String(), "拉起器投递转交到拉起器所在机器") {
-		t.Fatalf("自名机器不得走转发分支，实得日志:\n%s", logs.String())
-	}
-}
-
 // TestB439_4CoordinatorLaunchSelfNameCarrierIsLocal 锁 scheddrain.go:284（carrier.Machine）
 // 的本机判断认自名：协调者载体登记在自名机器上 → 本机拉起，不再当远端拒绝。
 func TestB439_4CoordinatorLaunchSelfNameCarrierIsLocal(t *testing.T) {
@@ -306,20 +267,27 @@ func TestB439_4CoordinatorWakeBearingSelfNameIsLocal(t *testing.T) {
 	}
 }
 
-// TestB439_4WakeDesktopSeatSelfNameIsLocal 锁 desktopwake.go:896（desk.Machine）的本机
-// 判断认自名：桌面端席位登记在自名机器上 → 本机写信 + continue，不转交。
-func TestB439_4WakeDesktopSeatSelfNameIsLocal(t *testing.T) {
-	env, _, spy, _ := newDesktopSliceEnv(t)
-	env.srv.conf().Name = b439SelfName
-	cardID := createCoordCard(t, env)
-	bindDesktopSeatAt(t, env, cardID, "self-cli", "local_b439self", b439SelfName)
-	openDecisionSeq(t, env, cardID, "自名桌面端席位唤醒")
-
-	processed, escalated, err := env.srv.consumeAutomationEventsOnce(context.Background())
-	if err != nil || escalated || processed != 1 {
-		t.Fatalf("自名桌面端席位应本机唤醒：processed=%d escalated=%v err=%v", processed, escalated, err)
+// TestB439_4ResidentDoorbellSelfNameIsLocal 是 B439 两条桌面端「自名判本机」锁（deliverDesktopLetter、
+// wakeDesktopSeat，随 B435 X 退役删除）在替代通路上的移植：驻场者登记在自名机器上（machine == 自名、
+// 非 hostname）→ 本机写恰一封门铃信 + 一次 continue，不转交、不跳过（residentwake.go 经 IsSelfTarget
+// 认自名）。
+func TestB439_4ResidentDoorbellSelfNameIsLocal(t *testing.T) {
+	env, _, sessionID, _, home, spy := o2ResidentEnv(t)
+	if b439SelfName == o2Hostname(t) {
+		t.Skip("夹具前提：自名须不同于本机 hostname")
 	}
-	if got := spy.calls(); len(got) != 1 {
-		t.Fatalf("自名桌面端席位应恰发一次 continue 深链，实得 %v", got)
+	env.srv.conf().Name = b439SelfName
+	b435ExecSQL(t, env, `UPDATE session_residents SET machine = ? WHERE session = ?`, b439SelfName, sessionID)
+	seq := sendSessionMessage(t, env.srv.rooms, sessionID, "user:tester", "人类无 @（自名机器上的驻场者）", nil, 0)
+	o2Consume(t, env.srv)
+	letters := o2Letters(t, home)
+	if len(letters) != 1 {
+		t.Fatalf("自名机器上的驻场者应本机写恰一封门铃信，得 %d", len(letters))
+	}
+	if want := o2WantLetter(sessionID, 1, seq, seq); letters[0].body != want {
+		t.Fatalf("信件字节不符: %q", letters[0].body)
+	}
+	if n := len(spy.calls()); n != 1 {
+		t.Fatalf("应恰发一次 continue 深链，得 %d", n)
 	}
 }

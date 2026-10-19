@@ -1,8 +1,7 @@
 // coordinator.go —— 协调者控制面拨号方法。
 //
-// 协调者的 launch 拨号位于 squads.go；本文件提供 launch-only rebind、跨机唤醒转交、
-// 内存驱逐、B434 拉起器代开（DesktopLauncherOpen）与 agentd→agentd 拉起器投递
-// （DesktopDeliver），保持 HTTP body 与服务端契约一致，
+// 协调者的 launch 拨号位于 squads.go；本文件提供 launch-only rebind、跨机唤醒转交与
+// 内存驱逐（B434 拉起器代开与投递两方法已随 B435 X 退役），保持 HTTP body 与服务端契约一致，
 // 不把浏览器或 CLI 提供的 identity 当作可信席位。
 package client
 
@@ -67,66 +66,4 @@ func (c *Client) CoordinatorForget(ctx context.Context, cardID string) error {
 		return c.httpError("coordinator forget", resp)
 	}
 	return nil
-}
-
-// DesktopLauncherOpen 请 agentd 让卡所属项目的拉起器代开一场 Claude 桌面端协调者会话
-// （POST /api/cards/{id}/coordinator/desktop-launch，体 {}；契约 §3.9、§3.10，P7=d）。
-//
-// 参数：ctx 控制请求；cardID 卡号（作路径段转义）。
-// 返回：200 → 解码后的回执（拉起器桌面端会话 id、拉起器登记机器、实际写信的机器）；
-// 非 2xx → httpError 包装的错误，服务端 `error` 原文用 ServerErrorText 取；连接失败 →
-// ErrUnreachable 链。
-// 注意：只发一次、不重试；不打 needs_human——无拉起器的等人标记由端点落（条 145），
-// 调用方也不得补打（条 260）。不经协调者小队识别与准入（与 CoordinatorRebind 不同路由）。
-func (c *Client) DesktopLauncherOpen(ctx context.Context, cardID string) (*proto.DesktopLauncherOpenResp, error) {
-	c.log().Info("请求拉起器代开桌面端协调者", "card", cardID)
-	resp, err := c.do(ctx, http.MethodPost,
-		"/api/cards/"+url.PathEscape(cardID)+"/coordinator/desktop-launch", struct{}{})
-	if err != nil {
-		c.log().Warn("拉起器代开请求未拿到响应", "card", cardID, "cause", err)
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, c.httpError("desktop launcher open", resp)
-	}
-	var out proto.DesktopLauncherOpenResp
-	if err := decodeWire(resp, &out); err != nil {
-		c.log().Warn("拉起器代开回执解码失败", "card", cardID, "cause", err)
-		return nil, err
-	}
-	c.log().Info("拉起器代开已受理", "card", cardID,
-		"launcher", out.Launcher, "machine", out.Machine, "handled_by", out.HandledBy)
-	return &out, nil
-}
-
-// DesktopDeliver 把一次拉起器投递交给拉起器所在机器的 agentd（POST /api/desktop/deliver，
-// 契约 §3.9、§3.9.1，P3=A）：收件机按 req.Card 经共享账本读卡、用**它自己**登记的项目
-// 位置渲染拉起器来信，写进 req.CLISession 的信箱并对 req.DesktopSession 发 continue。
-//
-// 参数：ctx 控制请求（调用方给单次时限）；req 只搬运卡号与两个会话 id，不含来信正文（条 211–212）。
-// 返回：200 → 解码后的回执（Written=true；Opened 报告 continue 是否发出）；非 2xx →
-// httpError 包装的错误，状态码用 StatusCode 取、`error` 原文用 ServerErrorText 取；
-// 连接失败 → ErrUnreachable 链。
-// 注意：出站方负责加防环头（调用方用 MarkForwarded，条 153）；只发一次、不重试——
-// 重试会让「信已落盘但响应丢了」变成两封拉起信、开出两场会话。
-func (c *Client) DesktopDeliver(ctx context.Context, req proto.DesktopDeliverReq) (*proto.DesktopDeliverResp, error) {
-	c.log().Info("拉起器投递转交到收件机", "card", req.Card, "cli_session", req.CLISession)
-	resp, err := c.do(ctx, http.MethodPost, "/api/desktop/deliver", req)
-	if err != nil {
-		c.log().Warn("拉起器投递未拿到收件机响应", "card", req.Card, "cause", err)
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, c.httpError("desktop deliver", resp)
-	}
-	var out proto.DesktopDeliverResp
-	if err := decodeWire(resp, &out); err != nil {
-		c.log().Warn("拉起器投递回执解码失败", "card", req.Card, "cause", err)
-		return nil, err
-	}
-	c.log().Info("拉起器投递已由收件机受理", "card", req.Card,
-		"handled_by", out.HandledBy, "written", out.Written, "opened", out.Opened)
-	return &out, nil
 }

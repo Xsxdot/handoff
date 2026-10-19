@@ -26,5 +26,6 @@
   "conflict": false,
   "open_tickets": 0,
   "driver_session": "cli:codex#thread-01",
-  "driver_source": "bind"
+  "driver_source": "bind",
+  "driver_mode": "pull"
 }

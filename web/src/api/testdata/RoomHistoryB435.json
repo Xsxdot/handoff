@@ -1,0 +1,36 @@
+{
+  "messages": [
+    {
+      "seq": 41,
+      "card_id": "session:3",
+      "type": "room_message",
+      "actor": "user:sy",
+      "payload": {
+        "body": "有人在吗"
+      },
+      "created_at": "2026-10-18T00:00:00Z",
+      "no_recipient": "needs_mention"
+    },
+    {
+      "seq": 42,
+      "card_id": "session:3",
+      "type": "room_message",
+      "actor": "agent:x",
+      "payload": {
+        "body": "@B9 看一下"
+      },
+      "created_at": "2026-10-18T00:00:01Z",
+      "no_recipient": "addressed_unresolved"
+    },
+    {
+      "seq": 43,
+      "card_id": "session:3",
+      "type": "room_message",
+      "actor": "user:sy",
+      "payload": {
+        "body": "@B7 继续"
+      },
+      "created_at": "2026-10-18T00:00:02Z"
+    }
+  ]
+}

@@ -1,0 +1,23 @@
+[
+  {
+    "id": "session:5",
+    "kind": "session",
+    "title": "handoff 项目房间",
+    "owner": "user:sy",
+    "archived": false,
+    "project": "handoff",
+    "unread": 0,
+    "needs_human": false,
+    "last_activity": "2026-10-18T00:00:00Z"
+  },
+  {
+    "id": "session:3",
+    "kind": "session",
+    "title": "B435 讨论",
+    "owner": "user:sy",
+    "archived": false,
+    "unread": 2,
+    "needs_human": false,
+    "last_activity": "2026-10-18T00:00:00Z"
+  }
+]

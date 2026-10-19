@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/Xsxdot/handoff/internal/collab/client"
 	"github.com/Xsxdot/handoff/internal/collab/room"
@@ -200,6 +201,99 @@ func (s *Service) LeaveCard(sessionID, cardID, actor string) error {
 	return mapSessionError(s.lc.LeaveCardToSession(sessionID, cardID, actor))
 }
 
+// 驻场者写面哨兵（B435 R）。占位/不在座直接复用出站哨兵，调用方（CLI）只依赖 collab 包。
+var (
+	// ErrResidentIdentity 驻场者身份不是统一记法 user:<n>/agent:<n>（C-413），或是系统发信身份（Q14 甲）。
+	ErrResidentIdentity = errors.New("collab: 驻场者身份非法")
+	// ErrResidentOccupied 会话已有驻场者（C-414）。
+	ErrResidentOccupied = client.ErrResidentOccupied
+	// ErrResidentNotSeated 要请下的身份不是现驻场者。
+	ErrResidentNotSeated = client.ErrResidentNotSeated
+)
+
+// SitResident 登记会话房间驻场者——驻场者写面的唯一入口（R plan Q11 甲；O1 的
+// `sit --project` 复用同一校验）。参数 r：Session 须为会话房间 id；Identity 须为统一记法
+// （proto.ValidateMemberIdentity，C-413）且不得是系统发信身份 agent:handoff（Q14 甲：比
+// C-413 更严——否则系统通知会自写自收，且 Q4 后它成为书写者，冒充面扩大）；桌面端三列由
+// 调用方校验形状后原样落库。返回账本写下的一行（含 SatAt）。错误：非会话房间/会话不存在 →
+// ErrNoRoom；记法非法 → ErrResidentIdentity；已归档 → ErrReadOnly；已有驻场者 →
+// ErrResidentOccupied。校验失败零写入。
+func (s *Service) SitResident(r proto.SessionResident) (proto.SessionResident, error) {
+	if !room.IsSessionRoom(r.Session) {
+		log().Warn("登记驻场者被拒：不是会话房间", "room", r.Session, "identity", r.Identity)
+		return proto.SessionResident{}, fmt.Errorf("%q 不是会话房间（须形如 session:<n>）: %w", r.Session, ErrNoRoom)
+	}
+	if !proto.ValidateMemberIdentity(r.Identity) {
+		log().Warn("登记驻场者被拒：身份非统一记法", "session", r.Session, "identity", r.Identity)
+		return proto.SessionResident{}, fmt.Errorf("驻场者身份 %q 须为统一记法 user:<名字> 或 agent:<名字>: %w", r.Identity, ErrResidentIdentity)
+	}
+	if r.Identity == proto.SystemNotifierIdentity {
+		log().Warn("登记驻场者被拒：系统发信身份不得驻场", "session", r.Session, "identity", r.Identity)
+		return proto.SessionResident{}, fmt.Errorf("%s 是系统发信身份，不能当驻场者: %w", r.Identity, ErrResidentIdentity)
+	}
+	got, err := s.lc.SitResident(r)
+	if err != nil {
+		mapped := mapResidentError(err)
+		log().Warn("登记驻场者失败", "session", r.Session, "identity", r.Identity, "cause", err)
+		return proto.SessionResident{}, mapped
+	}
+	log().Info("驻场者已登记", "session", r.Session, "identity", r.Identity, "has_desktop", r.DesktopSession != "")
+	return got, nil
+}
+
+// StandResident 请下会话房间驻场者（`session stand`，Q7 甲）：identity 须等于现驻场者，否则
+// ErrResidentNotSeated、登记不变。非会话房间 → ErrNoRoom。
+func (s *Service) StandResident(sessionID, identity string) error {
+	if !room.IsSessionRoom(sessionID) {
+		log().Warn("请下驻场者被拒：不是会话房间", "room", sessionID, "identity", identity)
+		return fmt.Errorf("%q 不是会话房间（须形如 session:<n>）: %w", sessionID, ErrNoRoom)
+	}
+	if err := s.lc.StandResident(sessionID, identity); err != nil {
+		log().Warn("请下驻场者失败", "session", sessionID, "identity", identity, "cause", err)
+		return mapResidentError(err)
+	}
+	log().Info("驻场者已请下", "session", sessionID, "identity", identity)
+	return nil
+}
+
+// mapResidentError 把驻场者写面的出站哨兵映射成会话门面错误：不存在 → ErrNoRoom，
+// 状态不允许（已归档）→ ErrReadOnly；占位/不在座哨兵与其余错误原样上抛（保留上下文）。
+func mapResidentError(err error) error {
+	switch {
+	case errors.Is(err, client.ErrNotFound):
+		return fmt.Errorf("%w（%s）", ErrNoRoom, err.Error())
+	case errors.Is(err, client.ErrBadState):
+		return fmt.Errorf("%w（%s）", ErrReadOnly, err.Error())
+	default:
+		return err
+	}
+}
+
+// ErrProjectName 项目名形状非法（Q15 甲：裁剪后为空，或含空白/控制字符）。
+var ErrProjectName = errors.New("collab: 项目名非法")
+
+// EnsureProjectRoom 取项目的项目房间，不存在则创建——项目房间创建的唯一入口（O1 plan Q3 甲；`handoff
+// project room <p>` 与 `session sit --project <p>` 共用）。参数：project 为卡 project 字段的比较键
+// （调用方已裁剪首尾空白；本层只校验形状，不要求账本已有该项目的卡，Q15 甲）；actor 落 session_created。
+// 新建时群主 = 系统发信身份 agent:handoff（Q1 甲：群主即首个显式成员，系统通知因此是书写者，零书写者
+// 规则改动）。返回会话本体与是否本次新建。错误：项目名非法 → ErrProjectName（零写入）；其余为账本错误。
+// 注意：项目房间创建时零卡、不执法拉卡（Q12 甲）；归档后绑定不变（Q11 甲）。
+func (s *Service) EnsureProjectRoom(project, actor string) (proto.Session, bool, error) {
+	if strings.TrimSpace(project) == "" || strings.IndexFunc(project, func(r rune) bool {
+		return unicode.IsSpace(r) || unicode.IsControl(r)
+	}) >= 0 {
+		log().Warn("确保项目房间被拒：项目名非法", "project", project, "actor", actor)
+		return proto.Session{}, false, fmt.Errorf("项目名 %q 须非空且不含空白与控制字符（即卡的 project 字段值）: %w", project, ErrProjectName)
+	}
+	session, created, err := s.lc.EnsureProjectRoom(project, proto.SystemNotifierIdentity, actor)
+	if err != nil {
+		log().Warn("确保项目房间失败", "project", project, "actor", actor, "cause", err)
+		return proto.Session{}, false, err
+	}
+	log().Info("项目房间已确保", "project", project, "session", session.ID, "created", created, "archived", session.Archived)
+	return session, created, nil
+}
+
 // WakeTargets 解析一条 room_message 的寻址，返回被唤醒成员身份集；空集表示
 // 不唤醒任何人。规则：
 //   - @卡号 解析为该卡当前席位（换绑后指向新席位）；解析不到卡时按外部会话
@@ -216,7 +310,9 @@ func (s *Service) WakeTargets(ev proto.LedgerEvent) ([]string, error) {
 }
 
 // MessageWakeTargets 是 WakeTargets 的消息级半边（已在手解析好 replyAuthor 的
-// 调用方用它）。唤醒路径只认它——签名里没有成员集合，扇出形状写不出来。
+// 调用方用它）。签名里没有成员集合，扇出形状写不出来。B435 起 push 消费循环与
+// card wait 改走匹配函数 Recipients/Matches（recipients.go）；本函数仅剩 session wait
+// （cmd/session.go，后续子卡 R 改接后 collab 外零调用，C-241）。
 func (s *Service) MessageWakeTargets(msg proto.RoomMessage) ([]string, error) {
 	if msg.BySystem || msg.Kind == proto.RoomMsgPointer {
 		return nil, nil
@@ -251,28 +347,6 @@ func (s *Service) resolveMessageTargets(msg proto.RoomMessage, replyAuthor strin
 		return card.DriverSession, ok
 	}
 	return room.ResolveDelivery(msg, replyAuthor, resolveSeat), nil
-}
-
-// AddressesCard 判断一条消息的寻址是否命中该卡当前席位（唤醒路径的必要条件）。
-// 装配缺失（无账本）或卡无席位时返回 false——宁缺毋滥，杜绝广播回潮。
-func (s *Service) AddressesCard(msg proto.RoomMessage, cardID string) bool {
-	if cardID == "" {
-		return false
-	}
-	card, err := s.lc.GetCard(cardID)
-	if err != nil || card.DriverSession == "" {
-		return false
-	}
-	targets, err := s.MessageWakeTargets(msg)
-	if err != nil {
-		return false
-	}
-	for _, target := range targets {
-		if target == card.DriverSession {
-			return true
-		}
-	}
-	return false
 }
 
 // replyEventOf 按全局 seq 点读引用条；不存在、跨房间或非消息都不是有效回复。
@@ -320,9 +394,16 @@ func (s *Service) summarizeSession(session proto.Session, byCard map[string]prot
 	if err != nil {
 		return proto.SessionSummary{}, err
 	}
+	// 项目房间标记（B435 ⑤ C-510–C-512，O1 plan Q9 甲）：本函数是列表与详情头的唯一装配点，故 project
+	// 只在此填；读失败上抛——静默缺键会让控制台把项目房间显示成普通会话。
+	project, err := s.lc.SessionProject(session.ID)
+	if err != nil {
+		log().Warn("会话项目绑定读取失败", "session", session.ID, "cause", err)
+		return proto.SessionSummary{}, fmt.Errorf("读取会话 %s 项目绑定: %w", session.ID, err)
+	}
 	summary := proto.SessionSummary{
 		ID: session.ID, Kind: proto.SessionKind, Title: session.Title,
-		Owner: session.Owner, Archived: session.Archived,
+		Owner: session.Owner, Archived: session.Archived, Project: project,
 		LastActivity: session.UpdatedAt,
 		Members:      members,
 		Cards:        sessionCards(session, byCard),
@@ -377,7 +458,7 @@ func latestNeedsByCard(events []proto.LedgerEvent) map[string]bool {
 	return needs
 }
 
-// sessionMembers 派生会话成员：显式成员（人/主 agent）+ 会话内各卡的当前席位。
+// sessionMembers 派生会话成员：显式成员（人/主 agent）+ 房间驻场者（B435）+ 会话内各卡的当前席位。
 // 状态只报可证实的——有未过期租约报 working/listening，否则报 last_active；
 // 空座报 empty。不报「在线」（外部会话随时可能被关掉）。
 //
@@ -402,6 +483,24 @@ func (s *Service) sessionMembers(session proto.Session, byCard map[string]proto.
 		}
 		members = append(members, proto.SessionMember{
 			Identity: identity, Kind: kind, Status: status, LastActive: lastActive,
+		})
+	}
+	// 房间驻场者（B435 C-208、契约 §13 第 5 条）：显式成员之后、卡席位之前恰一行；驻场者
+	// `card bind` 升格后同一人另以 seat 行出现（两种记法，N2）。读失败上抛——静默少一行会让
+	// 详情页与判定表（驻场者是默认收件人）说两种话。
+	resident, seated, err := s.lc.SessionResident(session.ID)
+	if err != nil {
+		log().Warn("会话驻场者读取失败", "session", session.ID, "cause", err)
+		return nil, fmt.Errorf("读取会话 %s 驻场者: %w", session.ID, err)
+	}
+	if seated {
+		status, lastActive, err := s.memberStatus(resident.Identity)
+		if err != nil {
+			log().Warn("会话驻场者租约读取失败", "session", session.ID, "identity", resident.Identity, "cause", err)
+			return nil, fmt.Errorf("读取会话 %s 驻场者 %s 租约: %w", session.ID, resident.Identity, err)
+		}
+		members = append(members, proto.SessionMember{
+			Identity: resident.Identity, Kind: proto.SessionMemberResident, Status: status, LastActive: lastActive,
 		})
 	}
 	for _, cardID := range session.Cards {
@@ -456,6 +555,7 @@ func sessionCards(session proto.Session, byCard map[string]proto.Card) []proto.S
 		}
 		out = append(out, proto.SessionCard{
 			CardID: card.ID, Title: card.Title, Status: card.Status, Seat: card.DriverSession,
+			SeatMode: card.DriverMode,
 		})
 	}
 	return out

@@ -70,7 +70,7 @@ import { NewSessionDialog } from '../rooms/NewSessionDialog'
 import { SessionSidebar } from '../rooms/SessionSidebar'
 import { SessionTab } from '../rooms/SessionTab'
 import { openSessionDetail } from '../rooms/sessionDetailOpener'
-import { totalUnread } from '../rooms/sessionModel'
+import { sessionProjects, totalUnread } from '../rooms/sessionModel'
 import { COLLAB_POLL_MS } from '../rooms/constants'
 import { needsAttention } from '../cards/columns'
 import { Breadcrumb } from './Breadcrumb'
@@ -1236,9 +1236,10 @@ export function Shell() {
       tree={treeState.data}
       tasks={tasks}
       sessions={sessions.map(session => {
-        const names=[...new Set((session.cards ?? []).map(card=>projectOfCard(card.card_id)).filter(Boolean))]
+        // B435 Q7：归属规则归 sessionModel.sessionProjects（项目房间标记 ∪ 卡项目）；零项目名仍判未关联。
+        const { names, hasUnknownCard } = sessionProjects(session, projectOfCard)
         const projectIds=[...new Set(names.flatMap(name=>treeState.data!.projects.filter(p=>p.name===name || p.locations.some(l=>l.name===name)).map(p=>p.project_id)))]
-        return { id:session.id,title:session.title,projectIds,archived:session.archived,needsHuman:session.needs_human,unresolved:!(session.cards?.length) || session.cards!.some(c=>!projectOfCard(c.card_id)) || names.some(name=>!treeState.data!.projects.some(p=>p.name===name || p.locations.some(l=>l.name===name))) }
+        return { id:session.id,title:session.title,projectIds,archived:session.archived,needsHuman:session.needs_human,unresolved:names.length===0 || hasUnknownCard || names.some(name=>!treeState.data!.projects.some(p=>p.name===name || p.locations.some(l=>l.name===name))) }
       })}
       onOpenSession={(id) => { const found=sessions.find(s=>s.id===id);if(found)openSession(found) }}
       onOpenArchive={() => openSessionList(true)}

@@ -848,7 +848,7 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 - **远端项目用深链 SSH 变体拉起**：`claude://code/new?ssh_host=&ssh_folder=&q=` 文档化（桌面端 ≥ 2.110.0），能把开发机上的项目位置也开成 Claude 桌面端会话；要先定 handoff 的 target 与桌面端 SSH 连接名的对应。来源：同上 Out of Scope。
 - **bind 席位心跳过期与自动换绑**：会话关了席位还在；三期范围。来源：同上 Out of Scope。
 - **主 agent 身份自动入群**：从桌面端会话把 `agent:<名字>` 登记为会话成员，免手填。来源：同上 Out of Scope。
-- **给 claude 开无头协调能力（`coordination` 能力位 + Launch/Resume）或用 `claude --bg` 后台会话当协调者**：用户 2026-10-16 两次弃选（只要桌面端会话形态）；`--bg` 本机已验可无人值守拉起（台账 `6184b87b`），若将来要不依赖桌面端的协调者再重走 spec。来源：同上弃选。
+- **给 claude 开无头协调能力（`coordination` 能力位 + Launch/Resume）或用 `claude --bg` 后台会话当协调者**：用户 2026-10-16 两次弃选（只要桌面端会话形态）；`--bg` 本机已验可无人值守拉起（台账 `6184b87b`），若将来要不依赖桌面端的协调者再重走 spec。来源：同上弃选。（B435 2026-10-18 裁定：桌面端会话不当卡协调者，改作项目房间组织者；无头 claude 当 push 载体归「push 载体扩展」条。）
 - **handoff 移动壳内查看/进入桌面端协调者会话**：今天靠 Claude 手机端 Remote Control；要 handoff 自己的面需先有会话 id 映射。来源：同上 Out of Scope。
 - **定时巡场兜底**：桌面端本地定时任务每 N 分钟开一场新会话扫账本，作拉起器缺席时的无人值守兜底；B434 r2 弃选为主路径，保留为可选。来源：`docs/superpowers/specs/b434.md` 弃选。
 
@@ -867,3 +867,35 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 - **opencode review 裁决块形状漂移**：B439 五轮 review 有三轮「裁决解析失败」——结论 JSON 多出自造字段、或把 handoff-verdict 块经提问工单发出且收到答复后继续提问（只能 stop 收口）。宜在纪律块/runner 侧收紧：容忍多余键、或明文禁止经 ask 交裁决。来源：B439 协调者。
 - **卡派发起点取「上一轮任务分支」，非工作分支最新合入**：B439 父卡 review 首两派起点为 cards/B439-charter-2/-3@20dca87（缺 B439.4 合入，子卡合入的是 cards/B439-charter），且每次派发（含被 stop 的）都成为下一轮起点；协调者须手工快进才对上 62ed2a22。宜让父卡工作分支 = 子卡合入目标，并让被 stop 的零提交轮不改写工作分支。来源：B439 finish。
 - **`fake` 执行器无 Profile 能力，卡派发恒带纪律块 → fake 无法走卡派发**：真机/隔离验证想用零成本执行器验镜像链路时被拒（「没有 Profile 能力」），只得改用无凭据 codex 让回合 401 失败。宜给 fake 一个空实现 Profile，或允许纪律块对 fake 跳过。来源：B439 finish 真机。
+
+## 2026-10-18 B435 协调者统一模型残余（本期不做、后续要做）
+
+- **推式 print 载体扩到 claude CLI / codex / grok**：hostapi 驱动白名单只有 opencode（`internal/hostapi/driver.go:52`）；B435 本期推式只对 opencode 成立，其他 agent 走自驱 `wait`。来源：`docs/superpowers/specs/b435.md` §11（待用户裁决是否拉进本期）。
+- **组织者结构化记忆**：B435 只留记忆目录与简报指针；记忆的结构、检索与过期后续定。来源：b435.md §11。
+- **一个组织者管多项目**：B435 为 project ↔ 项目房间 1:1。来源：b435.md §11。
+- **移动端项目房间专用 UI**：现有房间页可用，专用入口后续。来源：b435.md §11。
+- **`handoff card wait` 别名下线**：B435 保留一期作 `wait --card` 别名。来源：b435.md §5 D2。
+- **跨机拉式 wait**：远端 agentd 驱动的 `wait`，B435 沿用既有转交不改。来源：b435.md §11。
+- **协调者小队在席位模式下的轮换策略**：来源：b435.md §11。
+- **席位地址游标键含卡号**：B435 契约 C-112 游标键 = 席位身份原样，同一 CLI 会话同时坐两张卡时共享一份游标、可能丢积压；K0 按冻结实现并进真机清单 K0-5，改键需重走 contract。来源：`docs/superpowers/plans/b435.1-plan.md` §0 知悉项。
+
+### B435 finish 残余（2026-10-19；来源各子卡 impl-ledger 与 `b435-ledger.md` 十五）
+
+- **用户机待验（2026-10-19 补验后剩余）**：K0-3、K0-D、R-5b、O2-U1…U6、O2-M1、X-U1、W-7 控制台半边、X-U2 的 mod/CLAUDE.md 半边已补验（`b435-ledger.md` 十七）。仍未验：**R-1m / W-0 真手机**（无设备，控制台仅做过移动端模拟）；**薄壳内 W-7 与 X-U2 `/new` 拒绝**（薄壳未装，构建需 `go install` wails3）；K0-D 的 `card wait` 收房间行（生产副本无非终态在会话 pull 卡）；O2-U3 桌面端是否实际回收会话未独立观测。来源：`b435-ledger.md` 十七 17.1。
+- ~~**`handoff room read --after N` 语义反了**~~ **已修**（2026-10-19，CLI 侧翻页，`b435-ledger.md` 17.4）。
+- ~~**人类不在项目房间书写者集**~~ **已修**（2026-10-19，R-K1 (a‴)：项目房间书写者集并入 `console_user`，`b435-ledger.md` 17.5）。
+- ~~**组织者授权规则 vs 用户「不在电脑前也能沟通」**~~ **已裁决并落地**（2026-10-19，用户选 A：只认作者为 `user:<本人>` 的房间发言；契约 §15 Q4 变更，`b435-ledger.md` 17.5）。
+- **SKILL `card wait` 可动作事件清单补 `room_message`**（Minor）。来源：`b435-ledger.md` 17.2-4。
+- ~~**主线合并后 `codegraph absorb cards-B435-charter-1`**~~ **作废**（2026-10-19：代码图功能已随 B436 从主线整体移除，合入时一并删去本分支的 `codegraph/target.json` 改动与视图 diff）。
+- **`MessageWakeTargets` / `WakeTargets` / `SessionMessageCandidatesContext` 删除与过时文件头**：`internal/collab/sessions.go:304-316` 生产零调用方；`internal/ledger/session_candidates.go:5`、`seat_revision.go:4` 文件头仍称其为唯一裁决。来源：R plan Q12 乙 + review M4（I 卡未做，留下一期顺手）。
+- **O2 review Minor-1/2/3**：(a″) 第二读失败分支与「新命中并入在途重试」补测试锁；`residentwake.go` `human` 变量名改 `addressable`。来源：`b435.4-impl-ledger.md`。
+- **W review M2/M3**：`rooms.ts` `isNoRecipientReason`/`isSessionMemberKind` 只供契约测试（入参先过守卫或注明）；`SessionChat`/`SessionDetail` 各补一支词表外值组件用例。来源：`b435.6-impl-ledger.md`。
+- **X review Minor-3**：退役 flag 不带卡号时 cobra `ExactArgs(1)` 先报参数错、看不到墓碑。来源：`b435.5-impl-ledger.md`。
+- **空库双 agentd 首启 DDL 竞争**：`CREATE TABLE IF NOT EXISTS` 并发 → `pg_type_typname_nsp_index` 重复键，一边启动失败（基线行为）。来源：O1-1。
+- **O1 m1–m3 / N5**：换人 + 崩溃窗幂等锚按当前驻场者查可能重发；已终局认领让过不记 handled 的重复开销；含空白项目名建不了房；200 条页耗时未造。来源：`b435.3-impl-ledger.md`。
+- **opencode executor 测试时序抖动**：`TestCoordinatorCancelTurnUsesSessionID` 全包并跑偶红、单跑绿。来源：O1 合入后复跑。
+- **R 残余**：两阶段拉起（R plan Q3 乙）；diag 测试无 `--timeout`（M5）；~~图覆盖债重扫（#27）~~（代码图已移除，作废）。来源：`b435.2-impl-ledger.md`。
+- **派发简报纪律**（O2 Minor-4 回旋镖）：修复轮越禁区测试文件须单列 F 行；简报更强调逐段红绿。
+- **升级说明进发布文档**：同版本整队升级、先起 agentd 再跑 CLI、回退只在留痕。来源：`b435-contract.md` §15。
+- **驻场者 `machine` 取 hostname，与 B439 自名方向不一致**（合入 main 时发现）：`cmd/session_resident.go#residentDesktopAddress` 写 `os.Hostname()`，门铃判本机走 `scheduling.IsLocalMachine`（hostname 同源，功能正确）；B439 S6 把 hostname 视作本机旧别名、有自名（`cfg.Name`）时只认自名。待定：有自名时驻场者登记改写自名、判本机同步走自名（需迁存量行）。来源：B435 合入 main 集成。
+- **`session wait` 正常 124 超时附带 WARN「查最大 seq 失败…deadline_exceeded」**：超时出口复用了已到期的 ctx 去查最大 seq，日志噪声误导排障。来源：B435 补验组织者回报（17.5 后）。

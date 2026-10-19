@@ -90,7 +90,7 @@ func TestSessionWaitDiagCompletionBacklogHit(t *testing.T) {
 	}
 	capture := withCLICapture(t)
 
-	out, _, err := runLedgerCLI(t, dir, "session", "wait", "user:sy", "--since", "0")
+	out, _, err := runLedgerCLI(t, dir, "session", "wait", sessionID, "--since", "0")
 	if err != nil {
 		t.Fatalf("session wait: %v", err)
 	}
@@ -124,12 +124,12 @@ func TestSessionWaitDiagCompletionBacklogHit(t *testing.T) {
 // success_empty。
 func TestSessionWaitDiagTimeoutClassifiedCanceled(t *testing.T) {
 	dir := t.TempDir()
-	_, _, _, _ = mustWaitFixture(t, dir)
+	_, _, _, sessionID := mustWaitFixture(t, dir)
 	capture := withCLICapture(t)
 
 	sessionWaitPollInterval = 20 * time.Millisecond
 	defer func() { sessionWaitPollInterval = 2 * time.Second }()
-	out, _, err := runLedgerCLI(t, dir, "session", "wait", "user:sy", "--since", "0", "--timeout", "100ms")
+	out, _, err := runLedgerCLI(t, dir, "session", "wait", sessionID, "--since", "0", "--timeout", "100ms")
 	if out != "" {
 		t.Fatalf("空等不得输出: %q", out)
 	}
@@ -160,7 +160,7 @@ func TestSessionWaitDiagOperationIDCorrelatesToStore(t *testing.T) {
 	}
 	capture := withCLICapture(t)
 
-	if _, _, err := runLedgerCLI(t, dir, "session", "wait", "user:sy", "--since", "0"); err != nil {
+	if _, _, err := runLedgerCLI(t, dir, "session", "wait", sessionID, "--since", "0"); err != nil {
 		t.Fatalf("session wait: %v", err)
 	}
 	completion, ok := capture.find("session wait 完成")
@@ -245,32 +245,32 @@ func atoiDiag(t *testing.T, raw string) int {
 func TestSessionWaitCancelDuringScanExitSemantics(t *testing.T) {
 	// 命中查询路径：钩子在席位版本读之后、候选查询之前取消 ctx，使取消以
 	// 查询错误形态返回（select 分支来不及感知）。
-	seed := func(t *testing.T) (*collab.Service, *ledger.Store) {
+	seed := func(t *testing.T) (*collab.Service, *ledger.Store, proto.DeliveryAddress) {
 		t.Helper()
-		svc, _, st, _ := mustWaitFixture(t, t.TempDir())
-		return svc, st
+		svc, _, st, sessionID := mustWaitFixture(t, t.TempDir())
+		return svc, st, syResident(sessionID)
 	}
 	t.Run("one_shot_exits_124", func(t *testing.T) {
-		svc, st := seed(t)
+		svc, st, addr := seed(t)
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		sessionWaitBeforeQuery = func(from, to int64) { cancel() }
 		defer func() { sessionWaitBeforeQuery = nil }()
 		var out bytes.Buffer
-		err := sessionWaitRun(ctx, svc, st, &out, "user:sy", 0, false, 0, false)
+		err := sessionWaitRun(ctx, svc, st, &out, addr, 0, false, 0, false)
 		var codeErr *exitCodeError
 		if !errors.As(err, &codeErr) || codeErr.code != ExitTimeout {
 			t.Fatalf("一次性取消应按 124 超时退出: %v", err)
 		}
 	})
 	t.Run("follow_exits_0", func(t *testing.T) {
-		svc, st := seed(t)
+		svc, st, addr := seed(t)
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		sessionWaitBeforeQuery = func(from, to int64) { cancel() }
 		defer func() { sessionWaitBeforeQuery = nil }()
 		var out bytes.Buffer
-		if err := sessionWaitRun(ctx, svc, st, &out, "user:sy", 0, false, 0, true); err != nil {
+		if err := sessionWaitRun(ctx, svc, st, &out, addr, 0, false, 0, true); err != nil {
 			t.Fatalf("follow 主动取消应退 0: %v", err)
 		}
 	})

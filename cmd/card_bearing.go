@@ -19,7 +19,7 @@ var cardSeatBearingCarrier string
 
 var cardSeatCmd = &cobra.Command{
 	Use:   "seat",
-	Short: "协调者席位的附属记录维护（coordinate 席位承载记录 / claude bind 席位桌面端记录）",
+	Short: "协调者席位的附属记录维护（coordinate 席位承载记录）",
 }
 
 var cardSeatBearingCmd = &cobra.Command{

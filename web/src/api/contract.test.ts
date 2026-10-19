@@ -131,11 +131,23 @@ import homeWakeReqFixture from './testdata/HomeWakeReq.json'
 import homeWakeRespFixture from './testdata/HomeWakeResp.json'
 import carrierDetectRespFixture from './testdata/CarrierDetectResp.json'
 import carrierRunCommandRespFixture from './testdata/CarrierRunCommandResp.json'
-import desktopLaunchMaterialFixture from './testdata/DesktopLaunchMaterial.json'
-import desktopLaunchMaterialNoLauncherFixture from './testdata/DesktopLaunchMaterialNoLauncher.json'
-import desktopLauncherOpenRespFixture from './testdata/DesktopLauncherOpenResp.json'
-import desktopDeliverReqFixture from './testdata/DesktopDeliverReq.json'
-import desktopDeliverRespFixture from './testdata/DesktopDeliverResp.json'
+import cardViewEmptySeatFixture from './testdata/CardViewEmptySeat.json'
+import cardDetailSeatedFixture from './testdata/CardDetailSeated.json'
+import sessionDetailB435Fixture from './testdata/SessionDetailB435.json'
+import roomHistoryB435Fixture from './testdata/RoomHistoryB435.json'
+import sessionSummaryProjectB435Fixture from './testdata/SessionSummaryProjectB435.json'
+import b435VocabFixture from './testdata/B435Vocab.json'
+import { SEAT_MODES, isSeatMode, type SeatMode } from './ledger'
+import {
+  NO_RECIPIENT_REASONS,
+  SESSION_MEMBER_KINDS,
+  isNoRecipientReason,
+  isSessionMemberKind,
+  type RoomHistoryItem,
+  type SessionCard,
+  type SessionMemberKind,
+  type SessionSummary,
+} from './rooms'
 import {
   type CarrierDetectResp,
   type CarrierRunCommandResp,
@@ -143,8 +155,6 @@ import {
   type CoordinatorLaunchResp,
   type CoordinatorStatus,
   type CoordinatorAttachReleaseResp,
-  type DesktopLaunchMaterial,
-  type DesktopLauncherOpenResp,
   type HomeProbeReq,
   type HomeProbeResp,
   type HomeWakeReq,
@@ -175,6 +185,8 @@ describe('契约 fixture 与 TS 类型', () => {
 			const view: CardView = {
 				...cardViewFixture,
 				driver_source: cardViewFixture.driver_source as CardView['driver_source'],
+				// B435：JSON import 把 driver_mode 拓宽成 string；以词表守卫收窄，不照抄上一行的 as（N7）。
+				driver_mode: isSeatMode(cardViewFixture.driver_mode) ? cardViewFixture.driver_mode : undefined,
 			}
 		const detail: CardDetail = cardDetailFixture
 		const node: NodeDef = nodeDefFixture
@@ -704,36 +716,93 @@ describe('远端预览会话契约', () => {
   })
 })
 
-// B434 桌面端协调者 DTO（契约 §6 DTO 行）：Go 侧 TestContractFixtures 生成、逐字节钉住；
-// 这里以 TS 类型承接（编译期）并断言键序、缺键与零值在场（运行期）。
-// DesktopDeliverReq/Resp 是 agentd↔agentd wire，web 无消费方、无 TS 镜像，只钉键与零值。
-describe('B434 桌面端协调者 DTO 契约', () => {
-  it('DesktopLaunchMaterial：已登记拉起器时 launcher 在场', () => {
-    const m: DesktopLaunchMaterial = desktopLaunchMaterialFixture
-    expect(Object.keys(m)).toEqual(['card', 'folder', 'brief', 'launcher'])
-    expect(m.card).toBe('B434')
-    expect(m.folder).toBe('/Users/dev/workspace/handoff')
-    expect(m.brief.startsWith('[handoff] ')).toBe(true)
-    expect(m.launcher).toBe('local_6f1c-launcher')
+// B435 TS 镜像（契约 C-305/306/307/327、C-208/406、C-501/502/509/510；W plan §5.1）：
+// 夹具全部由 Go TestContractFixtures 生成（⑤ 两份经 Go 解码 internal/proto/testdata 金样本
+// 再编码，事实源同一份）。JSON import 把字面量拓宽成 string，故新键一律经词表守卫收窄、
+// 运行期以 hasOwnProperty 区分缺键与空串——不用 as（N7）。
+describe('B435 TS 镜像', () => {
+  const has = (row: object, key: string) => Object.prototype.hasOwnProperty.call(row, key)
+
+  it('词表数组与 Go 常量逐值同序（枚举新值过白名单）', () => {
+    expect([...SEAT_MODES]).toEqual(b435VocabFixture.seat_modes)
+    expect([...NO_RECIPIENT_REASONS]).toEqual(b435VocabFixture.no_recipient_reasons)
+    expect([...SESSION_MEMBER_KINDS]).toEqual(b435VocabFixture.session_member_kinds)
   })
-  it('DesktopLaunchMaterial：未登记拉起器时 launcher 是缺键而不是空串', () => {
-    const m: DesktopLaunchMaterial = desktopLaunchMaterialNoLauncherFixture
-    expect(Object.keys(m)).toEqual(['card', 'folder', 'brief'])
-    expect(Object.prototype.hasOwnProperty.call(m, 'launcher')).toBe(false)
-    expect(m.launcher).toBeUndefined()
+
+  it('词表守卫拒空串、大小写变体与词表外值', () => {
+    for (const bad of ['', 'Push', 'PULL', 'auto', undefined, null, 1]) {
+      expect(isSeatMode(bad)).toBe(false)
+    }
+    for (const bad of ['', 'Structural', 'none', undefined]) {
+      expect(isNoRecipientReason(bad)).toBe(false)
+    }
+    expect(isSessionMemberKind('')).toBe(false)
+    expect(isSessionMemberKind('resident')).toBe(true)
   })
-  it('DesktopLauncherOpenResp：machine 空串（本机）是在场的零值', () => {
-    const r: DesktopLauncherOpenResp = desktopLauncherOpenRespFixture
-    expect(Object.keys(r)).toEqual(['launcher', 'machine', 'handled_by'])
-    expect(Object.prototype.hasOwnProperty.call(r, 'machine')).toBe(true)
-    expect(r.machine).toBe('')
-    expect(r.handled_by).toBe('mac-01')
+
+  it('CardView / Card：坐着带 driver_mode（词表内），空座 driver_* 三键同缺', () => {
+    const seated: Pick<CardView, 'driver_mode'> = {
+      driver_mode: isSeatMode(cardViewFixture.driver_mode) ? cardViewFixture.driver_mode : undefined,
+    }
+    expect(seated.driver_mode).toBe('pull')
+    expect(cardViewFixture.driver_source).toBe('bind')
+
+    for (const key of ['driver_mode', 'driver_session', 'driver_source']) {
+      expect(has(cardViewEmptySeatFixture, key)).toBe(false)
+    }
+
+    const card = cardDetailSeatedFixture.card
+    const mode: SeatMode | undefined = isSeatMode(card.driver_mode) ? card.driver_mode : undefined
+    const detailCard: Pick<CardDetail['card'], 'driver_mode' | 'driver_session'> = {
+      driver_mode: mode, driver_session: card.driver_session,
+    }
+    expect(detailCard.driver_mode).toBe('push')
+    expect(card.driver_source).toBe('coordinate')
+    // 无席位的既有 CardDetail 样本：driver_mode 同样缺键。
+    expect(has(cardDetailFixture.card, 'driver_mode')).toBe(false)
   })
-  it('DesktopDeliverReq / DesktopDeliverResp：键序与零值在场', () => {
-    expect(Object.keys(desktopDeliverReqFixture)).toEqual(['cli_session', 'desktop_session', 'card'])
-    expect(desktopDeliverReqFixture.card).toBe('B434')
-    expect(Object.keys(desktopDeliverRespFixture)).toEqual(['handled_by', 'written', 'opened'])
-    expect(desktopDeliverRespFixture.written).toBe(true)
-    expect(desktopDeliverRespFixture.opened).toBe(false)
+
+  it('SessionDetail：resident 成员行无 card_id；seat_mode 带/不带两态；项目房间带 project', () => {
+    const summary = sessionDetailB435Fixture.summary
+    const project: Pick<SessionSummary, 'project'> = { project: summary.project }
+    expect(project.project).toBe('handoff')
+
+    const kinds: SessionMemberKind[] = summary.members.map((m) => {
+      expect(isSessionMemberKind(m.kind)).toBe(true)
+      return isSessionMemberKind(m.kind) ? m.kind : 'human'
+    })
+    expect(kinds).toEqual(['human', 'resident', 'seat', 'seat'])
+    const resident = summary.members[1]
+    expect(resident.identity).toBe('agent:org')
+    expect(has(resident, 'card_id')).toBe(false)
+    expect(has(resident, 'card_title')).toBe(false)
+    expect(summary.members[2].card_id).toBe('B7')
+    expect(summary.members[3].identity).toBe('')
+    expect(summary.members[3].status).toBe('empty')
+
+    const [seatedCard, emptyCard] = summary.cards
+    const typed: Pick<SessionCard, 'seat_mode'> = {
+      seat_mode: isSeatMode(seatedCard.seat_mode) ? seatedCard.seat_mode : undefined,
+    }
+    expect(typed.seat_mode).toBe('pull')
+    expect(has(emptyCard, 'seat_mode')).toBe(false)
+    expect(has(emptyCard, 'seat')).toBe(false)
+  })
+
+  it('RoomHistoryItem.no_recipient（同一金样本）：出键行词表内，缺键行键集 = LedgerEvent', () => {
+    const rows = roomHistoryB435Fixture.messages
+    const typed: Pick<RoomHistoryItem, 'no_recipient'>[] = rows.map((row) => ({
+      no_recipient: isNoRecipientReason(row.no_recipient) ? row.no_recipient : undefined,
+    }))
+    expect(typed.map((r) => r.no_recipient)).toEqual(['needs_mention', 'addressed_unresolved', undefined])
+    expect(has(rows[2], 'no_recipient')).toBe(false)
+    expect(Object.keys(rows[2])).toEqual(Object.keys(ledgerEventFixture))
+  })
+
+  it('SessionSummary.project：项目房间出键、非项目房间缺键', () => {
+    const [projectRoom, plain] = sessionSummaryProjectB435Fixture
+    const typed: Pick<SessionSummary, 'project'> = { project: projectRoom.project }
+    expect(typed.project).toBe('handoff')
+    expect(has(plain, 'project')).toBe(false)
   })
 })

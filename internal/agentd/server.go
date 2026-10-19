@@ -203,6 +203,12 @@ type Server struct {
 	automationCursor      int64
 	automationCursorStore *automationCursorStore
 	automationSeen        map[int64]struct{}
+	// projectNotify 是项目房间系统通知器的 handled 集（B435 O1 Q6 甲，projectnotify.go）：只记「已发且
+	// 收尾 / 判定不适用 / 确定性放弃」的源事件 seq；零值可用，自带锁，不经 automationMu。
+	projectNotify projectNotifyHandled
+	// residentWake 是驻场者门铃信桥的进程内状态（B435 O2，residentwake.go）：已处置事件 seq 与「信未落盘」
+	// 的在途重试；零值可用，自带锁，不经 automationMu。
+	residentWake residentWakeState
 	// automationBackoff 记录每张卡最近一次失败唤醒的 seq 与退避截止时刻（B389
 	// §3.5.4）：同卡同 seq 在退避窗内不重复试跑，防止失败事件反复引发唤醒。
 	// 进程内存：重启后重试一次是安全方向（不丢事件）。
@@ -212,11 +218,6 @@ type Server struct {
 	// 不标 seen）；这里只数连续失败次数，用于恰一次落 needs_human 的去重阈值。
 	// 成功或遇非准入错误即清。进程内存：重启后重新计数，安全方向。
 	automationStall map[string]int
-	// desktopWakeStall 是每张卡当前的桌面端失败段（B434 契约 §3.7）：连续失败次数（0→1
-	// 落一条 needs_human）、未落盘重试的退避截止与段内复用的 wake_round 轮次。与
-	// automationStall 独立（不经 recordAdmissionStall）。受 automationMu 保护；成功即删。
-	// 进程内存：重启清零，同段最多多落一条 needs_human（契约写明可接受）。
-	desktopWakeStall map[string]desktopWakeStallEntry
 	// wakeQueueRounds 锁定「一轮」的队列路径身份：IgnitionRequest 身份键
 	// （wakeQueueRoundKey）→ 未收尾的 wake roundID。契约是「同一 IgnitionRequest
 	// 为一轮」（plan r2），不是「同一卡为一轮」——同卡换节点是新请求、新开一轮
@@ -239,8 +240,8 @@ type Server struct {
 	// NewServer 不装配（测试进程永远拿不到真实 opener）；生产由 cmd/agentd.go 组装点经
 	// SetDesktopOpener(PlatformDesktopOpener(runtime.GOOS)) 装配（darwin `open`、其它平台报
 	// 「本平台不支持 Claude 桌面端深链」，契约 r12 第 3 条）；同包测试直接赋 spy。
-	// nil = 本机不能发深链：wakeDesktopSeat 按「信已落盘、continue 未发出」返回
-	// desktopUnopenedError。只在装配期写、运行期只读，不加锁。
+	// nil = 本机不能发深链：驻场者门铃按「信已落盘、continue 未发出」处置（residentwake.go）。
+	// 只在装配期写、运行期只读，不加锁。
 	desktopOpen desktopOpener
 	// desktopHome 是桌面端信箱的根目录（信箱 = <desktopHome>/.handoff/desktop-wake，
 	// 契约 r10 第 11 条）。空 = os.UserHomeDir()（信箱属写信进程用户）；测试注入
@@ -337,7 +338,6 @@ func NewServer(cfg *config.Config, st *store.Store, log *slog.Logger) *Server {
 		automationKick:          make(chan struct{}, 1),
 		automationSeen:          make(map[int64]struct{}),
 		automationStall:         make(map[string]int),
-		desktopWakeStall:        make(map[string]desktopWakeStallEntry),
 		wakeQueueRounds:         make(map[string]string),
 	}
 	s.pty = ptyhost.New(s.ptyRootPath, exe, log)
@@ -405,6 +405,10 @@ func (s *Server) StartPush(ctx context.Context) {
 	s.log.Info("推送扇出 worker 启动")
 	s.pushFanout.Start(ctx)
 }
+
+// ConsoleMember 返回本机人本人的成员身份 `user:<console_user>`（每次读活配置；未配或非法名返回空串）。
+// 组装点把它注入 collab 项目房间书写者集（R-K1 (a‴)）：人可在项目房间发言，授权规则据作者认人本人。
+func (s *Server) ConsoleMember() string { return s.pushConsoleMember() }
 
 // pushConsoleMember 是 fanout 的 memberOf：只读配置里的 console_user 拼统一记法。
 //
@@ -991,10 +995,6 @@ func (s *Server) Handler() http.Handler {
 	s.registerLedgerRoutes(api)
 	s.registerSchedulingRoutes(api)
 	s.registerCoordRoutes(api)
-	// B434 G3：agentd→agentd 拉起器投递（契约 §3.9 P3=A、r6）。挂在 api mux 内即在 auth
-	// token 中间件之内（401 最外层，条 246）；只套 withLedger（未配账本 503 先于体校验，
-	// 条 243/245），不套 withCoordinator——收件机按卡读共享账本渲染，不依赖自动化层。
-	api.HandleFunc("POST /api/desktop/deliver", s.withLedger(s.handleDesktopDeliver))
 	// B432：iOS 推送设备登记（spec §契约面 1）。独立注册函数与 ledger/scheduling
 	// 同款，避免 Handler() 主表继续膨胀。
 	s.registerPushRoutes(api)
@@ -1594,14 +1594,17 @@ func (r coordinatorRunner) Resume(ref keysclient.SessionRef, prompt string) (key
 	if r.coord == nil {
 		return keysclient.TurnResult{}, executor.UnsupportedError(name, executor.CapCoordination)
 	}
+	// F-RM1（B435.2 R plan Q2 甲）：resume 回合注入本卡席位对，协调者按简报以席位身份回房间。
+	// launch 回合不注入（Q3 甲：会话 id 回合中才生成，半注入是 currentSeatIdentity 的硬错误）。
+	ref.Env = seatEnv(ref.CLI, ref.SessionID)
 	ctx, cancel := readyCtx()
 	defer cancel()
 	slog.Default().Log(ctx, wakeRoundLogLevel, "协调者回合开始", "cli", ref.CLI,
 		"mode", "resume", "session", ref.SessionID, "home_dir", ref.HomeDir,
-		"workdir", ref.Workdir, "timeout", coordWakeTurnTimeout.String())
+		"workdir", ref.Workdir, "seat_env", len(ref.Env) > 0, "timeout", coordWakeTurnTimeout.String())
 	got, err := r.coord.Resume(ctx, executor.CoordSessionRef{
 		CLI: ref.CLI, SessionID: ref.SessionID, HomeDir: ref.HomeDir,
-		Workdir: ref.Workdir, Model: ref.Model,
+		Workdir: ref.Workdir, Model: ref.Model, Env: ref.Env,
 	}, prompt)
 	if err != nil {
 		slog.Default().Log(ctx, wakeRoundLogLevel, "协调者回合失败", "cli", ref.CLI,
@@ -1637,20 +1640,16 @@ func NewCoordinatorRunner(coord executor.Coordinator, reg *executor.Registry,
 	return coordinatorRunner{coord: coord, reg: reg, prepareHome: prepareHome}
 }
 
-// resumeTurnRequest 把 SessionRef 上的续接环境映射进 RunTurn。HOME 空时
-// 子进程继承 agentd 默认 HOME，隔离会话必然找不到——调用方必须带上。
-func resumeTurnRequest(ref keysclient.SessionRef, prompt string) hostapi.TurnRequest {
-	if ref.HomeDir == "" {
-		slog.Default().Warn("协调者续接未带隔离 HOME，将继承 agentd 默认 HOME",
-			"component", "agentd", "has_cli", ref.CLI != "", "has_session", ref.SessionID != "")
+// seatEnv 拼 resume 回合注入子进程的 HANDOFF 席位对（B435.2 F-RM1，R plan Q2 甲；agentd 是
+// 该语义的唯一生产者，执行适配器只透传）。两值缺任一返回 nil：只给一半会被 CLI 侧
+// currentSeatIdentity 判为硬错误，宁可不注入（协调者命令显式失败）也不半注入。
+func seatEnv(cli, sessionID string) []string {
+	if cli == "" || sessionID == "" {
+		return nil
 	}
-	return hostapi.TurnRequest{
-		CLI: ref.CLI, SessionID: ref.SessionID, Prompt: prompt,
-		HomeDir: ref.HomeDir, Workdir: ref.Workdir, Model: ref.Model,
-		Env: []string{
-			"HANDOFF_SESSION_CLI=" + ref.CLI,
-			"HANDOFF_SESSION_ID=" + ref.SessionID,
-		},
+	return []string{
+		"HANDOFF_SESSION_CLI=" + cli,
+		"HANDOFF_SESSION_ID=" + sessionID,
 	}
 }
 
