@@ -137,9 +137,15 @@ func residentBriefing(brief ResidentBrief, evs []WakeEvent, firstRound bool) str
 	}
 	b += "回人话**发到本会话**：`" + residentSessionSend(brief.Agent, brief.Session) + "`。" +
 		residentBriefingSpeakOnly(brief.Agent) + residentBriefingCoordinate + residentBriefingCoordinateNoSlot + briefingRoomTone
+	// 零卡未命名：起名只在有人话可读的回合（spec S4「人发第一条消息后命名」）。首轮无唤醒事件时人还没开口，
+	// 真机 R5 实测此时模型会凭空起「驻场值班会话」这类无信息名——首轮只叫它等。
 	if len(brief.Cards) == 0 && brief.Title == proto.SessionUntitledTitle {
-		b += "\n本会话还没有名字：读懂人说的事后，用 `" + residentRename(brief.Agent, brief.Session) +
-			"` 起一个概括性名字；命令若因标题已变被拒，说明人已手动命名，保留人的名字即可。"
+		if len(evs) == 0 {
+			b += "\n本会话还没有名字，人也还没说话：**本轮不要改名**，等人第一次说话后再起名。"
+		} else {
+			b += "\n本会话还没有名字：读懂人说的事后，用 `" + residentRename(brief.Agent, brief.Session) +
+				"` 起一个概括性名字；命令若因标题已变被拒，说明人已手动命名，保留人的名字即可。"
+		}
 	}
 	b += "\n\n## 本会话上下文\n\n- 会话：" + brief.Session + "\n- 标题：" + brief.Title + "\n"
 	if len(brief.Cards) == 0 {

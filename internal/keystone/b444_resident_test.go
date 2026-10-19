@@ -132,8 +132,14 @@ func TestB444ResidentBriefing(t *testing.T) {
 					}
 				}
 				rename := "handoff session rename session:9 --agent coord --expect-title " + proto.SessionUntitledTitle
-				if got := strings.Contains(p, rename); got != tc.wantRename {
-					t.Fatalf("%s 简报 CAS 改名指令出现=%v，应 %v:\n%s", mode, got, tc.wantRename, p)
+				// 真机 R5（协调者改断言）：launch 首轮无人话，零卡未命名也不得起名——起名只在有唤醒事件的续轮。
+				wantRename := tc.wantRename && mode == "resume"
+				if got := strings.Contains(p, rename); got != wantRename {
+					t.Fatalf("%s 简报 CAS 改名指令出现=%v，应 %v:\n%s", mode, got, wantRename, p)
+				}
+				wantWait := tc.wantRename && mode == "launch"
+				if got := strings.Contains(p, "本轮不要改名"); got != wantWait {
+					t.Fatalf("%s 简报「本轮不要改名」出现=%v，应 %v:\n%s", mode, got, wantWait, p)
 				}
 				// B444 P2 返工 F2（协调者批准改断言）：简报现在**点名禁止** `--cli/--session`，故不再按子串全禁；
 				// 改禁「指示用席位身份发言」的形态（session send 带 --cli、席位环境键）。
