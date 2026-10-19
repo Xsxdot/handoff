@@ -116,6 +116,8 @@ func TestB444ResidentBriefing(t *testing.T) {
 				for _, want := range []string{
 					"handoff session send --agent coord session:9 <正文>",
 					"handoff card coordinate <卡号>",
+					// 协调者裁决 9（R3 嵌套名额暂不改）：叫协调者报无名额 / 409 时在会话里说明，不循环重试。
+					residentBriefingCoordinateNoSlot,
 					briefingRoomTone,
 				} {
 					if !strings.Contains(p, want) {

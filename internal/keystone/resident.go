@@ -95,6 +95,11 @@ const residentBriefingRole = "你是本会话的驻场者（会话 agent）：�
 const residentBriefingCoordinate = "会话里的卡需要推进时，为它叫协调者：`handoff card coordinate <卡号>`" +
 	"（卡协调者一卡一个，按卡工作；你不接管卡席位）。"
 
+// residentBriefingCoordinateNoSlot 是叫协调者失败时的处置句（B444 协调者裁决 9：驻场回合里同步叫协调者可能
+// 撞同一小队的名额——R3 待真机判定，修法未定；在此之前不让驻场者循环重试烧回合）。
+const residentBriefingCoordinateNoSlot = "若 `card coordinate` 报无名额 / 409，就在本会话里如实告诉人（哪张卡、报了什么），" +
+	"不要反复重试。"
+
 // residentBriefingFirstRound 是 launch 首轮的标注：驻场身份是 agent: 而非席位，首轮即可发言（与卡席位
 // 首轮「发不了房间消息」相反，不得照搬 briefingFirstRound）。
 const residentBriefingFirstRound = "本轮为首轮：你现在就可以在会话里说话。"
@@ -119,7 +124,7 @@ func residentBriefing(brief ResidentBrief, evs []WakeEvent, firstRound bool) str
 		b += residentBriefingFirstRound
 	}
 	b += "回人话**发到本会话**：`" + residentSessionSend(brief.Agent, brief.Session) + "`。" +
-		residentBriefingCoordinate + briefingRoomTone
+		residentBriefingCoordinate + residentBriefingCoordinateNoSlot + briefingRoomTone
 	if len(brief.Cards) == 0 && brief.Title == proto.SessionUntitledTitle {
 		b += "\n本会话还没有名字：读懂人说的事后，用 `" + residentRename(brief.Agent, brief.Session) +
 			"` 起一个概括性名字；命令若因标题已变被拒，说明人已手动命名，保留人的名字即可。"
