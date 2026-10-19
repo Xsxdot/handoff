@@ -33,7 +33,14 @@ type WakeEvent struct {
 	Kind    WakeKind
 	Card    string
 	Summary string // 一行人读得懂的事件摘要，进开场简报
+	// Session 非空 = 驻场唤醒（B444 P1）：目标是该会话房间的 push 驻场者，Card 恒空、Resident 为驻场身份。
+	// 卡路径（Wake/Decide/转交）只认 Card；驻场唤醒由 agentd 驻场批经 WakeResident 消费，不得混进卡批。
+	Session  string
+	Resident string
 }
+
+// IsResident 报告该唤醒是否指向会话驻场者（而不是卡席位）。
+func (ev WakeEvent) IsResident() bool { return ev.Session != "" }
 
 // Decision 是唤醒决策结论。
 type Decision struct {
@@ -67,18 +74,20 @@ type Service struct {
 	narrator    keysclient.Narrator
 	ledger      keysclient.LedgerView
 	sessions    map[string]keysclient.SessionRef // 卡号 → 绑定的协调者会话引用
+	residents   map[string]keysclient.SessionRef // 会话房间 id → push 驻场者会话引用（B444；与卡表分开，键空间不串）
 	refResolver SessionRefResolver
 }
 
 // New 组装四条出站端口。locator 允许 nil（attach 入口未装配时定位报错而非崩溃）。
 func New(runner keysclient.Runner, narrator keysclient.Narrator, ledger keysclient.LedgerView, locator keysclient.TerminalLocator) *Service {
 	return &Service{
-		takeover: map[string]bool{},
-		sessions: map[string]keysclient.SessionRef{},
-		runner:   runner,
-		narrator: narrator,
-		ledger:   ledger,
-		locator:  locator,
+		takeover:  map[string]bool{},
+		sessions:  map[string]keysclient.SessionRef{},
+		residents: map[string]keysclient.SessionRef{},
+		runner:    runner,
+		narrator:  narrator,
+		ledger:    ledger,
+		locator:   locator,
 	}
 }
 
