@@ -648,11 +648,11 @@ func TestCoordLaunchFailureReleasesCapacityAndKeeps502(t *testing.T) {
 	}
 }
 
-// TestCoordLaunchRejectsRemoteCarrier 锁「print 协调者只支持本机载体」：
-// 载体登记在远端时，回合必须被显式拒绝（旧 TUI 形态有远端 PTY 分支，print 没有），
-// 且不得留下半状态——席位仍空、名额归零。
+// TestCoordLaunchRejectsRemoteCarrier（B448 改写）：载体登记在远端时首轮转交给载体机；对端不可达 →
+// 入口 502 点名载体与机器（spec「实现决定」文案），且不留半状态——席位仍空、两级名额归零。
+// 原断言「print 协调者只支持本机载体」被 B448 推翻（plan §3 唯一允许改写的既有测试）。
 func TestCoordLaunchRejectsRemoteCarrier(t *testing.T) {
-	env, _ := newNoPTYCoordEnv(t)
+	env, runner := newNoPTYCoordEnv(t)
 	svc := mustScheduling(t, env.srv)
 	putOnlineCarrier(t, svc, scheduling.Carrier{
 		Name: "remote-carrier", Machine: "linux-01", CLI: "opencode",
@@ -667,23 +667,27 @@ func TestCoordLaunchRejectsRemoteCarrier(t *testing.T) {
 	}
 	cardID := createCoordCard(t, env)
 
+	// allowCarrierMachines 把 linux-01 指向 127.0.0.1:1：对端不可达。
 	code, body := ledgerPost(t, env.testAgentdEnv, "/api/cards/"+cardID+"/coordinator/launch", `{}`)
-	if code == http.StatusOK {
-		t.Fatalf("远端载体不得被拉起，状态=%d body=%s", code, body)
+	if code != http.StatusBadGateway {
+		t.Fatalf("远端载体对端不可达应 502，状态=%d body=%s", code, body)
 	}
-	if !strings.Contains(body, "远端") {
-		t.Fatalf("拒绝理由应点明远端载体：%s", body)
+	if !strings.Contains(body, "协调者载体 remote-carrier 在 linux-01，转交到该机失败") {
+		t.Fatalf("失败理由应点名载体与目标机：%s", body)
+	}
+	if len(runner.launches) != 0 {
+		t.Fatalf("受理机不得在本机拉起远端载体，Launch=%d", len(runner.launches))
 	}
 	card, err := env.ledger.GetCard(cardID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if card.DriverSession != "" || card.DriverSource != "" {
-		t.Fatalf("被拒的拉起不得落席位: session=%q source=%q", card.DriverSession, card.DriverSource)
+		t.Fatalf("转交失败不得落席位: session=%q source=%q", card.DriverSession, card.DriverSource)
 	}
 	for _, key := range []string{"squad/coord/remote-carrier", "carrier/remote-carrier"} {
 		if got := runningCountIn(t, env.srv.autoLedger, key); got != 0 {
-			t.Fatalf("被拒后名额 %s=%d，want 0", key, got)
+			t.Fatalf("转交失败后名额 %s=%d，want 0", key, got)
 		}
 	}
 }

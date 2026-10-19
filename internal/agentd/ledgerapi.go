@@ -72,6 +72,9 @@ func (s *Server) registerLedgerRoutes(api *http.ServeMux) {
 	// B444：改名（Q6 CAS）与叫驻场者（Q4，与建会话共用编排；需 keystone+scheduling，未装配 503）。
 	api.HandleFunc("POST /api/sessions/{id}/rename", s.withRooms(s.handleSessionRename))
 	api.HandleFunc("POST /api/sessions/{id}/resident/launch", s.withRooms(s.withCoordinator(s.handleSessionResidentLaunch)))
+	// B448：驻场者首轮转交收件端（agentd↔agentd）。不包 requireConsoleIdentity：执行机可能没配 console_user，
+	// agentd 之间的信任由 Bearer 令牌承担（与 coordinator/wake 同口径，plan §8 F5）。
+	api.HandleFunc("POST /api/sessions/{id}/resident/first-round", s.withRooms(s.withCoordinator(s.handleResidentFirstRound)))
 	// health 是前端的门控探针，必须恒 200：503 与网络错在浏览器侧不可区分。
 	// 其余 /api/cards* 等仍走 withLedger（未挂载 = 503）。
 	api.HandleFunc("GET /api/ledger/health", s.handleLedgerHealth)
