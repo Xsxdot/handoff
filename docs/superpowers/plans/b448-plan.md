@@ -285,7 +285,7 @@ go test ./internal/client/ ./internal/proto/ -count=1
 **错误回执**：体统一为 `{"error":string,"kind":string,"session_id"?:string,"pointed"?:bool}`。
 
 - **F19**（consumer 受理端）：未知 `kind` 或无 `kind`（例如 503 未装配）→ 入口 502，原文透出。
-- **F20**（producer 收件端）：新端点在业务上绝不回 404；卡或会话不存在 → 409 `kind=not_found`。
+- **F20**（producer 收件端）：新端点在业务上绝不回 404；卡不存在 → 409 `kind=not_found`；会话不存在 → 409 `kind=no_room`（即 F26，受理端还原为 `collab.ErrNoRoom` → 404，与本机路径 `sessionsapi.go` 一致）。〔修订 r1，2026-10-20：独立 review I-3 澄清，原文「卡或会话不存在 → not_found」与 F26 重叠；协调者裁决取 no_room。〕
 - **F21**（consumer 受理端）：对端回 404 → `ErrFirstRoundUnsupported` → 入口 502，文案「<机器> 的 agentd 版本过旧，不支持首轮转交，请升级」。
 - **F22**：`kind=no_slot`，状态 409 → 受理端错误满足 `errors.Is(err, scheduling.ErrNoSlot)`，并且 `errors.As(*coordinatorAdmissionError)` 成立。
 - **F23**：`kind=admission_rejected`，状态 400 → 受理端为非 NoSlot 的 `*coordinatorAdmissionError` → 入口 400。
