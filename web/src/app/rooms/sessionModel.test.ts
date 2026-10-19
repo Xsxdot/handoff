@@ -138,6 +138,8 @@ describe('项目筛选（B358.8 #6 纯函数缝）', () => {
       ['home_project 零卡 → {home}', { ...summaryOf('h3', []), home_project: 'aim' }, ['aim'], false],
       ['home_project 与卡同项目 → 去重', { ...summaryOf('h4', ['B2']), home_project: 'aim' }, ['aim'], false],
       ['home_project 空串视同缺键', { ...summaryOf('h5', []), home_project: '' }, [], false],
+      // 真机 R7：卡已终态移出卡流 → 映射缺失；有所属项目时以它为主（spec），不因未知卡落「其他会话」。
+      ['home_project + 映射缺失的卡 → {home}，不标未知', { ...summaryOf('h6', ['B9']), home_project: 'aim' }, ['aim'], false],
     ] as const)('B444 %s', (_name, session, names, unknown) => {
       expect(sessionProjects(session, projectOfCard)).toEqual({ names: [...names], hasUnknownCard: unknown })
     })

@@ -164,7 +164,10 @@ export function sessionProjects(
 ): SessionProjects {
   const cardProjects = (session.cards ?? []).map((card) => projectOfCard(card.card_id))
   const names = [...new Set([session.home_project ?? '', session.project ?? '', ...cardProjects].filter(Boolean))]
-  return { names, hasUnknownCard: cardProjects.some((name) => !name) }
+  // 有所属项目时以它为主（B444 spec「目标架构」）：映射缺失的卡（如已终态移出卡流，真机 R7）不使归属
+  // 不可证实——否则带终态卡的项目内会话会掉进「其他会话」。无 home_project 时保持 B435 口径不编造项目。
+  const hasUnknownCard = !session.home_project && cardProjects.some((name) => !name)
+  return { names, hasUnknownCard }
 }
 
 /** PullableCard 建会话框只读卡的四个键（CardView 与 Card 都满足）。 */

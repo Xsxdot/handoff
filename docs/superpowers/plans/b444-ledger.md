@@ -171,3 +171,4 @@
 ## 真机 R4/R5 返工（协调者 inline，2026-10-19）
 - R5 首跑：零卡空标题建会话，驻场者首轮（人尚未开口）即改名「驻场值班会话」——违背 S4「人发第一条消息后命名」。根因：简报对零卡未命名一律下发改名指令，含无唤醒事件的 launch 首轮。
 - 修：residentBriefing 仅在有唤醒事件时下发 CAS 改名；首轮改为「本轮不要改名」。TestB444ResidentBriefing 改断言（协调者自批：launch 不含改名、含等待句；resume 含改名），旧实现下该用例红（零卡未命名子例），新实现绿。
+- 真机 R7：带终态卡的项目内会话（session:1，home_project=b444demo，D1/D2 已完成移出卡流）在桌面左栏落「其他会话」。根因：sessionProjects 把映射缺失的卡判 hasUnknownCard，Shell/MobileWorkspace 据此判未关联。修：有 home_project 时不标未知（spec「所属项目为主」）；新增规则表用例先红后绿；rooms/tree/shell 597 绿，tsc 净。
