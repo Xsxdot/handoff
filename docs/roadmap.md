@@ -1000,7 +1000,11 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 
 ### B435 finish 残余（2026-10-19；来源各子卡 impl-ledger 与 `b435-ledger.md` 十五）
 
-- **用户机待验**（机制半边已在隔离靶子验过，设备/凭据项留档）：K0-3 其他 agent 解析 `card wait` 输出；K0-D 装过 B434 的用户机升级回填；R-1m 真手机控制台无 @ 发言；R-5b 真 opencode + 模型凭据跑 S1 一轮；O2-U1…U6 真 mod ≤16s 取信、桌面端组织者会话按简报行事、900s 回收后 continue 拉起、归档后新会话 `sit` 续读；O2-M1 双机门铃；W-0 真手机浏览器与薄壳内 W-7；X-U1 用户真实 SQLite 账本副本升级；X-U2 用户机 mod/桌面端/薄壳 `/new` 拒绝与 CLAUDE.md 旧片段。来源：`b435-ledger.md` 十五 15.5。
+- **用户机待验（2026-10-19 补验后剩余）**：K0-3、K0-D、R-5b、O2-U1…U6、O2-M1、X-U1、W-7 控制台半边、X-U2 的 mod/CLAUDE.md 半边已补验（`b435-ledger.md` 十七）。仍未验：**R-1m / W-0 真手机**（无设备，控制台仅做过移动端模拟）；**薄壳内 W-7 与 X-U2 `/new` 拒绝**（薄壳未装，构建需 `go install` wails3）；K0-D 的 `card wait` 收房间行（生产副本无非终态在会话 pull 卡）；O2-U3 桌面端是否实际回收会话未独立观测。来源：`b435-ledger.md` 十七 17.1。
+- **`handoff room read --after N` 语义反了**（存量缺陷，B156.2.7 `5582a6ce` 起，已在 main）：`cmd/room.go#roomReadCmd` 把 `--after` 传进 `HistoryContext` 的 `beforeSeq`；组织者「答前先查」取证命令因此读错区间。修法：CLI 走排他 after 的账本查询（或改 flag 名并同步 SKILL），补一支 `--after` 穿 CLI 的回归测试。来源：`b435-ledger.md` 17.2-1。
+- **人类不在项目房间书写者集**：项目房间群主 `agent:handoff`，控制台用户在项目房间发言被拒（`书写者与房间身份不符`），与 SKILL「人在项目房间无 @ 发言 → 门铃」不符。待裁决：项目房间书写者集并入 `console_user`（或建房时把人加为成员），或改 SKILL 文案。来源：`b435-ledger.md` 17.2-2。
+- **组织者授权规则 vs 用户「不在电脑前也能沟通」**（需用户裁决、会改冻结契约 Q4 与 SKILL 逐字）：备选——只认作者为 `user:<本人>` 的房间发言为授权（组织者真机提议，已用其拒绝了 agent 冒称同意）。来源：`b435-ledger.md` 17.2-3。
+- **SKILL `card wait` 可动作事件清单补 `room_message`**（Minor）。来源：`b435-ledger.md` 17.2-4。
 - **主线合并后 `codegraph absorb cards-B435-charter-1`**：`validate` 9 条 no-import 全部源于本卡删除的 import，absorb 前已知；absorb 后复核 `check` 三处存量 over-budget 是否变化。来源：X 偏离 #18。
 - **`MessageWakeTargets` / `WakeTargets` / `SessionMessageCandidatesContext` 删除与过时文件头**：`internal/collab/sessions.go:304-316` 生产零调用方；`internal/ledger/session_candidates.go:5`、`seat_revision.go:4` 文件头仍称其为唯一裁决。来源：R plan Q12 乙 + review M4（I 卡未做，留下一期顺手）。
 - **O2 review Minor-1/2/3**：(a″) 第二读失败分支与「新命中并入在途重试」补测试锁；`residentwake.go` `human` 变量名改 `addressable`。来源：`b435.4-impl-ledger.md`。
