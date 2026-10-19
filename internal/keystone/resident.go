@@ -93,7 +93,19 @@ const residentBriefingRole = "你是本会话的驻场者（会话 agent）：�
 
 // residentBriefingCoordinate 指路「为卡叫协调者」（S6，既有 card coordinate；不改代码）。
 const residentBriefingCoordinate = "会话里的卡需要推进时，为它叫协调者：`handoff card coordinate <卡号>`" +
-	"（卡协调者一卡一个，按卡工作；你不接管卡席位）。"
+	"（卡协调者一卡一个，按卡工作；你不接管卡席位）。" + residentBriefingCoordinateSync
+
+// residentBriefingCoordinateSync 说明 card coordinate 的同步与耗时（B444 P2 返工 F2，真机 R4：它要等该卡协调者
+// 首轮跑完，可能好几分钟；载体 shell 工具 120s 默认超时杀掉后模型误报失败、可能重复叫）。
+const residentBriefingCoordinateSync = "这条命令是**同步**的：它会等该卡协调者首轮跑完才返回，可能要好几分钟——" +
+	"调用时把工具超时设到至少 20 分钟；超时不等于失败，先用 `handoff card show <卡号>` 看 driver_session 是否已坐上再判断；" +
+	"同一张卡绝不重复 coordinate。"
+
+// residentBriefingSpeakOnly 限定发言身份（B444 P2 返工 F2，真机 R4：首轮发不了言时模型冒用了卡席位的
+// --cli/--session）。返回带小队名的句子。
+func residentBriefingSpeakOnly(agent string) string {
+	return "只用 `--agent " + agent + "` 发言，绝不用 `--cli/--session`（那是卡席位的身份，不是你的）。"
+}
 
 // residentBriefingCoordinateNoSlot 是叫协调者失败时的处置句（B444 协调者裁决 9：驻场回合里同步叫协调者可能
 // 撞同一小队的名额——R3 待真机判定，修法未定；在此之前不让驻场者循环重试烧回合）。
@@ -115,16 +127,16 @@ func residentRename(agent, session string) string {
 		proto.SessionUntitledTitle + " <概括名>"
 }
 
-// residentBriefing 拼驻场者回合简报：角色句、发言命令、叫协调者指路、口吻句、（零卡且仍是占位名时）
-// CAS 改名指令、会话最小上下文与本次唤醒事件。不含卡席位句（`--cli/--session`、HANDOFF 席位环境键）：
-// 驻场者用 --agent 出示身份，席位句会诱导它冒用不存在的席位。
+// residentBriefing 拼驻场者回合简报：角色句、发言命令与只用 --agent 的限定、叫协调者指路（同步与超时处置）、
+// 口吻句、（零卡且仍是占位名时）CAS 改名指令、会话最小上下文与本次唤醒事件。不给任何「以席位身份发言」的
+// 指示（`send --cli …`、HANDOFF 席位环境键）——只点名禁止 `--cli/--session`（真机 R4 冒用卡席位的教训）。
 func residentBriefing(brief ResidentBrief, evs []WakeEvent, firstRound bool) string {
 	b := residentBriefingRole
 	if firstRound {
 		b += residentBriefingFirstRound
 	}
 	b += "回人话**发到本会话**：`" + residentSessionSend(brief.Agent, brief.Session) + "`。" +
-		residentBriefingCoordinate + residentBriefingCoordinateNoSlot + briefingRoomTone
+		residentBriefingSpeakOnly(brief.Agent) + residentBriefingCoordinate + residentBriefingCoordinateNoSlot + briefingRoomTone
 	if len(brief.Cards) == 0 && brief.Title == proto.SessionUntitledTitle {
 		b += "\n本会话还没有名字：读懂人说的事后，用 `" + residentRename(brief.Agent, brief.Session) +
 			"` 起一个概括性名字；命令若因标题已变被拒，说明人已手动命名，保留人的名字即可。"

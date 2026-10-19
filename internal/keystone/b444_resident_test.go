@@ -118,6 +118,13 @@ func TestB444ResidentBriefing(t *testing.T) {
 					"handoff card coordinate <卡号>",
 					// 协调者裁决 9（R3 嵌套名额暂不改）：叫协调者报无名额 / 409 时在会话里说明，不循环重试。
 					residentBriefingCoordinateNoSlot,
+					// B444 P2 返工 F2（真机 R4）：card coordinate 同步且慢——工具超时 ≥20 分钟、超时先 card show 查
+					// driver_session、同卡不重复叫；只用 --agent 发言。
+					"至少 20 分钟",
+					"handoff card show <卡号>",
+					"driver_session",
+					"同一张卡绝不重复",
+					"只用 `--agent coord` 发言",
 					briefingRoomTone,
 				} {
 					if !strings.Contains(p, want) {
@@ -128,10 +135,15 @@ func TestB444ResidentBriefing(t *testing.T) {
 				if got := strings.Contains(p, rename); got != tc.wantRename {
 					t.Fatalf("%s 简报 CAS 改名指令出现=%v，应 %v:\n%s", mode, got, tc.wantRename, p)
 				}
-				for _, banned := range []string{"--cli", "--session", "HANDOFF_SESSION_"} {
+				// B444 P2 返工 F2（协调者批准改断言）：简报现在**点名禁止** `--cli/--session`，故不再按子串全禁；
+				// 改禁「指示用席位身份发言」的形态（session send 带 --cli、席位环境键）。
+				for _, banned := range []string{"send --cli", "--cli opencode", "HANDOFF_SESSION_"} {
 					if strings.Contains(p, banned) {
 						t.Fatalf("%s 驻场简报不得含卡席位句 %q:\n%s", mode, banned, p)
 					}
+				}
+				if !strings.Contains(p, "绝不用 `--cli/--session`") {
+					t.Fatalf("%s 驻场简报应点名禁止 --cli/--session:\n%s", mode, p)
 				}
 				for _, c := range tc.brief.Cards {
 					if !strings.Contains(p, c) {
