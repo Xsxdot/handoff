@@ -137,13 +137,23 @@ import sessionDetailB435Fixture from './testdata/SessionDetailB435.json'
 import roomHistoryB435Fixture from './testdata/RoomHistoryB435.json'
 import sessionSummaryProjectB435Fixture from './testdata/SessionSummaryProjectB435.json'
 import b435VocabFixture from './testdata/B435Vocab.json'
+import sessionSummaryHomeProjectB444Fixture from './testdata/SessionSummaryHomeProjectB444.json'
+import sessionCreateRespB444Fixture from './testdata/SessionCreateRespB444.json'
+import sessionCreateRespResidentErrorB444Fixture from './testdata/SessionCreateRespResidentErrorB444.json'
+import sessionTimelineRenamedB444Fixture from './testdata/SessionTimelineRenamedB444.json'
+import { sessionProjects, timelineKindLabel } from '../app/rooms/sessionModel'
 import { SEAT_MODES, isSeatMode, type SeatMode } from './ledger'
 import {
   NO_RECIPIENT_REASONS,
   SESSION_MEMBER_KINDS,
   isNoRecipientReason,
   isSessionMemberKind,
+  isResidentDriverMode,
+  isSessionTimelineKind,
   type RoomHistoryItem,
+  type SessionCreateResp,
+  type SessionMember,
+  type SessionTimelineEvent,
   type SessionCard,
   type SessionMemberKind,
   type SessionSummary,
@@ -804,5 +814,69 @@ describe('B435 TS 镜像', () => {
     const typed: Pick<SessionSummary, 'project'> = { project: projectRoom.project }
     expect(typed.project).toBe('handoff')
     expect(has(plain, 'project')).toBe(false)
+  })
+})
+
+// B444 TS 镜像（plan A2.6/A3.4、§8 版本化增量）：夹具由 Go TestContractFixtures 生成。
+// 「缺失 vs 空」（缺陷族 R10）：旧会话 home_project 缺键、桌面驻场者 driver_mode 缺键，
+// 一律以 hasOwnProperty 断言键的有无，不以 falsy 混判。
+describe('B444 TS 镜像', () => {
+  const has = (row: object, key: string) => Object.prototype.hasOwnProperty.call(row, key)
+
+  it('SessionSummary.home_project：旧会话缺键、新会话出键；sessionProjects 旧行不变、新行以 home_project 打头', () => {
+    const [legacy, homed] = sessionSummaryHomeProjectB444Fixture
+    expect(has(legacy, 'home_project')).toBe(false)
+    expect(has(legacy, 'project')).toBe(false)
+    const typed: Pick<SessionSummary, 'home_project'> = { home_project: homed.home_project }
+    expect(typed.home_project).toBe('handoff')
+    // 卡映射到他项目：home_project 必须排在卡项目之前（并集 = 跨项目会话）。
+    const projectOfCard = (id: string) => ({ B1: 'aim', B2: 'handoff' } as Record<string, string>)[id] ?? ''
+    expect(sessionProjects(legacy, projectOfCard)).toEqual({ names: [], hasUnknownCard: false })
+    expect(sessionProjects(homed, projectOfCard)).toEqual({ names: ['handoff', 'aim'], hasUnknownCard: false })
+  })
+
+  it('SessionMember：push 驻场者带 driver_mode/carrier/carrier_machine/model，词表守卫收窄', () => {
+    const raw = sessionSummaryHomeProjectB444Fixture[1].members![0]
+    const member: Pick<SessionMember, 'driver_mode' | 'carrier' | 'carrier_machine' | 'model'> = {
+      driver_mode: isResidentDriverMode(raw.driver_mode) ? raw.driver_mode : undefined,
+      carrier: raw.carrier, carrier_machine: raw.carrier_machine, model: raw.model,
+    }
+    expect(member).toEqual({ driver_mode: 'push', carrier: 'linux-01-opencode', carrier_machine: 'linux-01', model: 'free-model' })
+    for (const bad of ['', 'Push', 'desktop', undefined]) expect(isResidentDriverMode(bad)).toBe(false)
+    // B435 既有成员样本（桌面驻场者）四键同缺。
+    for (const key of ['driver_mode', 'carrier', 'carrier_machine', 'model']) {
+      expect(has(sessionDetailB435Fixture.summary.members[1], key)).toBe(false)
+    }
+  })
+
+  it('SessionCreateResp：内嵌 Session 键集 + home_project + rejected_cards + resident 成功形', () => {
+    const resp: SessionCreateResp = sessionCreateRespB444Fixture
+    expect(resp.id).toBe('session:9')
+    expect(resp.home_project).toBe('handoff')
+    expect(resp.cards).toEqual(['B1', 'B2'])
+    expect(resp.rejected_cards).toEqual([{ card: 'B3', reason: '卡已在会话 session:4 里' }])
+    expect(resp.resident).toEqual({ identity: 'agent:coord', carrier: 'linux-01-opencode', carrier_machine: 'linux-01' })
+    expect(has(sessionCreateRespB444Fixture.resident, 'error')).toBe(false)
+  })
+
+  it('SessionCreateResp：驻场者首轮失败形只带 resident.error；无拒卡时 rejected_cards 缺键', () => {
+    const resp: SessionCreateResp = sessionCreateRespResidentErrorB444Fixture
+    expect(resp.title).toBe('新会话')
+    expect(resp.resident?.error).toContain('拉起驻场者首轮失败')
+    expect(has(sessionCreateRespResidentErrorB444Fixture.resident, 'identity')).toBe(false)
+    expect(has(sessionCreateRespResidentErrorB444Fixture, 'rejected_cards')).toBe(false)
+    expect(has(sessionCreateRespResidentErrorB444Fixture, 'cards')).toBe(false)
+  })
+
+  it('SessionTimelineEvent：renamed 在词表内且有中文标签', () => {
+    const [raw] = sessionTimelineRenamedB444Fixture
+    expect(isSessionTimelineKind(raw.kind)).toBe(true)
+    const row: Pick<SessionTimelineEvent, 'kind' | 'detail' | 'actor'> = {
+      kind: isSessionTimelineKind(raw.kind) ? raw.kind : 'created', detail: raw.detail, actor: raw.actor,
+    }
+    expect(row.kind).toBe('renamed')
+    expect(timelineKindLabel(row.kind)).toBe('会话改名')
+    expect(JSON.parse(row.detail!)).toEqual({ from: '新会话', session: 'session:10', title: '排查登录失败' })
+    expect(isSessionTimelineKind('rename')).toBe(false)
   })
 })

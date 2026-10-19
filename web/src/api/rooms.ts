@@ -133,6 +133,14 @@ export function isSessionMemberKind(value: unknown): value is SessionMemberKind 
 // 「看板不说谎」：与 proto.SessionMember* 状态词表逐值一致（sessions_fixture_test.go 冻结）。
 export type SessionMemberStatus = 'working' | 'listening' | 'last_active' | 'empty'
 
+// B444：驻场者驱动形态词表（proto.ResidentDriver*）。desktop 驻场者在线上是空串 → omitempty 缺键，
+// 故词表只有 push；缺键即 desktop（旧行），不得把空串当词表值（缺陷族 R10）。
+export const RESIDENT_DRIVER_MODES = ['push'] as const
+export type ResidentDriverMode = (typeof RESIDENT_DRIVER_MODES)[number]
+export function isResidentDriverMode(value: unknown): value is ResidentDriverMode {
+  return typeof value === 'string' && (RESIDENT_DRIVER_MODES as readonly string[]).includes(value)
+}
+
 export interface SessionMember {
   identity: string
   kind: SessionMemberKind
@@ -140,6 +148,11 @@ export interface SessionMember {
   card_title?: string
   status: SessionMemberStatus
   last_active?: string
+  /** B444：只驻场者行可能出键；push 驻场者四键齐出，desktop 驻场者全缺。 */
+  driver_mode?: ResidentDriverMode
+  carrier?: string
+  carrier_machine?: string
+  model?: string
 }
 
 /** 会话里的一张卡；seat 缺键 = 空座。seat_mode（B435 C-307/327）与 seat 同缺同出。 */
@@ -153,6 +166,8 @@ export interface SessionSummary {
   archived: boolean
   /** B435 ⑤ C-510/511：项目房间标记（取值项目名）；非项目房间不出键。 */
   project?: string
+  /** B444 S8：会话所属项目（建时写入，不随卡变）；旧会话与项目房间不出键。 */
+  home_project?: string
   unread: number
   needs_human: boolean
   last_activity: string
@@ -163,15 +178,38 @@ export interface SessionSummary {
 
 export interface Session {
   id: string; title: string; owner: string; archived: boolean
+  /** B444：会话所属项目；旧形态建会话不出键。 */
+  home_project?: string
   members?: string[]; cards?: string[]
   created_at: string; updated_at: string
 }
 
+/** B444：建会话时被拒的一张卡；reason 由服务端点名冲突对象（如所在会话 id）。 */
+export interface SessionRejectedCard { card: string; reason: string }
+
+/** B444：拉起驻场者的结果——成功带 identity 与载体落点，失败只带 error（会话与卡照旧保留）。 */
+export interface SessionResidentOutcome { identity?: string; carrier?: string; carrier_machine?: string; error?: string }
+
+/** B444：POST /api/sessions 响应 = Session 键集 + 可选 rejected_cards / resident（均 omitempty）。 */
+export interface SessionCreateResp extends Session {
+  rejected_cards?: SessionRejectedCard[]
+  resident?: SessionResidentOutcome
+}
+
+/** B444：项目内建会话请求。squad 必填（Web 形态，预填唯一协调小队）；空标题/空卡不出键。 */
+export interface SessionCreateInput { project: string; squad: string; cards?: string[]; title?: string }
+
 export interface SessionNode { card_id: string; title?: string; node: string; round?: number; state: string; target?: string }
 
-export type SessionTimelineKind =
-  | 'created' | 'archived' | 'card_joined' | 'card_left'
-  | 'seat_bound' | 'seat_rebound' | 'needs_human' | 'card_closed'
+// 与 proto.SessionEvent* 词表逐值一致（B444 增 renamed）。
+export const SESSION_TIMELINE_KINDS = [
+  'created', 'archived', 'card_joined', 'card_left',
+  'seat_bound', 'seat_rebound', 'needs_human', 'card_closed', 'renamed',
+] as const
+export type SessionTimelineKind = (typeof SESSION_TIMELINE_KINDS)[number]
+export function isSessionTimelineKind(value: unknown): value is SessionTimelineKind {
+  return typeof value === 'string' && (SESSION_TIMELINE_KINDS as readonly string[]).includes(value)
+}
 
 export interface SessionTimelineEvent {
   seq: number; kind: SessionTimelineKind
@@ -268,10 +306,25 @@ export const fetchSessions = (signal?: AbortSignal): Promise<SessionSummary[]> =
 export const fetchSessionDetail = (id: string, signal?: AbortSignal): Promise<SessionDetail> =>
   request<SessionDetail>(`/api/sessions/${encodeURIComponent(id)}`, { signal })
 
-// createSession 建会话（POST /api/sessions {title}）：owner 由服务端按解析人名
-// 缺省（B358.9 契约 §3.8；决定 6 owner=创建者），前端不传 owner。
-export const createSession = (title: string): Promise<Session> =>
-  postJSON<Session>('/api/sessions', { title })
+// createSession 项目内建会话（B444：POST /api/sessions {project, squad, cards?, title?}）。
+// owner 仍由服务端按解析人名缺省（B358.9 契约 §3.8），前端不传 owner。服务端同步建行、
+// 拉卡并拉起驻场者首轮，可能耗时较长；首轮失败仍 200，失败原因在 resident.error。
+// 空标题（trim 后）与空卡列表不出键——标题留空即交服务端自动命名。
+export const createSession = (input: SessionCreateInput): Promise<SessionCreateResp> => {
+  const payload: SessionCreateInput = { project: input.project, squad: input.squad }
+  if (input.cards !== undefined && input.cards.length > 0) payload.cards = input.cards
+  const title = input.title?.trim() ?? ''
+  if (title !== '') payload.title = title
+  return postJSON<SessionCreateResp>('/api/sessions', payload)
+}
+
+// renameSession 改会话名（B444 S7：POST /api/sessions/{id}/rename）。expectTitle 非空即 CAS 前值
+// （不符 409）；人在 Web 上改名不带 expect。身份服务端注入（群主或驻场者才可改）。
+export const renameSession = (id: string, title: string, expectTitle = ''): Promise<Session> => {
+  const payload: { title: string; expect_title?: string } = { title }
+  if (expectTitle !== '') payload.expect_title = expectTitle
+  return postJSON<Session>(`/api/sessions/${encodeURIComponent(id)}/rename`, payload)
+}
 
 // archiveSession 归档会话（POST …/archive，幂等）。控制台本期无归档入口
 // （CLI `session archive` 是操作面），函数保留为六端点镜像完整性。

@@ -2,6 +2,7 @@
 // @分段、未读聚合。边界：不发请求、不碰 React；两张词表是「看板不说谎」
 // （proto 四值词表）与「未知值不白屏」（透传兜底）的前端半边，词表漂移由
 // sessionModel.test 与孪生金样本双侧拦截。
+import type { Card } from '../../api/ledger'
 import type { SessionMember, SessionMemberKind, SessionSummary } from '../../api/rooms'
 import { formatRelative, isUnrecordedTime } from '../lib/format'
 
@@ -30,16 +31,35 @@ export function memberStatusText(member: SessionMember): string {
   return memberStatusLabel(member.status)
 }
 
-// 恰八值（proto.SessionEvent* 词表）；未知 ledger 事件不进 timeline（collab 侧），
+// 恰九值（proto.SessionEvent* 词表，B444 增 renamed）；未知 ledger 事件不进 timeline（collab 侧），
 // 但前端仍对未知 kind 透传兜底（缺陷族 7 不白屏）。
 export const TIMELINE_KIND_LABEL: Readonly<Record<string, string>> = {
   created: '会话建立', archived: '会话归档', card_joined: '卡进群', card_left: '卡移出',
   seat_bound: '协调者入座', seat_rebound: '席位换绑', needs_human: '需要你', card_closed: '卡收口',
+  renamed: '会话改名',
 }
 
 // timelineKindLabel timeline 事件渲染：未知 kind 原样透传，不白屏。
 export function timelineKindLabel(kind: string): string {
   return TIMELINE_KIND_LABEL[kind] ?? kind
+}
+
+// timelineDetailText timeline 行的 detail 读数。renamed 的 detail 是服务端 JSON
+// {from,title,session}，渲染成「旧名 → 新名」；其余 kind 或解析不出预期形状时原样透传
+// （载荷可对质，不二次解释）。
+export function timelineDetailText(row: { kind: string; detail?: string }): string {
+  const raw = row.detail ?? ''
+  if (row.kind !== 'renamed' || raw === '') return raw
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    if (parsed !== null && typeof parsed === 'object') {
+      const { from, title } = parsed as { from?: unknown; title?: unknown }
+      if (typeof from === 'string' && typeof title === 'string') return `${from} → ${title}`
+    }
+  } catch {
+    // 非 JSON：原样透传，不白屏。
+  }
+  return raw
 }
 
 export interface BodySegment { text: string; mention: boolean }
@@ -133,16 +153,35 @@ export const PROJECT_ROOM_BADGE = '项目房间'
 // hasUnknownCard = 有卡在 projectOfCard 里查不到项目（归属不可证实，调用方不得编造项目）。
 export interface SessionProjects { names: string[]; hasUnknownCard: boolean }
 
-// sessionProjects 会话 → 所属项目名集合（B435 Q7，C-510）= summary.project ∪ 卡项目。
+// sessionProjects 会话 → 所属项目名集合（B435 Q7，C-510；B444 S8）=
+// home_project ∪ summary.project ∪ 卡项目，去重保序、home_project 打头。
 // 这是「会话属于哪个项目」的唯一规则：桌面项目树（Shell）、移动工作台（MobileWorkspace）
-// 与侧栏筛选（filterSessionsByProject）共用；项目房间零卡也归属其项目。
+// 与侧栏筛选（filterSessionsByProject）共用；项目房间与项目内会话零卡也归属其项目。
+// 旧会话 home_project 缺键（或空串）时结果与 B435 规则逐例一致，不迁移。
 export function sessionProjects(
-  session: Pick<SessionSummary, 'project' | 'cards'>,
+  session: Pick<SessionSummary, 'project' | 'home_project' | 'cards'>,
   projectOfCard: (cardId: string) => string,
 ): SessionProjects {
   const cardProjects = (session.cards ?? []).map((card) => projectOfCard(card.card_id))
-  const names = [...new Set([session.project ?? '', ...cardProjects].filter(Boolean))]
+  const names = [...new Set([session.home_project ?? '', session.project ?? '', ...cardProjects].filter(Boolean))]
   return { names, hasUnknownCard: cardProjects.some((name) => !name) }
+}
+
+/** PullableCard 建会话框只读卡的四个键（CardView 与 Card 都满足）。 */
+export type PullableCard = Pick<Card, 'id' | 'title' | 'status' | 'project'>
+
+// 账本终态（internal/ledger/types.go StatusDone/StatusClosed）：终态卡不可拉入会话。
+const TERMINAL_CARD_STATUSES = new Set(['已完成', '终止'])
+
+/**
+ * pullableCards 建会话框的卡候选：属本项目、未终态、不在任何（已知）会话里，保持入参顺序。
+ * @param cards 卡流快照（全部项目）
+ * @param project 会话所属项目名（与 card.project 逐字比对，同服务端预校验口径）
+ * @param sessions 会话列表快照（含归档）；列表外的会话占用由服务端拒绝并点名
+ */
+export function pullableCards<T extends PullableCard>(cards: T[], project: string, sessions: Pick<SessionSummary, 'cards'>[]): T[] {
+  const taken = new Set(sessions.flatMap((session) => (session.cards ?? []).map((card) => card.card_id)))
+  return cards.filter((card) => card.project === project && !TERMINAL_CARD_STATUSES.has(card.status) && !taken.has(card.id))
 }
 
 // filterSessionsByProject 按项目筛选会话列表（B358.8 #6）：project='' 为「全部」

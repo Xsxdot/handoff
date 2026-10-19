@@ -17,6 +17,7 @@ import {
   joinSessionCard,
   leaveSessionCard,
   markRoomRead,
+  renameSession,
   sendRoomMessage,
 } from './rooms'
 import fixture from './testdata/RoomsFixture.json'
@@ -242,14 +243,33 @@ describe('addSessionMember (B366)', () => {
 })
 
 describe('session 写面 (B358.6)', () => {
-  it('createSession POST {title}——不再带 owner（服务端按解析人名缺省）', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(jsonResp({ id: 'session:1', title: 'T', owner: 'user:sycm', archived: false, created_at: '', updated_at: '' }))
+  // B444（plan §3 P3 改签名）：项目内建会话。不变式保留——仍不带 owner（服务端按解析人名缺省）。
+  it('createSession POST {project, squad, cards?, title?}——空标题与空卡不出键，不带 owner', async () => {
+    const fetchMock = vi.fn().mockImplementation(async () => jsonResp({ id: 'session:1', title: '新会话', owner: 'user:sycm', archived: false, home_project: 'handoff', created_at: '', updated_at: '' }))
     vi.stubGlobal('fetch', fetchMock)
-    await createSession('需求对齐')
+    const resp = await createSession({ project: 'handoff', squad: 'coord', cards: [], title: '  ' })
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
     expect(url).toBe('/api/sessions')
     expect(init.method).toBe('POST')
-    expect(JSON.parse(init.body as string)).toEqual({ title: '需求对齐' })
+    expect(JSON.parse(init.body as string)).toEqual({ project: 'handoff', squad: 'coord' })
+    expect(resp.home_project).toBe('handoff')
+
+    await createSession({ project: 'handoff', squad: 'coord', cards: ['B1', 'B2'], title: ' 需求对齐 ' })
+    const [, init2] = fetchMock.mock.calls[1] as [string, RequestInit]
+    expect(JSON.parse(init2.body as string)).toEqual({ project: 'handoff', squad: 'coord', cards: ['B1', 'B2'], title: '需求对齐' })
+  })
+
+  it('renameSession POST /api/sessions/{id}/rename {title, expect_title?}', async () => {
+    const fetchMock = vi.fn().mockImplementation(async () => jsonResp({ id: 'session:7', title: '新名', owner: 'user:sy', archived: false, created_at: '', updated_at: '' }))
+    vi.stubGlobal('fetch', fetchMock)
+    await renameSession('session:7', '新名')
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(url).toBe('/api/sessions/session%3A7/rename')
+    expect(init.method).toBe('POST')
+    expect(JSON.parse(init.body as string)).toEqual({ title: '新名' })
+    await renameSession('session:7', '新名', '新会话')
+    const [, init2] = fetchMock.mock.calls[1] as [string, RequestInit]
+    expect(JSON.parse(init2.body as string)).toEqual({ title: '新名', expect_title: '新会话' })
   })
 
   it('fetchIdentity GET /api/identity 三键解码', async () => {

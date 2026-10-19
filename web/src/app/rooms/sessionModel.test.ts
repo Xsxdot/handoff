@@ -6,7 +6,7 @@ import { SESSION_MEMBER_KINDS, type SessionMember, type SessionSummary } from '.
 import {
   MEMBER_KIND_LABEL, MEMBER_STATUS_LABEL, PROJECT_ROOM_BADGE, RESIDENT_ORGANIZER_LABEL, TIMELINE_KIND_LABEL, memberRoleLabel, sessionProjects,
   applyMention, extractSessionMentions, filterSessionsByProject, isSelfActor, memberKindLabel, memberStatusLabel, memberStatusText,
-  mentionCandidates, segmentBody, signatureText, timelineKindLabel, totalUnread,
+  mentionCandidates, segmentBody, signatureText, timelineDetailText, timelineKindLabel, totalUnread,
 } from './sessionModel'
 
 describe('CLI/桌面共用的 @ 金样本', () => {
@@ -72,11 +72,17 @@ describe('@分段', () => {
 })
 
 describe('timeline kind 标签', () => {
-  it('词表恰八值且中文标签互异（渲染与 Go 词表逐值对齐）', () => {
+  it('词表恰九值且中文标签互异（渲染与 Go 词表逐值对齐；B444 增 renamed）', () => {
     expect(Object.keys(TIMELINE_KIND_LABEL).sort()).toEqual(
-      ['archived', 'card_closed', 'card_joined', 'card_left', 'created', 'needs_human', 'seat_bound', 'seat_rebound'].sort(),
+      ['archived', 'card_closed', 'card_joined', 'card_left', 'created', 'needs_human', 'renamed', 'seat_bound', 'seat_rebound'].sort(),
     )
-    expect(new Set(Object.values(TIMELINE_KIND_LABEL)).size).toBe(8)
+    expect(new Set(Object.values(TIMELINE_KIND_LABEL)).size).toBe(9)
+  })
+  it('renamed 的 detail 渲染为「旧名 → 新名」；detail 非预期形状原样透传', () => {
+    expect(timelineDetailText({ kind: 'renamed', detail: '{"from":"新会话","session":"session:10","title":"排查登录失败"}' })).toBe('新会话 → 排查登录失败')
+    expect(timelineDetailText({ kind: 'renamed', detail: 'not-json' })).toBe('not-json')
+    expect(timelineDetailText({ kind: 'seat_bound', detail: '{"to":"x"}' })).toBe('{"to":"x"}')
+    expect(timelineDetailText({ kind: 'renamed' })).toBe('')
   })
   it('未知 kind 原样透传（渲染兜底不白屏）', () => {
     expect(timelineKindLabel('weird_kind')).toBe('weird_kind')
@@ -123,6 +129,22 @@ describe('项目筛选（B358.8 #6 纯函数缝）', () => {
       ['映射缺失的卡 → 标未知（不编造项目）', room('r6', ['B9'], 'handoff'), ['handoff'], true],
     ] as const)('%s', (_name, session, names, unknown) => {
       expect(sessionProjects(session, projectOfCard)).toEqual({ names: [...names], hasUnknownCard: unknown })
+    })
+
+    // B444 A3.4（S8）：home_project 在前，并上卡项目；缺键（旧会话）结果与 B435 规则逐例一致。
+    it.each([
+      ['旧会话无 home_project：卡∈p1 → 不变', { ...summaryOf('h1', ['B1']) }, ['handoff'], false],
+      ['home_project=p2 + 卡∈p1 → [p2, p1]（跨项目）', { ...summaryOf('h2', ['B1']), home_project: 'aim' }, ['aim', 'handoff'], false],
+      ['home_project 零卡 → {home}', { ...summaryOf('h3', []), home_project: 'aim' }, ['aim'], false],
+      ['home_project 与卡同项目 → 去重', { ...summaryOf('h4', ['B2']), home_project: 'aim' }, ['aim'], false],
+      ['home_project 空串视同缺键', { ...summaryOf('h5', []), home_project: '' }, [], false],
+    ] as const)('B444 %s', (_name, session, names, unknown) => {
+      expect(sessionProjects(session, projectOfCard)).toEqual({ names: [...names], hasUnknownCard: unknown })
+    })
+
+    it('B444 filterSessionsByProject：零卡 home_project 会话归其项目', () => {
+      const homed = { ...summaryOf('hz', []), home_project: 'aim' }
+      expect(filterSessionsByProject([...sessions, homed], projectOfCard, 'aim').map((s) => s.id)).toEqual(['s2', 'hz'])
     })
 
     it('filterSessionsByProject 命中项目房间；非项目房间结果逐例不变', () => {

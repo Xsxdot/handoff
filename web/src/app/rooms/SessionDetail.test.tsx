@@ -6,6 +6,8 @@ import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import fixture from '../../api/testdata/RoomsFixture.json'
 import b435Fixture from '../../api/testdata/SessionDetailB435.json'
+import b444SummaryFixture from '../../api/testdata/SessionSummaryHomeProjectB444.json'
+import b444RenamedFixture from '../../api/testdata/SessionTimelineRenamedB444.json'
 import type { SessionDetail as SessionDetailDTO, SessionSummary } from '../../api/rooms'
 import { SessionDetail } from './SessionDetail'
 import { MEMBER_KIND_LABEL, RESIDENT_ORGANIZER_LABEL } from './sessionModel'
@@ -157,5 +159,18 @@ describe('B435 驻场者/组织者与席位模式', () => {
     expect(seatRow).toHaveTextContent('拆解')
     expect(within(seatRow).getByTestId('member-seat-mode-1')).toHaveTextContent('pull')
     expect(within(screen.getByTestId('member-row-0')).queryByTestId('member-seat-mode-0')).toBeNull()
+  })
+
+  // B444：renamed 事件渲染「会话改名 旧名 → 新名」；push 驻场者行显示载体落点（详情可见驻场者，S1）。
+  it('B444：timeline renamed 行与 push 驻场者载体落点', () => {
+    const summary = b444SummaryFixture[1] as SessionSummary
+    const timeline = b444RenamedFixture as SessionDetailDTO['timeline']
+    render(<SessionDetail detail={{ summary, nodes: [], timeline }} />)
+    const row = screen.getByTestId('timeline-row-0')
+    expect(row).toHaveTextContent('会话改名')
+    expect(row).toHaveTextContent('新会话 → 排查登录失败')
+    expect(row).toHaveTextContent('由 agent:coord')
+    expect(screen.getByTestId('member-kind-0')).toHaveTextContent('驻场者')
+    expect(screen.getByTestId('member-resident-carrier-0')).toHaveTextContent('push · linux-01-opencode@linux-01')
   })
 })

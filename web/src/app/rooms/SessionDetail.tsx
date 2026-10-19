@@ -4,10 +4,11 @@
 // 未知 kind 原样显示不白屏（sessionModel 兜底）。
 // B435 Q6：成员行带 kind 标签（resident 在项目房间标组织者、否则驻场者）；席位行与
 // 会话卡行附 seat_mode（同一身份的驻场者行与席位行并列，服务端本就不去重——S9）。
+// B444：push 驻场者行附载体落点（driver_mode · carrier@machine）；renamed 行渲染「旧名 → 新名」。
 import type { SessionDetail as SessionDetailDTO } from '../../api/rooms'
 import { seatModeView } from '../../api/ledger'
 import { formatRelative } from '../lib/format'
-import { memberRoleLabel, memberStatusText, timelineKindLabel } from './sessionModel'
+import { memberRoleLabel, memberStatusText, timelineDetailText, timelineKindLabel } from './sessionModel'
 
 export function SessionDetail({ detail, onOpenCard, onArchive, archiveBusy, archiveError, compact = false }: {
   detail: SessionDetailDTO
@@ -34,7 +35,7 @@ export function SessionDetail({ detail, onOpenCard, onArchive, archiveBusy, arch
       <span className="shrink-0 font-mono text-[10px] text-muted-foreground">{formatRelative(row.created_at)}</span>
       <span className="shrink-0 font-medium">{timelineKindLabel(row.kind)}</span>
       {row.card_id && <b className="shrink-0 font-mono">{row.card_id}</b>}
-      {row.detail && <span className="min-w-0 flex-1 truncate text-muted-foreground" title={row.detail}>{row.detail}</span>}
+      {row.detail && <span className="min-w-0 flex-1 truncate text-muted-foreground" title={row.detail}>{timelineDetailText(row)}</span>}
       {row.actor && <span className="shrink-0 text-muted-foreground">· 由 {row.actor}</span>}
     </div>
   )
@@ -61,6 +62,11 @@ export function SessionDetail({ detail, onOpenCard, onArchive, archiveBusy, arch
               {member.identity !== '' ? member.identity : `（${member.card_title ?? member.card_id ?? ''} 无人推）`}
               {member.kind === 'seat' && member.identity !== '' && <span className="ml-1 text-xs text-muted-foreground">· {member.card_title ?? member.card_id}</span>}
               {seatCard?.seat && renderSeatMode(seatCard.seat_mode, `member-seat-mode-${index}`, 'ml-1')}
+              {member.kind === 'resident' && member.driver_mode && (
+                <span data-testid={`member-resident-carrier-${index}`} className="ml-1 font-mono text-xs text-muted-foreground">
+                  · {member.driver_mode}{member.carrier ? ` · ${member.carrier}${member.carrier_machine ? `@${member.carrier_machine}` : ''}` : ''}
+                </span>
+              )}
             </span>
             <span data-testid={`member-kind-${index}`} className="shrink-0 rounded-full border px-1.5 text-[10px] text-muted-foreground">{memberRoleLabel(member, summary)}</span>
             {member.identity !== '' && member.identity === summary.owner && (
