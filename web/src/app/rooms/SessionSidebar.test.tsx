@@ -16,7 +16,6 @@ const defaultProps = {
   needsOnly: false,
   onToggleNeeds: () => {},
   onOpen: () => {},
-  onCreate: () => {},
   projectFilter: '',
   onProjectFilter: () => {},
   projectOptions: [] as string[],

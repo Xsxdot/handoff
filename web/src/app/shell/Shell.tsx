@@ -64,9 +64,9 @@ import { useWebPrefs } from '../settings/useWebPrefs'
 import { CardsPage } from '../cards/CardsPage'
 import { isRunningRow } from '../cards/taskRun'
 import { FlowsPage } from '../flows/FlowsPage'
-import { fetchSessions, createSession, fetchIdentity } from '../../api/rooms'
+import { fetchSessions, createSession, fetchIdentity, type SessionCreateResp } from '../../api/rooms'
 import type { SessionSummary } from '../../api/rooms'
-import { NewSessionDialog } from '../rooms/NewSessionDialog'
+import { NewSessionDialog, type NewSessionInput } from '../rooms/NewSessionDialog'
 import { SessionSidebar } from '../rooms/SessionSidebar'
 import { SessionTab } from '../rooms/SessionTab'
 import { openSessionDetail } from '../rooms/sessionDetailOpener'
@@ -265,7 +265,10 @@ export function Shell() {
   // 面不存在，没有理由持续打扰它）；30s 节奏对齐树流——会话列表不是强实时面。
   const ptySessionsState = usePoll(() => fetchPtySessions('all'), 30_000, { enabled: compact })
   const [sidebarTab, setSidebarTab] = useState<'sessions' | 'tasks'>('tasks')
-  const [createOpen, setCreateOpen] = useState(false)
+  // createProject 建会话框的所属项目（B444：入口只在项目上）；null = 对话框关闭。
+  const [createProject, setCreateProject] = useState<string | null>(null)
+  // createResult 建成但有被拒卡/驻场者失败时的点名结果；null = 表单态。
+  const [createResult, setCreateResult] = useState<SessionCreateResp | null>(null)
   const [createBusy, setCreateBusy] = useState(false)
   const [createError, setCreateError] = useState('')
   // consoleConfigured 身份读缝（B358.9）：未配 console_user 时新建表单给可行动
@@ -285,8 +288,13 @@ export function Shell() {
   const [needsOnly, setNeedsOnly] = useState(false)
   const mobileArchived = new URLSearchParams(location.search).get('archive') === '1'
   const [desktopArchived, setDesktopArchived] = useState(false)
-  // openCreateSession 是建会话对话框的唯一打开动作：左栏树、移动端菜单与会话列表共用（B442）
-  const openCreateSession = () => { setCreateError(''); setCreateOpen(true) }
+  // openCreateSession 是建会话对话框的唯一打开动作（B444：桌面项目行 icon 与移动端项目「操作」面板共用），
+  // 项目由入口带入且在框内不可改。
+  const openCreateSession = (project: ProjectNode) => {
+    setCreateError(''); setCreateResult(null); setCreateProject(project.name)
+    console.debug('shell.session.create_open', { project: project.name })
+  }
+  const closeCreateSession = () => { setCreateProject(null); setCreateResult(null) }
   const openSessionList = (archived: boolean) => {
     if (compact) navigate('/?tab=sessions' + (archived ? '&archive=1' : ''))
     else { setDesktopArchived(archived); setSidebarTab('sessions') }
@@ -869,20 +877,34 @@ export function Shell() {
     else console.debug('shell.session.for_card_missing', { cardId })
   }
 
-  // confirmCreateSession 建会话（B358.9）：owner 由服务端按解析人名缺省，前端只交
-  // 标题；建后刷新会话流。403「以当前身份加入会话」一键仍在 SessionChat（U7 老屋）。
-  const confirmCreateSession = async (title: string) => {
+  // confirmCreateSession 项目内建会话（B444）：owner 由服务端按解析人名缺省（B358.9）。请求同步跑到驻场者
+  // 首轮结束；成功即刷新会话流并开 tab（openSession）。有被拒卡或驻场者首轮失败时对话框转结果视图点名，
+  // 否则直接关。请求失败留在表单态显示服务端原文。
+  const confirmCreateSession = async (input: NewSessionInput) => {
+    const project = createProject
+    if (project === null) return
     setCreateBusy(true)
     setCreateError('')
-    console.debug('shell.session.create_started', { title })
+    console.debug('shell.session.create_started', { project, squad: input.squad, cards: input.cards, title: input.title })
     try {
-      const session = await createSession(title)
-      setCreateOpen(false)
+      const resp = await createSession({ project, squad: input.squad, cards: input.cards, title: input.title })
       sessionsState.refresh()
-      console.debug('shell.session.created', { sessionId: session.id, title })
+      openSession({
+        id: resp.id, kind: 'session', title: resp.title, owner: resp.owner, archived: resp.archived,
+        home_project: resp.home_project, unread: 0, needs_human: false, last_activity: resp.updated_at,
+      })
+      const rejected = resp.rejected_cards ?? []
+      const residentError = resp.resident?.error ?? ''
+      if (rejected.length > 0 || residentError !== '') {
+        setCreateResult(resp)
+        console.warn('shell.session.created_partial', { sessionId: resp.id, project, rejected, residentError })
+      } else {
+        closeCreateSession()
+        console.debug('shell.session.created', { sessionId: resp.id, project, title: resp.title, resident: resp.resident?.identity })
+      }
     } catch (error: unknown) {
       setCreateError(errorMessage(error))
-      console.warn('shell.session.create_failed', { title, error: errorMessage(error) })
+      console.warn('shell.session.create_failed', { project, error: errorMessage(error) })
     } finally {
       setCreateBusy(false)
     }
@@ -1368,7 +1390,7 @@ export function Shell() {
         {ledgerEnabled && (
           <div className={`flex min-h-0 flex-1 flex-col ${sidebarTab !== 'sessions' ? 'hidden' : ''}`}>
             {/* B406：401 终止态不算 loading（否则永转圈），过期面交由 expired 渲染 */}
-            <button className="px-3 py-2 text-left text-xs" onClick={()=>setSidebarTab('tasks')}>‹ 返回项目</button><SessionSidebar sessions={sessions.filter(s=>s.archived===desktopArchived)} archivedOnly={desktopArchived}
+            <button className="px-3 py-2 text-left text-xs" onClick={()=>setSidebarTab('tasks')}>‹ 返回项目</button><SessionSidebar sessions={sessions.filter(s=>s.archived===desktopArchived)}
               loading={sessionsState.data === null && !sessionsState.disconnected && !sessionsState.sessionExpired}
               errorText={sessionsState.disconnected ? sessionsState.errorText : ''}
               expired={sessionsState.sessionExpired}
@@ -1378,8 +1400,7 @@ export function Shell() {
               onProjectFilter={setProjectFilter}
               projectOptions={projectOptions}
               projectOfCard={projectOfCard}
-              onOpen={openSession}
-              onCreate={openCreateSession} />
+              onOpen={openSession} />
           </div>
         )}
         {/* 账本未启用时会话 tab 不渲染，任务 pane 兜底可见（hidden 恒不挂） */}
@@ -1594,9 +1615,7 @@ export function Shell() {
                       projectOptions={projectOptions}
                       projectOfCard={projectOfCard}
                       onOpen={openSession}
-                      onCreate={openCreateSession}
                       compact={compact}
-                      archivedOnly={mobileArchived}
                     /></div>
                   ) : (
                     <p className="p-4 text-sm text-muted-foreground">账本未启用，会话不可用。</p>
@@ -1991,8 +2010,11 @@ export function Shell() {
         }}
       />
 
-      <NewSessionDialog open={createOpen} busy={createBusy} error={createError} configured={consoleConfigured}
-        onCancel={() => setCreateOpen(false)} onCreate={(title) => void confirmCreateSession(title)} />
+      <NewSessionDialog open={createProject !== null} project={createProject ?? ''}
+        cards={cardsState.data?.cards ?? []} sessions={sessions}
+        busy={createBusy} error={createError} configured={consoleConfigured} result={createResult}
+        onCancel={closeCreateSession} onDone={closeCreateSession}
+        onCreate={(input) => void confirmCreateSession(input)} />
 
       <AddProjectWizard
         open={wizardOpen}

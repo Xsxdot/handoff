@@ -45,7 +45,7 @@
 import { useEffect, useMemo, useRef, useState, type DragEvent } from 'react'
 import '../workbench/desktop-workspace.css'
 import {
-  AppWindow, Archive, ChevronDown, ChevronRight, FolderOpen, FileText, FolderGit2, LayoutGrid, MessagesSquare, Monitor, Plus, Search, Server, Settings, SquareKanban, SquareTerminal, Terminal, Ticket, WifiOff, Workflow, X,
+  AppWindow, Archive, ChevronDown, ChevronRight, FolderOpen, FileText, FolderGit2, LayoutGrid, MessageSquarePlus, MessagesSquare, Monitor, Plus, Search, Server, Settings, SquareKanban, SquareTerminal, Terminal, Ticket, WifiOff, Workflow, X,
 } from 'lucide-react'
 import dispatchTaskUrl from '../../assets/dispatch-task.png'
 import { filterTree, taskMatchesQuery } from './search'
@@ -105,9 +105,9 @@ export interface ProjectTreeProps {
   sessions?: ProjectSessionRow[]
   onOpenSession?: (id: string, title: string) => void
   onOpenArchive?: () => void
-  // onCreateSession 打开建会话对话框（B442）：B429 收起左栏「会话」tab 后，建会话按钮只剩
-  // 在归档列表里且被禁用；入口须在树本身可见处。未传（账本关闭）则不渲染。
-  onCreateSession?: () => void
+  // onCreateSession 在该项目下打开建会话对话框（B444：入口在项目行动作区，终端与文件夹之后；
+  // B442 的底部入口已撤）。未传（账本关闭）则不渲染。
+  onCreateSession?: (project: ProjectNode) => void
   currentBrowseBase?: BaseDir | null
   tree: ProjectTreeResp
   tasks: Task[]
@@ -931,6 +931,7 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
                     }}><ChevronDown size={11} /></button>
                 </div>
                 <button type="button" aria-label={`浏览 ${project.name} 文件`} title={browsingBase ? `浏览文件 · ${machineLabel(browsingBase.machine)} / ${browsingBase.label}` : '没有可用目录'} disabled={!browsingBase} onClick={() => browsingBase && openDirectory(browsingBase)}><FolderOpen size={14} /></button>
+                {onCreateSession && <button type="button" aria-label={`在 ${project.name} 新建会话`} title={`在 ${project.name} 新建会话`} onClick={() => onCreateSession(allProject)}><MessageSquarePlus size={14} /></button>}
               </div>}
               {/* B369.7：桌面 hidden group-hover:flex 逐字节保留；compact 下容器
                   常驻 flex（触屏无 hover），「工作项」钮触点与底栏
@@ -1461,7 +1462,6 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
           工单数为 0 时按钮仍在、角标不显示——按钮消失会让人以为功能没了。
           justify-around 而非左对齐：少了占主位的文字按钮后，一排图标挤在
           左半边会让右半边看起来像渲染缺了东西 */}
-      {!compact && onCreateSession && <button className="desktop-archive-entry" type="button" onClick={onCreateSession}><Plus size={14} />新建会话</button>}
       {!compact && onOpenArchive && <button className="desktop-archive-entry" type="button" onClick={onOpenArchive}><Archive size={14} />归档会话</button>}
 
       <div className="mt-1 flex items-center justify-around gap-0.5 border-t px-2 pt-2">

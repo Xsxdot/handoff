@@ -65,6 +65,8 @@ vi.mock('../../api/scheduling', async () => {
     ...actual,
     getCoordinatorStatus: vi.fn().mockResolvedValue({ bound: false, attach_active: false, attach: null }),
     attachCoordinator: vi.fn(),
+    // B444：建会话框读协调小队（默认恰一个 role=coordinator 小队 → 预填）。
+    getSquads: vi.fn().mockResolvedValue({ carriers: [], squads: [{ name: 'coord', role: 'coordinator', members: [], version: 1 }], running: [] }),
   }
 })
 const { getCoordinatorStatus, attachCoordinator } = await import('../../api/scheduling')
@@ -2006,20 +2008,29 @@ describe('B361 会话 IA', () => {
     expect(screen.queryByRole('button', { name: '打开房间面板' })).toBeNull()
   })
 
-  it('新建会话：对话框只有标题，createSession 只收标题并刷新列表（B358.9 反例：无群主输入）', async () => {
+  // B444（plan §3 P3 改写 B358.9 两条：入口改到项目行、createSession 改收项目输入）。
+  // B358.9 不变式保留：无群主输入、不写 owner 记忆、建后不补员。
+  it('新建会话（B444 A3.1/A3.3）：项目行 icon 打开对话框，createSession 收 {project, squad}，建后刷新并开 tab，零卡会话落该项目下', async () => {
     const { createSession } = await import('../../api/rooms')
-    vi.mocked(createSession).mockResolvedValue({ id: 'session:9', title: '新场', owner: 'user:sycm', archived: false, created_at: '', updated_at: '' })
+    const created = { id: 'session:9', title: '新会话', owner: 'user:sycm', archived: false, home_project: 'handoff', created_at: '', updated_at: '2026-10-19T00:00:00Z', resident: { identity: 'agent:coord', carrier: 'c1', carrier_machine: 'linux-01' } }
+    vi.mocked(createSession).mockResolvedValue(created)
     vi.mocked(fetchSessions).mockResolvedValue([] as never)
     const user = userEvent.setup()
     renderShell()
-    await waitFor(() => expect(visibleButtonsNamed('新建会话')[0]).toBeEnabled())
-    await user.click(visibleButtonsNamed('新建会话')[0])
-    await waitFor(() => expect(screen.getByRole('textbox', { name: '会话标题' })).toBeInTheDocument())
+    await user.click(await screen.findByRole('button', { name: '在 handoff 新建会话' }))
+    expect(screen.getByRole('textbox', { name: '所属项目' })).toHaveValue('handoff')
     expect(screen.queryByRole('combobox', { name: '群主身份' })).toBeNull()
-    await user.type(screen.getByRole('textbox', { name: '会话标题' }), '新场')
+    await waitFor(() => expect(screen.getByRole('combobox', { name: '驻场小队' })).toHaveValue('coord'))
+    // 建后列表刷新返回带 home_project 的零卡会话
+    vi.mocked(fetchSessions).mockResolvedValue([sessionSummary({ id: 'session:9', title: '新会话', home_project: 'handoff', cards: [] })] as never)
+    const refreshCallsBefore = vi.mocked(fetchSessions).mock.calls.length
     await user.click(screen.getByRole('button', { name: '创建' }))
-    await waitFor(() => expect(createSession).toHaveBeenCalledWith('新场'))
-    // 不再有 owner 记忆（B358.9：owner 服务端按解析人名缺省）
+    await waitFor(() => expect(createSession).toHaveBeenCalledWith({ project: 'handoff', squad: 'coord', cards: [], title: '' }))
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '新建会话' })).toBeNull())
+    expect(vi.mocked(fetchSessions).mock.calls.length).toBeGreaterThan(refreshCallsBefore)
+    expect(await screen.findByRole('tab', { name: /新会话/ })).toBeInTheDocument()
+    const project = await screen.findByTestId('project-node-p1')
+    expect(await within(project).findByText('新会话')).toBeInTheDocument()
     expect(window.localStorage.getItem('handoff.last-session-owner')).toBeNull()
   })
 
@@ -2029,12 +2040,46 @@ describe('B361 会话 IA', () => {
     vi.mocked(fetchSessions).mockResolvedValue([] as never)
     const user = userEvent.setup()
     renderShell()
-    await waitFor(() => expect(visibleButtonsNamed('新建会话')[0]).toBeEnabled())
-    await user.click(visibleButtonsNamed('新建会话')[0])
+    await user.click(await screen.findByRole('button', { name: '在 handoff 新建会话' }))
     await user.type(screen.getByRole('textbox', { name: '会话标题' }), '新场')
+    await waitFor(() => expect(screen.getByRole('button', { name: '创建' })).toBeEnabled())
     await user.click(screen.getByRole('button', { name: '创建' }))
     await waitFor(() => expect(screen.queryByRole('dialog', { name: '新建会话' })).toBeNull())
     expect(addSessionMember).not.toHaveBeenCalled()
+  })
+
+  it('B444：建成但有被拒卡/驻场者失败 → 对话框转结果视图点名，会话照开 tab', async () => {
+    const { createSession } = await import('../../api/rooms')
+    vi.mocked(createSession).mockResolvedValue({
+      id: 'session:10', title: '新会话', owner: 'user:sycm', archived: false, home_project: 'handoff', created_at: '', updated_at: '',
+      rejected_cards: [{ card: 'B3', reason: '卡已在会话 session:4 里' }],
+      resident: { error: '拉起驻场者首轮失败: 载体登录失效' },
+    })
+    vi.mocked(fetchSessions).mockResolvedValue([] as never)
+    const user = userEvent.setup()
+    renderShell()
+    await user.click(await screen.findByRole('button', { name: '在 handoff 新建会话' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: '创建' })).toBeEnabled())
+    await user.click(screen.getByRole('button', { name: '创建' }))
+    const view = await screen.findByTestId('new-session-result')
+    expect(view).toHaveTextContent('B3：卡已在会话 session:4 里')
+    expect(view).toHaveTextContent('驻场者未拉起：拉起驻场者首轮失败: 载体登录失效')
+    expect(await screen.findByRole('tab', { name: /新会话/ })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '知道了' }))
+    expect(screen.queryByRole('dialog', { name: '新建会话' })).toBeNull()
+  })
+
+  it('B444：建会话失败 → 对话框留着显示服务端原文，不开 tab', async () => {
+    const { createSession } = await import('../../api/rooms')
+    vi.mocked(createSession).mockRejectedValue(new Error('驻场小队不可用'))
+    vi.mocked(fetchSessions).mockResolvedValue([] as never)
+    const user = userEvent.setup()
+    renderShell()
+    await user.click(await screen.findByRole('button', { name: '在 handoff 新建会话' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: '创建' })).toBeEnabled())
+    await user.click(screen.getByRole('button', { name: '创建' }))
+    expect(await screen.findByText('驻场小队不可用')).toBeInTheDocument()
+    expect(screen.getByRole('dialog', { name: '新建会话' })).toBeInTheDocument()
   })
 
   it('关闭会话 tab（组关闭）后 tabbar 不再含该会话', async () => {
@@ -3486,29 +3531,37 @@ function visibleButtonsNamed(name: string): HTMLElement[] {
   return screen.queryAllByRole('button', { name }).filter((button) => button.closest('.hidden') === null)
 }
 
-describe('B442 新建会话入口可见', () => {
+// B444 S9（协调者批准撤 B442 入口，改写 B442 两条为缺席断言）：入口只在项目上。
+describe('B444 新建会话入口在项目上', () => {
   const originalWidth = window.innerWidth
   afterEach(() => {
     Object.defineProperty(window, 'innerWidth', { value: originalWidth, configurable: true, writable: true })
   })
 
-  it('桌面：左栏可见处有「新建会话」，点开即建会话对话框', async () => {
+  it('桌面 A3.5：左栏底部与会话列表无「新建会话」；项目行有「在 handoff 新建会话」icon，点开即带项目的对话框', async () => {
     Object.defineProperty(window, 'innerWidth', { value: 1280, configurable: true, writable: true })
     vi.mocked(fetchSessions).mockResolvedValue([] as never)
     renderShell()
-    await waitFor(() => expect(visibleButtonsNamed('新建会话').length).toBeGreaterThan(0))
-    fireEvent.click(visibleButtonsNamed('新建会话')[0])
-    expect(await screen.findByRole('textbox', { name: '会话标题' })).toBeInTheDocument()
+    const entry = await screen.findByRole('button', { name: '在 handoff 新建会话' })
+    expect(entry).toHaveAttribute('title', '在 handoff 新建会话')
+    expect(screen.queryAllByRole('button', { name: '新建会话' })).toEqual([])
+    expect(screen.queryByText('＋ 新建会话')).toBeNull()
+    fireEvent.click(entry)
+    expect(await screen.findByRole('textbox', { name: '所属项目' })).toHaveValue('handoff')
   })
 
-  it('移动端：工作台操作菜单直接有「新建会话」，点开即建会话对话框', async () => {
+  it('移动端 A3.5：「⋯」菜单无 mobile-create-session；项目「操作」面板有「新建会话」，点开即带项目的对话框', async () => {
     Object.defineProperty(window, 'innerWidth', { value: 375, configurable: true, writable: true })
     vi.mocked(fetchSessions).mockResolvedValue([] as never)
     renderShell('/?tab=projects')
     expect(await ensureMobileProjectCard()).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: '工作台操作' }))
-    await waitFor(() => expect(visibleButtonsNamed('新建会话').length).toBeGreaterThan(0))
-    fireEvent.click(visibleButtonsNamed('新建会话')[0])
-    expect(await screen.findByRole('textbox', { name: '会话标题' })).toBeInTheDocument()
+    expect(screen.queryByTestId('mobile-create-session')).toBeNull()
+    expect(visibleButtonsNamed('新建会话')).toEqual([])
+    fireEvent.click(screen.getByRole('button', { name: 'handoff 操作' }))
+    const sheet = await screen.findByRole('dialog', { name: 'handoff 操作与位置' })
+    fireEvent.click(within(sheet).getByRole('button', { name: '新建会话' }))
+    expect(await screen.findByRole('textbox', { name: '所属项目' })).toHaveValue('handoff')
+    expect(screen.queryByRole('dialog', { name: 'handoff 操作与位置' })).toBeNull()
   })
 })

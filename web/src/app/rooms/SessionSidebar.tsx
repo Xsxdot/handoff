@@ -1,6 +1,7 @@
 // SessionSidebar —— 左栏「会话」tab 的列表面（B361：v1 中央区第一栏整体迁入）。
 // 边界：纯展示——数据由 Shell 的 usePoll 持有（徽章要跨 tab 活），本组件只渲染
-// 与回调；行点击 = 开工作台 tab 的入口，新建走 Shell 的 NewSessionDialog。
+// 与回调；行点击 = 开工作台 tab 的入口。B444（plan Q5）：列表头不再有「新建会话」——
+// 建会话只从项目入口进（对话框要求项目已定）。
 // B358.8 #1：行可拖——dragstart 写 DRAG_SESSION_MIME，落点语义由 WorkbenchPage/
 // TabBar 的既有拖放面承接（拖出即分屏/开组），本组件只负责发载荷与拖源提示。
 // B435 Q7：项目房间（summary.project 非空）行带「项目房间」徽章；按项目筛选随 sessionProjects。
@@ -22,7 +23,6 @@ export interface SessionSidebarProps {
   needsOnly: boolean
   onToggleNeeds: () => void
   onOpen: (session: SessionSummary) => void
-  onCreate: () => void
   // 项目筛选（B358.8 #6）：选项与映射由 Shell 从 cardsState 投影下传（零新增端点）。
   projectFilter: string
   onProjectFilter: (project: string) => void
@@ -32,11 +32,10 @@ export interface SessionSidebarProps {
   // 原样在下，「原型未覆盖能力保留」）+ 行内成员横排（5 枚上限 + 溢出 +N）与
   // 群主行。缺省 false，桌面 toggle 行与行结构逐字节不动。
   compact?: boolean
-  archivedOnly?: boolean
 }
 
-export function SessionSidebar({ sessions, loading, errorText, expired = false, needsOnly, onToggleNeeds, onOpen, onCreate,
-  projectFilter, onProjectFilter, projectOptions, projectOfCard, compact = false, archivedOnly = false }: SessionSidebarProps) {
+export function SessionSidebar({ sessions, loading, errorText, expired = false, needsOnly, onToggleNeeds, onOpen,
+  projectFilter, onProjectFilter, projectOptions, projectOfCard, compact = false }: SessionSidebarProps) {
   const byProject = filterSessionsByProject(sessions, projectOfCard, projectFilter)
   const visible = needsOnly ? byProject.filter((session) => session.needs_human) : byProject
   const needsCount = sessions.filter((session) => session.needs_human).length
@@ -52,7 +51,6 @@ export function SessionSidebar({ sessions, loading, errorText, expired = false, 
       {/* 未读徽章的聚合读数挂在列表头：tab 级徽章由 Shell 用同一数据另算 */}
       <div className="flex shrink-0 items-center justify-between px-3 py-2.5">
         <span className="text-sm font-semibold">会话</span>
-        <button type="button" aria-label="新建会话" onClick={onCreate} disabled={loading || expired || errorText !== '' || archivedOnly} className="rounded-md border px-2 py-1 text-xs hover:bg-accent">＋ 新建会话</button>
       </div>
       {/* 筛选单行（走查 09-17，对 board.html 原型 .im-filters）：项目下拉 + 需要你
           开关 + 计数同处一行，纯文字项不做成带边框表单控件。桌面随 main，只在

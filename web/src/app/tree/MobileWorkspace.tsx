@@ -1,7 +1,7 @@
 // MobileWorkspace projects Shell-owned resources by stable directory identity and card links.
 // It neither polls nor changes resource lifetime; directory browsing and creation defaults are independent.
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Archive, ChevronDown, ChevronRight, FileText, Folder, MessageSquare, MoreHorizontal, Plus, Search, Terminal, X } from 'lucide-react'
+import { Archive, ChevronDown, ChevronRight, FileText, Folder, MessageSquare, MessageSquarePlus, MoreHorizontal, Plus, Search, Terminal, X } from 'lucide-react'
 import type { SessionSummary } from '../../api/rooms'
 import type { MachineStatus, ProjectNode, PtySession, Task } from '../../api/types'
 import type { OpenedWorkbenchItem, BaseDir } from '../workbench/tabs'
@@ -21,8 +21,9 @@ interface Props {
   onOpenTerminal: (base: BaseDir) => void; onOpenDirectory: (base: BaseDir) => void
   onOpenProject: (id: string) => void; onEditProject: (project: ProjectNode) => void
   onAddProject: () => void; onOpenSessions: (archived: boolean) => void; onOpenCards: () => void
-  // onCreateSession 打开建会话对话框（B442）；未传（账本关闭）则菜单不出现该项
-  onCreateSession?: () => void
+  // onCreateSession 在该项目下打开建会话对话框（B444：入口在项目「操作」面板；B442 的「⋯」菜单项已撤）。
+  // 未传（账本关闭）则面板不出现该项。
+  onCreateSession?: (project: ProjectNode) => void
 }
 
 function loadLocation(key: string): string { try { return localStorage.getItem(key) ?? '' } catch { return '' } }
@@ -135,7 +136,7 @@ export function MobileWorkspace(props: Props) {
   return <section data-testid="mobile-workspace" className="mobile-workspace h-full overflow-auto">
     <header className="mobile-page-header"><h1>工作台</h1><button aria-label="搜索工作台" onClick={()=>setSearching(!searching)}><Search className="size-5"/></button><button aria-label="工作台操作" onClick={()=>setMenu(!menu)}><MoreHorizontal className="size-5"/></button></header>
     {searching && <input autoFocus className="mobile-search" aria-label="搜索项目与资源" placeholder="搜索项目与资源" value={query} onChange={e=>setQuery(e.target.value)}/>}
-    {menu && <div className="mobile-inline-menu"><button data-testid="mobile-add-project" disabled={!props.ready} aria-label="添加项目" onClick={props.onAddProject}><Plus className="size-4"/>添加项目</button>{props.onCreateSession && <button data-testid="mobile-create-session" onClick={()=>{setMenu(false);props.onCreateSession!()}}><Plus className="size-4"/>新建会话</button>}<button onClick={()=>props.onOpenSessions(false)}><MessageSquare className="size-4"/>全部协作会话</button></div>}
+    {menu && <div className="mobile-inline-menu"><button data-testid="mobile-add-project" disabled={!props.ready} aria-label="添加项目" onClick={props.onAddProject}><Plus className="size-4"/>添加项目</button><button onClick={()=>props.onOpenSessions(false)}><MessageSquare className="size-4"/>全部协作会话</button></div>}
     {(() => {
       const needsKnown = props.needsCount !== null && (props.ready || props.errorText || props.expired)
       const needsZero = needsKnown && props.needsCount === 0
@@ -177,6 +178,7 @@ export function MobileWorkspace(props: Props) {
         <button type="button" className="mobile-sheet-action primary" disabled={!props.ready || !locations(actionProject).some(i=>i.base.key===browse && locationProblem(i.loc,props.machines)==='')} onClick={()=>{const chosen=locations(actionProject).find(i=>i.base.key===browse);if(chosen){setActionProject(null);props.onOpenDirectory(chosen.base)}}}><Folder className="size-5"/>浏览目录</button>
       </div>
       <div className="mobile-sheet-group mobile-sheet-group-secondary" role="group" aria-label="更多项目操作">
+        {props.onCreateSession && <button type="button" className="mobile-sheet-action secondary" disabled={!props.ready} onClick={()=>{const project=actionProject;setActionProject(null);props.onCreateSession!(project)}}><MessageSquarePlus className="size-5"/><span>新建会话</span></button>}
         <button type="button" className="mobile-sheet-action secondary" disabled={!props.ready} onClick={()=>{setActionProject(null);props.onOpenProject(actionProject.project_id)}}><Plus className="size-5"/><span>工作树与项目目录</span></button>
         <button type="button" className="mobile-sheet-action secondary" disabled={!props.ready} onClick={()=>{setActionProject(null);props.onEditProject(actionProject)}}><MoreHorizontal className="size-5"/><span>项目位置管理</span></button>
       </div>
