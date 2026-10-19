@@ -132,6 +132,26 @@ func (s *Store) SetResidentPushSession(session, identity, pushSession string) er
 		session, current.DriverMode, current.PushSession != "", ErrCASConflict)
 }
 
+// IsPushResidentSession 报告 CLI 会话 id 是否正是某 push 驻场行的 push_session（B444 P2 返工四，review C2：
+// agentd 续轮据此判「这一轮是驻场者」而不注入卡席位对；返工三的账本互斥保证同一 CLI 会话不会同时坐卡席位）。
+// 空串恒 false（首轮在途行 push_session 空，不可比）。读失败带上下文上抛，调用方不得猜。
+func (s *Store) IsPushResidentSession(pushSession string) (bool, error) {
+	if pushSession == "" {
+		return false, nil
+	}
+	var one int
+	err := s.db.QueryRow(s.q(`SELECT 1 FROM session_residents
+		WHERE driver_mode = ? AND push_session = ? LIMIT 1`), ResidentDriverPush, pushSession).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		log().Warn("查 CLI 会话是否为 push 驻场者失败", "push_session", pushSession, "cause", err)
+		return false, fmt.Errorf("session_residents 按 push_session 查询: %w", err)
+	}
+	return true, nil
+}
+
 // ListInflightPushResidents 列首轮在途的 push 驻场行（driver_mode=push 且 push_session 空），按会话 id 升序
 // （B444 P2：agentd 启动清扫的读面——首轮回合由拉起它的 agentd 进程执行，进程重启后在途行不会再被补写）。
 // 不按机器过滤：哪台机器的行归谁处置由调用方按 carrier_machine 判（R9）。读失败带上下文上抛。

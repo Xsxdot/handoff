@@ -132,6 +132,8 @@ type LedgerClient interface {
 	SetResidentPushSession(sessionID, identity, pushSession string) error
 	// InflightPushResidents 列首轮在途的 push 驻场行（push_session 空），全机器（调用方按 carrier_machine 过滤）。
 	InflightPushResidents() ([]proto.SessionResident, error)
+	// IsPushResidentSession 报告 CLI 会话 id 是否正是某 push 驻场行的 push_session（B444 P2 返工四）；空串恒 false。
+	IsPushResidentSession(pushSession string) (bool, error)
 	// StandResident 请下会话驻场者（`session stand`）：identity 须等于现驻场者，否则
 	// ErrResidentNotSeated（登记不变）。
 	StandResident(sessionID, identity string) error

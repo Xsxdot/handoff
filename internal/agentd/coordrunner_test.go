@@ -1,16 +1,20 @@
 package agentd
 
 import (
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/Xsxdot/handoff/internal/collab"
 	"github.com/Xsxdot/handoff/internal/executor"
 	"github.com/Xsxdot/handoff/internal/executor/opencode"
 	"github.com/Xsxdot/handoff/internal/hostapi"
 	"github.com/Xsxdot/handoff/internal/keysclient"
+	"github.com/Xsxdot/handoff/internal/ledger"
+	ledgerapi "github.com/Xsxdot/handoff/internal/ledger/api"
 	"github.com/Xsxdot/handoff/internal/toolchain"
 )
 
@@ -40,12 +44,19 @@ printf '%s\n' '{"type":"step_finish","sessionID":"runner-sess","part":{"type":"s
 	return capture
 }
 
-// testCoordRunner 构造挂在假 CLI 上的协调者承载（走导出构造 NewCoordinatorRunner）。
+// testCoordRunner 构造挂在假 CLI 上的协调者承载（走导出构造 NewCoordinatorRunner）；驻场判定恒「不是驻场者」
+// （卡回合语义，B444 返工四前的既有用例不涉驻场）。
 func testCoordRunner(h *hostapi.Host, prepareHome func(keysclient.SessionSpec) (string, error)) keysclient.Runner {
+	return testCoordRunnerWithResidents(h, prepareHome, func(string) (bool, error) { return false, nil })
+}
+
+// testCoordRunnerWithResidents 同 testCoordRunner，但显式给驻场判定读口（B444 返工四）。
+func testCoordRunnerWithResidents(h *hostapi.Host, prepareHome func(keysclient.SessionSpec) (string, error),
+	isPushResidentSession func(string) (bool, error)) keysclient.Runner {
 	ocRep, _ := executor.BaselineReport(executor.HarnessOpenCode)
 	coordReg := executor.NewRegistry(executor.StaticProvider{HarnessName: executor.HarnessOpenCode, Rep: ocRep})
 	coord := opencode.NewCoordinator(h, slog.Default())
-	return NewCoordinatorRunner(coord, coordReg, prepareHome)
+	return NewCoordinatorRunner(coord, coordReg, prepareHome, isPushResidentSession)
 }
 
 // TestCoordinatorRunnerPassesPreparedHomeToSubprocess 锁 runner 与 prepareHome 缝的
@@ -228,16 +239,32 @@ func TestB435LaunchTurnHasNoPartialSeatEnv(t *testing.T) {
 	}
 }
 
-// TestB444ResidentResumeHasNoSeatEnv 锁 B444 P2 返工三 裁决 1（真机 R6：驻场者拿注入的席位对把自己
-// 绑成了卡席位）：驻场续轮（ref.Resident=true）子进程两键都缺；同一 runner 的卡续轮照旧注入（不回归 F-RM1）。
+// TestB444ResidentResumeHasNoSeatEnv 锁 B444 P2 返工三 裁决 1 / 返工四（review C2）：真 coordinatorRunner +
+// 真 opencode.Coordinator + PATH 假 CLI；驻场判定读真账本（经 api.Facade → collab）。账本里有 push 驻场行
+// push_session=ses_resident → 续接 ses_resident 时子进程两键都缺；续接卡席位会话 ses_card 照旧注入（不回归 F-RM1）。
 func TestB444ResidentResumeHasNoSeatEnv(t *testing.T) {
 	b435UnsetSeatEnv(t)
 	capture := installCoordinatorFakeCLI(t)
+	st, err := ledger.Open(filepath.Join(t.TempDir(), "ledger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	session, err := st.CreateSession("驻场", "user:o", "user:o")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.SitResident(ledger.SessionResident{Session: session.ID, Identity: "agent:coord",
+		DriverMode: ledger.ResidentDriverPush, PushCLI: "opencode", PushSession: "ses_resident",
+		Carrier: "c1", CarrierMachine: "linux-01"}); err != nil {
+		t.Fatal(err)
+	}
+	rooms := collab.New(ledgerapi.New(st))
 	home := t.TempDir()
-	runner := testCoordRunner(hostapi.NewWithCredentialPathFor(toolchain.CredRelPathFor),
-		func(keysclient.SessionSpec) (string, error) { return home, nil })
+	runner := testCoordRunnerWithResidents(hostapi.NewWithCredentialPathFor(toolchain.CredRelPathFor),
+		func(keysclient.SessionSpec) (string, error) { return home, nil }, rooms.IsPushResidentSession)
 	if _, err := runner.Resume(keysclient.SessionRef{
-		CLI: "opencode", SessionID: "ses_resident", HomeDir: home, Workdir: t.TempDir(), Resident: true,
+		CLI: "opencode", SessionID: "ses_resident", HomeDir: home, Workdir: t.TempDir(),
 	}, "resident resume"); err != nil {
 		t.Fatalf("runner.Resume(resident): %v", err)
 	}
@@ -256,5 +283,28 @@ func TestB444ResidentResumeHasNoSeatEnv(t *testing.T) {
 	}
 	if got, _ := b435CapturedEnv(t, capture, "HANDOFF_SESSION_ID"); got != "ses_card" {
 		t.Fatalf("卡续轮子进程 HANDOFF_SESSION_ID=%q，want ses_card（卡回合照旧注入）", got)
+	}
+}
+
+// TestB444ResumeResidentLookupErrorFailsRound 锁返工四的判不出分支：驻场判定读失败 → 本轮返回错误（带原因），
+// 子进程根本不起（捕获文件不存在），绝不按「非驻场」猜着注入；未装配（nil）同样拒跑。
+func TestB444ResumeResidentLookupErrorFailsRound(t *testing.T) {
+	b435UnsetSeatEnv(t)
+	capture := installCoordinatorFakeCLI(t)
+	home := t.TempDir()
+	cause := errors.New("账本读超时")
+	ref := keysclient.SessionRef{CLI: "opencode", SessionID: "ses_x", HomeDir: home, Workdir: t.TempDir()}
+	prepare := func(keysclient.SessionSpec) (string, error) { return home, nil }
+	h := hostapi.NewWithCredentialPathFor(toolchain.CredRelPathFor)
+	failing := testCoordRunnerWithResidents(h, prepare, func(string) (bool, error) { return false, cause })
+	if _, err := failing.Resume(ref, "resume"); !errors.Is(err, cause) {
+		t.Fatalf("驻场判定读失败应让本轮失败并带原因，得 %v", err)
+	}
+	unwired := testCoordRunnerWithResidents(h, prepare, nil)
+	if _, err := unwired.Resume(ref, "resume"); !errors.Is(err, errResidentLookupUnwired) {
+		t.Fatalf("驻场判定未装配应拒跑，得 %v", err)
+	}
+	if _, err := os.Stat(capture); !os.IsNotExist(err) {
+		t.Fatalf("判不出时子进程不得启动（捕获文件应不存在），stat err=%v", err)
 	}
 }

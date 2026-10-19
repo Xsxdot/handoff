@@ -39,10 +39,6 @@ func TestB444WakeResidentResumesGivenRef(t *testing.T) {
 	if len(rec.launches) != 0 {
 		t.Fatalf("驻场续轮不得 Launch，得 %d", len(rec.launches))
 	}
-	// B444 P2 返工三 裁决 1（真机 R6）：驻场续轮必须标为驻场回合，Runner 据此不注入卡席位对。
-	if !rec.resumes[0].Resident {
-		t.Fatalf("驻场续轮 ref 应标 Resident=true（Runner 不注入席位 env），得 %+v", rec.resumes[0])
-	}
 	// R1：驻场键与卡键分表——同名字符串的 Forget(卡) 不清驻场 ref。
 	svc.Forget("session:7")
 	svc.mu.Lock()

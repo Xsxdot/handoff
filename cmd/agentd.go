@@ -717,7 +717,7 @@ func setupLedger(cfg *config.Config, srv *agentd.Server, taskStore *store.Store,
 	// 叙事/attach 适配，经 SetKeystone 注入。
 	prepareHome := orchestration.NewCoordinatorPrepareHome(srv.Conf(), srv.Providers(), srv.RuleLoader())
 	coord := opencode.NewCoordinator(hostAPI, slog.Default())
-	runner := agentd.NewCoordinatorRunner(coord, srv.Providers(), prepareHome)
+	runner := agentd.NewCoordinatorRunner(coord, srv.Providers(), prepareHome, rooms.IsPushResidentSession)
 	resolver := agentd.NewCoordinatorSessionRefResolver(srv, hostapi.ExpandHomePath)
 	ks := keystone.New(runner, keystone.NewRoomNarrator(rooms), facade,
 		agentd.NewAttachLocator(hostapi.ExpandHomePath))

@@ -67,6 +67,12 @@ func b444ResidentSeatExclusionScenario(t *testing.T, s *Store) {
 	if _, err := s.SitResident(resident); err != nil {
 		t.Fatalf("坐 push 驻场者: %v", err)
 	}
+	// 返工四：续轮驻场判定读口——push_session 命中为 true，空串与非驻场会话为 false。
+	for sid, want := range map[string]bool{"ses_b444_resident": true, "": false, "ses_b444_card": false} {
+		if got, err := s.IsPushResidentSession(sid); err != nil || got != want {
+			t.Fatalf("IsPushResidentSession(%q)=%v err=%v，want %v", sid, got, err, want)
+		}
+	}
 	wantText := "该 CLI 会话是会话 " + residentSession + " 的驻场者，不能坐卡席位"
 	assertConflict := func(what string, err error) {
 		t.Helper()

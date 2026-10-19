@@ -392,6 +392,17 @@ func (s *Service) InflightPushResidents() ([]proto.SessionResident, error) {
 	return rows, nil
 }
 
+// IsPushResidentSession 报告 CLI 会话 id 是否是某会话 push 驻场者的会话（B444 P2 返工四，review C2：agentd
+// coordinatorRunner 续轮据此决定不注入卡席位对）。collab 只给事实；读失败原样上抛（调用方让本轮失败，不猜）。
+func (s *Service) IsPushResidentSession(pushSession string) (bool, error) {
+	ok, err := s.lc.IsPushResidentSession(pushSession)
+	if err != nil {
+		log().Warn("查 CLI 会话是否为驻场者失败", "push_session", pushSession, "cause", err)
+		return false, err
+	}
+	return ok, nil
+}
+
 // StandResident 请下会话房间驻场者（`session stand`，Q7 甲）：identity 须等于现驻场者，否则
 // ErrResidentNotSeated、登记不变。非会话房间 → ErrNoRoom。
 func (s *Service) StandResident(sessionID, identity string) error {

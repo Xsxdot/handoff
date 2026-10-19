@@ -219,3 +219,97 @@
 - **R7**：桌面 1280 宽：项目行「在 b444demo 新建会话」icon → 对话框（项目只读、标题占位「留空则自动命名」、卡只列 D4、小队预填 lead）→ 创建中「正在拉起驻场者…」→ 会话出现在 b444demo 下并开 tab；左栏底部仅「归档会话」。手机 360 宽：项目 ⋯ 操作面板含「新建会话」，对话框适配。发现带终态卡的项目内会话落「其他会话」→ d4a107d0 修，复看 session:1 归 b444demo。
 - **R8**：在役版 8d10ea74 于隔离 HOME/7793 造旧库（会话「旧会话甲」+ desktop 驻场者 agent:old-desk）→ 3051d2b2 前一版 d4a107d0 打开：200，摘要无 `home_project` 键，驻场成员无 `driver_mode` 键；二次打开 200。
 - 范围外另立卡：B445（opencode 回合不在 SessionSpec.Workdir）、B446（协调者首轮自坐后 launch 收尾撞席）。
+
+## P2 返工四（review C2：不碰 B233.2 冻结镜像）——实现者 subagent，2026-10-19
+
+### 偏离与自主决定
+
+1. 撤掉 `keysclient.SessionRef.Resident`（文件回到 f7d89494 原样）及 keystone 两处置位、全部断言该字段的测试行（agentd 三处、keystone 一处）；`executor TestCoordTypesMirrorKeysclientFields` 复绿。
+2. 驻场判定读口走既有分层：ledger `Store.IsPushResidentSession(pushSession)`（`driver_mode=push AND push_session=?`，空串恒 false）→ `api.Facade` 直通 → `client.LedgerClient` 新方法（fakeLC 补桩）→ `collab.Service.IsPushResidentSession`；cmd 组装点把 `rooms.IsPushResidentSession` 作为 `NewCoordinatorRunner` 第 4 个参数注入（签名变更，三个调用点同改）。keystone 不碰账本。
+3. **依赖为 nil 时 Resume 拒跑**（`errResidentLookupUnwired`），不默认为「非驻场」照旧注入——那等于猜。Launch 不受影响。读失败包上下文后经 `classifyRunnerErr`（非哨兵即原样透传）返回，子进程不启动，Warn 记 cli/session/cause。
+4. 测试夹具：`testCoordRunner` 保留旧签名，默认判定恒 false（既有卡回合用例语义不变）；新增 `testCoordRunnerWithResidents` 显式给读口。
+5. 全量复跑没有经 `gotest.sh` 包装（worktree 守卫拒绝 `bash <脚本>` 形态），改为同效的 `unset CLAUDE_CODE_SESSION_ID HANDOFF_SESSION_CLI HANDOFF_SESSION_ID; go test -count=1 -json ./...`（与脚本内容逐条相同：脚本也只做 unset + cd 本 worktree + go test），计数由 json 事件逐包统计。
+
+### 事实与命令
+
+- 红绿：
+  - agentd `TestB444ResidentResumeHasNoSeatEnv` 改为真账本坐 push 驻场行（push_session=ses_resident）→ `ledgerapi.New` → `collab.New` 的读口；临时把 `if resident` 改成 `if resident && false` 复跑红「HANDOFF_SESSION_CLI="opencode"，want <unset>」，恢复后绿；卡续轮 ses_card 仍注入。
+  - 新增 agentd `TestB444ResumeResidentLookupErrorFailsRound`：读失败 → 错误含原因、未装配 → `errResidentLookupUnwired`、两种情形子进程均未启动（捕获文件不存在）；临时把读失败判断短路复跑红「驻场判定读失败应让本轮失败并带原因，得 <nil>」，恢复后绿。
+  - ledger `TestB444ResidentSeatExclusion` 场景加 `IsPushResidentSession` 三值断言（命中 true、空串 false、卡席位会话 false）。
+- 命令：`go build ./...` ok；`go vet ./...` ok；`gofmt -l $(git ls-files '*.go')`（1385 个文件，经文件列表喂 xargs）输出空。
+
+## 验收复跑
+
+全量：`unset CLAUDE_CODE_SESSION_ID HANDOFF_SESSION_CLI HANDOFF_SESSION_ID; go test -count=1 -json ./...` → exit=0，stderr 空。逐包汇总（json 事件计数，含子测试；无测试文件的包略去）：
+
+```
+pass .  pass=26 fail=0 skip=0  3.6s
+pass ./cmd  pass=668 fail=0 skip=0  79.1s
+pass ./internal/agentd  pass=1085 fail=0 skip=1  72.0s
+pass ./internal/approval  pass=35 fail=0 skip=0  0.6s
+pass ./internal/approval/internal/decision  pass=4 fail=0 skip=0  0.4s
+pass ./internal/buildinfo  pass=17 fail=0 skip=0  0.3s
+pass ./internal/client  pass=215 fail=0 skip=0  9.7s
+pass ./internal/collab  pass=178 fail=0 skip=0  1.9s
+pass ./internal/collab/room  pass=3 fail=0 skip=0  0.5s
+pass ./internal/config  pass=126 fail=0 skip=0  0.4s
+pass ./internal/diag  pass=4 fail=0 skip=0  0.3s
+pass ./internal/discipline  pass=12 fail=0 skip=0  0.3s
+pass ./internal/dropdir  pass=11 fail=0 skip=0  0.4s
+pass ./internal/envfile  pass=38 fail=0 skip=0  0.4s
+pass ./internal/executor  pass=59 fail=0 skip=0  0.4s
+pass ./internal/executor/agy  pass=66 fail=0 skip=0  1.9s
+pass ./internal/executor/claudecode  pass=84 fail=0 skip=3  5.6s
+pass ./internal/executor/codex  pass=87 fail=0 skip=0  7.3s
+pass ./internal/executor/fake  pass=3 fail=0 skip=0  0.6s
+pass ./internal/executor/grok  pass=142 fail=0 skip=1  2.6s
+pass ./internal/executor/opencode  pass=240 fail=0 skip=1  30.8s
+pass ./internal/executor/rawtap  pass=6 fail=0 skip=0  0.4s
+pass ./internal/executor/turn  pass=67 fail=0 skip=0  0.7s
+pass ./internal/hostapi  pass=25 fail=0 skip=0  3.5s
+pass ./internal/initflow  pass=36 fail=0 skip=0  0.4s
+pass ./internal/keystone  pass=33 fail=0 skip=0  0.5s
+pass ./internal/launcher  pass=14 fail=0 skip=0  0.4s
+pass ./internal/ledger  pass=283 fail=0 skip=37  6.2s
+pass ./internal/ledger/api  pass=14 fail=0 skip=0  0.5s
+pass ./internal/ledgermirror  pass=21 fail=0 skip=0  2.7s
+pass ./internal/ledgerstep  pass=169 fail=0 skip=0  1.4s
+pass ./internal/localsync  pass=4 fail=0 skip=0  1.1s
+pass ./internal/logx  pass=8 fail=0 skip=0  0.4s
+pass ./internal/mobilecore  pass=29 fail=0 skip=0  4.4s
+pass ./internal/orchestration  pass=456 fail=0 skip=0  40.0s
+pass ./internal/p2p  pass=12 fail=0 skip=0  22.6s
+pass ./internal/pathenv  pass=10 fail=0 skip=0  0.7s
+pass ./internal/permgate  pass=407 fail=0 skip=0  0.4s
+pass ./internal/prochost  pass=125 fail=0 skip=6  12.3s
+pass ./internal/projectid  pass=2 fail=0 skip=0  0.4s
+pass ./internal/proto  pass=87 fail=0 skip=0  0.4s
+pass ./internal/proxycfg  pass=8 fail=0 skip=0  0.4s
+pass ./internal/ptyhost  pass=20 fail=0 skip=0  21.5s
+pass ./internal/ptyhost/engine  pass=29 fail=0 skip=0  11.5s
+pass ./internal/ptyhost/hostproc  pass=7 fail=0 skip=0  12.9s
+pass ./internal/ptyhost/sessdir  pass=7 fail=0 skip=0  0.7s
+pass ./internal/ptyhost/wire  pass=7 fail=0 skip=0  0.6s
+pass ./internal/ptytestroot  pass=6 fail=0 skip=0  0.4s
+pass ./internal/relay  pass=31 fail=0 skip=0  38.2s
+pass ./internal/release  pass=38 fail=0 skip=0  1.7s
+pass ./internal/scheduling  pass=87 fail=0 skip=0  0.9s
+pass ./internal/scheduling/internal/logging  pass=2 fail=0 skip=0  0.4s
+pass ./internal/selfupdate  pass=29 fail=0 skip=0  0.4s
+pass ./internal/service  pass=84 fail=0 skip=0  0.4s
+pass ./internal/skill  pass=56 fail=0 skip=0  0.7s
+pass ./internal/store  pass=83 fail=0 skip=0  1.0s
+pass ./internal/targetclient  pass=27 fail=0 skip=0  5.6s
+pass ./internal/termseq  pass=4 fail=0 skip=0  0.4s
+pass ./internal/testhttp  pass=6 fail=0 skip=0  0.5s
+pass ./internal/testperm  pass=7 fail=0 skip=1  0.3s
+pass ./internal/toolchain  pass=10 fail=0 skip=0  0.4s
+pass ./internal/upgrade  pass=22 fail=0 skip=0  0.4s
+pass ./internal/webui  pass=2 fail=0 skip=0  0.4s
+pass ./internal/workspace  pass=242 fail=0 skip=0  20.6s
+pass ./internal/workspace/internal/gitproc  pass=5 fail=0 skip=0  0.4s
+TOTAL pass=5730 fail=0 skip=50 packages=65
+```
+
+- skip 50 条：ledger 37（27 条测试名含 PG，未设 `LEDGER_TEST_PG_DSN`；其余 10 条为既有环境门控，未逐条核），其他包 13 条为既有环境门控；**PG 腿未验证**。真机复跑 R6 归协调者。
+- 提交：`840f0b50 fix(B444): 驻场判定改读账本事实，撤回 SessionRef.Resident（review C2，不碰 B233.2 冻结镜像）`（本行随后 amend 收进该提交，hash 会变）。

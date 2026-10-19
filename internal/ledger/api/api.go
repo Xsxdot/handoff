@@ -311,6 +311,11 @@ func (f *Facade) SetResidentPushSession(sessionID, identity, pushSession string)
 	return translateResidentErr(err)
 }
 
+// IsPushResidentSession 直通 Store.IsPushResidentSession（B444 P2 返工四）。
+func (f *Facade) IsPushResidentSession(pushSession string) (bool, error) {
+	return f.st.IsPushResidentSession(pushSession)
+}
+
 // InflightPushResidents 直通 Store.ListInflightPushResidents（B444）并逐行映射 wire。
 func (f *Facade) InflightPushResidents() ([]proto.SessionResident, error) {
 	rows, err := f.st.ListInflightPushResidents()

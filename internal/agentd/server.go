@@ -1558,7 +1558,13 @@ type coordinatorRunner struct {
 	coord       executor.Coordinator
 	reg         *executor.Registry
 	prepareHome func(keysclient.SessionSpec) (string, error)
+	// isPushResidentSession 判续接的 CLI 会话是不是 push 驻场者（B444 P2 返工四，review C2）：是 → 本轮不注入
+	// 卡席位对。事实在账本（经 collab），不在 SessionRef（B233.2 冻结镜像不加字段）。nil = 未装配，Resume 拒跑。
+	isPushResidentSession func(sessionID string) (bool, error)
 }
+
+// errResidentLookupUnwired 是 runner 未装配驻场判定依赖时 Resume 的拒绝原因（不猜注不注入）。
+var errResidentLookupUnwired = errors.New("协调者 runner 未装配驻场者判定，拒绝续轮")
 
 func (r coordinatorRunner) Launch(spec keysclient.SessionSpec, prompt string) (keysclient.TurnResult, error) {
 	name := filepath.Base(spec.CLI)
@@ -1623,9 +1629,19 @@ func (r coordinatorRunner) Resume(ref keysclient.SessionRef, prompt string) (key
 	}
 	// F-RM1（B435.2 R plan Q2 甲）：卡的 resume 回合注入本卡席位对，协调者按简报以席位身份回房间。
 	// launch 回合不注入（Q3 甲：会话 id 回合中才生成，半注入是 currentSeatIdentity 的硬错误）。
-	// 驻场续轮（ref.Resident）一律不注入（B444 P2 返工三 裁决 1，真机 R6：驻场者拿注入的对把自己绑成了
-	// 卡席位）；驻场者只用 --agent 发言，不需要也不该拿到席位身份。
-	if ref.Resident {
+	// 驻场续轮一律不注入（B444 P2 返工三 裁决 1，真机 R6：驻场者拿注入的对把自己绑成了卡席位）：按账本事实
+	// 判——续接的会话 id 是某 push 驻场行的 push_session 即驻场回合（返工三的账本互斥保证它不会同时是卡席位）。
+	// 判不出（未装配 / 读失败）就让本轮失败，唤醒路径照常重试或落指针行，绝不猜。
+	if r.isPushResidentSession == nil {
+		slog.Default().Warn("协调者 Resume 拒跑：驻场判定未装配", "cli", ref.CLI, "session", ref.SessionID)
+		return keysclient.TurnResult{}, errResidentLookupUnwired
+	}
+	resident, err := r.isPushResidentSession(ref.SessionID)
+	if err != nil {
+		slog.Default().Warn("协调者 Resume 拒跑：查驻场者失败", "cli", ref.CLI, "session", ref.SessionID, "cause", err)
+		return keysclient.TurnResult{}, classifyRunnerErr(fmt.Errorf("查续接会话是否为驻场者: %w", err))
+	}
+	if resident {
 		ref.Env = nil
 	} else {
 		ref.Env = seatEnv(ref.CLI, ref.SessionID)
@@ -1634,7 +1650,7 @@ func (r coordinatorRunner) Resume(ref keysclient.SessionRef, prompt string) (key
 	defer cancel()
 	slog.Default().Log(ctx, wakeRoundLogLevel, "协调者回合开始", "cli", ref.CLI,
 		"mode", "resume", "session", ref.SessionID, "home_dir", ref.HomeDir,
-		"workdir", ref.Workdir, "resident", ref.Resident, "seat_env", len(ref.Env) > 0, "timeout", coordWakeTurnTimeout.String())
+		"workdir", ref.Workdir, "resident", resident, "seat_env", len(ref.Env) > 0, "timeout", coordWakeTurnTimeout.String())
 	got, err := r.coord.Resume(ctx, executor.CoordSessionRef{
 		CLI: ref.CLI, SessionID: ref.SessionID, HomeDir: ref.HomeDir,
 		Workdir: ref.Workdir, Model: ref.Model, Env: ref.Env,
@@ -1668,9 +1684,13 @@ func classifyRunnerErr(err error) error {
 // NewCoordinatorRunner 构造 keystone 的会话承载缝（B233.18：类型与 Launch/Resume
 // 实现留在本包，构造上移 cmd 组装点，故导出本构造函数；返回 keysclient.Runner
 // 使用方接口，cmd 不感知具体类型）。
+//
+// isPushResidentSession（B444 P2 返工四）：续接会话是否为 push 驻场者的账本事实读口（组装点从 collab 取）；
+// 为 nil 时 Resume 一律拒跑（Launch 不受影响）。
 func NewCoordinatorRunner(coord executor.Coordinator, reg *executor.Registry,
-	prepareHome func(keysclient.SessionSpec) (string, error)) keysclient.Runner {
-	return coordinatorRunner{coord: coord, reg: reg, prepareHome: prepareHome}
+	prepareHome func(keysclient.SessionSpec) (string, error),
+	isPushResidentSession func(sessionID string) (bool, error)) keysclient.Runner {
+	return coordinatorRunner{coord: coord, reg: reg, prepareHome: prepareHome, isPushResidentSession: isPushResidentSession}
 }
 
 // seatEnv 拼 resume 回合注入子进程的 HANDOFF 席位对（B435.2 F-RM1，R plan Q2 甲；agentd 是

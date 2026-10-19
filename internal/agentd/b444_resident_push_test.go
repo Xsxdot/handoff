@@ -163,10 +163,6 @@ func TestB444PushResidentResumesOnHumanMessage(t *testing.T) {
 	if ref.CLI != "opencode" || ref.HomeDir != b444Home || ref.Workdir != b444Workdir || ref.Model != b444Model {
 		t.Fatalf("续轮 ref 应取自驻场 bearing，得 %+v", ref)
 	}
-	// 返工三 裁决 1（真机 R6）：驻场续轮标驻场回合，coordinatorRunner 据此不注入卡席位对。
-	if !ref.Resident {
-		t.Fatalf("驻场续轮 ref 应标 Resident=true，得 %+v", ref)
-	}
 	_, prompts := runner.snapshot()
 	if !strings.Contains(prompts[0], "--agent "+b444Squad) || !strings.Contains(prompts[0], session) {
 		t.Fatalf("驻场续轮简报应给出以 --agent %s 回到 %s 的发言命令: %q", b444Squad, session, prompts[0])
@@ -198,9 +194,6 @@ func TestB444AtCardWakesSeatNotResident(t *testing.T) {
 	refs, prompts := runner.snapshot()
 	if len(refs) != 1 || refs[0].SessionID != "b444-seat-1" || !b435WokeCard(prompts[0], card) {
 		t.Fatalf("@卡号应只续卡席位一次，得 refs=%+v", refs)
-	}
-	if refs[0].Resident {
-		t.Fatalf("卡席位续轮不得标驻场回合（卡回合照旧注入席位对），得 %+v", refs[0])
 	}
 	if n := len(b444ResidentResumes(runner)); n != 0 {
 		t.Fatalf("@卡号不得唤醒驻场者，得 %d 次", n)

@@ -44,10 +44,6 @@ type SessionRef struct {
 	// 由 Runner 实现方按回合填写（agentd coordinatorRunner.Resume 填 HANDOFF 席位对），
 	// 不是会话持久属性，故 json:"-" 不落盘、不进 wire；值不得进日志。
 	Env []string `json:"-"`
-	// Resident 标本回合是 push 驻场者续轮（B444 P2 返工三 裁决 1，真机 R6）：驻场者身份是 agent:<小队>，
-	// 不是任何卡的席位，Runner 不得给它注入卡席位对（注入后它会拿该对 `card bind` 把自己绑成卡席位）。
-	// 由 keystone.WakeResident 置位；同 Env 是回合属性，json:"-"。
-	Resident bool `json:"-"`
 }
 
 // TurnResult 是一个唤醒回合的产出。

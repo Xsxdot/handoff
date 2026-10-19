@@ -202,9 +202,6 @@ func TestB444SessionCreateWithCardsSeatsPushResident(t *testing.T) {
 	if len(resumes) != 1 || resumes[0].SessionID != "ses_b444_create_1" {
 		t.Fatalf("建会话后人无 @ 发言应续到驻场者同一会话，得 %+v", resumes)
 	}
-	if !resumes[0].Resident {
-		t.Fatalf("驻场续轮 ref 应标 Resident=true（不注入卡席位对），得 %+v", resumes[0])
-	}
 }
 
 // A2.1 命名分支：只给一张卡 → 标题 = 卡标题；零卡 → 「新会话」，首轮简报叫驻场者等人开口再起名；显式标题原样。

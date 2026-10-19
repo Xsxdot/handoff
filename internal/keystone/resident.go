@@ -41,8 +41,6 @@ func (s *Service) WakeResident(ctx context.Context, ref keysclient.SessionRef, b
 	if len(evs) == 0 {
 		return RoundResult{}, errors.New("keystone: 驻场者续轮没有事件")
 	}
-	// 返工三 裁决 1（真机 R6）：标驻场回合，Runner 据此不注入卡席位对——无论调用方是否置位。
-	ref.Resident = true
 	s.mu.Lock()
 	s.residents[brief.Session] = ref
 	s.mu.Unlock()
@@ -75,7 +73,6 @@ func (s *Service) LaunchForResident(ctx context.Context, spec keysclient.Session
 	s.mu.Lock()
 	s.residents[brief.Session] = keysclient.SessionRef{
 		CLI: spec.CLI, SessionID: result.SessionID, HomeDir: spec.HomeDir, Workdir: spec.Workdir, Model: spec.Model,
-		Resident: true,
 	}
 	s.mu.Unlock()
 	log().Info("驻场者首轮拉起完成", "session", brief.Session, "push_session", result.SessionID)
