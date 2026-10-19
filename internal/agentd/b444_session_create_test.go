@@ -198,7 +198,7 @@ func TestB444SessionCreateWithCardsSeatsPushResident(t *testing.T) {
 	}
 }
 
-// A2.1 命名分支：只给一张卡 → 标题 = 卡标题；零卡 → 「新会话」，首轮简报带 CAS 改名指令；显式标题原样。
+// A2.1 命名分支：只给一张卡 → 标题 = 卡标题；零卡 → 「新会话」，首轮简报叫驻场者等人开口再起名；显式标题原样。
 func TestB444SessionCreateAutoTitle(t *testing.T) {
 	env, runner := newB444CreateEnv(t, true)
 	c1 := b444Card(t, env, "单卡标题", "handoff")
@@ -211,8 +211,10 @@ func TestB444SessionCreateAutoTitle(t *testing.T) {
 	}
 	_, prompts, _ := runner.snapshot()
 	last := prompts[len(prompts)-1]
-	if !strings.Contains(last, "session rename "+resp.ID) || !strings.Contains(last, "--expect-title "+proto.SessionUntitledTitle) {
-		t.Fatalf("零卡未命名会话的首轮简报应带 CAS 改名指令: %q", last)
+	// 真机 R5（协调者批准改断言，同 f6113731）：首轮人还没开口，简报叫驻场者等、不下发改名；CAS 改名指令
+	// 只在有人话的续轮出现（keystone TestB444ResidentBriefing 锁续轮侧）。
+	if strings.Contains(last, "session rename "+resp.ID) || !strings.Contains(last, "本轮不要改名") {
+		t.Fatalf("零卡未命名会话的首轮简报应叫驻场者等人开口、不带改名指令: %q", last)
 	}
 	if code, resp, _ := b444Create(t, env, `{"title":"  人起的名  ","project":"handoff","squad":"coord"}`); code != 200 || resp.Title != "人起的名" {
 		t.Fatalf("显式标题应裁剪后原样: %d %q", code, resp.Title)

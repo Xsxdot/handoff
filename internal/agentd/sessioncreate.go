@@ -205,8 +205,8 @@ func (s *Server) createProjectSession(ctx context.Context, in sessionCreateInput
 // 会话锁 → 读会话（不存在 ErrNoRoom、归档 ErrReadOnly）→ 已有驻场者（含首轮在途行）ErrResidentOccupied →
 // runOnCoordinatorCarrier（准入 → 本机载体 → spec，workdir 按会话所属项目）→ 真实机器名（R9）→
 // collab.SitResident(push，push_session 空 = 首轮在途) → keystone.LaunchForResident → SetResidentPushSession。
-// 首轮或补写失败 → 请下在途行（StandResident）+ 会话里一条系统指针行；进入名额窗口之前的失败（会话不存在/
-// 归档/已有驻场者）不落指针行（那是调用方的请求错，响应即可见面）。
+// 准入（含名额满、载体不可用）、首轮或补写失败 → 请下在途行（若已坐下，StandResident）+ 会话里一条系统
+// 指针行；请求错（会话不存在/归档/已有驻场者）不落指针行（响应即可见面）。
 func (s *Server) launchSessionResident(ctx context.Context, sessionID string, squad scheduling.Squad) (proto.SessionResidentOutcome, error) {
 	var zero proto.SessionResidentOutcome
 	identity, err := proto.MemberIdentity(proto.IdentityKindAgent, squad.Name)
