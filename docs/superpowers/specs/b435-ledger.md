@@ -606,3 +606,13 @@ K0-3（其他 agent 解析 `card wait` 输出）、K0-D（装过 B434 的用户�
 - **W-7 薄壳半边**：控制台页由 agentd 下发，与浏览器同包；web 侧薄壳分支只有标题栏 inset、`showOpenInBrowser`（`CardsPage.tsx`）、文件拖放、剪贴板，卡抽屉空座态不读 `isDesktopShell`。浏览器读数已过（17.1）。**薄壳内点开卡抽屉的截图未取**（需点击）→ 用户配合项。
 - **X-U2 薄壳半边**：B435 W 删了 web 侧唯一的 `handoff:open-deeplink:` 生产者，现仅 `desktopShell.ts` 的 CDC 常量与壳侧 `external_deeplink.go` 消费者，UI 无入口触发——「薄壳里点 continue / 点 /new」的前提不成立，判**不适用（无生产者）**。壳侧白名单（只放 `claude://code/continue`、拒退役 `/new`）由 `go test ./internal/shell/ -run 'ExternalDeepLink|RawMessage' -count=1` → `ok 1.378s` 覆盖（含 `TestHandleExternalDeepLinkMessageRejectsRetiredNew`）。roadmap 记「壳侧深链通道零生产者，待定去留」。
 - **收尾**：停薄壳与靶子 M 进程。
+
+### 17.8 用户配合项：真手机 R-1m / W-0 与薄壳内 W-7（2026-10-19，协调者本地 + 用户手机/点击）
+
+- **偏离与自主决定**：①为让真手机可达，靶子 M 的 `listen` 临时由 `127.0.0.1:7792` 改为 LAN `192.168.0.4:7792`（Host 白名单恒含 listen host），验后改回；在役 7777 未动（launchd 单元 running）。②ticket 兑换 URL 由 `console --print-url` 签发后把 host 换成 LAN 地址，以二维码交用户扫（一次性、60s、仅 LAN 测试靶）。
+- **W-0（真手机登录）**：agentd 日志「签发 ticket」14:41:56 →「消费 ticket 成功」14:42:46，随后 `项目树请求`/`机器列表请求` `remote_addr=192.168.0.168`（手机，本机为 .4）。**通过**。
+- **R-1m（真手机房间发言）**：账本 seq 72 `room_message` actor=`user:xsx` room=`session:2`（项目房间 handoff）body「hi」；驻场者游标 `resident:session:2/agent:org` → 72（14:43:19）；组织者会话 `session wait --timeout 30s` 取到 #72，判「人本人的话、仅问候、无授权动作」，14:43:26 `session send --mention user:xsx` 回应（seq 74）。**通过**（同时是 Q4 在真手机来源上的一次读数）。
+- **用户在手机上点 T4「▶ 叫机器人」**：14:43:35/40 抽屉轮询协调者状态 → 14:43:41 `scheduling.launch_admit.success`、「自动化拉起协调者回合」、stub 载体 `ses_stub_1792388621_858`，seq 75 `driver_seat_bound`。手机侧叫机器人通路可用（用户确认是本人点的）。
+- **W-7（薄壳内）**：薄壳以隔离 HOME 连 `192.168.0.4:7792` 握手成功；用户点开 T6，抽屉「协调者 未绑定」只有「▶ 叫机器人」，协调者席位「空座：可选择"叫机器人"启动协调者」，无打开桌面端按钮（`uv/shell_t6.png`，窗号 6834）；agentd 日志 `desktop-launch|desktop_launch|打开桌面端` 计数 0。**通过**。
+- **Minor 发现**：房间消息 `device` 字段记为「DF-ZIDONGdeMac-mini.local / Safari」——设备名取自签 ticket 的一端（`console --print-url` 缺省本机主机名），手机经此路径登录时被标成 Mac。仅展示字段，不影响作者身份；落 roadmap。
+- **收尾**：停薄壳与靶子 M，`listen` 改回回环；在役 launchd 单元 `state = running`。
