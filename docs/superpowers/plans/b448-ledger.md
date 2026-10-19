@@ -53,3 +53,32 @@
   `go test ./internal/agentd/ -run 'B448|TestCoordLaunchRejectsRemoteCarrier' -count=1` → `ok ... 1.614s`。
 - S4 回归：`go test ./internal/agentd/ -run 'B448|CoordLaunch|CoordRebind|B444|B446|Coord|Drain|Queue|Wake' -count=1`
   → `ok ... 7.437s`；`git diff --stat` 既有测试文件只动了 `coordapi_test.go`（即唯一允许改写的那条）。
+
+### F-5 驻场路径 V2 / V2a–c / V6 驻场腿
+
+- 新文件 `internal/agentd/b448_resident_test.go`（4 例）。驻场实现已在 ea75943f 随骨架一并落下（收件 handler 共用
+  错误映射，拆不开），所以这 4 例在分支上首跑即绿——**先红是在基线上补证的**：
+  `git worktree add --detach <scratchpad>/b448-base 08baeae1`，拷入 `b448_pair_test.go` 与 `b448_resident_test.go`，
+  `go test ./internal/agentd/ -run TestB448Resident -count=1` → 4 例全红，均为断言红，原文
+  `驻场者应在执行机坐下: &{... Error:协调者载体 t448-oc 在机器 t448-linux（远端）：print 协调者只支持本机载体，请把协调者小队的成员指向本机载体}`；
+  随后 `git worktree remove --force` 清掉临时 worktree。
+- 分支上：`go test ./internal/agentd/ -run TestB448Resident -count=1 -v` → 4 例 PASS。
+
+### F-6 V7 超时与日志
+
+- 新文件 `internal/agentd/b448_timeout_log_test.go`：`TestB448TransferCtxDeadlineCoversTurnTimeout`（F34）、
+  `TestB448ReceiptOutlivesServerWriteTimeout`（F35：`coordWakeTurnTimeout` 覆盖成 3s，B 的 server WriteTimeout=200ms，
+  B 回合 600ms，A 入口仍 200）、`TestB448TransferLogsOnBothEnds`（卡与驻场两端各一行 ≥Warn 的「…转交完成」日志，
+  带 accepted_by/handled_by/carrier/card|session）。三例首跑即绿。
+- **放弃的尝试**：想在临时 worktree 里把 `extendFirstRoundWriteDeadline` 置空看 F35 用例变红，命令被沙箱拒绝
+  （worktree 隔离会话不许拼装运行期脚本改另一 worktree）。没有再绕；F35 用例的「牙」未由实现侧观测，留给 review 变异复验。
+
+### F-7 触及包整包测试暴露的夹具纪律
+
+- `go test ./internal/agentd/ -count=1` 首跑：`--- FAIL: TestNoDirectHttptestServers`，原文
+  `b448_card_test.go:83 仍直接调用 httptest.NewServer(，请改用 internal/testhttp`。
+- 判断：仓内既有守卫，B448 测试违反夹具纪律（不是功能问题）。把 b448 测试里 4 处 `httptest.NewServer(` 改成
+  `testhttp.NewServer(t, ...)`（自带 Cleanup，删掉对应 `t.Cleanup(x.Close)`）。
+- 复跑：`go test ./internal/agentd/ -count=1` → `ok  github.com/Xsxdot/handoff/internal/agentd 75.334s`（整包全绿）。
+- `go build ./...` → 无输出；`go vet ./...` → 无输出；`gofmt -l internal/agentd/ internal/client/ internal/proto/` → 空。
+- 残留检查：`/usr/bin/grep -rn -e "指向本机载体" -e "只支持本机载体" internal cmd web/src` 只剩改写测试头注释里的一句历史说明。

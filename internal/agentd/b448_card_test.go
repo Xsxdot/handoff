@@ -25,6 +25,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/ledger"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/scheduling"
+	"github.com/Xsxdot/handoff/internal/testhttp"
 )
 
 func b448SeatIdentity(t *testing.T, session string) string {
@@ -80,7 +81,7 @@ func newB448Proxy(t *testing.T, target *b448Host) *b448Proxy {
 	}
 	rp := httputil.NewSingleHostReverseProxy(u)
 	p := &b448Proxy{}
-	p.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	p.srv = testhttp.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		raw, _ := io.ReadAll(r.Body)
 		var keys map[string]json.RawMessage
 		_ = json.Unmarshal(raw, &keys)
@@ -97,7 +98,6 @@ func newB448Proxy(t *testing.T, target *b448Host) *b448Proxy {
 		r.ContentLength = int64(len(raw))
 		rp.ServeHTTP(w, r)
 	}))
-	t.Cleanup(p.srv.Close)
 	return p
 }
 
@@ -317,11 +317,10 @@ func TestB448CardNoSlotOnCarrierMachine(t *testing.T) {
 func TestB448CardNotLocalRejectsWithoutSecondHop(t *testing.T) {
 	p := newB448Pair(t, b448PairOpts{})
 	var hops atomic.Int32
-	counter := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	counter := testhttp.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hops.Add(1)
 		w.WriteHeader(http.StatusTeapot)
 	}))
-	t.Cleanup(counter.Close)
 	if err := p.b.srv.swapConf(func(c *config.Config) error {
 		c.Name = "t448-other"
 		return nil
@@ -348,8 +347,7 @@ func TestB448CardNotLocalRejectsWithoutSecondHop(t *testing.T) {
 // V6（F21）：对端不认新路径（404）→ A 入口 502「<机器> 的 agentd 版本过旧，不支持首轮转交，请升级」，零席位零计数。
 func TestB448CardOldPeerReportsUpgrade(t *testing.T) {
 	p := newB448Pair(t, b448PairOpts{})
-	old := httptest.NewServer(http.NotFoundHandler())
-	t.Cleanup(old.Close)
+	old := testhttp.NewServer(t, http.NotFoundHandler())
 	p.a.setTargets(t, map[string]string{b448MachineB: strings.TrimPrefix(old.URL, "http://")})
 	card := b448Card(t, p)
 	code, body := ledgerPost(t, p.a.testAgentdEnv, "/api/cards/"+card+"/coordinator/launch", `{}`)
