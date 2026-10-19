@@ -122,3 +122,31 @@
 - **未验证**：
   - R4/R7 真机（隔离 M + 真载体）：建会话耗时下「正在拉起驻场者…」体感、桌面与 390px 手机宽度截图（项目行 icon 是否挤压行内计数/芯片、操作面板项、底部与「⋯」入口已撤）——归协调者。jsdom 下只断言了结构，未做像素/横向滚动检查。
   - 原型回流 `prototypes/base/` 归 finish。
+
+## P2 返工（真机 R4 F1/F2）——实现者 subagent，2026-10-19
+
+### 偏离与自主决定
+
+1. **改了 P1 既有断言（协调者批准）**：
+   - collab `TestB444SitResidentPushShape`：「push 行缺 push_session → 拒」改为「push_session 空（首轮在途）→ 通过」（裁决 F1-b）。
+   - keystone `TestB444ResidentBriefing`：原按子串全禁 `--cli`/`--session`，因简报现须**点名禁止** `--cli/--session`（裁决 F2），改禁「以席位身份发言」的形态（`send --cli`、`--cli opencode`、`HANDOFF_SESSION_`），并新增「必须点名禁止」的正向断言。
+2. **在途行的唤醒判据放在认领之后**（裁决 F1-c）：`consumeResidentBatch` 在认领与退避闸之后、续轮之前判 `push_session==""` → Info「驻场者首轮在途，暂缓续轮」、不收尾不标 seen 不落指针行。必须先认领：水位由 `CursorWatermark` 按在飞认领挡住，不认领就 return 会让水位越过该消息、消息丢失（准入满路径同理）。
+3. **补写 push_session 的 CAS 形状**：账本单条条件 UPDATE（`identity=? AND driver_mode='push' AND push_session=''`）；0 行时回读区分「无行/身份不符 → ErrResidentNotSeated」与「已补写或非 push → ErrCASConflict」。collab 侧新哨兵 `ErrResidentPushSessionSet`（= `client.ErrCASConflict`）。不落账本事件、不递增席位版本（驻场身份未变）。
+4. **首轮失败与补写失败同一收尾**：`ForgetResident` + `StandResident`（请下在途行）+ 原有指针行 + `resident.error`。请下本身失败只留 Error 日志（在途行会让人话一直暂缓，须人工 `handoff session stand <会话> --as <身份>`）——未自动重试，也未加清扫。
+5. **已知残余风险（未修，提请协调者裁决）**：agentd 在首轮在跑时崩溃/重启，在途行（push_session 空）会永久留下：人话被无限暂缓（认领留在飞、无指针行），`resident/launch` 回 409。恢复靠人工 `session stand`。可选修法：启动对账清扫在途行，或在途超过 N 分钟后落一条指针行——均未做。
+6. **collab 红绿顺序如实记**：`TestB444InflightResidentWritesAndPushSessionFill` 编译红后，校验放宽与 `SetResidentPushSession` 同步写完再跑即绿，中间未单独见断言红。agentd 两条竖切（首轮发言/改名、首轮在途消息）在旧编排上断言红（「驻场行应已坐下」「补写后应恰一次续轮，得 []」——后者揭示旧顺序下首轮期间的人话直接丢失）；在途唤醒守卫另做了一次「去掉守卫 → 红（准入满报错）」的确认后还原。
+7. 范围外（按协调者指示未动）：opencode 不按 SessionSpec.Workdir 运行；协调者回合内自行 `card bind` 与 launch 回合后 bind 相撞。
+
+### 事实与命令
+
+- 基线 HEAD `0ed8de85`（含 P3）。返工提交：`8ee53cf9`（F1）、`3892b1f7`（F2）。
+- F1 新顺序（`launchSessionResident`）：会话锁 → 读会话/归档/已有驻场者（含在途行 → 409，错误文案注明「首轮在途」）→ `runOnCoordinatorCarrier` 名额窗口内：真实机器名（R9）→ `SitResident(push, push_session="")` → `LaunchForResident` → `SetResidentPushSession`。
+- 断言（裁决 e，F1 的竖切红）：`b444CreateRunner.onLaunch` 在 Launch 期间经**真实** collab 写面以 `agent:coord` `Send` 与 `RenameSession(expect=新会话)`，二者均须成功；同时读到驻场行已坐下且 push_session 空。
+- 测试映射：
+  - F1-a/e：agentd `TestB444ResidentSpeaksAndRenamesInFirstRound`；ledger `TestB444SetResidentPushSessionCAS`；collab `TestB444InflightResidentWritesAndPushSessionFill`。
+  - F1-b：collab `TestB444SitResidentPushShape`（改断言，见偏离 1）。
+  - F1-c：agentd `TestB444MessageDuringFirstRoundDeliveredAfterPushSessionSet`（在途期间 0 续轮 0 指针行；补写后恰 1 次 Resume 到 `ses_b444_create_1`，再排水不重复）。
+  - F1-d：agentd `TestB444ResidentLaunchConflictsWhileInflight`（在途行 → 409，0 次 Launch）；既有 `TestB444SessionCreateResidentFailureThenRetry` 仍绿（失败后驻场位为空、指针行恰一条、重试成功）。
+  - F2：keystone `TestB444ResidentBriefing`（新增必含：至少 20 分钟、`handoff card show <卡号>`、driver_session、同一张卡绝不重复、只用 `--agent coord` 发言、点名禁止 `--cli/--session`；CAS 改名句保留）。
+- 命令：`go build ./...` ok；`go vet ./internal/... ./cmd/...` ok；`gofmt -l` 触及目录空；`unset CLAUDE_CODE_SESSION_ID && go test -count=1 ./internal/{ledger,collab,keystone,agentd,proto,client}/... ./cmd/...` 9 包全 ok（agentd 69.8s、cmd 76.6s）；`go test -count=1 -v -run TestB444`（ledger/collab/keystone/agentd/cmd）43 PASS、2 SKIP（PG 腿）、0 FAIL。proto 无改动，契约夹具未重生成；web/ 未动。
+- **未验证**：PG 腿（无 `LEDGER_TEST_PG_DSN`）；真机复跑 R4/R5（首轮发言与改名、card coordinate 长超时行为）归协调者。
