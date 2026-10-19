@@ -184,6 +184,36 @@ func (f *Facade) CreateSession(title, owner, actor string) (proto.Session, error
 	return sessionWire(session), nil
 }
 
+// CreateSessionInProject 直通 Store.CreateSessionInProject（B444）并映射 wire 会话。
+func (f *Facade) CreateSessionInProject(title, owner, homeProject, actor string) (proto.Session, error) {
+	session, err := f.st.CreateSessionInProject(title, owner, homeProject, actor)
+	if err != nil {
+		return proto.Session{}, err
+	}
+	return sessionWire(session), nil
+}
+
+// RenameSession 直通 Store.RenameSession（B444）：账本哨兵逐一翻成 collab/client 侧哨兵（不存在、状态不
+// 允许、前值不符），保留原文案作上下文；其余错误原样透传。
+func (f *Facade) RenameSession(id, title, expect, actor string) (proto.Session, error) {
+	session, err := f.st.RenameSession(id, title, expect, actor)
+	if err != nil {
+		var sentinel error
+		switch {
+		case errors.Is(err, ledger.ErrNotFound):
+			sentinel = client.ErrNotFound
+		case errors.Is(err, ledger.ErrCASConflict):
+			sentinel = client.ErrCASConflict
+		case errors.Is(err, ledger.ErrBadState):
+			sentinel = client.ErrBadState
+		default:
+			return proto.Session{}, err
+		}
+		return proto.Session{}, fmt.Errorf("%w（%s）", sentinel, err.Error())
+	}
+	return sessionWire(session), nil
+}
+
 func (f *Facade) GetSession(id string) (proto.Session, error) {
 	session, err := f.st.GetSession(id)
 	if err != nil {
@@ -335,14 +365,15 @@ func translateNotFound(err error) error {
 // sessionWire 账本会话 → wire DTO（逐字段直通，无业务判断）。
 func sessionWire(s ledger.Session) proto.Session {
 	return proto.Session{
-		ID:        s.ID,
-		Title:     s.Title,
-		Owner:     s.Owner,
-		Archived:  s.Archived,
-		Members:   s.Members,
-		Cards:     s.Cards,
-		CreatedAt: s.CreatedAt,
-		UpdatedAt: s.UpdatedAt,
+		ID:          s.ID,
+		Title:       s.Title,
+		Owner:       s.Owner,
+		Archived:    s.Archived,
+		HomeProject: s.HomeProject,
+		Members:     s.Members,
+		Cards:       s.Cards,
+		CreatedAt:   s.CreatedAt,
+		UpdatedAt:   s.UpdatedAt,
 	}
 }
 

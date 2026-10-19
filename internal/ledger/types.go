@@ -103,6 +103,8 @@ const (
 	EvSessionCardJoined = "session_card_joined"
 	// EvSessionCardLeft 卡移出会话。
 	EvSessionCardLeft = "session_card_left"
+	// EvSessionRenamed 会话改名（B444）：载荷 {session, title, from}；群主或现驻场者经 collab 改名入口落。
+	EvSessionRenamed = "session_renamed"
 )
 
 // WorkflowTarget 是跨流迁移的显式目标。Version==0 表示在迁移事务内取目标流最新版。

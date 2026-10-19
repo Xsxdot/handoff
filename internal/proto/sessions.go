@@ -14,14 +14,17 @@ const SessionKind = "session"
 
 // Session 是会话本体的账本 wire 投影（会话列表详情的取数源）。
 type Session struct {
-	ID        string    `json:"id"`
-	Title     string    `json:"title"`
-	Owner     string    `json:"owner"`
-	Archived  bool      `json:"archived"`
-	Members   []string  `json:"members,omitempty"`
-	Cards     []string  `json:"cards,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID       string `json:"id"`
+	Title    string `json:"title"`
+	Owner    string `json:"owner"`
+	Archived bool   `json:"archived"`
+	// HomeProject 会话所属项目（B444 plan Q1 甲）：建时写入、不随卡变；旧会话缺键（omitempty），消费方
+	// 必须把缺键当「无所属项目，按卡推算位置」。与 SessionSummary.Project（项目房间标记）不是一回事。
+	HomeProject string    `json:"home_project,omitempty"`
+	Members     []string  `json:"members,omitempty"`
+	Cards       []string  `json:"cards,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
 
 // SessionMember 的成员种类词表。
@@ -145,6 +148,9 @@ type SessionSummary struct {
 	// Project 项目房间标记（B435 ⑤/D6）：取值项目名；非项目房间不出键。
 	// 唯一写者是项目房间绑定（session sit --project / project room 创建的那条）。
 	Project string `json:"project,omitempty"`
+	// HomeProject 会话所属项目（B444，同 Session.HomeProject）：旧会话缺键；Web 位置推算取
+	// project ∪ home_project ∪ 卡项目。
+	HomeProject string `json:"home_project,omitempty"`
 	// Unread 该成员未读消息数。
 	Unread int `json:"unread"`
 	// NeedsHuman 会话内任意一张卡处于 needs_human（列表标签）。
@@ -181,6 +187,8 @@ const (
 	SessionEventCardClosed  = "card_closed"
 	SessionEventArchived    = "archived"
 	SessionEventCreated     = "created"
+	// SessionEventRenamed 会话改名（B444 S7）← ledger session_renamed；Detail 透传 {session,title,from}。
+	SessionEventRenamed = "renamed"
 )
 
 // SessionTimelineEvent 是详情页会话 timeline 的一行：结构事件 + 席位变更。
@@ -217,6 +225,61 @@ type SessionArchivedPayload struct {
 type SessionCardPayload struct {
 	Session string `json:"session"`
 	Card    string `json:"card"`
+}
+
+// SessionRenamedPayload 是 session_renamed 账本事件的载荷 schema（B444）。
+type SessionRenamedPayload struct {
+	Session string `json:"session"`
+	Title   string `json:"title"`
+	From    string `json:"from"`
+}
+
+// SessionCreateReq 是 POST /api/sessions 的请求体（B444 扩；版本化增量）。
+//   - 旧形态 {title, owner}：project/cards/squad 全缺 → 只建会话，标题必填（不变）；
+//   - 新形态：project 必填、squad 必填（role=coordinator 的驻场小队）；title 可空（按已接受的卡自动命名）；
+//     cards 只收本项目、未终态、未进任何会话的卡，其余进响应 rejected_cards。
+type SessionCreateReq struct {
+	Title   string   `json:"title"`
+	Owner   string   `json:"owner,omitempty"`
+	Project string   `json:"project,omitempty"`
+	Cards   []string `json:"cards,omitempty"`
+	Squad   string   `json:"squad,omitempty"`
+}
+
+// SessionRejectedCard 是建会话时被拒的一张卡与原因（原因点名冲突对象，如所在会话 id）。
+type SessionRejectedCard struct {
+	Card   string `json:"card"`
+	Reason string `json:"reason"`
+}
+
+// SessionResidentOutcome 是拉起驻场者的结果：成功带 identity 与载体落点摘要，失败只带 error（会话与卡
+// 照旧保留，驻场位为空，可经 POST /api/sessions/{id}/resident/launch 重试）。
+type SessionResidentOutcome struct {
+	Identity       string `json:"identity,omitempty"`
+	Carrier        string `json:"carrier,omitempty"`
+	CarrierMachine string `json:"carrier_machine,omitempty"`
+	Error          string `json:"error,omitempty"`
+}
+
+// SessionCreateResp 是 POST /api/sessions 的响应：内嵌 Session（旧客户端按 Session 解析不受影响），新增
+// rejected_cards 与 resident 两键（均 omitempty；旧形态请求两键同缺）。
+type SessionCreateResp struct {
+	Session
+	RejectedCards []SessionRejectedCard   `json:"rejected_cards,omitempty"`
+	Resident      *SessionResidentOutcome `json:"resident,omitempty"`
+}
+
+// SessionRenameReq 是 POST /api/sessions/{id}/rename 的请求体（B444 S7）：expect_title 非空时作 CAS 前值
+// （当前标题不符 → 409，标题不变；plan Q6 甲）。
+type SessionRenameReq struct {
+	Title       string `json:"title"`
+	ExpectTitle string `json:"expect_title,omitempty"`
+}
+
+// SessionResidentLaunchReq 是 POST /api/sessions/{id}/resident/launch 的请求体（B444 plan Q4 甲）：
+// squad 为 role=coordinator 的小队名；空 = 取唯一协调小队。
+type SessionResidentLaunchReq struct {
+	Squad string `json:"squad,omitempty"`
 }
 
 // SessionWake 是会话订阅通道的唤醒载荷（B358 R1）。

@@ -26,6 +26,10 @@ var ErrNotFound = errors.New("collab: 账本对象不存在")
 // 账本 ErrBadState 翻译成它（同 ErrNotFound 的归属理由）。B435 R 驻场者写面用。
 var ErrBadState = errors.New("collab: 账本对象状态不允许该写入")
 
+// ErrCASConflict 是「前值不符」的会话侧哨兵（B444 改名 expect_title CAS）；实现侧把账本 ErrCASConflict
+// 翻译成它。
+var ErrCASConflict = errors.New("collab: 前值不符（并发修改）")
+
 // ErrResidentOccupied 表示会话房间已有驻场者（C-414：一房间至多一名，第二次 sit 被拒）。
 var ErrResidentOccupied = errors.New("collab: 会话已有驻场者")
 
@@ -93,6 +97,11 @@ type LedgerClient interface {
 	// --- B358 会话（群）域账本能力 ---
 	// CreateSession 建一场会话（群），返回带分配 id 的会话本体。
 	CreateSession(title, owner, actor string) (proto.Session, error)
+	// CreateSessionInProject 建一场属于项目 homeProject 的会话（B444）；homeProject 形状校验在调用方。
+	CreateSessionInProject(title, owner, homeProject, actor string) (proto.Session, error)
+	// RenameSession 改会话标题（B444）：expect 非空作 CAS 前值。不存在 → ErrNotFound；空标题/已归档 →
+	// ErrBadState；前值不符 → ErrCASConflict；同名幂等零事件。权限判定不在实现侧（collab 是唯一入口）。
+	RenameSession(id, title, expect, actor string) (proto.Session, error)
 	// GetSession 读单会话；不存在返回错误（由组装点翻译为 ErrNoRoom）。
 	GetSession(id string) (proto.Session, error)
 	// ListSessions 列全部会话（含归档），按创建序。

@@ -51,7 +51,9 @@ func (s *Store) EnsureProjectRoom(project, owner, actor string) (Session, bool, 
 		case !errors.Is(err, sql.ErrNoRows):
 			return fmt.Errorf("读项目房间绑定 project=%s: %w", project, err)
 		}
-		session, err = s.createSessionTx(tx, sink, projectRoomTitle(project), owner, actor)
+		// 项目房间的 home_project 留空（B444 执行者决定）：项目房间的项目归属唯一真源是 project_rooms 绑定，
+		// 再写一份会让新旧项目房间两种读数并存（B444 前建的项目房间此列为空）。
+		session, err = s.createSessionTx(tx, sink, projectRoomTitle(project), owner, "", actor)
 		if err != nil {
 			return err
 		}

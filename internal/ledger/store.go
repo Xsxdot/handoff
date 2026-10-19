@@ -360,6 +360,11 @@ func ddlStatements(pg bool) []string {
 			`CREATE INDEX IF NOT EXISTS idx_session_structure_session_seq
 				ON card_events((payload->>'session'), seq)
 				WHERE card_id IS NULL AND type IN ('session_archived','session_card_joined','session_card_left')`,
+			// B444 改名事件的限域读另立部分索引、不扩上一条的 type 集：既有库上 CREATE INDEX IF NOT EXISTS
+			// 不会改写已建索引的谓词，扩谓词只对新库生效，旧库的详情读会退化成全表扫。
+			`CREATE INDEX IF NOT EXISTS idx_session_renamed_session_seq
+				ON card_events((payload->>'session'), seq)
+				WHERE card_id IS NULL AND type = 'session_renamed'`,
 			`CREATE TABLE IF NOT EXISTS workflows (
 				name TEXT NOT NULL, version INT NOT NULL, definition JSONB NOT NULL,
 				created_at TIMESTAMPTZ NOT NULL, PRIMARY KEY (name, version))`,
@@ -422,7 +427,8 @@ func ddlStatements(pg bool) []string {
 			`CREATE TABLE IF NOT EXISTS sessions (
 				id TEXT PRIMARY KEY, title TEXT NOT NULL, owner TEXT NOT NULL,
 				archived BOOLEAN NOT NULL DEFAULT false, members JSONB NOT NULL DEFAULT '[]',
-				created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL)`,
+				created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL,
+				home_project TEXT NOT NULL DEFAULT '')`,
 			`CREATE TABLE IF NOT EXISTS session_cards (
 				session_id TEXT NOT NULL REFERENCES sessions(id),
 				card_id TEXT NOT NULL REFERENCES cards(id),
@@ -562,6 +568,9 @@ func ddlStatements(pg bool) []string {
 			`CREATE INDEX IF NOT EXISTS idx_session_structure_session_seq
 				ON card_events(json_extract(payload, '$.session'), seq)
 				WHERE card_id IS NULL AND type IN ('session_archived','session_card_joined','session_card_left')`,
+			`CREATE INDEX IF NOT EXISTS idx_session_renamed_session_seq
+				ON card_events(json_extract(payload, '$.session'), seq)
+				WHERE card_id IS NULL AND type = 'session_renamed'`,
 			`CREATE TABLE IF NOT EXISTS workflows (
 				name TEXT NOT NULL, version INTEGER NOT NULL, definition TEXT NOT NULL,
 				created_at TEXT NOT NULL, PRIMARY KEY (name, version))`,
@@ -618,7 +627,8 @@ func ddlStatements(pg bool) []string {
 			`CREATE TABLE IF NOT EXISTS sessions (
 				id TEXT PRIMARY KEY, title TEXT NOT NULL, owner TEXT NOT NULL,
 				archived INTEGER NOT NULL DEFAULT 0, members TEXT NOT NULL DEFAULT '[]',
-				created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+				created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+				home_project TEXT NOT NULL DEFAULT '')`,
 			`CREATE TABLE IF NOT EXISTS session_cards (
 				session_id TEXT NOT NULL REFERENCES sessions(id),
 				card_id TEXT NOT NULL REFERENCES cards(id),
@@ -756,6 +766,33 @@ func (s *Store) migrateResidentPushColumns() error {
 	return nil
 }
 
+// migrateSessionHomeProject B444 P2 加列迁移：旧库 sessions 补 home_project（新库已内联建列）。TEXT NOT
+// NULL 缺省空串：旧会话零回填（空串 = 无所属项目，位置照旧按卡推算，S8）。容忍两方言重复列文案
+// （migrateDriverMode 先例）；同名对象不是基表时跳过（migrateResidentPushColumns 同口径）。
+func (s *Store) migrateSessionHomeProject() error {
+	dialectName := map[bool]string{true: "postgres", false: "sqlite"}[s.dialect == dialectPG]
+	base, err := s.isBaseTable("sessions")
+	if err != nil {
+		log().Warn("会话所属项目列迁移前读表类型失败", "table", "sessions", "dialect", dialectName, "cause", err)
+		return fmt.Errorf("迁移 sessions 前读表类型: %w", err)
+	}
+	if !base {
+		log().Warn("sessions 不是基表，跳过会话所属项目列迁移（读面将在查询期报错）", "dialect", dialectName)
+		return nil
+	}
+	if _, err := s.db.Exec(`ALTER TABLE sessions ADD COLUMN home_project TEXT NOT NULL DEFAULT ''`); err != nil {
+		msg := err.Error()
+		if !strings.Contains(msg, "duplicate column") && !strings.Contains(msg, "already exists") {
+			log().Warn("账本加列迁移失败", "table", "sessions", "column", "home_project", "dialect", dialectName, "cause", err)
+			return fmt.Errorf("迁移 sessions.home_project: %w", err)
+		}
+		log().Info("sessions.home_project 列已存在，跳过加列", "dialect", dialectName)
+		return nil
+	}
+	log().Info("账本加列迁移完成", "table", "sessions", "column", "home_project", "dialect", dialectName)
+	return nil
+}
+
 // isBaseTable 报告本库当前 schema 里名为 table 的对象是否为基表（不存在 → false）。两方言各读自己的
 // 目录：SQLite 读 sqlite_master.type，PG 读 information_schema.tables（限 current_schema，与连接的
 // search_path 一致）。
@@ -834,6 +871,9 @@ func (s *Store) ensureSchema() error {
 		return err
 	}
 	if err := s.migrateResidentPushColumns(); err != nil {
+		return err
+	}
+	if err := s.migrateSessionHomeProject(); err != nil {
 		return err
 	}
 	if err := s.ensureOpenTicketProjection(); err != nil {

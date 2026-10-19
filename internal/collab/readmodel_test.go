@@ -95,6 +95,12 @@ func (f *fakeLC) RecordMessageConsumed(cardID string, msgSeq int64, consumer str
 func (f *fakeLC) CreateSession(title, owner, actor string) (proto.Session, error) {
 	return proto.Session{ID: "session:1", Title: title, Owner: owner}, nil
 }
+func (f *fakeLC) CreateSessionInProject(title, owner, homeProject, actor string) (proto.Session, error) {
+	return proto.Session{ID: "session:1", Title: title, Owner: owner, HomeProject: homeProject}, nil
+}
+func (f *fakeLC) RenameSession(id, title, expect, actor string) (proto.Session, error) {
+	return proto.Session{ID: id, Title: title}, nil
+}
 func (f *fakeLC) GetSession(id string) (proto.Session, error) {
 	if f.errGetSession != nil {
 		return proto.Session{}, f.errGetSession

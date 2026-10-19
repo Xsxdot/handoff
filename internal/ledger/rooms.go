@@ -195,8 +195,11 @@ func (s *Store) SessionProjectionEventsContext(ctx context.Context, sessionID st
 		UNION ALL
 		SELECT seq, card_id, type, actor, payload, source_target, source_task, source_seq, created_at
 		FROM card_events WHERE card_id IS NULL AND type IN ('session_archived','session_card_joined','session_card_left') AND ` + sessionExpr + ` = ?
+		UNION ALL
+		SELECT seq, card_id, type, actor, payload, source_target, source_task, source_seq, created_at
+		FROM card_events WHERE card_id IS NULL AND type = 'session_renamed' AND ` + sessionExpr + ` = ?
 		ORDER BY seq ASC`
-	if err := collect(query, []any{sessionID, sessionID}, "会话详情结构事件读取失败"); err != nil {
+	if err := collect(query, []any{sessionID, sessionID, sessionID}, "会话详情结构事件读取失败"); err != nil {
 		return nil, fmt.Errorf("读会话 %s 结构事件: %w", sessionID, err)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Seq < out[j].Seq })

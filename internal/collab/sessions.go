@@ -30,6 +30,79 @@ func (s *Service) CreateSession(title, owner, actor string) (proto.Session, erro
 	return s.lc.CreateSession(title, owner, actor)
 }
 
+// 改名入口哨兵（B444 S7）。
+var (
+	// ErrSessionTitle 会话标题为空（裁剪后）。
+	ErrSessionTitle = errors.New("collab: 会话标题不能为空")
+	// ErrTitleConflict 改名的 expect_title 与当前标题不符（plan Q6 甲 CAS），标题不变。
+	ErrTitleConflict = client.ErrCASConflict
+)
+
+// CreateSessionInProject 建一场属于项目 homeProject 的会话（B444：会话属项目）。homeProject 为卡 project
+// 字段的比较键，形状校验同 EnsureProjectRoom（非空、不含空白与控制字符）；非法 → ErrProjectName（零写入）。
+// 只写会话本体与所属项目——拉卡、拉起驻场者由 agentd 编排层串起（spec 落位三问 ①）。
+func (s *Service) CreateSessionInProject(title, owner, homeProject, actor string) (proto.Session, error) {
+	if err := validProjectName(homeProject); err != nil {
+		log().Warn("建项目内会话被拒：项目名非法", "home_project", homeProject, "actor", actor)
+		return proto.Session{}, err
+	}
+	session, err := s.lc.CreateSessionInProject(title, owner, homeProject, actor)
+	if err != nil {
+		log().Warn("建项目内会话失败", "home_project", homeProject, "owner", owner, "cause", err)
+		return proto.Session{}, err
+	}
+	log().Info("项目内会话已建", "session", session.ID, "home_project", homeProject, "owner", owner, "actor", actor)
+	return session, nil
+}
+
+// RenameSession 改会话标题（B444 S7）——改名的唯一入口。参数：title 新标题（裁剪首尾空白）；expect 非空时
+// 作 CAS 前值（驻场者首轮以占位名 proto.SessionUntitledTitle 改名，人先手改过就不覆盖，plan Q6 甲）；
+// actor 是改名者身份，须为群主或本会话现驻场者。返回改名后的会话。错误：空标题 → ErrSessionTitle；
+// 会话不存在 → ErrNoRoom；已归档 → ErrReadOnly；actor 无权 → ErrNotWriter；前值不符 → ErrTitleConflict。
+// 权限判定先于写入：被拒零写入。
+func (s *Service) RenameSession(id, title, expect, actor string) (proto.Session, error) {
+	title = strings.TrimSpace(title)
+	if title == "" {
+		log().Warn("会话改名被拒：标题为空", "session", id, "actor", actor)
+		return proto.Session{}, ErrSessionTitle
+	}
+	session, err := s.lc.GetSession(id)
+	if err != nil {
+		log().Warn("会话改名前读会话失败", "session", id, "actor", actor, "cause", err)
+		return proto.Session{}, mapSessionError(err)
+	}
+	if session.Archived {
+		log().Warn("会话改名被拒：会话已归档", "session", id, "actor", actor)
+		return proto.Session{}, fmt.Errorf("会话 %s 已归档，不能改名: %w", id, ErrReadOnly)
+	}
+	allowed := actor != "" && actor == session.Owner
+	if !allowed {
+		resident, seated, err := s.lc.SessionResident(id)
+		if err != nil {
+			log().Warn("会话改名前读驻场者失败", "session", id, "actor", actor, "cause", err)
+			return proto.Session{}, fmt.Errorf("读会话 %s 驻场者: %w", id, err)
+		}
+		allowed = seated && actor != "" && resident.Identity == actor
+	}
+	if !allowed {
+		log().Warn("会话改名被拒：既不是群主也不是驻场者", "session", id, "actor", actor, "owner", session.Owner)
+		return proto.Session{}, fmt.Errorf("%s 不是会话 %s 的群主或驻场者，不能改名: %w", actor, id, ErrNotWriter)
+	}
+	renamed, err := s.lc.RenameSession(id, title, expect, actor)
+	if err != nil {
+		log().Warn("会话改名失败", "session", id, "actor", actor, "has_expect", expect != "", "cause", err)
+		switch {
+		case errors.Is(err, client.ErrNotFound):
+			return proto.Session{}, ErrNoRoom
+		case errors.Is(err, client.ErrBadState):
+			return proto.Session{}, fmt.Errorf("%w（%s）", ErrReadOnly, err.Error())
+		}
+		return proto.Session{}, err
+	}
+	log().Info("会话已改名", "session", id, "title", title, "actor", actor)
+	return renamed, nil
+}
+
 // ListSessions 列全部会话（含归档），member 非空时投影该成员未读数。
 func (s *Service) ListSessions(member string) ([]proto.SessionSummary, error) {
 	return s.ListSessionsContext(context.Background(), member)
@@ -313,6 +386,17 @@ func mapResidentError(err error) error {
 // ErrProjectName 项目名形状非法（Q15 甲：裁剪后为空，或含空白/控制字符）。
 var ErrProjectName = errors.New("collab: 项目名非法")
 
+// validProjectName 是项目名形状的唯一判据（项目房间与 B444 会话所属项目共用）：非空且不含空白与控制
+// 字符。非法返回包 ErrProjectName 的可行动错误。
+func validProjectName(project string) error {
+	if strings.TrimSpace(project) == "" || strings.IndexFunc(project, func(r rune) bool {
+		return unicode.IsSpace(r) || unicode.IsControl(r)
+	}) >= 0 {
+		return fmt.Errorf("项目名 %q 须非空且不含空白与控制字符（即卡的 project 字段值）: %w", project, ErrProjectName)
+	}
+	return nil
+}
+
 // EnsureProjectRoom 取项目的项目房间，不存在则创建——项目房间创建的唯一入口（O1 plan Q3 甲；`handoff
 // project room <p>` 与 `session sit --project <p>` 共用）。参数：project 为卡 project 字段的比较键
 // （调用方已裁剪首尾空白；本层只校验形状，不要求账本已有该项目的卡，Q15 甲）；actor 落 session_created。
@@ -320,11 +404,9 @@ var ErrProjectName = errors.New("collab: 项目名非法")
 // 规则改动）。返回会话本体与是否本次新建。错误：项目名非法 → ErrProjectName（零写入）；其余为账本错误。
 // 注意：项目房间创建时零卡、不执法拉卡（Q12 甲）；归档后绑定不变（Q11 甲）。
 func (s *Service) EnsureProjectRoom(project, actor string) (proto.Session, bool, error) {
-	if strings.TrimSpace(project) == "" || strings.IndexFunc(project, func(r rune) bool {
-		return unicode.IsSpace(r) || unicode.IsControl(r)
-	}) >= 0 {
+	if err := validProjectName(project); err != nil {
 		log().Warn("确保项目房间被拒：项目名非法", "project", project, "actor", actor)
-		return proto.Session{}, false, fmt.Errorf("项目名 %q 须非空且不含空白与控制字符（即卡的 project 字段值）: %w", project, ErrProjectName)
+		return proto.Session{}, false, err
 	}
 	session, created, err := s.lc.EnsureProjectRoom(project, proto.SystemNotifierIdentity, actor)
 	if err != nil {
@@ -444,7 +526,7 @@ func (s *Service) summarizeSession(session proto.Session, byCard map[string]prot
 	}
 	summary := proto.SessionSummary{
 		ID: session.ID, Kind: proto.SessionKind, Title: session.Title,
-		Owner: session.Owner, Archived: session.Archived, Project: project,
+		Owner: session.Owner, Archived: session.Archived, Project: project, HomeProject: session.HomeProject,
 		LastActivity: session.UpdatedAt,
 		Members:      members,
 		Cards:        sessionCards(session, byCard),
@@ -694,6 +776,14 @@ func sessionTimeline(events []proto.LedgerEvent, session proto.Session) []proto.
 			}
 			card, _ := fields["card"].(string)
 			kind, cardID = proto.SessionEventCardLeft, card
+		case "session_renamed":
+			// B444 S7：改名结构事实，归属判据同其余无卡结构事件（载荷 session 键）；载荷 {session,title,from}
+			// 原样透传 Detail（可对质）。
+			fields := structEventFields(ev)
+			if fields == nil || fields["session"] != session.ID {
+				continue
+			}
+			kind, detail = proto.SessionEventRenamed, string(ev.Payload)
 		case "driver_takeover":
 			// 席位变更：仅当事件所属卡在该会话内时归入本 timeline（契约 §9）。
 			// detail 原样透传 {from,to} 载荷——可对质，不做二次解释（缺陷族 6）。

@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -22,6 +23,9 @@ type Session struct {
 	Title    string `json:"title"`
 	Owner    string `json:"owner"` // 群主：人或主 agent 会话身份（升级终点）
 	Archived bool   `json:"archived"`
+	// HomeProject 会话所属项目（B444）：建时写入、之后不随卡变化；空串 = 旧会话或未指定（位置按卡推算）。
+	// 与项目房间绑定（project_rooms）是两回事：项目房间的项目归属只在绑定表里。
+	HomeProject string `json:"home_project,omitempty"`
 	// Members 显式成员身份（人与主 agent 的外部会话身份）。席位成员不落此列
 	// ——由会话内各卡的当前席位在投影期派生（不新增成员表）。
 	Members   []string  `json:"members,omitempty"`
@@ -35,15 +39,33 @@ type Session struct {
 const sessionCounterKey = "session_seq"
 
 // CreateSession 建一场会话并落 EvSessionCreated（无卡事件）。返回带分配 id
-// 的会话。id 形如 session:<n>，由账本单调分配、不复用。
+// 的会话。id 形如 session:<n>，由账本单调分配、不复用。所属项目为空（B444 前的入口形态）。
 func (s *Store) CreateSession(title, owner, actor string) (Session, error) {
+	return s.createSession(title, owner, "", actor)
+}
+
+// CreateSessionInProject 建一场属于项目 homeProject 的会话（B444 建会话编排的账本半边）。参数同
+// CreateSession，homeProject 为卡 project 字段的比较键（形状校验在调用方 collab）；空串等同 CreateSession。
+// 返回带分配 id 与所属项目的会话。落 EvSessionCreated（载荷多带 home_project 键，空串不带）。
+func (s *Store) CreateSessionInProject(title, owner, homeProject, actor string) (Session, error) {
+	session, err := s.createSession(title, owner, homeProject, actor)
+	if err != nil {
+		log().Warn("建项目内会话失败", "home_project", homeProject, "owner", owner, "cause", err)
+		return Session{}, err
+	}
+	log().Info("项目内会话已建", "session", session.ID, "home_project", homeProject, "owner", owner)
+	return session, nil
+}
+
+// createSession 是两个建会话入口的共同体：校验群主非空，单事务内 createSessionTx。
+func (s *Store) createSession(title, owner, homeProject, actor string) (Session, error) {
 	if owner == "" {
 		return Session{}, fmt.Errorf("会话群主不能为空")
 	}
 	var session Session
 	err := s.mutate(func(tx *sql.Tx, sink *eventSink) error {
 		var err error
-		session, err = s.createSessionTx(tx, sink, title, owner, actor)
+		session, err = s.createSessionTx(tx, sink, title, owner, homeProject, actor)
 		return err
 	})
 	if err != nil {
@@ -54,8 +76,8 @@ func (s *Store) CreateSession(title, owner, actor string) (Session, error) {
 
 // createSessionTx 是 CreateSession 的事务内半边（B435 O1 抽出，供 EnsureProjectRoom 在同一事务里
 // 建会话 + 写绑定复用）：分配会话号、写 sessions 行、落 EvSessionCreated。owner 记为首个显式成员。
-// 调用方负责 owner 非空与事务提交。
-func (s *Store) createSessionTx(tx *sql.Tx, sink *eventSink, title, owner, actor string) (Session, error) {
+// 调用方负责 owner 非空与事务提交。homeProject 为会话所属项目（B444；空串 = 不指定）。
+func (s *Store) createSessionTx(tx *sql.Tx, sink *eventSink, title, owner, homeProject, actor string) (Session, error) {
 	next, err := s.nextSessionSeqTx(tx)
 	if err != nil {
 		return Session{}, err
@@ -63,22 +85,81 @@ func (s *Store) createSessionTx(tx *sql.Tx, sink *eventSink, title, owner, actor
 	now := s.timeNow()
 	session := Session{
 		ID: "session:" + strconv.FormatInt(next, 10), Title: title, Owner: owner,
-		Members:   []string{owner},
-		CreatedAt: now, UpdatedAt: now,
+		HomeProject: homeProject,
+		Members:     []string{owner},
+		CreatedAt:   now, UpdatedAt: now,
 	}
 	members, err := encodeMembers(session.Members)
 	if err != nil {
 		return Session{}, err
 	}
-	if _, err := tx.Exec(s.q(`INSERT INTO sessions (id, title, owner, archived, members, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)`),
+	if _, err := tx.Exec(s.q(`INSERT INTO sessions (id, title, owner, archived, members, created_at, updated_at, home_project)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`),
 		session.ID, session.Title, session.Owner, false, members,
-		s.tval(session.CreatedAt), s.tval(session.UpdatedAt)); err != nil {
+		s.tval(session.CreatedAt), s.tval(session.UpdatedAt), session.HomeProject); err != nil {
 		return Session{}, fmt.Errorf("写会话 %s: %w", session.ID, err)
 	}
 	payload := map[string]any{"id": session.ID, "title": session.Title, "owner": session.Owner}
+	if session.HomeProject != "" {
+		payload["home_project"] = session.HomeProject
+	}
 	if _, err := s.appendEvent(tx, sink, "", EvSessionCreated, actor, payload); err != nil {
 		return Session{}, err
+	}
+	return session, nil
+}
+
+// RenameSession 改会话标题（B444 S7；plan Q6 甲 CAS）。参数：title 新标题（裁剪后非空）；expect 非空时作
+// CAS 前值——当前标题不等于它即拒（驻场者按占位名改名时不覆盖人先手改的名字）；actor 落事件。
+// 返回改名后的会话（不含卡列表）。错误：会话不存在 → ErrNotFound；标题为空或会话已归档 → ErrBadState；
+// expect 不符 → ErrCASConflict（文案带当前标题）。新旧标题相同 → 幂等成功、零事件。
+// 权限（群主或现驻场者）不在本层——调用方 collab.Service.RenameSession 是唯一入口。
+func (s *Store) RenameSession(id, title, expect, actor string) (Session, error) {
+	title = strings.TrimSpace(title)
+	if title == "" {
+		err := fmt.Errorf("会话 %s 改名：标题不能为空: %w", id, ErrBadState)
+		log().Warn("会话改名被拒：标题为空", "session", id, "actor", actor)
+		return Session{}, err
+	}
+	var session Session
+	renamed := false
+	err := s.mutate(func(tx *sql.Tx, sink *eventSink) error {
+		var err error
+		session, err = getSessionTx(s, tx, id)
+		if err != nil {
+			return err
+		}
+		if session.Archived {
+			return fmt.Errorf("会话 %s 已归档，不能改名: %w", id, ErrBadState)
+		}
+		if expect != "" && session.Title != expect {
+			return fmt.Errorf("会话 %s 当前标题为 %q，不是期望的 %q: %w", id, session.Title, expect, ErrCASConflict)
+		}
+		if session.Title == title {
+			return nil
+		}
+		from := session.Title
+		now := s.timeNow()
+		if _, err := tx.Exec(s.q(`UPDATE sessions SET title = ?, updated_at = ? WHERE id = ?`),
+			title, s.tval(now), id); err != nil {
+			return fmt.Errorf("改会话 %s 标题: %w", id, err)
+		}
+		if _, err := s.appendEvent(tx, sink, "", EvSessionRenamed, actor,
+			map[string]string{"session": id, "title": title, "from": from}); err != nil {
+			return err
+		}
+		session.Title, session.UpdatedAt = title, now
+		renamed = true
+		return nil
+	})
+	if err != nil {
+		log().Warn("会话改名失败", "session", id, "actor", actor, "has_expect", expect != "", "cause", err)
+		return Session{}, err
+	}
+	if renamed {
+		log().Info("会话已改名", "session", id, "title", title, "actor", actor)
+	} else {
+		log().Info("会话改名为同名，幂等跳过", "session", id, "actor", actor)
 	}
 	return session, nil
 }
@@ -306,14 +387,14 @@ func getSessionTx(s *Store, tx *sql.Tx, id string) (Session, error) {
 	return session, err
 }
 
-const sessionSelect = `SELECT id, title, owner, archived, members, created_at, updated_at FROM sessions`
+const sessionSelect = `SELECT id, title, owner, archived, members, created_at, updated_at, home_project FROM sessions`
 
 func scanSession(row rowScanner) (Session, error) {
 	var session Session
 	var archived any
 	var members string
 	var createdAt, updatedAt any
-	if err := row.Scan(&session.ID, &session.Title, &session.Owner, &archived, &members, &createdAt, &updatedAt); err != nil {
+	if err := row.Scan(&session.ID, &session.Title, &session.Owner, &archived, &members, &createdAt, &updatedAt, &session.HomeProject); err != nil {
 		return Session{}, err
 	}
 	session.Archived = parseBool(archived)
