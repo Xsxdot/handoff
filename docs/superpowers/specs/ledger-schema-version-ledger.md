@@ -24,3 +24,17 @@
 - 对照：main a429b193 基线在 handoff_b409_test 上 PG 全集 → 仅 TestB439DevicesPG（attrs `{"k": "v"}`）、TestPGSmokeEndToEnd（前缀 P 被 "p" 占用）两红；本分支同库全集 → 同样且仅这两红。均落 roadmap。
 - SQLite：`go test ./internal/ledger/... -count=1` → ok ledger 6.556s、ok api 0.907s；`go build ./...`、`go vet ./internal/ledger/` 通过。
 - 提交：`git commit` → b54e2827 fix(ledger): PG 账本 schema 版本闸（随后 amend 收台账，hash 会变）。
+
+## review（2026-10-19，独立 subagent，只读）
+
+- 裁决：**通过**（单卡最终，L1）。无 Critical/Important。复跑：SQLite ledger 包绿；schema_ver 库定向 PG 八支 PASS（S1 50.45ms）；handoff_b409_test 全集仅基线两红（TestB439DevicesPG、TestPGSmokeEndToEnd）。
+- 变异：schema_version.go `stored >= ledgerSchemaVersion` → `<`（唯一命中、可编译）→ S1 红「迁移 cards.driver_carrier: … lock timeout (SQLSTATE 55P03)（耗时 10.28s）」；还原后绿 48.26ms。
+- Minor 1（补披露，归 implement「偏离与自主决定」第 4 条）：写标记 upsert 加了 `CASE WHEN value ~ '^[0-9]{1,9}$'` 守卫（schema_version.go:61-65），spec 示意 SQL 只有 `::int <` 比较；不加守卫时不可解析标记会让 cast 报错、永不被覆盖，违背 spec「不可解析按过期重跑」——属实现 spec 所必需，在授权内。
+- Minor 2（记账不改）：S1 的 pg_locks 旁证在 Open 返回、建库池关闭后才查，证明力弱；承重证据是 <1s 计时（变异已证其有牙）。
+
+## finish（2026-10-19）
+
+- 静态门禁：`gofmt -l $(git ls-files '*.go')` → 空；`go vet ./internal/ledger/` 通过。
+- 全量 `go test ./... -count=1`：64 包 ok，唯一红 cmd TestSessionSendActorResolution；`env -u CLAUDE_CODE_SESSION_ID go test ./cmd/ -count=1 -run TestSessionSendActorResolution` → ok 0.382s（环境敏感既有红，roadmap「来自 B436 finish」已记）。
+- 集成方式归人：委托会话转达用户——不合入 main、不推送，合并由用户决定。分支停在 fix/ledger-schema-version 待裁。
+- 残余：已落 roadmap（Go 侧迁移防漏升、PG 两条既有红）。在役 agentd/CLI 升级不在本卡。
