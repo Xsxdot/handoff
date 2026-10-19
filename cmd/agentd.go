@@ -492,6 +492,8 @@ func setupLedger(cfg *config.Config, srv *agentd.Server, taskStore *store.Store,
 	facade := srv.AutoLedger()
 	rooms := collab.New(facade)
 	rooms.SetCursorStore(cursor.New(filepath.Join(srv.Conf()().DataDir, "room-cursors.json")))
+	// R-K1 (a‴)：项目房间书写者集并入人本人（读活配置 console_user，改配置不必重启）。
+	rooms.SetProjectRoomHuman(srv.ConsoleMember)
 	srv.SetRooms(rooms)
 	// 凭据相对路径表仍由 toolchain 唯一维护；组装点注入给 hostapi，避免
 	// hostapi 反向 import maintenance 域或复制三家 CLI 的平台规则。

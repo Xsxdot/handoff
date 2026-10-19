@@ -1002,8 +1002,8 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 
 - **用户机待验（2026-10-19 补验后剩余）**：K0-3、K0-D、R-5b、O2-U1…U6、O2-M1、X-U1、W-7 控制台半边、X-U2 的 mod/CLAUDE.md 半边已补验（`b435-ledger.md` 十七）。仍未验：**R-1m / W-0 真手机**（无设备，控制台仅做过移动端模拟）；**薄壳内 W-7 与 X-U2 `/new` 拒绝**（薄壳未装，构建需 `go install` wails3）；K0-D 的 `card wait` 收房间行（生产副本无非终态在会话 pull 卡）；O2-U3 桌面端是否实际回收会话未独立观测。来源：`b435-ledger.md` 十七 17.1。
 - ~~**`handoff room read --after N` 语义反了**~~ **已修**（2026-10-19，CLI 侧翻页，`b435-ledger.md` 17.4）。
-- **人类不在项目房间书写者集**：项目房间群主 `agent:handoff`，控制台用户在项目房间发言被拒（`书写者与房间身份不符`），与 SKILL「人在项目房间无 @ 发言 → 门铃」不符。待裁决：项目房间书写者集并入 `console_user`（或建房时把人加为成员），或改 SKILL 文案。来源：`b435-ledger.md` 17.2-2。
-- **组织者授权规则 vs 用户「不在电脑前也能沟通」**（需用户裁决、会改冻结契约 Q4 与 SKILL 逐字）：备选——只认作者为 `user:<本人>` 的房间发言为授权（组织者真机提议，已用其拒绝了 agent 冒称同意）。来源：`b435-ledger.md` 17.2-3。
+- ~~**人类不在项目房间书写者集**~~ **已修**（2026-10-19，R-K1 (a‴)：项目房间书写者集并入 `console_user`，`b435-ledger.md` 17.5）。
+- ~~**组织者授权规则 vs 用户「不在电脑前也能沟通」**~~ **已裁决并落地**（2026-10-19，用户选 A：只认作者为 `user:<本人>` 的房间发言；契约 §15 Q4 变更，`b435-ledger.md` 17.5）。
 - **SKILL `card wait` 可动作事件清单补 `room_message`**（Minor）。来源：`b435-ledger.md` 17.2-4。
 - **主线合并后 `codegraph absorb cards-B435-charter-1`**：`validate` 9 条 no-import 全部源于本卡删除的 import，absorb 前已知；absorb 后复核 `check` 三处存量 over-budget 是否变化。来源：X 偏离 #18。
 - **`MessageWakeTargets` / `WakeTargets` / `SessionMessageCandidatesContext` 删除与过时文件头**：`internal/collab/sessions.go:304-316` 生产零调用方；`internal/ledger/session_candidates.go:5`、`seat_revision.go:4` 文件头仍称其为唯一裁决。来源：R plan Q12 乙 + review M4（I 卡未做，留下一期顺手）。

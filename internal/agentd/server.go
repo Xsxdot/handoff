@@ -405,6 +405,10 @@ func (s *Server) StartPush(ctx context.Context) {
 	s.pushFanout.Start(ctx)
 }
 
+// ConsoleMember 返回本机人本人的成员身份 `user:<console_user>`（每次读活配置；未配或非法名返回空串）。
+// 组装点把它注入 collab 项目房间书写者集（R-K1 (a‴)）：人可在项目房间发言，授权规则据作者认人本人。
+func (s *Server) ConsoleMember() string { return s.pushConsoleMember() }
+
 // pushConsoleMember 是 fanout 的 memberOf：只读配置里的 console_user 拼统一记法。
 //
 // 不复用 resolveConsoleIdentity——那个还要请求（取登录会话端戳），而推送是

@@ -348,3 +348,53 @@ type failingProjectRoomLC struct {
 }
 
 func (f failingProjectRoomLC) ProjectRoom(string) (string, bool, error) { return "", false, f.err }
+
+// R-K1 (a‴)（B435 用户机补验后用户裁决，2026-10-19）：项目房间书写者集另并入组装点注入的人本人身份
+// （agentd 的 console_user，`user:<名字>`）——人在项目房间无 @ 发言按 D4 落驻场者、叫醒组织者。
+// 反例：未注入时人被拒（ErrNotWriter，原行为）；非项目房间不扩；注入空串不扩；他人 user: 身份不扩。
+// 真 Store + Facade + collab。
+func TestB435ProjectRoomWritersIncludeConsoleHuman(t *testing.T) {
+	svc, _, _ := newSessionFixture(t)
+	pr, _, err := svc.EnsureProjectRoom("p", proto.SystemNotifierIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.SitResident(proto.SessionResident{Session: pr.ID, Identity: "agent:org"}); err != nil {
+		t.Fatal(err)
+	}
+	other, err := svc.CreateSession("普通会话", "user:o", "user:o")
+	if err != nil {
+		t.Fatal(err)
+	}
+	say := proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "组织者在吗"}
+	if _, err := svc.Send(pr.ID, say, "user:xsx"); !errors.Is(err, ErrNotWriter) {
+		t.Fatalf("未注入人本人身份时应 ErrNotWriter，得 %v", err)
+	}
+	svc.SetProjectRoomHuman(func() string { return "user:xsx" })
+	if _, err := svc.Send(pr.ID, say, "user:xsx"); err != nil {
+		t.Fatalf("注入后人本人应可在项目房间发言: %v", err)
+	}
+	if _, err := svc.Send(pr.ID, say, "user:mallory"); !errors.Is(err, ErrNotWriter) {
+		t.Fatalf("他人 user: 身份不得扩入，得 %v", err)
+	}
+	if _, err := svc.Send(other.ID, say, "user:xsx"); !errors.Is(err, ErrNotWriter) {
+		t.Fatalf("非项目房间的书写者集不得扩，得 %v", err)
+	}
+	say.Room = pr.ID
+	got, err := svc.Recipients(say, "user:xsx")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := proto.DeliveryAddress{Kind: proto.DeliveryResident, Session: pr.ID, Identity: "agent:org"}
+	hit := false
+	for _, a := range got.Addresses {
+		hit = hit || a == want
+	}
+	if !hit {
+		t.Fatalf("人本人无 @ 发言应按 D4 落驻场者 %+v，得 %+v", want, got)
+	}
+	svc.SetProjectRoomHuman(func() string { return "" })
+	if _, err := svc.Send(pr.ID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "x"}, "user:xsx"); !errors.Is(err, ErrNotWriter) {
+		t.Fatalf("注入空串不得扩，得 %v", err)
+	}
+}

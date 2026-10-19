@@ -142,6 +142,9 @@ const pointerActor = "system:pointer"
 type Service struct {
 	lc     client.LedgerClient
 	cursor *cursor.Store
+	// projectRoomHuman 返回人本人的成员身份（`user:<名字>`，空串 = 未配置）；只在装配期写、
+	// 运行期只读，不加锁。nil 与返回空串同义：项目房间书写者集不并入人。
+	projectRoomHuman func() string
 }
 
 // New 组装点调用；lc 的具体实现是 internal/ledger/api.Facade。未读游标默认
@@ -155,6 +158,11 @@ func New(lc client.LedgerClient) *Service {
 // DataDir，用 cursor.New(filepath.Join(cfg.DataDir, "room-cursors.json")) 接线；
 // 不调用则保持 New 的纯内存默认——游标非权威，重启丢失无害、打开房间即自愈。
 func (s *Service) SetCursorStore(st *cursor.Store) { s.cursor = st }
+
+// SetProjectRoomHuman 注入人本人身份的取值函数（R-K1 (a‴)，B435 补验后用户裁决）：项目房间的书写者集
+// 另并入它返回的 `user:<名字>`。组装点（agentd）传读活配置 console_user 的闭包，改配置不必重启；
+// CLI 不注入（CLI 人形发言身份是 cli:，不经此路）。fn 返回空串时不扩。
+func (s *Service) SetProjectRoomHuman(fn func() string) { s.projectRoomHuman = fn }
 
 // normalizeMentions 归一化消息的显式寻址：剥去每个 mention 的可选前导 '@'
 // 与首尾空白，空项丢弃；无有效项返回 nil（保持 wire omitempty 语义）。
@@ -274,6 +282,15 @@ func (s *Service) sessionWriters(session proto.Session) ([]string, error) {
 		}
 		log().Debug("项目房间书写者集已并入同项目卡席位", "session", session.ID,
 			"project", project, "seats", projectSeats)
+		// R-K1 (a‴)：人本人（console_user）可在项目房间发言——人无 @ 发言按 D4 落驻场者叫醒组织者，
+		// 也是授权规则「只认作者为 user:<本人> 的房间发言」的前提。只并入注入的那一个身份。
+		if s.projectRoomHuman != nil {
+			if human := s.projectRoomHuman(); human != "" {
+				writers = append(writers, human)
+				log().Debug("项目房间书写者集已并入人本人", "session", session.ID,
+					"project", project, "human", human)
+			}
+		}
 	}
 	// R-K1 (a″)：会话内卡所属各项目的项目房间驻场者（组织者）并入；项目按首见去重，一项目只读一次。
 	seenProject := make(map[string]bool, len(session.Cards))
