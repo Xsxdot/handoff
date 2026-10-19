@@ -25,3 +25,5 @@
   - D7（卡标题诱导「先 card bind 自己坐下」）：协调者未自坐，`{"woke":true,…ses_eac24e778…}`，coordinate/push + 承载，无 needs_human（简报修生效）。
   - D8（回合中按 D5 原样手动 `card bind D8 --cli opencode --session <回合会话>` → `{"ok":true}`）：收尾日志 `坐下被拒：席位非空` → `协调者首轮已自己坐下，收尾改写为机器人席位` old_source=bind；事件 seq166 driver_seat_bound、seq184 driver_takeover X→X；卡行 coordinate/push，承载 free@linux-01；HTTP `{"woke":true,…}` exit=0，无 needs_human（兜底生效）。
   - 收尾：停隔离 agentd，换回原二进制（本分支版留 bin/handoff.b446）。
+- review（独立 subagent，只读）：PASS。新鲜复跑 agentd/keystone/ledger 全 ok；变异（禁 adoptSelfSeatedCoordinator 调用）→ TestB446 两子测红 409，还原后绿。Minor 两条落 docs/roadmap.md「来自 B446 finish」。
+- finish：未合并、未推送（合并归人）；分支 fix/b446-launch-self-seat。
