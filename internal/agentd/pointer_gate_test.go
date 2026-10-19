@@ -52,6 +52,8 @@ var pointerWhitelist = []pointerWhitelistEntry{
 		"CLI 裸派发的派发指针行经测试缝 roomPointer（包级 var 闭包承载，归属实测名）落账（岔口八范围），不在 HTTP 路由可达图上。"},
 	{"internal/agentd/residentpush.go", "Server.pointResidentFailure",
 		"B444 P1（plan §2.2 B3 / A1.9）：push 驻场者续轮失败时由自动化消费循环在会话里落一条系统指针行（谁、为什么、怎么重试），同一批至多一条；消费循环内部调用，不在 HTTP 路由可达图上。"},
+	{"internal/agentd/sessioncreate.go", "Server.pointResidentLaunchFailure",
+		"B444 P2（协调者裁决 Q3：建会话首轮失败须在会话里落系统指针行）：叫驻场者失败时落一条系统指针行（谁、为什么、重试命令）。由 POST /api/sessions 与 /resident/launch 间接触发，但正文全部由服务端拼出（驻场身份、已校验的小队名、会话 id、失败原因），请求方不能经此写任意指针行——不构成「可达 Pointer 的入口」。"},
 	{"internal/workspace/identity.go", "HasLedgerAttachField",
 		"反射提取结构体元数据（reflect.Pointer 解引用，非 collab.Service.Pointer 路由），用于断言工作区请求/响应结构体零挂卡字段。"},
 }

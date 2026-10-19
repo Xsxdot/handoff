@@ -69,6 +69,9 @@ func (s *Server) registerLedgerRoutes(api *http.ServeMux) {
 	api.HandleFunc("DELETE /api/sessions/{id}/cards/{cardID}", s.withRooms(s.handleSessionLeaveCard))
 	// B366 补员端点：控制台「以当前身份加入会话」一键的后端（成员身份服务端权威）。
 	api.HandleFunc("POST /api/sessions/{id}/members", s.withRooms(s.handleSessionMemberAdd))
+	// B444：改名（Q6 CAS）与叫驻场者（Q4，与建会话共用编排；需 keystone+scheduling，未装配 503）。
+	api.HandleFunc("POST /api/sessions/{id}/rename", s.withRooms(s.handleSessionRename))
+	api.HandleFunc("POST /api/sessions/{id}/resident/launch", s.withRooms(s.withCoordinator(s.handleSessionResidentLaunch)))
 	// health 是前端的门控探针，必须恒 200：503 与网络错在浏览器侧不可区分。
 	// 其余 /api/cards* 等仍走 withLedger（未挂载 = 503）。
 	api.HandleFunc("GET /api/ledger/health", s.handleLedgerHealth)

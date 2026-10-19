@@ -54,7 +54,14 @@ func sessionErr(w http.ResponseWriter, err error) {
 	writeErr(w, code, err)
 }
 
-// handleSessionCreate POST /api/sessions {title, owner} → CreateSession。
+// handleSessionCreate POST /api/sessions → 建会话（B358.4；B444 P2 扩为项目内建会话编排）。
+//
+// 两种形态（proto.SessionCreateReq，版本化增量）：
+//   - 旧形态 {title, owner}（project/cards/squad 全缺）：只建会话，标题必填（空 → 400），响应 proto.Session；
+//   - 新形态（带 project/cards/squad 任一）：createProjectSession 编排——project 必填、驻场小队须为协调小队
+//     （空 = 唯一协调小队）、title 可空（按已接受的卡自动命名）。校验失败 400 零写入；建好即 200，响应
+//     proto.SessionCreateResp（拒卡在 rejected_cards，驻场者首轮失败在 resident.error，Q3 甲）。
+//
 // owner（群主=初始成员，契约条 3）缺省 = 解析出的人名（§3.8、决定 6：owner=创建者），
 // 显式 owner 仍按统一记法校验；actor（审计「谁调的 HTTP」）与 owner 同源解析人名
 // （B358.9 换脸后两字段不再是两个来源）。
@@ -63,19 +70,12 @@ func (s *Server) handleSessionCreate(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	var req struct {
-		Title string `json:"title"`
-		Owner string `json:"owner"`
-	}
+	var req proto.SessionCreateReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, errors.New("bad json"))
 		return
 	}
 	title := strings.TrimSpace(req.Title)
-	if title == "" {
-		writeErr(w, http.StatusBadRequest, errors.New("会话标题不能为空"))
-		return
-	}
 	owner := strings.TrimSpace(req.Owner)
 	if owner == "" {
 		owner = id.Member
@@ -85,15 +85,126 @@ func (s *Server) handleSessionCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	actor := id.Member
-	session, err := s.rooms.CreateSession(title, owner, actor)
+	if req.Project == "" && len(req.Cards) == 0 && req.Squad == "" {
+		if title == "" {
+			writeErr(w, http.StatusBadRequest, errors.New("会话标题不能为空"))
+			return
+		}
+		session, err := s.rooms.CreateSession(title, owner, actor)
+		if err != nil {
+			// 可达失败只有账本写失败（owner/title 已验）——服务端错误。
+			s.log.Warn("建会话失败", "title", title, "owner", owner, "actor", actor, "cause", err)
+			writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
+		s.log.Info("会话已创建", "session", session.ID, "title", title, "owner", owner, "actor", actor)
+		writeJSON(w, http.StatusOK, session)
+		return
+	}
+	if s.keystone == nil || s.scheduling == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+			"error": "自动化层未装配（SetupAutomation 未执行），无法拉起驻场者",
+		})
+		return
+	}
+	s.log.Info("项目内建会话请求", "project", req.Project, "cards", len(req.Cards), "squad", req.Squad,
+		"has_title", title != "", "actor", actor)
+	resp, err := s.createProjectSession(r.Context(), sessionCreateInput{
+		Title: title, Owner: owner, Project: strings.TrimSpace(req.Project),
+		Cards: req.Cards, Squad: req.Squad, Actor: actor,
+	})
 	if err != nil {
-		// 可达失败只有账本写失败（owner/title 已验）——服务端错误。
-		s.log.Warn("建会话失败", "title", title, "owner", owner, "actor", actor, "cause", err)
+		var lookupErr *coordinatorLookupError
+		switch {
+		case errors.As(err, &lookupErr):
+			writeErr(w, http.StatusBadRequest, errors.New(residentSquadMessage(lookupErr.err)))
+		case errors.Is(err, errSessionCreateInvalid):
+			writeErr(w, http.StatusBadRequest, err)
+		default:
+			s.log.Warn("项目内建会话失败", "project", req.Project, "actor", actor, "cause", err)
+			writeErr(w, http.StatusInternalServerError, err)
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// handleSessionRename POST /api/sessions/{id}/rename {title, expect_title?}（B444 S7，plan Q6 甲）。改名者 =
+// 控制台身份（服务端注入，body 不带身份）；群主或现驻场者才可改。错误映射：空标题 400、会话不存在 404、
+// 非群主非驻场者 403、expect_title 不符或已归档 409、其余 500。
+func (s *Server) handleSessionRename(w http.ResponseWriter, r *http.Request) {
+	id, ok := s.requireConsoleIdentity(w, r)
+	if !ok {
+		return
+	}
+	roomID := r.PathValue("id")
+	var req proto.SessionRenameReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, errors.New("bad json"))
+		return
+	}
+	session, err := s.rooms.RenameSession(roomID, req.Title, req.ExpectTitle, id.Member)
+	if err != nil {
+		code := http.StatusInternalServerError
+		switch {
+		case errors.Is(err, collab.ErrSessionTitle):
+			code = http.StatusBadRequest
+		case errors.Is(err, collab.ErrNoRoom):
+			code = http.StatusNotFound
+		case errors.Is(err, collab.ErrNotWriter):
+			code = http.StatusForbidden
+		case errors.Is(err, collab.ErrTitleConflict), errors.Is(err, collab.ErrReadOnly):
+			code = http.StatusConflict
+		}
+		s.log.Warn("会话改名失败", "session", roomID, "actor", id.Member, "status", code, "cause", err)
+		writeErr(w, code, fmt.Errorf("会话 %s 改名: %w", roomID, err))
+		return
+	}
+	s.log.Info("会话已改名", "session", roomID, "title", session.Title, "actor", id.Member)
+	writeJSON(w, http.StatusOK, session)
+}
+
+// handleSessionResidentLaunch POST /api/sessions/{id}/resident/launch {squad?}（B444 plan Q4 甲）：为会话
+// 拉起 push 驻场者——与建会话共用 launchSessionResident。错误映射：小队不可用 400、会话不存在 404、
+// 已归档/已有驻场者/名额满 409、拉起失败 502（会话里同时落系统指针行）。
+func (s *Server) handleSessionResidentLaunch(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireConsoleIdentity(w, r); !ok {
+		return
+	}
+	roomID := r.PathValue("id")
+	var req proto.SessionResidentLaunchReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeErr(w, http.StatusBadRequest, errors.New("bad json"))
+		return
+	}
+	squad, err := s.residentSquadFor(req.Squad)
+	if err != nil {
+		var lookupErr *coordinatorLookupError
+		if errors.As(err, &lookupErr) {
+			writeErr(w, http.StatusBadRequest, errors.New(residentSquadMessage(lookupErr.err)))
+			return
+		}
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
-	s.log.Info("会话已创建", "session", session.ID, "title", title, "owner", owner, "actor", actor)
-	writeJSON(w, http.StatusOK, session)
+	outcome, err := s.launchSessionResident(r.Context(), roomID, squad)
+	if err != nil {
+		var admissionErr *coordinatorAdmissionError
+		var lookupErr *coordinatorLookupError
+		code := http.StatusBadGateway
+		switch {
+		case errors.As(err, &lookupErr):
+			code = http.StatusBadRequest
+		case errors.Is(err, collab.ErrNoRoom):
+			code = http.StatusNotFound
+		case errors.Is(err, collab.ErrReadOnly), errors.Is(err, collab.ErrResidentOccupied), errors.As(err, &admissionErr):
+			code = http.StatusConflict
+		}
+		s.log.Warn("叫驻场者失败", "session", roomID, "squad", squad.Name, "status", code, "cause", err)
+		writeErr(w, code, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, outcome)
 }
 
 // handleSessionMemberAdd POST /api/sessions/{id}/members → AddSessionMember
