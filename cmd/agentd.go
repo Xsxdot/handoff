@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -133,10 +134,9 @@ var agentdCmd = &cobra.Command{
 		//     撞锁时什么都没动过的位置
 		//   - 必须在 logx.Setup 之后：否则撞锁失败的日志无处可去
 		//
-		// 为什么不能指望端口冲突挡住第二个 agentd：ListenAndServe 是本函数
-		// **最后**一条语句，在它之前 RecoverOnStartup 已经对在役 agentd 的活
-		// 执行器重建了订阅并写入状态迁移；store.Open 开了 WAL 也不拦多进程
-		// 打开。破坏发生在撞端口之前，所以锁必须卡在这里。
+		// 为什么不能指望端口冲突挡住第二个 agentd：绑端口（启动闸）在 store.Open、
+		// 审批链与执行器装配之后，store.Open 开了 WAL 也不拦多进程打开；端口
+		// 只是第二道闸，碰数据之前的唯一保证是这把锁，所以锁必须卡在这里。
 		lock, err := orchestration.AcquireDataDirLock(cfg.DataDir, logger)
 		if err != nil {
 			// 不再包一层：撞锁时 err 本身就是一段完整的可行动指引，
@@ -247,15 +247,80 @@ var agentdCmd = &cobra.Command{
 		// 任务级进程点名（B93 §3.2）：watchdog 的 scanTaskProcs 按任务数进程，
 		// 生产计数实现恒为 Manager.TaskProcCount（与 sweep 的 mgr.SweepTaskProcs 同款接线）
 		orchestration.SetTaskProcCounter(mgr.TaskProcCount)
+		// B85：listen 绑单网卡 IP 时追加 loopback 辅助监听，本机 CLI 恒走 127.0.0.1
+		//（spec §3.2）。任一地址绑不上都启动失败——辅助监听与主监听同等对待
+		listenAddrs := []string{cfg.Listen}
+		var listenAux string
+		if cls, aux := config.ClassifyListen(cfg.Listen); cls == config.ListenSingle {
+			listenAux = aux
+			listenAddrs = append(listenAddrs, aux)
+		}
+		startAttrs := []any{"addr", cfg.Listen, "data_dir", cfg.DataDir, "default_executor", cfg.Executor.Default,
+			"proc_fence_disabled", cfg.ProcFence.Disabled,
+			"proc_fence_reserve_ratio", cfg.ProcFence.ReserveRatio,
+			"proc_fence_task_budget", cfg.ProcFence.TaskBudget,
+			"proc_fence_task_hard_limit", cfg.ProcFence.TaskHardLimit}
+		// 无辅助监听时不打 listen_aux 字段：两档常规配置的启动日志保持不变
+		if listenAux != "" {
+			startAttrs = append(startAttrs, "listen_aux", listenAux)
+		}
+		logger.Info("agentd 服务启动", startAttrs...)
+
+		// 优雅关停：收到 SIGINT/SIGTERM（或进程内 Trigger）后停收新连接、
+		// 等在途请求、再按序收尾。返回 nil = exit 0，systemd Restart=always /
+		// launchd KeepAlive 据此把新进程拉起来。
+		//
+		// cleanup 的顺序是有讲究的，不要调换：先停看门狗（它会写库），
+		// 再关库，最后放锁（放早了别的 agentd 会在库还开着时进来）。
+		// store.Close 与 lock.Release 上面已有 defer，这里不重复调用——
+		// defer 在 RunE 返回后仍会执行，顺序是 lock.Release 后于 st.Close，
+		// 正是我们要的。
+		sd := orchestration.NewShutdown(logger)
+		// 换版接口靠它退出进程，交接给进程管理器拉起的新二进制
+		srv.SetRestart(sd.Trigger)
+
+		// 启动闸（2026-10-19 mac-mini 事故）：端口在账本挂载**之前**占住，启动期
+		// 一切请求回 503 + 当前阶段（账本重试第几次、原因），handoff status 与对端
+		// 看到的是「在、未就绪、卡在哪」而不是 connection refused。真实 handler 在
+		// 账本挂载与启动恢复都完成后才经 bootGate.Ready 上线——「恢复先于对外服务」
+		// 的约束不变，只是把绑端口提前了。单实例仍由上面的 DataDir 锁保证。
+		bootGate := agentd.NewBootGate(logger)
+		waitServe, err := sd.Begin(newAgentdHTTPServer(cfg.Listen, bootGate), listenAddrs...)
+		if err != nil {
+			return err
+		}
+		// 启动期失败的统一出口：先按优雅关停收掉已占的端口，再把原因带出去
+		abortBoot := func(cause error) error {
+			sd.Trigger("startup-failed")
+			_ = waitServe(func() {})
+			return cause
+		}
+		// 停机信号在启动期到达时取消账本重试（bootCtx 只管启动期，不影响 wdCtx 的收尾次序）
+		bootCtx, bootCancel := context.WithCancel(context.Background())
+		defer bootCancel()
+		go func() {
+			select {
+			case <-sd.Done():
+				bootCancel()
+			case <-bootCtx.Done():
+			}
+		}()
+
 		// 恢复前先挂自动化账本：RecoverOnStartup 会通过 Server.autoLedger
 		// 对任务占用做启动期对账，账本尚未装配时必须拒绝启动，而不是让恢复
 		// 进入一个不完整的服务状态。
 		wdCtx, wdCancel := context.WithCancel(context.Background())
 		defer wdCancel()
-		stopLedger, err := setupLedger(cfg, srv, st, wdCtx, logger)
+		stopLedger, err := setupLedger(cfg, srv, st, wdCtx, logger,
+			ledgerBoot{ctx: bootCtx, report: bootGate.SetPhase})
 		if err != nil {
-			return err
+			if bootCtx.Err() != nil {
+				// 启动期收到停机：按优雅关停退出（exit 0），不是启动失败
+				return waitServe(func() {})
+			}
+			return abortBoot(err)
 		}
+		bootCancel()
 		defer stopLedger()
 
 		// B437：把共享审批链读取口 / 远程裁决口 / 本机环解析缝 / 自名判据注入审批者。
@@ -293,10 +358,10 @@ var agentdCmd = &cobra.Command{
 			logger.Warn("账本未挂载，跳过启动恢复对账",
 				"action", "在 config.yaml 设置 name:（直连形态还需 advertise:）后重启")
 		} else if err := srv.RecoverOnStartup(mgr.ResumeTask, mgr.SweepTaskProcs, logger); err != nil {
-			return fmt.Errorf("启动恢复: %w", err)
+			return abortBoot(fmt.Errorf("启动恢复: %w", err))
 		}
 		if err := srv.StartPreviewServices(wdCtx); err != nil {
-			return fmt.Errorf("启动预览服务: %w", err)
+			return abortBoot(fmt.Errorf("启动预览服务: %w", err))
 		}
 		// B438 S8：打洞是 UDP，proxy 设置与 HTTPS_PROXY 都不承载它——配了代理的机器
 		// 启动时明说一次（INFO，不是 WARN：这是知会，不是故障）。
@@ -332,41 +397,12 @@ var agentdCmd = &cobra.Command{
 		logger.Info("事件镜像已启动", "targets", len(srv.Pool().Names()), "tick", "30s",
 			"note", "运行期新增的机器无需重启")
 
-		// B85：listen 绑单网卡 IP 时追加 loopback 辅助监听，本机 CLI 恒走 127.0.0.1
-		//（spec §3.2）。任一地址绑不上都启动失败——辅助监听与主监听同等对待
-		listenAddrs := []string{cfg.Listen}
-		var listenAux string
-		if cls, aux := config.ClassifyListen(cfg.Listen); cls == config.ListenSingle {
-			listenAux = aux
-			listenAddrs = append(listenAddrs, aux)
-		}
-		startAttrs := []any{"addr", cfg.Listen, "data_dir", cfg.DataDir, "default_executor", cfg.Executor.Default,
-			"proc_fence_disabled", cfg.ProcFence.Disabled,
-			"proc_fence_reserve_ratio", cfg.ProcFence.ReserveRatio,
-			"proc_fence_task_budget", cfg.ProcFence.TaskBudget,
-			"proc_fence_task_hard_limit", cfg.ProcFence.TaskHardLimit}
-		// 无辅助监听时不打 listen_aux 字段：两档常规配置的启动日志保持不变
-		if listenAux != "" {
-			startAttrs = append(startAttrs, "listen_aux", listenAux)
-		}
-		logger.Info("agentd 服务启动", startAttrs...)
-
-		// 优雅关停：收到 SIGINT/SIGTERM（或进程内 Trigger）后停收新连接、
-		// 等在途请求、再按序收尾。返回 nil = exit 0，systemd Restart=always /
-		// launchd KeepAlive 据此把新进程拉起来。
-		//
-		// cleanup 的顺序是有讲究的，不要调换：先停看门狗（它会写库），
-		// 再关库，最后放锁（放早了别的 agentd 会在库还开着时进来）。
-		// store.Close 与 lock.Release 上面已有 defer，这里不重复调用——
-		// defer 在 RunE 返回后仍会执行，顺序是 lock.Release 后于 st.Close，
-		// 正是我们要的。
-		sd := orchestration.NewShutdown(logger)
-		// 换版接口靠它退出进程，交接给进程管理器拉起的新二进制
-		srv.SetRestart(sd.Trigger)
+		// 启动期结束：账本已挂、启动恢复已做，真实 handler 上线（此前一切请求由启动闸回 503）。
+		bootGate.Ready(srv.Handler())
+		logger.Info("agentd 服务就绪", "addr", cfg.Listen)
 		// 两侧都要保留：main 侧把 wdCancel 包进了 PTY 感知的优雅关停清理，
 		// 本分支要在 Serve 返回后关掉 target 客户端池（含 relay 隧道）。
-		err = sd.Serve(newAgentdHTTPServer(cfg.Listen, srv.Handler()),
-			srv.GracefulShutdownCleanup(wdCancel), listenAddrs...)
+		err = waitServe(srv.GracefulShutdownCleanup(wdCancel))
 		if closeErr := srv.CloseTargets(); closeErr != nil {
 			logger.Warn("关闭 target 客户端池失败", "cause", closeErr)
 		}
@@ -519,8 +555,104 @@ func init() {
 // 返回：stop 必须由调用方 defer，且保证先于账本库 Close 执行——订阅
 // 回调在写库，Stop 先于 Close 是硬约束（本函数把 Close 一并收进 stop，
 // 调用方只需 defer stop() 一个动作）。
+// ledgerBoot 是账本挂载的启动期参数（2026-10-19 mac-mini 事故：一次 53300 即放弃账本）。
+// 零值即生产缺省：open=ledger.Open/OpenShared，sleep=定时器，report 不播报，
+// ctx 取 setupLedger 的 ctx。
+type ledgerBoot struct {
+	// ctx 取消 = 停机，放弃重试并返回 ctx.Err()
+	ctx context.Context
+	// open 按 shared 打开账本；测试注入失败序列
+	open func(dsn string, shared bool) (*ledger.Store, error)
+	// report 把重试状态播报给启动闸（handoff status 据此看出账本未挂载）
+	report func(phase string)
+	// sleep 退避等待；ctx 取消时立即返回 ctx.Err()
+	sleep func(ctx context.Context, d time.Duration) error
+}
+
+// 账本挂载退避：首次 1s，倍增，封顶 30s；±20% 抖动，避免全队同时重启后同秒撞库。
+const (
+	ledgerRetryInitial = time.Second
+	ledgerRetryMax     = 30 * time.Second
+)
+
+// openLedgerWithRetry 打开账本，瞬时错误（ledger.IsTransientOpenError）退避重试直到
+// 成功或停机，配置性错误第一次就返回。日志限频：第 1、2、4、8…次失败打 WARN，
+// 其余只经 report 刷新启动闸；重试后成功打一条 INFO 带总次数。
+func openLedgerWithRetry(dsn string, shared bool, boot ledgerBoot, logger *slog.Logger) (*ledger.Store, error) {
+	open := boot.open
+	if open == nil {
+		open = func(dsn string, shared bool) (*ledger.Store, error) {
+			if shared {
+				return ledger.OpenShared(dsn)
+			}
+			return ledger.Open(dsn)
+		}
+	}
+	sleep := boot.sleep
+	if sleep == nil {
+		sleep = sleepCtx
+	}
+	report := boot.report
+	if report == nil {
+		report = func(string) {}
+	}
+	ctx := boot.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	backoff := ledgerRetryInitial
+	started := time.Now()
+	for attempt := 1; ; attempt++ {
+		lst, err := open(dsn, shared)
+		if err == nil {
+			if attempt > 1 {
+				// WARN 而非 INFO：与此前的重试 WARN 同级可见，默认日志级别下事故有始有终
+				logger.Warn("账本挂载重试成功，瞬时故障已恢复", "attempts", attempt, "elapsed", time.Since(started).Round(time.Second))
+			}
+			return lst, nil
+		}
+		if !ledger.IsTransientOpenError(err) {
+			logger.Error("打开账本库失败（配置性错误，不重试）", "dsn_configured", shared, "attempt", attempt, "cause", err,
+				"action", "检查 config.yaml 的 ledger.dsn（地址/库名/账号/密码）后重启")
+			return nil, err
+		}
+		wait := jitter(backoff)
+		reason := ledger.OpenErrorReason(err)
+		report(fmt.Sprintf("账本未挂载：共享账本打开失败，第 %d 次重试（%s），约 %s 后再试", attempt, reason, wait.Round(time.Second)))
+		if attempt&(attempt-1) == 0 {
+			logger.Warn("打开账本库失败（瞬时错误），退避重试；重试期间账本/镜像/卡派发/自动化未挂载，status 报未就绪",
+				"dsn_configured", shared, "attempt", attempt, "next_retry", wait.Round(time.Millisecond),
+				"elapsed", time.Since(started).Round(time.Second), "cause", err)
+		}
+		if err := sleep(ctx, wait); err != nil {
+			logger.Warn("停机请求到达，放弃账本挂载重试", "attempts", attempt, "cause", err)
+			return nil, err
+		}
+		if backoff *= 2; backoff > ledgerRetryMax {
+			backoff = ledgerRetryMax
+		}
+	}
+}
+
+// jitter 返回 d 的 ±20% 随机抖动。
+func jitter(d time.Duration) time.Duration {
+	return time.Duration(float64(d) * (0.8 + 0.4*rand.Float64()))
+}
+
+// sleepCtx 等 d 或 ctx 取消（返回 ctx.Err()）。
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
+}
+
 func setupLedger(cfg *config.Config, srv *agentd.Server, taskStore *store.Store, ctx context.Context,
-	logger *slog.Logger) (func(), error) {
+	logger *slog.Logger, boot ledgerBoot) (func(), error) {
 	ldsn := cfg.Ledger.DSN
 	shared := ldsn != ""
 	// S2 / §4.5 挂载门：有 DSN 但缺机器身份（无自名，或直连形态缺 advertise:）
@@ -538,15 +670,11 @@ func setupLedger(cfg *config.Config, srv *agentd.Server, taskStore *store.Store,
 	if !shared {
 		ldsn = filepath.Join(cfg.DataDir, "ledger.db")
 	}
-	var lst *ledger.Store
-	var err error
-	if shared {
-		lst, err = ledger.OpenShared(ldsn)
-	} else {
-		lst, err = ledger.Open(ldsn)
+	if boot.ctx == nil {
+		boot.ctx = ctx
 	}
+	lst, err := openLedgerWithRetry(ldsn, shared, boot, logger)
 	if err != nil {
-		logger.Error("打开账本库失败", "dsn_configured", shared, "cause", err)
 		return nil, fmt.Errorf("打开账本库: %w", err)
 	}
 	// B439 S3/S8：自登记（账本打开后、镜像挂载前同步执行）与本地 targets 一次性导入。

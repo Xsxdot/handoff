@@ -23,7 +23,7 @@ func (s *Store) Follow(ctx context.Context, members func() ([]string, error),
 	wake := make(chan struct{}, 1)
 	if s.dialect == dialectPG {
 		// LISTEN 用独立裸连接：database/sql 连接池拿不到稳定的会话级 LISTEN
-		conn, err := pgx.Connect(ctx, s.dsn)
+		conn, err := pgx.ConnectConfig(ctx, s.pgCfg)
 		if err != nil {
 			return fmt.Errorf("LISTEN 连接: %w", err)
 		}

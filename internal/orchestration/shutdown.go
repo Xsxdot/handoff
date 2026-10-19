@@ -105,6 +105,23 @@ func (s *Shutdown) Reason() string {
 //   - 非 nil 表示监听/启动失败（进程应 exit 1）。**任一地址绑不上都是启动失败**
 //     （B85 决策：辅助监听与主监听同等对待，「第三档 = 两个监听都在」恒成立）
 func (s *Shutdown) Serve(srv *http.Server, cleanup func(), addrs ...string) error {
+	wait, err := s.Begin(srv, addrs...)
+	if err != nil {
+		return err
+	}
+	return wait(cleanup)
+}
+
+// Begin 绑定 addrs 上的全部监听、接上信号并开始服务，**不阻塞**；返回的 wait
+// 阻塞到停机或任一监听失败，语义与 Serve 的返回值相同。
+//
+// 为什么要拆出来：agentd 要在账本挂载重试期间就占住端口、回答 /api/status
+// （启动闸），而账本挂载与启动恢复必须在真实 handler 上线之前完成——服务
+// 开始与阻塞等待之间要留出这段启动期。启动期内收到信号同样走 Trigger，
+// 调用方经 Done 感知并放弃启动。
+//
+// 返回：绑定失败时 err 非 nil、wait 为 nil，已绑上的监听全部收回。
+func (s *Shutdown) Begin(srv *http.Server, addrs ...string) (wait func(cleanup func()) error, err error) {
 	if len(addrs) == 0 {
 		addrs = []string{srv.Addr}
 	}
@@ -118,27 +135,35 @@ func (s *Shutdown) Serve(srv *http.Server, cleanup func(), addrs ...string) erro
 				held.Close()
 			}
 			// 端口被占是最常见的启动失败，报文里带上地址，别让用户去日志里找
-			return fmt.Errorf("监听 %s: %w", a, err)
+			return nil, fmt.Errorf("监听 %s: %w", a, err)
 		}
 		s.log.Debug("监听建立", "addr", ln.Addr().String())
 		lns = append(lns, ln)
 	}
-	return s.serveWithListeners(lns, srv, cleanup)
+	return s.beginWithListeners(lns, srv), nil
 }
+
+// Done 在停机被触发（信号或 Trigger）后关闭。启动期的阻塞步骤（账本挂载
+// 重试）据此放弃，交给 wait 走优雅关停。
+func (s *Shutdown) Done() <-chan struct{} { return s.fired }
 
 // serveWithListeners 是 Serve 的可测形态：监听器由调用方给。
 //
 // 拆出来的理由：单测要在随机可用端口上跑（net.Listen ":0"），而 Serve
 // 从地址串里取地址、拿不到实际分配的端口。测试拿着 listener 才能知道
 // 该往哪儿探活。
+func (s *Shutdown) serveWithListeners(lns []net.Listener, srv *http.Server, cleanup func()) error {
+	return s.beginWithListeners(lns, srv)(cleanup)
+}
+
+// beginWithListeners 接信号、起 serve goroutine，返回阻塞等待函数。
 //
 // 多 listener 挂同一个 http.Server：net/http 自己追踪所有经 Serve 注入的
 // listener，srv.Shutdown 会把它们全部关掉——优雅关停无需感知监听个数。
-func (s *Shutdown) serveWithListeners(lns []net.Listener, srv *http.Server, cleanup func()) error {
+func (s *Shutdown) beginWithListeners(lns []net.Listener, srv *http.Server) func(cleanup func()) error {
 	// 信号与进程内触发汇到同一个 Shutdown 上：signal.Notify 收到就转成一次 Trigger
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	defer signal.Stop(sigCh)
 	go func() {
 		sig, ok := <-sigCh
 		if !ok {
@@ -159,7 +184,14 @@ func (s *Shutdown) serveWithListeners(lns []net.Listener, srv *http.Server, clea
 			errCh <- nil
 		}(ln)
 	}
+	return func(cleanup func()) error {
+		defer signal.Stop(sigCh)
+		return s.waitServe(srv, errCh, cleanup)
+	}
+}
 
+// waitServe 阻塞到停机或任一 serve goroutine 返回，再按约定收尾。
+func (s *Shutdown) waitServe(srv *http.Server, errCh <-chan error, cleanup func()) error {
 	select {
 	case err := <-errCh:
 		// 还没触发停机，就有 Serve 返回了——第一个事件定性，不等其余

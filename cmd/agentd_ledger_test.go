@@ -44,7 +44,7 @@ func TestSetupLedgerMountsWithRetiredEnabledFlag(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	stop, err := setupLedger(cfg, srv, taskStore, ctx, discardLogger())
+	stop, err := setupLedger(cfg, srv, taskStore, ctx, discardLogger(), ledgerBoot{})
 	if err != nil {
 		t.Fatalf("enabled 已退休，启动账本路径应恒可用: %v", err)
 	}
@@ -104,7 +104,7 @@ func TestB439SetupLedgerMountGateMissingName(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	stop, err := setupLedger(cfg, srv, taskStore, ctx, logger)
+	stop, err := setupLedger(cfg, srv, taskStore, ctx, logger, ledgerBoot{})
 	if err != nil {
 		t.Fatalf("挂载门不应让 setupLedger 报错（agentd 照常起）: %v", err)
 	}
@@ -141,7 +141,7 @@ func TestB439SetupLedgerMountedLogsSelfName(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	stop, err := setupLedger(cfg, srv, taskStore, ctx, logger)
+	stop, err := setupLedger(cfg, srv, taskStore, ctx, logger, ledgerBoot{})
 	if err != nil {
 		t.Fatalf("有身份应挂载成功: %v", err)
 	}
@@ -172,7 +172,15 @@ func TestSetupLedgerFailureDoesNotLogDSNCredentials(t *testing.T) {
 	cfg := &config.Config{Name: "test-box", Advertise: "127.0.0.1:7777",
 		Ledger: config.LedgerConfig{DSN: dsn}}
 
-	_, err := setupLedger(cfg, nil, nil, context.Background(), logger)
+	// 127.0.0.1:1 拒连属瞬时错误，setupLedger 会退避重试：首次退避时模拟停机，
+	// 让它带着首轮重试日志返回——被验的仍是真实打开失败路径的日志脱敏。
+	bootCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	boot := ledgerBoot{ctx: bootCtx, sleep: func(ctx context.Context, _ time.Duration) error {
+		cancel()
+		return ctx.Err()
+	}}
+	_, err := setupLedger(cfg, nil, nil, context.Background(), logger, boot)
 	if err == nil {
 		t.Fatal("连接不可用的账本应返回错误")
 	}
@@ -248,7 +256,7 @@ func TestSetupLedgerMountLogsDoNotLogDSNCredentials(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	stop, err := setupLedger(cfg, srv, taskStore, ctx, logger)
+	stop, err := setupLedger(cfg, srv, taskStore, ctx, logger, ledgerBoot{})
 	if err != nil {
 		t.Fatalf("装配应成功: %v", err)
 	}
