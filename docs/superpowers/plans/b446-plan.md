@@ -30,6 +30,11 @@
 1. **简报（已做，纯文本，不改语义）**：`briefingFirstRound` 写明「席位在本轮结束后由 agentd 替你落定
    （机器人席位）」，并禁本轮 `handoff card bind` / `handoff card rebind`、禁去找自己的会话 id。
    测试 `TestB446LaunchBriefingForbidsSelfSeat`（经 `LaunchForCard` 生产入口）先红后绿。
-2. **收尾兜底（待人裁决，改席位语义）**：收尾遇席位 == 本回合会话身份（任意来源/模式）时，
+2. **收尾兜底（人裁决 A，2026-10-19 已做）**：收尾遇席位 == 本回合会话身份（任意来源/模式）时，
    以 `RebindSeatMode(expect=该身份)` 原子改写为 coordinate/push + 承载，视为成功、不标 needs_human；
    席位是别的会话时维持现状（409 + needs_human）。
+
+实现：`adoptSelfSeatedCoordinator`（internal/agentd/scheddrain.go），只在收尾坐下/换绑报 `ErrCASConflict`
+时进入；重读卡，`DriverSession == 本回合身份` 才以自身为 expect 换绑（落一条 `driver_takeover` X→X），
+否则原错误返回。覆盖 `card coordinate` 与 `rebind --launch` 两条 launch 收尾；重建回合（Wake rebuilt）不在范围。
+测试 `TestB446LaunchFinalizeAdoptsSelfSeat`（经 HTTP launch/rebind 端点）先红（409）后绿。
