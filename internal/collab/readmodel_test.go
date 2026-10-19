@@ -131,6 +131,7 @@ func (f *fakeLC) SitResident(r proto.SessionResident) (proto.SessionResident, er
 	f.sitCalls = append(f.sitCalls, r)
 	return r, nil
 }
+func (f *fakeLC) SetResidentPushSession(sessionID, identity, pushSession string) error { return nil }
 func (f *fakeLC) StandResident(sessionID, identity string) error {
 	f.standCalls = append(f.standCalls, [2]string{sessionID, identity})
 	return nil

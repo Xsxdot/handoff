@@ -2,7 +2,8 @@
 //
 // 职责：把「项目内新建会话」这一次人类请求串成多领域写（spec 落位三问 ①：由 agentd 编排单元串起，不让 Web
 // 逐步调）：校验小队（role=coordinator）→ 逐卡预校验（Q7：存在、未终态、项目相符、未属他会话）→ 按已接受
-// 的卡算标题 → 建会话（含所属项目）→ 逐卡拉入 → 拉起驻场者首轮 → SitResident(push)。
+// 的卡算标题 → 建会话（含所属项目）→ 逐卡拉入 → SitResident(push，首轮在途) → 拉起驻场者首轮 → 补写 push 会话 id
+// （B444 P2 返工 F1：先坐下，首轮里驻场者即是书写者）。
 // 「叫驻场者」（launchSessionResident）是建会话与 POST /api/sessions/{id}/resident/launch 共用的同一函数。
 //
 // 边界：
@@ -200,10 +201,12 @@ func (s *Server) createProjectSession(ctx context.Context, in sessionCreateInput
 }
 
 // launchSessionResident 为会话拉起 push 驻场者首轮并坐下（建会话与 resident/launch 共用，plan Q4 甲）。
-// 顺序：会话锁 → 读会话（不存在 ErrNoRoom、归档 ErrReadOnly）→ 已有驻场者 ErrResidentOccupied →
-// runOnCoordinatorCarrier（准入 → 本机载体 → spec，workdir 按会话所属项目）→ keystone.LaunchForResident →
-// 真实机器名（R9）→ collab.SitResident(push)。任一步在「进入名额窗口之后」失败，会话里落一条系统指针行；
-// 之前的失败（会话不存在/归档/已有驻场者）不落（那是调用方的请求错，响应即可见面）。
+// 顺序（B444 P2 返工 F1：先坐下、再拉起、后补写——首轮里驻场者已是书写者，能发言、能 CAS 改名）：
+// 会话锁 → 读会话（不存在 ErrNoRoom、归档 ErrReadOnly）→ 已有驻场者（含首轮在途行）ErrResidentOccupied →
+// runOnCoordinatorCarrier（准入 → 本机载体 → spec，workdir 按会话所属项目）→ 真实机器名（R9）→
+// collab.SitResident(push，push_session 空 = 首轮在途) → keystone.LaunchForResident → SetResidentPushSession。
+// 首轮或补写失败 → 请下在途行（StandResident）+ 会话里一条系统指针行；进入名额窗口之前的失败（会话不存在/
+// 归档/已有驻场者）不落指针行（那是调用方的请求错，响应即可见面）。
 func (s *Server) launchSessionResident(ctx context.Context, sessionID string, squad scheduling.Squad) (proto.SessionResidentOutcome, error) {
 	var zero proto.SessionResidentOutcome
 	identity, err := proto.MemberIdentity(proto.IdentityKindAgent, squad.Name)
@@ -226,39 +229,53 @@ func (s *Server) launchSessionResident(ctx context.Context, sessionID string, sq
 	if current, seated, err := s.autoLedger.SessionResident(sessionID); err != nil {
 		return zero, fmt.Errorf("读会话 %s 驻场者: %w", sessionID, err)
 	} else if seated {
-		return zero, fmt.Errorf("会话 %s 已有驻场者 %s（换人先 handoff session stand）: %w",
-			sessionID, current.Identity, collab.ErrResidentOccupied)
+		state := "已在座"
+		if current.DriverMode == proto.ResidentDriverPush && current.PushSession == "" {
+			state = "首轮在途"
+		}
+		return zero, fmt.Errorf("会话 %s 已有驻场者 %s（%s；换人先 handoff session stand）: %w",
+			sessionID, current.Identity, state, collab.ErrResidentOccupied)
 	}
 	var sat proto.SessionResident
 	_, err = s.runOnCoordinatorCarrier(squad.Name, residentClaimKey(sessionID),
 		[]any{"session", sessionID, "resident", identity},
 		func() string { return s.resolveProjectWorkdir(session.HomeProject, "session", sessionID) },
 		func(round coordinatorCarrierRound) (keystone.RoundResult, error) {
-			result, err := s.keystone.LaunchForResident(ctx, round.spec, keystone.ResidentBrief{
-				Session: sessionID, Agent: squad.Name, Title: session.Title, Cards: session.Cards,
-			})
-			if err != nil {
-				return result, fmt.Errorf("拉起驻场者首轮失败: %w", err)
-			}
-			if result.SessionID == "" {
-				return result, fmt.Errorf("驻场者首轮未返回会话身份，无法续轮（session=%s）", sessionID)
-			}
+			var zeroRound keystone.RoundResult
 			machine, err := s.residentCarrierMachine(round.carrier.Machine)
 			if err != nil {
-				s.keystone.ForgetResident(sessionID)
-				return result, err
+				return zeroRound, err
 			}
 			sat, err = s.rooms.SitResident(proto.SessionResident{
 				Session: sessionID, Identity: identity, DriverMode: proto.ResidentDriverPush,
-				PushCLI: round.spec.CLI, PushSession: result.SessionID,
-				Carrier: round.binding.Carrier, CarrierMachine: machine,
+				PushCLI: round.spec.CLI, Carrier: round.binding.Carrier, CarrierMachine: machine,
 				HomeDir: round.spec.HomeDir, Workdir: round.spec.Workdir, Model: round.spec.Model,
 			})
 			if err != nil {
-				s.keystone.ForgetResident(sessionID)
-				s.log.Error("驻场者首轮已跑但驻场行未落", "session", sessionID, "push_session", result.SessionID, "cause", err)
-				return result, fmt.Errorf("驻场者首轮已跑（会话 %s）但驻场行未落: %w", result.SessionID, err)
+				s.log.Warn("驻场者首轮前坐下失败，不拉起", "session", sessionID, "identity", identity, "cause", err)
+				return zeroRound, fmt.Errorf("驻场者坐下失败: %w", err)
 			}
+			s.log.Info("驻场者已坐下（首轮在途），开始拉起首轮", "session", sessionID, "identity", identity,
+				"carrier", sat.Carrier, "carrier_machine", sat.CarrierMachine)
+			result, err := s.keystone.LaunchForResident(ctx, round.spec, keystone.ResidentBrief{
+				Session: sessionID, Agent: squad.Name, Title: session.Title, Cards: session.Cards,
+			})
+			switch {
+			case err != nil:
+				err = fmt.Errorf("拉起驻场者首轮失败: %w", err)
+			case result.SessionID == "":
+				err = fmt.Errorf("驻场者首轮未返回会话身份，无法续轮（session=%s）", sessionID)
+			default:
+				if fillErr := s.rooms.SetResidentPushSession(sessionID, identity, result.SessionID); fillErr != nil {
+					err = fmt.Errorf("驻场者首轮已跑（会话 %s）但 push 会话 id 未补写: %w", result.SessionID, fillErr)
+				}
+			}
+			if err != nil {
+				s.keystone.ForgetResident(sessionID)
+				s.standInflightResident(sessionID, identity, err)
+				return result, err
+			}
+			sat.PushSession = result.SessionID
 			return result, nil
 		})
 	if err != nil {
@@ -269,6 +286,17 @@ func (s *Server) launchSessionResident(ctx context.Context, sessionID string, sq
 	s.log.Info("驻场者已拉起并坐下", "session", sessionID, "identity", identity, "carrier", sat.Carrier,
 		"carrier_machine", sat.CarrierMachine, "push_session", sat.PushSession)
 	return proto.SessionResidentOutcome{Identity: identity, Carrier: sat.Carrier, CarrierMachine: sat.CarrierMachine}, nil
+}
+
+// standInflightResident 在首轮失败后请下首轮在途的驻场行（驻场位回到空，可经 resident/launch 重试）。
+// 请下失败只留 Error：在途行会让人话一直暂缓不续轮，须人工 `handoff session stand <会话> --as <身份>`。
+func (s *Server) standInflightResident(sessionID, identity string, cause error) {
+	if err := s.rooms.StandResident(sessionID, identity); err != nil {
+		s.log.Error("首轮失败后请下在途驻场行失败，需人工 session stand", "session", sessionID, "identity", identity,
+			"launch_cause", cause, "cause", err)
+		return
+	}
+	s.log.Info("首轮失败，已请下在途驻场行", "session", sessionID, "identity", identity, "launch_cause", cause)
 }
 
 // residentCarrierMachine 返回写进驻场行的真实机器名（协调者裁决 R9）：载体登记名不是本机别名就原样用；

@@ -210,6 +210,13 @@ func (s *Server) consumeResidentBatch(ctx context.Context, session string, batch
 		s.completeWakeBatch(key, claimed)
 		return 0, nil, nil
 	}
+	if r.PushSession == "" {
+		// 首轮在途（B444 P2 返工 F1：编排先坐下再拉起，首轮返回后才补写 push_session）：没有可 resume 的会话，
+		// 按准入满同口径暂缓——不收尾、不标 seen、不落指针行，认领留在飞挡住水位，下一轮补写后再续。
+		s.log.Info("驻场者首轮在途，暂缓续轮", "session", session, "identity", identity, "max_seq", maxSeq,
+			"event_count", len(evs))
+		return 0, nil, nil
+	}
 	stopRenew := s.startWakeClaimRenewal(key, claimed)
 	result, wakeErr := s.wakeResidentRound(ctx, r, sess, evs)
 	stopRenew()

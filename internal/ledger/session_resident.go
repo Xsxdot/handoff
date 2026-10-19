@@ -74,6 +74,47 @@ func (s *Store) SessionResident(session string) (SessionResident, bool, error) {
 	return r, true, nil
 }
 
+// SetResidentPushSession 给首轮在途的 push 驻场行补写 push_session（B444 P2 返工 F1：先坐下、再拉起首轮、
+// 首轮返回会话 id 后补写——首轮里驻场者已是书写者，能发言、能改名）。
+// 参数：identity 作 CAS（须等于现驻场者）；pushSession 非空。只写「driver_mode=push 且 push_session 仍空」
+// 的行——单条条件 UPDATE，两方言原子。返回：入参为空 → ErrBadState；无行或身份不符 → ErrResidentNotSeated；
+// 行在但已补写过 / 不是 push → ErrCASConflict（原值不变）。不落账本事件、不递增席位版本（驻场身份不变）。
+func (s *Store) SetResidentPushSession(session, identity, pushSession string) error {
+	if session == "" || identity == "" || pushSession == "" {
+		err := fmt.Errorf("补写驻场者 push_session：会话、身份、会话 id 必填（session=%q identity=%q）: %w",
+			session, identity, ErrBadState)
+		log().Warn("补写驻场者 push_session 被拒：入参为空", "cause", err)
+		return err
+	}
+	res, err := s.db.Exec(s.q(`UPDATE session_residents SET push_session = ?
+		WHERE session = ? AND identity = ? AND driver_mode = ? AND push_session = ''`),
+		pushSession, session, identity, ResidentDriverPush)
+	if err != nil {
+		log().Warn("补写驻场者 push_session 失败", "session", session, "identity", identity, "cause", err)
+		return fmt.Errorf("补写驻场者 push_session session=%s: %w", session, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("读补写 push_session 影响行数: %w", err)
+	}
+	if n == 1 {
+		log().Info("驻场者 push_session 已补写", "session", session, "identity", identity, "push_session", pushSession)
+		return nil
+	}
+	current, ok, err := s.SessionResident(session)
+	if err != nil {
+		return err
+	}
+	if !ok || current.Identity != identity {
+		log().Info("补写 push_session 被拒：身份不是现驻场者", "session", session, "identity", identity, "resident_present", ok)
+		return fmt.Errorf("会话 %s 的现驻场者不是 %s: %w", session, identity, ErrResidentNotSeated)
+	}
+	log().Info("补写 push_session 被拒：行已补写或不是 push", "session", session, "identity", identity,
+		"driver_mode", current.DriverMode, "has_push_session", current.PushSession != "")
+	return fmt.Errorf("会话 %s 驻场行不是首轮在途的 push 行（driver_mode=%q，push_session 已有=%v）: %w",
+		session, current.DriverMode, current.PushSession != "", ErrCASConflict)
+}
+
 // ErrResidentOccupied 表示会话已有驻场者（C-414：一房间至多一名，第二次 sit 一律拒绝）。
 var ErrResidentOccupied = errors.New("ledger: 会话已有驻场者")
 

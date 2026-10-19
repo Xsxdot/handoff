@@ -8,6 +8,7 @@ package ledger
 
 import (
 	"database/sql"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -35,6 +36,38 @@ func TestB444SitResidentPushRoundTrip(t *testing.T) {
 	got.SatAt = time.Time{}
 	if got != want {
 		t.Fatalf("push 驻场行读回不符:\n得 %+v\n应 %+v", got, want)
+	}
+}
+
+// B444 P2 返工 F1：首轮在途行（push_session 空）先坐下，首轮跑完再以身份 CAS 补写 push_session。
+// 补写只认「同身份、push、push_session 仍空」：已补过 → ErrCASConflict；身份不符或无行 → ErrResidentNotSeated。
+func TestB444SetResidentPushSessionCAS(t *testing.T) {
+	s := newTestStore(t)
+	session := b435ResidentSession(t, s)
+	inflight := b444PushResident(session)
+	inflight.PushSession = ""
+	if _, err := s.SitResident(inflight); err != nil {
+		t.Fatalf("坐首轮在途 push 驻场者: %v", err)
+	}
+	if err := s.SetResidentPushSession(session, "agent:other", "ses_x"); !errors.Is(err, ErrResidentNotSeated) {
+		t.Fatalf("身份不符应 ErrResidentNotSeated，得 %v", err)
+	}
+	if err := s.SetResidentPushSession("session:999", "agent:coord", "ses_x"); !errors.Is(err, ErrResidentNotSeated) {
+		t.Fatalf("无驻场行应 ErrResidentNotSeated，得 %v", err)
+	}
+	if err := s.SetResidentPushSession(session, "agent:coord", "ses_b444_push_1"); err != nil {
+		t.Fatalf("补写 push_session: %v", err)
+	}
+	got := b435MustResident(t, s, session)
+	got.SatAt = time.Time{}
+	if want := b444PushResident(session); got != want {
+		t.Fatalf("补写后驻场行不符:\n得 %+v\n应 %+v", got, want)
+	}
+	if err := s.SetResidentPushSession(session, "agent:coord", "ses_other"); !errors.Is(err, ErrCASConflict) {
+		t.Fatalf("已补写再写应 ErrCASConflict，得 %v", err)
+	}
+	if got := b435MustResident(t, s, session); got.PushSession != "ses_b444_push_1" {
+		t.Fatalf("CAS 失败不得改写 push_session，得 %q", got.PushSession)
 	}
 }
 

@@ -123,6 +123,9 @@ type LedgerClient interface {
 	// 会话不存在 → ErrNotFound；已归档 → ErrBadState；已有驻场者 → ErrResidentOccupied（原登记不变）。
 	// 记法校验不在实现侧——调用方（collab.Service.SitResident）是唯一入口。
 	SitResident(r proto.SessionResident) (proto.SessionResident, error)
+	// SetResidentPushSession 给首轮在途（push_session 空）的 push 驻场行补写 push 会话 id（B444）：identity 作
+	// CAS。无行/身份不符 → ErrResidentNotSeated；已补写或非 push → ErrCASConflict；入参为空 → ErrBadState。
+	SetResidentPushSession(sessionID, identity, pushSession string) error
 	// StandResident 请下会话驻场者（`session stand`）：identity 须等于现驻场者，否则
 	// ErrResidentNotSeated（登记不变）。
 	StandResident(sessionID, identity string) error

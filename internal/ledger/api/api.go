@@ -302,6 +302,15 @@ func (f *Facade) SitResident(r proto.SessionResident) (proto.SessionResident, er
 	return residentWire(got), nil
 }
 
+// SetResidentPushSession 直通 Store.SetResidentPushSession（B444）；账本哨兵翻成 client 侧哨兵（含 CAS）。
+func (f *Facade) SetResidentPushSession(sessionID, identity, pushSession string) error {
+	err := f.st.SetResidentPushSession(sessionID, identity, pushSession)
+	if errors.Is(err, ledger.ErrCASConflict) {
+		return fmt.Errorf("%w（%s）", client.ErrCASConflict, err.Error())
+	}
+	return translateResidentErr(err)
+}
+
 // StandResident 请下会话驻场者（条件删除，身份须等于现驻场者）。
 func (f *Facade) StandResident(sessionID, identity string) error {
 	return translateResidentErr(f.st.StandResident(sessionID, identity))

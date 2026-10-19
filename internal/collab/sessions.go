@@ -322,7 +322,7 @@ func (s *Service) SitResident(r proto.SessionResident) (proto.SessionResident, e
 
 // validateResidentDriver 校验驻场者行的驱动形态与载体落点成形（B444 P1，plan A1.7）：
 //   - push：身份必须是 agent:（push 驻场者记 agent:<小队名>；user: 是人，不能由载体冒用）；
-//     push_cli、push_session、carrier 必填（续轮 resume 的最小三元）；不得同时带桌面端两列——
+//     push_cli、carrier 必填；push_session 可空（首轮在途，B444 P2 返工 F1）；不得同时带桌面端两列——
 //     门铃只看 cli_session，带上就会门铃与 keystone 双重唤醒（缺陷族 R2）；
 //   - desktop（空串）：不得带任何 push/bearing 字段（同理：半个 bearing 不是可续轮的落点）；
 //   - 其余值：词表外，拒。
@@ -342,9 +342,11 @@ func validateResidentDriver(r proto.SessionResident) error {
 		if err != nil || kind != proto.IdentityKindAgent {
 			return fmt.Errorf("push 驻场者身份须为 agent:<小队名>，收到 %q: %w", r.Identity, ErrResidentIdentity)
 		}
-		if r.PushCLI == "" || r.PushSession == "" || r.Carrier == "" {
-			return fmt.Errorf("push 驻场者须带 push_cli、push_session、carrier（得 cli=%q session=%q carrier=%q）: %w",
-				r.PushCLI, r.PushSession, r.Carrier, ErrResidentIdentity)
+		// push_session 可空 = 首轮在途（B444 P2 返工 F1）：编排先坐下再拉起首轮，让驻场者首轮就是书写者，
+		// 首轮返回会话 id 后经 SetResidentPushSession 补写；在途期间唤醒循环按「暂缓」处理不续轮。
+		if r.PushCLI == "" || r.Carrier == "" {
+			return fmt.Errorf("push 驻场者须带 push_cli、carrier（得 cli=%q carrier=%q）: %w",
+				r.PushCLI, r.Carrier, ErrResidentIdentity)
 		}
 		if r.DesktopSession != "" || r.CLISession != "" {
 			return fmt.Errorf("push 驻场者不得同时登记桌面端地址（会与门铃双重唤醒）: %w", ErrResidentIdentity)
@@ -353,6 +355,28 @@ func validateResidentDriver(r proto.SessionResident) error {
 	default:
 		return fmt.Errorf("驻场者驱动形态 %q 不在词表（空=desktop | push）: %w", r.DriverMode, ErrResidentIdentity)
 	}
+}
+
+// ErrResidentPushSessionSet 补写 push_session 时驻场行已不是首轮在途（已补写过或不是 push 行），原值不变。
+var ErrResidentPushSessionSet = client.ErrCASConflict
+
+// SetResidentPushSession 给首轮在途的 push 驻场者补写 push 会话 id（B444 P2 返工 F1；collab 只存事实，
+// 拉起由 agentd 编排）。identity 须等于现驻场者（CAS）。错误：非会话房间 → ErrNoRoom；身份不是现驻场者
+// 或无驻场者 → ErrResidentNotSeated；已补写过 → ErrResidentPushSessionSet；pushSession 为空 → ErrResidentIdentity。
+func (s *Service) SetResidentPushSession(sessionID, identity, pushSession string) error {
+	if !room.IsSessionRoom(sessionID) {
+		log().Warn("补写驻场者 push 会话被拒：不是会话房间", "room", sessionID, "identity", identity)
+		return fmt.Errorf("%q 不是会话房间（须形如 session:<n>）: %w", sessionID, ErrNoRoom)
+	}
+	if strings.TrimSpace(pushSession) == "" {
+		return fmt.Errorf("补写驻场者 push 会话：会话 id 为空: %w", ErrResidentIdentity)
+	}
+	if err := s.lc.SetResidentPushSession(sessionID, identity, pushSession); err != nil {
+		log().Warn("补写驻场者 push 会话失败", "session", sessionID, "identity", identity, "cause", err)
+		return mapResidentError(err)
+	}
+	log().Info("驻场者 push 会话已补写", "session", sessionID, "identity", identity, "push_session", pushSession)
+	return nil
 }
 
 // StandResident 请下会话房间驻场者（`session stand`，Q7 甲）：identity 须等于现驻场者，否则

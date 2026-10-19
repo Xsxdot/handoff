@@ -8,11 +8,13 @@
 package agentd
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -25,6 +27,8 @@ import (
 )
 
 // b444CreateRunner 记录 Launch 的 spec/简报与 Resume 的 ref；launchErr 非 nil 时 Launch 返回它。
+// onLaunch 非 nil 时在 Launch 内（首轮「正在跑」期间、返回会话 id 之前）以简报调用——模拟载体在首轮里
+// 执行 handoff 命令（B444 P2 返工 F1 的竖切观察点）。onLaunch 在锁外调用，可再入本 runner 的读面。
 type b444CreateRunner struct {
 	mu        sync.Mutex
 	launches  []keysclient.SessionSpec
@@ -32,13 +36,20 @@ type b444CreateRunner struct {
 	resumes   []keysclient.SessionRef
 	launchErr error
 	nextID    int
+	onLaunch  func(prompt string)
 }
 
 func (r *b444CreateRunner) Launch(spec keysclient.SessionSpec, prompt string) (keysclient.TurnResult, error) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	r.launches = append(r.launches, spec)
 	r.prompts = append(r.prompts, prompt)
+	hook := r.onLaunch
+	r.mu.Unlock()
+	if hook != nil {
+		hook(prompt)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if r.launchErr != nil {
 		return keysclient.TurnResult{}, r.launchErr
 	}
@@ -445,5 +456,109 @@ func TestB444ResidentCarrierMachineKeepsRegisteredName(t *testing.T) {
 	}
 	if r, _, _ := env.ledger.SessionResident(resp.ID); r.CarrierMachine != host {
 		t.Fatalf("登记名为真实机器名时应原样记 %q，得 %q", host, r.CarrierMachine)
+	}
+}
+
+var b444SessionIDPattern = regexp.MustCompile(`session:\d+`)
+
+// F1 竖切（真机 R4 回归）：首轮「正在跑」时驻场者已坐下（push_session 空 = 在途），能以 agent:<小队> 经
+// 真实 collab 写面在会话里发言、按占位名 CAS 改名；首轮返回后 push_session 被补写。
+// 注意：钩子跑在 HTTP handler 的 goroutine 里，只记录不 Fatal。
+func TestB444ResidentSpeaksAndRenamesInFirstRound(t *testing.T) {
+	env, runner := newB444CreateEnv(t, true)
+	var sendErr, renameErr error
+	var during ledger.SessionResident
+	var seatedDuring bool
+	runner.onLaunch = func(prompt string) {
+		session := b444SessionIDPattern.FindString(prompt)
+		during, seatedDuring, _ = env.ledger.SessionResident(session)
+		_, sendErr = env.srv.rooms.Send(session, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "我是驻场者，先看看"}, b444Identity)
+		_, renameErr = env.srv.rooms.RenameSession(session, "排查登录", proto.SessionUntitledTitle, b444Identity)
+	}
+	code, resp, keys := b444Create(t, env, `{"project":"handoff","squad":"coord"}`)
+	if code != http.StatusOK || resp.Resident == nil || resp.Resident.Error != "" {
+		t.Fatalf("建会话: %d %+v %s", code, resp.Resident, keys["error"])
+	}
+	if !seatedDuring || during.DriverMode != ledger.ResidentDriverPush || during.PushSession != "" || during.Identity != b444Identity {
+		t.Fatalf("首轮在跑时驻场行应已坐下且 push_session 空（在途），得 seated=%v %+v", seatedDuring, during)
+	}
+	if sendErr != nil {
+		t.Fatalf("首轮里驻场者以 %s 发言应通过书写者检查: %v", b444Identity, sendErr)
+	}
+	if renameErr != nil {
+		t.Fatalf("首轮里驻场者 CAS 改名应成功: %v", renameErr)
+	}
+	got, err := env.ledger.GetSession(resp.ID)
+	if err != nil || got.Title != "排查登录" {
+		t.Fatalf("首轮改名应落账: %+v err=%v", got, err)
+	}
+	if r, ok, _ := env.ledger.SessionResident(resp.ID); !ok || r.PushSession != "ses_b444_create_1" {
+		t.Fatalf("首轮返回后应补写 push_session，得 ok=%v %+v", ok, r)
+	}
+}
+
+// F1 唤醒腿（裁决 c）：首轮在途时人发无 @ 消息 → 本轮不续轮、不落指针行、不越过；首轮返回补写 push_session
+// 后下一轮恰一次 Resume，目标就是首轮会话。
+func TestB444MessageDuringFirstRoundDeliveredAfterPushSessionSet(t *testing.T) {
+	env, runner := newB444CreateEnv(t, true)
+	var sendErr, drainErr error
+	var resumesDuring, pointersDuring int
+	runner.onLaunch = func(prompt string) {
+		session := b444SessionIDPattern.FindString(prompt)
+		if _, sendErr = env.srv.rooms.Send(session, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "首轮里人先说一句"}, consoleMember); sendErr != nil {
+			return
+		}
+		_, _, drainErr = env.srv.consumeAutomationEventsOnce(context.Background())
+		runner.mu.Lock()
+		resumesDuring = len(runner.resumes)
+		runner.mu.Unlock()
+		history, _ := env.srv.rooms.History(session, 0, 500)
+		for _, ev := range history {
+			var msg proto.RoomMessage
+			if json.Unmarshal(ev.Payload, &msg) == nil && msg.Kind == proto.RoomMsgPointer {
+				pointersDuring++
+			}
+		}
+	}
+	code, resp, keys := b444Create(t, env, `{"project":"handoff","squad":"coord"}`)
+	if code != http.StatusOK || resp.Resident == nil || resp.Resident.Error != "" {
+		t.Fatalf("建会话: %d %+v %s", code, resp.Resident, keys["error"])
+	}
+	if sendErr != nil || drainErr != nil {
+		t.Fatalf("首轮里人发言/排水不应报错: send=%v drain=%v", sendErr, drainErr)
+	}
+	if resumesDuring != 0 || pointersDuring != 0 {
+		t.Fatalf("首轮在途不得续轮、不得落指针行，得 resumes=%d pointers=%d", resumesDuring, pointersDuring)
+	}
+	runner.mu.Lock()
+	runner.onLaunch = nil
+	runner.mu.Unlock()
+	drainAutomation(t, env)
+	_, _, resumes := runner.snapshot()
+	if len(resumes) != 1 || resumes[0].SessionID != "ses_b444_create_1" {
+		t.Fatalf("补写 push_session 后应恰一次续到首轮会话，得 %+v", resumes)
+	}
+	drainAutomation(t, env)
+	if _, _, again := runner.snapshot(); len(again) != 1 {
+		t.Fatalf("同一消息不得重复续轮，得 %d 次", len(again))
+	}
+}
+
+// 裁决 d：驻场行在途（push_session 空）时再叫驻场者 → 409，不拉起载体。
+func TestB444ResidentLaunchConflictsWhileInflight(t *testing.T) {
+	env, runner := newB444CreateEnv(t, true)
+	session, err := env.srv.rooms.CreateSessionInProject("在途场", consoleMember, "handoff", consoleMember)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.srv.rooms.SitResident(proto.SessionResident{Session: session.ID, Identity: b444Identity,
+		DriverMode: proto.ResidentDriverPush, PushCLI: "opencode", Carrier: "coord-carrier", CarrierMachine: b444WantMachine(t, env)}); err != nil {
+		t.Fatalf("坐在途驻场行: %v", err)
+	}
+	if code, raw := ledgerPost(t, env.testAgentdEnv, "/api/sessions/"+session.ID+"/resident/launch", `{"squad":"coord"}`); code != http.StatusConflict {
+		t.Fatalf("在途驻场行再叫应 409，得 %d %s", code, raw)
+	}
+	if launches, _, _ := runner.snapshot(); len(launches) != 0 {
+		t.Fatalf("409 不得拉起载体: %+v", launches)
 	}
 }
