@@ -16,13 +16,51 @@ import (
 	"os"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 
 	ledgerapi "github.com/Xsxdot/handoff/internal/ledger/api"
 	"github.com/Xsxdot/handoff/internal/ledgerstep"
 	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/schedclient"
 	"github.com/Xsxdot/handoff/internal/scheduling"
 )
+
+// r1LaunchQueuePutCounter 包住真实账本端口，只数 launch 队列的写入次数——
+// 首轮准入若撞 ErrNoSlot，drainQueuesOnce 轮末回填会再 Put 这一行；对账先于
+// 首轮时这一行只被出队删除、从不回写。读写一律透传，不改任何读数。
+type r1LaunchQueuePutCounter struct {
+	inner schedclient.Registry
+	mu    sync.Mutex
+	puts  int
+}
+
+func (r *r1LaunchQueuePutCounter) Put(kind, id string, expectVersion int, body []byte, actor string) (int, error) {
+	if kind == scheduling.KindLaunchQueue {
+		r.mu.Lock()
+		r.puts++
+		r.mu.Unlock()
+	}
+	return r.inner.Put(kind, id, expectVersion, body, actor)
+}
+
+func (r *r1LaunchQueuePutCounter) Get(kind, id string) (schedclient.Record, error) {
+	return r.inner.Get(kind, id)
+}
+
+func (r *r1LaunchQueuePutCounter) List(kind string) ([]schedclient.Record, error) {
+	return r.inner.List(kind)
+}
+
+func (r *r1LaunchQueuePutCounter) Delete(kind, id string, expectVersion int, actor string) error {
+	return r.inner.Delete(kind, id, expectVersion, actor)
+}
+
+func (r *r1LaunchQueuePutCounter) count() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.puts
+}
 
 type r1HoldersBody struct {
 	Count   int            `json:"count"`
@@ -68,10 +106,14 @@ func r1ReadBody(t *testing.T, f *ledgerapi.Facade, key string) r1HoldersBody {
 // T9（竖切）：上一进程被杀留下 count=1、holders={self:1}，载体上限 1；launch 队列
 // 有一条协调者拉起请求。StartAutomation 之后首轮准入必须成功（Runner 收到 Launch），
 // 而不是 ErrNoSlot 回填——对账必须先于循环首轮（F48）。
+// 只看「最终准入成功」无牙：错序时首轮 no_slot 回填、对账后下一轮仍会准入成功；
+// 故另数 launch 队列入队后的写入次数，首轮即准入时必须为 0（无回填）。
 func TestB448R1StartAutomationReclaimsBeforeFirstAdmission(t *testing.T) {
 	host := r1Host(t)
 	env := setupNoPTYSquadEnv(t, 1)
 	runner := seedQueueCoordinator(t, env)
+	queueWrites := &r1LaunchQueuePutCounter{inner: facadeAsRegistry{f: env.srv.autoLedger}}
+	env.srv.SetScheduling(scheduling.New(queueWrites))
 	facade := ledgerapi.New(env.ledger)
 	for _, key := range []string{"squad/coord/coord-carrier", "carrier/coord-carrier"} {
 		r1PutBody(t, facade, key, r1HoldersBody{Count: 1, Holders: map[string]int{host: 1}})
@@ -82,6 +124,7 @@ func TestB448R1StartAutomationReclaimsBeforeFirstAdmission(t *testing.T) {
 	}, scheduling.KindLaunchQueue); err != nil {
 		t.Fatalf("入队协调者: %v", err)
 	}
+	enqueued := queueWrites.count()
 	env.srv.runStepFn = func(_ context.Context, _ *ledgerstep.StepRunner, _, _ string) {}
 
 	if err := startAutomationForTest(t, env.srv); err != nil {
@@ -94,6 +137,9 @@ func TestB448R1StartAutomationReclaimsBeforeFirstAdmission(t *testing.T) {
 	waitFor(t, func() bool {
 		return runningCountIn(t, env.srv.autoLedger, "carrier/coord-carrier") == 0
 	})
+	if backfills := queueWrites.count() - enqueued; backfills != 0 {
+		t.Fatalf("首轮准入应直接成功、请求不回填：launch 队列入队后又被写 %d 次（对账晚于首轮准入，F48）", backfills)
+	}
 }
 
 // T5（agentd 口径）：owned 取本机任务表里非终态（含 waiting_review、pending）且

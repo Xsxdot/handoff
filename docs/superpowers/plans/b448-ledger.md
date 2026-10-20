@@ -437,3 +437,26 @@
 - R7′b（混版本旧二进制写回）未跑：机内 T6/F44 已覆盖旧写者丢 holders 后只少扣不多扣；按 plan 为可选。
 - R7′ 补记（final review M-r1-3）：重启后 `session resident launch session:7` 成功（12:14:11→12:16:30，resident@t448-linux），回合后 `carrier/t448-oc`、`squad/t448-coord/t448-oc` 均 `{"count": 0}`（v63）；session:7 恰一条 `system:pointer`（被重启打断）。对照行不变。
 - final review I-r1-1（F48 测试无牙）已写入卡验收栏，修复轮 2 进行中。roadmap 已销「名额无 owner」并补三条 r1 残余（永久下线、改名、孤儿子进程）。
+
+## review 修复轮 2（I-r1-1 F48）
+
+### 偏离与自主决定
+
+- 无与 plan/spec 的偏离；只改测试（`internal/agentd/b448_r1_reclaim_test.go`），生产代码未动。
+- 自行拍板：取方向一（断言首轮准入不回填），不取方向二（在途阻塞危害场景）。理由：错序时首轮在 `automationStartOnce.Do` 内同步跑完，no_slot 回填在 StartAutomation 返回前就已落账，断言确定、无需阻塞 Runner 或 sleep；方向二要让 Launch 阻塞，而⑤c 下首轮同步执行，会把 StartAutomation 本身挂住，变成超时而非断言红。属测试设计，在执行者授权内。
+
+### 改动
+
+- T9 `TestB448R1StartAutomationReclaimsBeforeFirstAdmission`：把编制域换成 `scheduling.New(r1LaunchQueuePutCounter{facadeAsRegistry})`。这个包装只数 `KindLaunchQueue` 的 Put，读写一律透传。入队后记基数，准入成功后断言 launch 队列再无写入，也就是没有 no_slot 回填。
+
+### 验牙
+
+- 施加⑤c（在 `automationStartOnce.Do` 里、对账之前插 `s.runAutomationPass(ctx)`）后跑 `go test ./internal/agentd/ -run TestB448R1StartAutomationReclaimsBeforeFirstAdmission -count=5`，结果 5/5 红：
+  ```
+  ERROR scheduling.launch_admit.error squad=coord carrier=coord-carrier member_policy=1 carrier_cap=1 error_kind=no_slot cause="scheduling: 小队或载体并发已满"
+  --- FAIL: TestB448R1StartAutomationReclaimsBeforeFirstAdmission (0.03s)
+      b448_r1_reclaim_test.go:141: 首轮准入应直接成功、请求不回填：launch 队列入队后又被写 1 次（对账晚于首轮准入，F48）
+  ```
+- 用 `git checkout -- internal/agentd/scheddrain.go` 还原后，同一命令 `-count=5` 为 `ok`。
+- `go test ./internal/scheduling/ ./internal/agentd/ ./internal/orchestration/ -count=1`：三包均 ok（0.8s / 66.8s / 37.3s）。
+- `go build ./...`、`go vet ./...` 通过；`gofmt -l` 对改过的文件输出为空。
