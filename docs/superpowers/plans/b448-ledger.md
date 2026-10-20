@@ -426,3 +426,12 @@
   - 无可扣的键只打 Info 级 `scheduling.reclaim.keep`，warn 级别下看不到，属正常。
 - **对账时点**：在 `setupLedger` 内，早于 `RecoverOnStartup` 与 HTTP 就绪。B444 清扫照常在循环 goroutine 里、对账之后执行。
 - **R7′b（混版本）**：旧二进制写过之后，该行 body 退回 `{"count":N}`，没有 holders。linux 重启后，这一行应走 `scheduling.reclaim.keep`、不被改写。
+
+## 协调者：增补 r1 裁决与真机 R7′（2026-10-20）
+
+- 交回物「偏离与自主决定」1–10 认账（均在 r1.6 授权内）；第 10 条（依赖未装齐时 StartAutomation 不对账也不起循环）今天组装下不可达，不修，记此。
+- 构建 `d4684fc2`（mac `b6692af1…`，linux `2db08a81…`），两台隔离实例换版；在役 7777 未动。
+- 对照行：测试库手工植入 `carrier/t448-foreign` `{"count":1,"holders":{"t448-other":1}}` 与旧格式 `carrier/t448-legacy` `{"count":2}`。（首次植入时持有名写成 t448-mac，mac 实例随后重启即按 S7 归还：`scheduling.reclaim.reclaimed self=t448-mac key=carrier/t448-foreign deducted=1`——行为正确，改用第三机名重做。）
+- R7′：mac 建会话 session:7（T10），10s 时读在途 body：`carrier/t448-oc` 与 `squad/t448-coord/t448-oc` 均 `{"count": 1, "holders": {"t448-linux": 1}}`（v56）；`kill -9` linux 隔离实例 → mac 侧 `resident.error` …EOF；杀后、重启前计数仍 1（遗留）；重启后启动日志 `scheduling.reclaim.reclaimed self=t448-linux … deducted=1 kept=0 held_before=1 owned=0`（两键）、`scheduling.reclaim.done reclaimed_keys=2 deducted=2`，随后驻场者启动清扫请下 session:7 在途行；body 变 `{"count": 0}`（v57，holders 省略）；对照行 `t448-foreign` v3 与 `t448-legacy` v1 body/version 均不变。**S7 通过。**
+- 操作失误披露：r7p.sh 用了 `pkill -9 -f "opencode run"`，匹配范围是 linux-01 全机而非只限隔离实例。核对在役 `/root/.handoff/agentd.log`：最后一行在 2026-10-19T22:57Z，03:00–03:02Z 无任何记录，判定当时无在役回合被波及。后续脚本不再用全机 pkill。
+- R7′b（混版本旧二进制写回）未跑：机内 T6/F44 已覆盖旧写者丢 holders 后只少扣不多扣；按 plan 为可选。
