@@ -948,7 +948,7 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 - **R9 多机共库未在 fleet 上验**：push 驻场者唤醒只在 bearing 所在机认领，非本机零认领；只在单机隔离靶子验过，三机共库行为与「宿主机 agentd 停时会话里无提示」未真机验。来源：`docs/superpowers/plans/b444-plan.md` §7 R9。
 - **PG 迁移腿未跑**：`TestB444ResidentPushMigrationPG`、`TestB444SessionHomeProjectMigrationPG`、驻场/席位互斥 PG 孪生在无 `LEDGER_TEST_PG_DSN` 环境 SKIP；上 fleet（Supabase PG）前须在 linux-01 临时测试库跑一次。来源：B444 台账。
 - **续轮失败指针行未真机复现**：拉起失败→指针行→重试已真机（session:1 seq 7）；续轮（resume）失败的指针行只有单测与变异覆盖，隔离 M 上未能造出载体不可达。来源：B444 真机 R3 下半。
-- **建会话 / 叫机器人只接受本机载体**：`runOnCoordinatorCarrier`（`internal/agentd/scheddrain.go`）对远端载体 fail-closed，Web 请求发往控制台所在机；控制台所在机 ≠ 协调小队载体所在机时（生产：控制台 mac-mini，小队 leader 成员 mbp 在 macbook-pro）建会话得 `resident.error`、叫机器人失败。需定按载体机转发（B441 `?machine=` 转发面）还是前端按载体机路由。来源：B444 finish 前核对（与卡路径同约束，非 B444 回归）。
+- ~~**建会话 / 叫机器人只接受本机载体**~~（已由 B448 首轮按载体机转发销账，417b68ba）：`runOnCoordinatorCarrier`（`internal/agentd/scheddrain.go`）对远端载体 fail-closed，Web 请求发往控制台所在机；控制台所在机 ≠ 协调小队载体所在机时（生产：控制台 mac-mini，小队 leader 成员 mbp 在 macbook-pro）建会话得 `resident.error`、叫机器人失败。需定按载体机转发（B441 `?machine=` 转发面）还是前端按载体机路由。来源：B444 finish 前核对（与卡路径同约束，非 B444 回归）。
 
 ## 2026-10-19 账本 schema 版本闸残余（spec ledger-schema-version）
 
@@ -972,3 +972,5 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 - 叫机器人 / 建会话的既有 HTTP 入口在首轮超过 ~11 分钟时调用方连接被 server 写超时切断（首轮结果照落），见 plan Q4。来源：B448 真机 R10。
 - PG 测试腿既有缺陷：`TestB439DevicesPG` 对 jsonb attrs 做字节比对（PG 规范化空格）恒红；`TestPGSmokeEndToEnd`、`TestB435DriverModeMigrationPG` 等共用 public schema，项目自动前缀互占导致顺序相关红。来源：B448 真机 R9。
 - 载体登记后须在载体机跑一次 detect 才 online，否则叫机器人报「小队内没有已上线且有空的载体」，文案未提示去探测。来源：B448 真机 R1。
+- 载体 CLI 回合失败时只截 stderr 尾部；opencode 把错误（如 403 ENTITLEMENT_ERROR）写在 stdout JSON，导致失败原因显示为空。来源：B448 R11。
+- 生产遗留无主计数 `carrier/cmd`、`squad/leader/cmd` = 1（载体已删除，r1 前旧格式），需一次性人工清理或随「删载体清计数」处理。来源：B448 R11。

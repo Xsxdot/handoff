@@ -460,3 +460,14 @@
 - 用 `git checkout -- internal/agentd/scheddrain.go` 还原后，同一命令 `-count=5` 为 `ok`。
 - `go test ./internal/scheduling/ ./internal/agentd/ ./internal/orchestration/ -count=1`：三包均 ok（0.8s / 66.8s / 37.3s）。
 - `go build ./...`、`go vet ./...` 通过；`gofmt -l` 对改过的文件输出为空。
+
+## finish：合入、换版与 R11 生产复核（2026-10-20，用户批准「B448 合入 main 并推送，三台换版（旧二进制留备份），然后做 R11」）
+
+- 合并：detached origin/main（f44646ec）上 `git merge --no-ff cards/B448-charter-1` → 417b68ba；合并树门禁：build/vet ok、gofmt 0、`go test ./...` 65 包 ok 0 FAIL、web tsc ok、vitest 145 文件 1951 例 pass。`git push origin HEAD:main` f44646ec..417b68ba（分支 cards/B448-charter-1 也推到了 origin，非必需）。
+- 换版：linux-01 → macbook-pro → mac-mini 依次换 417b68ba（旧二进制留 `~/.local/bin/handoff.bak-pre-b448`；回滚 = mv 回去并重启服务）；三台 `/api/cards` 200、版本 417b68bac323。
+- R11（mac-mini 在役受理）：现役协调小队 `leader` 成员已被改为 `cline`（linux-01，opencode，模型 `cline-pass/cline-pass/glm-5.3-flash`，home 空→/root），不是计划写的 mbp@macbook-pro。
+  - 叫机器人（一次性卡 B449）：mac-mini「协调者首轮转交：受理机发出 handled_by=linux-01 carrier=cline」→ linux-01「执行机收件」→ opencode 2.7s exit 1 → 回执 `kind=round_failed` → CLI 502「执行机 linux-01 首轮失败：…exit status 1 stderr 尾部: 」；卡未落席位；计数 `carrier/cline`、`squad/leader/cline` 0。
+  - 建会话（session:32）：同形转交 → 驻场者首轮失败 → `resident.error` 点名执行机 linux-01；会话里恰一条指针行。
+  - 根因（手工复现于 linux-01）：`opencode run -m cline-pass/cline-pass/glm-5.3-flash` 返回 `403 ENTITLEMENT_ERROR: the user is not subscribed to required model plan`——cline 账号订阅问题，非 B448；且 opencode 把错误写在 stdout JSON，hostapi 只截 stderr，所以失败原因显示为空。
+  - 结论：B448 跨机转交、回执映射、名额归还、指针行在生产成立；载体本身不可用，成功闭环（首轮在载体机跑完并落座）未在生产复核。B449 已废弃关闭、session:32 已归档。
+- 生产 `squad/leader/cmd` 与 `carrier/cmd` 计数各为 1（载体 cmd 已不在登记表），是 r1 之前的旧格式无主遗留，按 S7 规则保留不动。
