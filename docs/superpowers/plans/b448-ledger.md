@@ -335,3 +335,94 @@
 - 实现：`scheduling.go` 新增 `runningBody{Count, Holders omitempty}`、`decodeRunning`（错误带 key/version）、`stepped`、`reclaimed`、`holderName`、`readRunning`；`casCount` 改为吃本次读到的 body 并在同一次 Put 里 `count+1/holders[self]+1`；`stepRunning` 同步维护；`AdmitCarrier`/`acquire` 改传 body；`ReclaimLocalOccupancy(owned)` 新增。`registry_read.go` `RunningCounts` 改用 `decodeRunning`，仍只投影 count。
 - 绿：`go test ./internal/scheduling/ -run B448R1 -count=1` → `ok`；整包 `go test ./internal/scheduling/ -count=1` → `ok  github.com/Xsxdot/handoff/internal/scheduling 0.957s`。
 - `go build ./...`、`go vet ./...`：无输出（exit 0）；`gofmt -l internal/scheduling/` 空。
+- 提交：`af77f6e0 feat(B448): sched_running 计数记持有机，新增本机遗留归还规则（r1 T1–T8）`。
+
+### r1 步 4：orchestration owned + agentd 启动序（T3 观察面 / T5 / T9 / T10）
+
+- 新测 `internal/agentd/b448_r1_reclaim_test.go`；`recover_occupancy_test.go` 五条用例改打新入口 `startAutomationForTest`（= `StartAutomation(ctx)`），断言语义不变，`RecoverOnStartup` 仍随后调用以保留原探活断言；malformed 用例改断言「StartAutomation 返回带 key 错误 + 日志带 key/version=2 + 无『自动化清队与事件唤醒循环启动』日志」。
+- 首红（编译红）：`recover_occupancy_test.go:75:9: srv.StartAutomation(ctx) (no value) used as value`。
+- 空壳（`StartAutomation` 只改签名返回 nil）后断言红：
+  - `TestB448R1StartAutomationReclaimsBeforeFirstAdmission`：`b448_r1_reclaim_test.go:90: 等待条件超时`（T9：载体满员，首轮 ErrNoSlot 回填，Runner 无 Launch）
+  - `TestB448R1ReclaimKeepsLiveLocalTasks`：`载体键对账后 {Count:4 Holders:map[B:1 DF-ZIDONGdeMac-mini.local:3]}，want {Count:3 ...:2}`（T5）
+  - `TestB448R1RecoverOnStartupNoLongerReconciles`：`err=启动对账解码 carrier/bad: invalid character 'o' in literal null (expecting 'u') probes=0，want nil/1`
+  - `TestB23310RecoverRejectsMalformedSchedRunning`：`malformed sched_running 应返回带 key 错误，实际 <nil>`（T10）
+  - `TestB448R1SquadsRunningViewHidesHolders`（T3 观察面）在空壳下即绿：wire 只投影 count，是守卫。
+- cmd 组装点守卫 `TestB448R1SetupLedgerAbortsWhenReconcileFails`（源码断言）：临时把 `cmd/agentd.go` 改回 `srv.StartAutomation(ctx)` 裸调用，`cd cmd; go test -run B448R1 -count=1 .` → `agentd_ledger_test.go:226: setupLedger 必须检查 StartAutomation 的返回错误`；还原后 `ok github.com/Xsxdot/handoff/cmd 0.575s`。
+- 实现：
+  - `orchestration/watchdog.go`：删 `schedRunningKind`/`schedRunningBody` 解码副本；新增窄接口 `OccupancyReclaimer`；`ReconcileSchedRunning(st, reclaimer, log)` 按 `OccupancyKeys(task.Squad, task.Carrier)` 计 owned（计数），交 `ReclaimLocalOccupancy`；有归还/跳过时完成日志用 Warn。
+  - `agentd/scheduling_client.go`：接口加 `ReclaimLocalOccupancy`。
+  - `agentd/scheddrain.go`：`StartAutomation(ctx) error`，`automationStartOnce` 内先同步对账，失败记 Error、不起循环、返回 error。
+  - `agentd/server.go`：`RecoverOnStartup` 去掉对账（保留 autoLedger 缺失检查）。
+  - `cmd/agentd.go`：`setupLedger` 检查 `StartAutomation` 错误，关账本库后返回错误（走 `abortBoot`）。
+- 绿（本轮实跑）：
+  - `go test ./internal/agentd/ -run B448R1 -count=1 -v`：4 条 PASS，`ok ... 0.595s`
+  - `go test ./internal/agentd/ -run B2331 -count=1 -v`：B23310/B23311 五条迁移用例全 PASS
+  - `go test ./internal/scheduling/ ./internal/orchestration/ ./internal/agentd/ -count=1`：
+    `ok github.com/Xsxdot/handoff/internal/scheduling 0.836s` / `ok .../internal/orchestration 41.855s` / `ok .../internal/agentd 87.735s`
+  - `cd cmd; go test -count=1 .`：首跑红 1 条 `TestSessionSendActorResolution`（`session_test.go:1298: ... --cli/--session 与当前环境会话不一致`）——即 memory 记载的环境敏感测试（读 `CLAUDE_CODE_SESSION_ID`），与本轮无关；`unset CLAUDE_CODE_SESSION_ID` 后复跑 `ok github.com/Xsxdot/handoff/cmd 77.269s`。
+  - `go build ./...` exit 0；`go vet ./...` exit 0；改过的 11 个文件 `gofmt -l` 空。
+- 提交：`e1c787e3 feat(B448): 启动对账前置到 StartAutomation 并归还本机遗留名额（r1 T3/T5/T9/T10）`。
+
+### 交回物
+
+#### 偏离与自主决定
+
+1. **新增 cmd 源码守卫测试** `TestB448R1SetupLedgerAbortsWhenReconcileFails`（T1–T10 之外）：锁「`setupLedger` 不丢弃 `StartAutomation` 的错误」。理由：`StartAutomation` 改成返回 error 后，Go 允许裸调用丢弃返回值，没有其它测试能挡住。属「测试文件组织」，在授权内。
+2. **五条迁移用例的改法**：对账入口换成 `StartAutomation`，并保留随后的 `RecoverOnStartup` 调用以维持原探活次数断言；malformed 用例原断言「对账失败后不探活」改为「对账失败后不起循环」（运行期阻断点已从 RecoverOnStartup 移到 StartAutomation，cmd 侧由第 1 条守卫）。断言没有放宽。属 r1.6「迁移方式」，在授权内。
+3. **T8 落在调度域层**：「重试耗尽时启动不失败」用 `ReclaimLocalOccupancy` 返回 nil error 断言（ReconcileSchedRunning 只在 err 非 nil 时返回错误），没有另经 StartAutomation 打一遍。属测试组织，在授权内。
+4. **日志级别**：单键归还 `scheduling.reclaim.reclaimed` 用 Warn；汇总行在有归还或跳过时用 Warn，否则 Info。理由：agentd 默认 warn 级别，Info 级别的归还会被吞掉（B390 R4 先例），R7′ 需要能在日志里看到。属「日志措辞」，在授权内。
+5. **holders 为空时省略字段**（`omitempty`），无持有的 body 与旧格式 `{"count":N}` 逐字节相同。在授权内（F39）。
+6. **F43 字面执行**：他人条目原值照抄，包括非正值；只把自名条目规范化（减到 0 即删键）。
+7. **错误文案**：`decodeRunning` 的错误统一为 `运行计数 <key>（version=<v>）解码失败: …`。`RunningCounts` 原文案是 `运行计数 <key> 解码失败: …`，因此损坏行时 `/api/squads` 500 的文案多了 version。wire 结构不变，只是文案，判断不属于 r1.6「修改 /api/squads 的 wire」。
+8. **新增依赖缺失错误分支**：`ReconcileSchedRunning` 在 store 或 reclaimer 为 nil 时返回 error。这是防御分支，生产组装下走不到。
+9. **持有者名取不到时**（自名为空且 `os.Hostname()` 失败）：准入只动 count、不记持有；对账记 Warn 后跳过。是 Q-r1-3 甲的边界补全。
+10. **依赖未装配时不对账**：`StartAutomation` 在依赖未装配（scheduling / keystone / autoLedger 任一为 nil）时，沿用今日行为，返回 nil，不对账也不起循环。提请协调者留意：若生产出现「scheduling 已装、keystone 未装」，`handleDispatch` 的准入会在没有对账的情况下发生。cmd 组装点里三者同批装配，今天不存在这种情形。本轮未改。
+
+以上都没有触及 r1.6 的「须升级」项：扣减口径、count 语义与准入判据、orchestration/agentd 直写 sched_running、/api/squads wire、DDL、F1–F37、准入机 ≠ 归还机，均未改动。
+
+#### 提交
+
+- `af77f6e0` feat(B448): sched_running 计数记持有机，新增本机遗留归还规则（r1 T1–T8）
+- `e1c787e3` feat(B448): 启动对账前置到 StartAutomation 并归还本机遗留名额（r1 T3/T5/T9/T10）
+- （本台账节随第三个 docs 提交落盘）
+
+#### T / F 落点
+
+| 条目 | 测试 | 代码 |
+|---|---|---|
+| T1 / F43 / F44 | `scheduling/b448_holders_test.go` `TestB448R1HoldersTrackAdmitAndRelease`、`TestB448R1AdmitCarrierRecordsHolder` | `scheduling.go` `runningBody.stepped`、`casCount`、`stepRunning`、`acquire`、`AdmitCarrier` |
+| T2 / F42 | `TestB448R1NewWriterOnLegacyBody` | `readRunning` / `decodeRunning` |
+| T3 / F41 / Q-r1-5 | `TestB448R1LegacyReaderDecodesNewBody`（金样本 + RunningCounts）；`agentd/b448_r1_reclaim_test.go` `TestB448R1SquadsRunningViewHidesHolders` | `registry_read.go` `RunningCounts` |
+| T4 / F46 / F47 | `TestB448R1ReclaimDeductsLocalOnly` | `runningBody.reclaimed`、`ReclaimLocalOccupancy` |
+| T5 | `TestB448R1ReclaimKeepsOwned`（调度侧）；`TestB448R1ReclaimKeepsLiveLocalTasks`（agentd：pending + waiting_review 计入，completed 不计） | `orchestration/watchdog.go` `ReconcileSchedRunning` |
+| T6 / F39 | `TestB448R1ReclaimNoopWithoutLocalHolder`；既有 B23310/B23311 五条 | `reclaimed` changed=false 不写 |
+| T7 | `TestB448R1ReclaimCappedByCount` | `reclaimed` |
+| T8 | `TestB448R1ReclaimRetriesOnConflict`、`TestB448R1ReclaimRetryExhaustedLogsAndContinues` | `ReclaimLocalOccupancy` CAS 重读重算 / 耗尽记 Error |
+| T9 / F48 | `TestB448R1StartAutomationReclaimsBeforeFirstAdmission` | `scheddrain.go` `StartAutomation` |
+| T10 / F49 | `TestB23310RecoverRejectsMalformedSchedRunning`（改打 StartAutomation）、`TestB448R1ReclaimRejectsMalformed`、cmd `TestB448R1SetupLedgerAbortsWhenReconcileFails` | `decodeRunning`、`StartAutomation`、`cmd/agentd.go` `setupLedger` |
+| Q-r1-1 去对账 | `TestB448R1RecoverOnStartupNoLongerReconciles` | `server.go` `RecoverOnStartup` |
+| F38 | T1–T4 断言的 body 形状 | `runningBody` |
+| F40 | 准入判据未改（`acquire`/`AdmitCarrier` 只比 `.Count`）；既有并发准入测试全绿 | — |
+| F45 | T9 / T5 用 hostname 回退；T1 用 SetSelfName | `holderName` |
+
+本轮实跑结果见上方「步 1–3」「步 4」两节原文。
+
+#### 未验
+
+- **PG 账本路径**：未验，原因是没有 DSN。机内测试全用 SQLite ledger 门面；PG 上 body 的 JSON 往返与 CAS 由 R7′ 兜底。
+- **变异两处**（删 owned 扣减 → T5；casCount 不保留他机 holders → T1）以及 T9 的「对账挪到首轮后」变异：留给 review，本节点未做。T9 的红只在「完全不对账」的空壳下观察到。
+- **真机 R7′ / R7′b**：未做，由协调者执行。
+- **全仓 `go test ./...`**：未跑，按三段律留给 review / finish。
+
+#### 给协调者真机 R7′ 的提示
+
+- **持有者名**：等于隔离实例 config 的 `name:`（即 `cfg.Name`，如 `t448-linux`），不是 hostname。在途读数应为 `{"count":1,"holders":{"t448-linux":1}}`，两把键（`squad/t448-coord/t448-oc`、`carrier/t448-oc`）同形。
+- **对账后 body**：持有清空时 holders 字段被省略，行不删。`t448-oc` 两把键应为 `{"count":0}`，version 各 +1。他机行 `{"count":1,"holders":{"t448-mac":1}}` 与旧格式行 `{"count":1}` 的 body 和 version 都不变。
+- **日志关键字**（默认 warn 级别下可见的几行）：
+  - `scheduling.reclaim.reclaimed`（WARN），字段：`self=`、`key=`、`version=`、`deducted=`、`kept=`（写后 count）、`held_before=`、`owned=`；
+  - `scheduling.reclaim.done`（有归还时 WARN），字段：`rows=`、`reclaimed_keys=`、`deducted=`、`skipped=`；
+  - `启动调度占用对账完成`（有归还时 WARN），字段：`self=`、`task_count=`、`owned_keys=`、`record_count=`。
+  - 失败时的关键字：`自动化循环未启动：启动调度占用对账失败`、`自动化编排启动失败：启动调度占用对账未通过`；写失败跳过时是 `scheduling.reclaim.error error_kind=retry_exhausted|write|reread`。
+  - 无可扣的键只打 Info 级 `scheduling.reclaim.keep`，warn 级别下看不到，属正常。
+- **对账时点**：在 `setupLedger` 内，早于 `RecoverOnStartup` 与 HTTP 就绪。B444 清扫照常在循环 goroutine 里、对账之后执行。
+- **R7′b（混版本）**：旧二进制写过之后，该行 body 退回 `{"count":N}`，没有 holders。linux 重启后，这一行应走 `scheduling.reclaim.keep`、不被改写。
