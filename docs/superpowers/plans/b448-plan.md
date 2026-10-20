@@ -375,3 +375,282 @@ go test ./internal/client/ ./internal/proto/ -count=1
 - **未验证，需真机**：
   - Tailscale 直连或 relay 隧道能否让一个静默 11–30 分钟的 HTTP 请求存活（R10）；
   - mac-mini 与 linux-01 在测试设备表里走直连还是 relay，取决于登记方式（R1 记录）。
+
+---
+
+## 增补 r1：S7 名额持有机（已拍板 2026-10-20）
+
+> **拍板（协调者，2026-10-20）**：Q-r1-1 甲（`StartAutomation` 先同步对账再起循环，失败中止启动；结构保证、T9 锁顺序）；Q-r1-2 甲（按键扣 `min(max(0, holders[self]−owned[key]), count)`，保留跨重启仍存活的执行者任务名额）；Q-r1-3 甲（`cfg.Name`，空则 `os.Hostname()`，与镜像 holder 同口径）；Q-r1-4 甲（仅解码失败中止，写失败记 Error 跳过该键）；Q-r1-5 甲（观察面不暴露 holders，wire/web 零改）。spec 方案段那句前提已同批修订为「扣除本机名下、且不属于本机仍存活任务的占用」。
+
+- 状态：**待拍板**。出稿者是 plan subagent，拍板者是主会话协调者。本节只做增补，不改 §0–§8（前一轮已交付）。
+- 输入：`docs/superpowers/specs/b448.md` 末节「修订 r1」，2026-10-20 已批准。内容是新故事 S7，以及 S6 失败子句的改写。
+- 基线：分支 `cards/B448-charter-1` @ `30b21c5d`。本节引用的代码事实见末尾「r1 核实读数」。
+
+### r1 待拍板
+
+> 每条给推荐项（**荐**）和理由。Q-r1-1 与 Q-r1-2 推翻了 spec 方案段的一句前提：「启动时本进程尚无任何在途回合，故本机名下的全部占用都是上一进程遗留」。这句话在基线代码里有两处不成立。拍板后，spec 那句措辞要不要同批修订，由协调者决定。
+
+1. **Q-r1-1 对账必须先于本进程的第一次准入。**
+   - 现状：`setupLedger` 在 `cmd/agentd.go:758` 调 `srv.StartAutomation(ctx)`，自动化循环 goroutine 立即开跑首轮。首轮里，事件唤醒走 `AdmitSeatCarrier`，清队走 `LaunchAdmit` / `Select`。启动对账却更晚，在 `cmd/agentd.go:360` 经 `srv.RecoverOnStartup` 调到 `server.go:1387`。
+   - 后果：对账跑之前，本进程可能已经以本机名准入了新回合。如果按 spec 扣掉「本机名下全部占用」，会把这个活着的回合也扣掉；它日后归还时再减一次，计数偏低，导致超发。
+   - HTTP 不受影响：真实 handler 在 `bootGate.Ready`（`cmd/agentd.go:401`）之后才上线，晚于两者。
+   - **荐 甲**：把对账做成 `StartAutomation` 的同步前置。
+     - `StartAutomation` 在 `automationStartOnce` 内先同步跑对账，成功后才起循环 goroutine；签名改为返回 error。解码失败时 `setupLedger` 返回错误，走 `abortBoot`。
+     - `Server.RecoverOnStartup` 不再调对账，只做 executor 恢复。
+     - 理由：启动期唯一的准入者就是自动化循环。把对账钉在它的入口上，顺序由结构保证，不依赖 cmd 里两行调用的先后，而且能写单测（T9）。
+     - 提前对账是安全的：对账读的是本机非终态任务集，`RecoverOnStartup` 只把任务迁到 waiting_review、不迁终态（`watchdog.go:596-602`），不会改变这个集合。
+   - 乙：只调 cmd 层顺序，`setupLedger` 在 `StartAutomation` 前显式调 `srv.ReconcileOccupancy()`。改动更小，但顺序只靠 cmd 两行维持，没有测试能锁住。
+   - 丙：持有者名带启动纪元（`<机器名>#<boot id>`），对账扣「本机名、非本纪元」的占用，完全不依赖顺序。代价是 executor 任务跨重启存活时，要把它的持有从旧纪元迁到新纪元，否则它日后 Release 时扣不到自己名下。复杂度明显更高，也偏离 spec「记机器名」。不荐。
+2. **Q-r1-2 跨重启仍存活的 executor 任务，名额要保留。**
+   - 现状：执行者任务在 agentd 重启后不会终结。`RecoverOnStartup` 探活成功就 resume；探活失败也只迁到 waiting_review。名额要等协调者 `done` / `stop` 时，经 `releaseTaskCarrierOccupancy` 才归还（`handlers.go:933-937,982-986,993-1025`）。
+   - 这些名额的持有者就是本机，因为准入发生在本机 `handleDispatch`（见承重事实 2）。按 spec 字面扣掉「本机名下全部」，会误扣它们；之后 `done` 再减一次，同样计数偏低、超发。
+   - **荐 甲**：按键扣减。
+     - `owned[key]` = 本机任务表里非终态、带 Carrier 的任务，按 `OccupancyKeys(task.Squad, task.Carrier)` 计数。是计数，不是今天的集合。
+     - 设 `h = holders[self]`，扣减量 `d = min(max(0, h − owned[key]), count)`；写回 `count −= d`，`holders[self] = min(h, owned[key])`。
+     - `owned` 用的键与 `releaseTaskCarrierOccupancy` 归还时用的键同源（都取 `task.Squad` / `task.Carrier`），扣与还对称，不会重复扣。
+     - 旧版本准入的任务不在 holders 里，会让 `owned` 偏大、扣得偏少。这是安全方向。
+   - 乙：按 spec 字面扣光 `holders[self]`。会误扣存活任务，否。
+3. **Q-r1-3 持有者名的来源。**
+   - **荐 甲**：用 `Service.selfName`，即 `cfg.Name`（`cmd/agentd.go:753` 注入）；自名为空时回退 `os.Hostname()`。
+     - 这与账本镜像 holder 的回退规则同口径（`cmd/agentd.go:772-775`）。
+     - 持有者记的是「哪个 agentd 进程族写的」，与载体登记的 machine 别名无关，不受 local / 本机 / hostname 等别名形态影响。
+     - 自名为空只出现在无 DSN 的单机账本，那里 `sched_running` 本来就只有本机写，hostname 足够。
+   - 乙：自名为空时不记持有，退化成今天的「无主、保留」。单机重启后照样泄漏，S7 在单机上不成立。
+4. **Q-r1-4 对账写失败（CAS 重试耗尽、Put 报错）时怎么办。**
+   - **荐 甲**：只有解码失败阻断启动（沿用现状，带 key / version）。CAS 耗尽或写错误时，记一条 Error 日志（带 key / version / 拟扣数 / cause），跳过这把键继续启动，遗留留到下次重启。理由：写失败的后果就是今天的现状（泄漏保留），为一次瞬态争用把整个 agentd 挡在门外，代价大于收益。
+   - 乙：任何失败都阻断启动。
+5. **Q-r1-5 观察面要不要暴露 holders。** 现状：`GET /api/squads` 的 `running` 视图只有 key 与 count（`proto/scheduling.go:50-60`、`web/src/api/scheduling.ts:38-39`）。
+   - **荐 甲**：不暴露。观察面 wire、契约夹具、前端都不改。理由：spec 没要求；持有分布只服务对账；少一个跨语言投影面。
+   - 乙：`RegistryRunningView` 加 `holders`，前端展示。要走契约夹具和 web 投影，属于范围外扩。
+
+### r1.0 交付目标
+
+本轮交付 S7，并完成 S6 失败子句的改写。
+
+- **要达成的结果**：
+  - 回合中途被杀的 agentd 重启后，本机遗留的名额归还，计数回到真实在途数；
+  - 他机名下的占用不动；
+  - 旧格式计数（无持有分布）原样保留；
+  - 计数记录损坏时，启动报错并带 key / version。
+- **覆盖范围**：全部准入路径，即卡首轮、驻场首轮与续轮、转交收件端、执行者任务派发。它们写计数都经过 `scheduling` 的同一组写者，所以一并覆盖。
+- **留待后续**（spec 已列 Out of Scope）：机器永久下线后其名下占用的清理；孤儿 CLI 子进程的回收。
+
+### r1.1 触及子系统与类型
+
+| 子系统 | 类型 | 本轮责任 |
+|---|---|---|
+| `internal/scheduling`（调度领域） | 逻辑型 | 计数 body 增加持有分布；`casCount` / `stepRunning` / `readCount` 保留并维护 holders；新增本机遗留归还方法，扣减规则只在这里定义 |
+| `internal/orchestration`（启动编排） | 逻辑型 | `ReconcileSchedRunning` 从只读改为「算 owned 计数，再调调度域归还」；删掉它自带的 body 解码副本 |
+| `internal/agentd`（组装与生命周期） | 逻辑型 | `SchedulingClient` 增加归还方法；按 Q-r1-1 甲，`StartAutomation` 先对账后起循环并返回 error，`RecoverOnStartup` 不再对账 |
+| `cmd/agentd.go`（组装点） | 逻辑型 | 处理 `StartAutomation` 返回的 error：失败时 `setupLedger` 返回错误 |
+| 共享账本 `registry` 表（`sched_running` 行） | 边界型 | 多版本 agentd 跨机共读共写同一 body；机内只验形状与混版本金样本，行为验收见 r1.5 真机清单 |
+
+不扇出，单工作单元。
+
+### r1.2 故事映射与行为闭环
+
+| 故事 | 实现责任 | 真实消费者 | 集成/回归负责人 |
+|---|---|---|---|
+| S7 本机遗留归还 | scheduling（规则）+ orchestration（owned）+ agentd（时序） | agentd 启动期的自动化循环，以及之后的一切准入 | 执行者（机内 T1–T10）；协调者（R7′） |
+| S6 失败子句（改写） | 同上 | 同上 | 同上 |
+
+行为闭环（触发者 → 权威事实/载体 → 消费者 → 可观察结果 → 实现责任）：
+
+| 触发者 | 权威事实/载体 | 消费者 | 可观察结果 | 实现责任 |
+|---|---|---|---|---|
+| 本机任一准入成功 | `sched_running/<key>` body：同一次 CAS 里 `count+1`、`holders[self]+1` | 本机下次启动对账 | 重启前已死回合的名额被扣回 | scheduling `acquire` / `AdmitCarrier` / `casCount` |
+| 本机回合结束归还 | 同一行：`count−1`，`holders[self]−1`（下限 0，归零删键） | 后续准入（读 count） | 名额可再用 | scheduling `Release` / `stepRunning` |
+| agentd 被杀后重启 | 本机任务表 + 本行 holders | 对账（先于自动化首轮） | 本机键的 `count` 降为真实在途数；`GET /api/squads` 的 running 读数下降；下一次叫机器人不再 409 | scheduling 归还方法 + orchestration owned + agentd 启动序 |
+| 他机 B 准入，或旧二进制写入 | 本行 `holders[B]`，或 holders 被旧写者整体丢弃 | A 的启动对账 | B 的条目与无主部分原样保留；`d` 只来自 `holders[A]` | scheduling 归还方法 |
+
+### r1.3 改动边界
+
+**只改**以下文件及其所在包的测试：
+
+- `internal/scheduling/scheduling.go`：计数 body 类型；`readCount` / `casCount` / `stepRunning`；`AdmitCarrier` 的计数写；新增归还方法。
+- `internal/scheduling/registry_read.go`：`RunningCounts` 改用同一 body 类型解码，对外仍只投影 count。
+- `internal/orchestration/watchdog.go`：`ReconcileSchedRunning` 及其注释。
+- `internal/agentd/scheduling_client.go`：接口加一个方法。
+- `internal/agentd/scheddrain.go`：`StartAutomation`。
+- `internal/agentd/server.go`：`RecoverOnStartup`。
+- `cmd/agentd.go`：处理 `StartAutomation` 的 error。
+
+**架构方向**：
+
+- 扣减规则只在 scheduling 定义（spec 落位①）。
+- orchestration 只负责从本机任务表算 `owned`，经使用方定义的窄接口交给调度域。接口形如 `interface{ ReclaimLocalOccupancy(owned map[string]int) (Report, error) }`，命名由执行者定。
+- orchestration 不再直接解码或改写 `sched_running`。今天 `watchdog.go:451-455` 有一份独立的 body 解码副本，本轮删除。
+- 不新增 DDL，不升 `ledgerSchemaVersion`（spec 已定）。
+
+**不改**：
+
+- `proto.RegistryRunningView` / `SquadsResp` 与 web 契约夹具（Q-r1-5 甲）；
+- B448 前一轮冻结的 F1–F37；
+- 转交端点与 `runOnCoordinatorCarrier` 的名额语义（F32 / F33 保持）。
+
+**改动面为什么能收住**：全仓写 `sched_running` 的只有 `scheduling.go:1226` 与 `:1253` 两处 `Put(kindRunning…)`。所以持有维护只需改这两个写函数，以及调用它们的 `acquire` / `AdmitCarrier` / `Release`。
+
+### r1.4 工作顺序
+
+1. **先钉混版本金样本（承重假设）**。写测试证明两点：
+   - 旧解码器（`struct{Count int "json:\"count\""}`，与 `registry_read.go:90`、`watchdog.go:453`、`scheduling.go:1213,1237` 同形）解新 body，count 正确；
+   - 新解码器解旧 body `{"count":3}`，得到 count=3、holders 为空。
+
+   这是「旧二进制读新 body 不坏」的唯一机内证据。若失败，阻塞后续全部步骤，回到 plan。
+2. scheduling：body 类型与三个计数函数的持有维护（T1–T3）。
+3. scheduling：归还方法与扣减规则（T4–T8）。
+4. orchestration + agentd：owned 计数、窄接口、`StartAutomation` 前置对账、`RecoverOnStartup` 去对账。既有 `recover_occupancy_test.go` 的五条用例迁到新入口，断言不变（T9、T10）。
+5. 全量测试：按 implement 三段律。
+6. 交协调者跑真机 R7′。
+
+### r1.5 验收方式
+
+**机内断言（执行者）**。全部打真实账本门面（`SetupAutomationForTest` 环境，或 scheduling 包的真实 Registry 实现），以便穿过真实的 body 编解码；不能只用内存 fake。
+
+- **T1 持有维护**：两个 `Service` 共用一个 Registry，自名分别为 A、B。A 准入 2 次、B 准入 1 次、A 归还 1 次。断言成员键与载体键两行的 body 都是 `count=2, holders={A:1,B:1}`。`AdmitCarrier`（无成员键）同样记持有。
+- **T2 旧 body 上的新写**：直写旧 body `{"count":3}`，A 准入一次，得到 `count=4, holders={A:1}`。
+- **T3 新 body 给旧读者（金样本）**：
+  - 新 body 用旧形结构解码，count 正确；
+  - `RunningCounts()` 与 `GET /api/squads` 的 `running[].count` 不变，响应里没有 holders 字段（Q-r1-5 甲）。
+- **T4 基本对账**：`count=3, holders={A:2,B:1}`，自名 A，本机无任务。对账后得到 `count=1, holders={B:1}`，version+1。
+- **T5 owned**：同 T4，但本机有一条非终态任务（含 waiting_review）落在该键上。只扣 1，得到 `count=2, holders={A:1,B:1}`。终态任务不计入 owned。
+- **T6 无可扣**：body 无 holders，或 `holders[self]=0` 时，不写、version 不变。既有 B23310 / B23311 五条用例的语义原样保留。
+- **T7 上限**：`count=2, holders={A:5}`。对账后 `count=0`，holders 中不再有 A；计数任何时候都不为负。
+- **T8 并发 CAS**：Registry 包装层在对账写时注入一次 `ErrCASConflict`，期间 B 并发准入一次。断言重试后两者的增减都保留：`count` = 原值 − d + 1，`holders[B]` 增 1。另注入重试耗尽：按 Q-r1-4 甲，启动不失败，日志带 key / version。
+- **T9 时序（竖切）**：
+  - 设置：载体 `max_concurrency=1`；账本里预置 `count=1, holders={self:1}`，模拟上一进程被杀；launch 队列里有一条协调者拉起请求。
+  - 断言：调 `StartAutomation` 后，fake Runner 收到 Launch，即首轮准入成功、没有 409。
+  - 变异：把对账挪到循环首轮之后，该用例必须变红。
+- **T10 解码损坏**：body 不是 JSON 时，`StartAutomation`（Q-r1-1 甲）返回带 key 的错误，循环不启动。
+- **变异两处**（供 review 复核）：
+  - 删去 owned 扣减 → T5 变红；
+  - `casCount` 不保留他机 holders → T1 变红。
+
+**运行入口**：
+
+```
+go test ./internal/scheduling/ ./internal/orchestration/ ./internal/agentd/ -count=1
+go test ./... -count=1
+```
+
+全量按 implement 三段律跑。memory 里记的两条环境敏感测试，按既有口径处理。
+
+**真机清单（本节由协调者执行，不派发）**
+
+- **R7′ 执行机被杀后计数归还**。沿用 R1 靶子（`t448-linux` / `t448-mac`，PG 测试库），两台隔离实例都换成本轮构建。**不碰在役 7777，不碰生产账本。**
+  1. **准备**：把 `t448-oc` 的 `max_concurrency` 设为 1。另外预置两行，与本机行合起来覆盖「本机 / 他机 / 无主」三类：
+     - 他机行：可以在 `t448-mac` 上登记载体 `t448-oc-mac` 并让它跑一个在途驻场续轮；也可以用 SQL 插一行 `carrier/t448-foreign`，body 为 `{"count":1,"holders":{"t448-mac":1}}`。
+     - 无主行：用 SQL 插一行 `carrier/t448-legacy`，body 为旧格式 `{"count":1}`。
+  2. **在途读数**：从 mac-mini 隔离控制台叫机器人（或建会话），首轮转交到 `t448-linux` 执行。在途时读测试库，断言 `squad/t448-coord/t448-oc` 与 `carrier/t448-oc` 两行都是 `count=1, holders={"t448-linux":1}`。存 SQL 读数。
+  3. **杀进程**：在 linux-01 上 `kill -9` 隔离实例（不是 7777），然后重启它。
+  4. **重启后断言**：
+     - `t448-oc` 的两把键都是 `count=0`，holders 里没有 `t448-linux`；
+     - 他机行与旧格式行的 body、version 都不变；
+     - linux 实例日志里有对账行，带 key、扣减数、保留数；
+     - B444 启动清扫照常请下在途驻场行，并落「被重启打断」指针行（保留原 R7 断言）。
+  5. **名额可再用**：再叫一次机器人，结果是成功，不是 409「协调者并发已满」；回合结束后计数为 0。
+  6. **可选 R7′b（混版本）**：把 mac-mini 实例换成基线 `b9e68472` 的构建，让它对 `t448-oc-mac` 准入并归还一次。断言 holders 被丢、count 正确；再重启 linux 实例，断言该行不被改写。
+  - **收尾**：手工清掉被杀实例遗留的孤儿 opencode 进程。这不在本卡范围，只是清场。
+
+### r1.6 决策权限
+
+**执行者可自行定**：
+
+- body 的 Go 类型名；
+- holders 为空时是省略还是写空对象（冻结条目 F39 已把两者定为语义等价）；
+- 归还方法的名字、签名与报告结构；
+- orchestration 窄接口的形状；
+- 日志措辞与测试文件组织；
+- `recover_occupancy_test.go` 用例迁到新入口的方式（断言语义不得放宽）。
+
+**须升级**：
+
+- 拍板结果以外的任何扣减口径；
+- 修改 `count` 的语义或准入判据；
+- 让 orchestration 或 agentd 直接写 `sched_running`；
+- 修改 `/api/squads` 的 wire；
+- 新增 DDL；
+- 触动 F1–F37；
+- 发现某条准入与归还不在同一台机（推翻承重事实 2）。
+
+交回物首节「偏离与自主决定」要对照本节逐条说明。
+
+### r1.7 缺陷族风险
+
+- **并发 CAS**：对账与他机的准入或归还会同时改同一行。所有写都必须是「读 body → 改 count 与 holders → 带 version Put → 冲突就重读重算」，不得拿旧读数回写。acquire 半程回滚为什么用带符号减法，`scheduling.go:1088-1099` 的注释已写明理由。由 T8 锁定。
+- **混版本**：旧写者（`scheduling.go:1225,1252`，body 为 `map{"count"}`）每写一次，就丢掉全部 holders，包括他机条目。退化方向是「无主保留」，只会少扣、不会多扣。全队换版后，新准入会重新积累 holders。由 T2、T3、T6 与 R7′b 锁定。
+- **误清他机**：`d` 只来自 `holders[self]`，前提是自名在共享账本内唯一。两个 agentd 用同一 `name` 挂同一账本时，会互相扣对方的占用。这是 B439 自名唯一性的既有前提，本轮不新增防护，只在对账日志里打印 self 名，便于排障。真机靶子用 `t448-*` 专名和测试库（Q5 甲），避开了这种情况。
+- **重复扣**：对账扣掉的名额若日后又被 Release 一次，计数偏低，导致超发。两道防线：
+  - owned 与 Release 用同一来源的键（Q-r1-2 甲），由 T5 锁定；
+  - 对账先于本进程的首次准入（Q-r1-1 甲），由 T9 锁定。
+
+  另有一种情形：旧版本准入、新版本归还时，减到的 `holders[self]` 本不含这一名额，结果是少扣，属于安全方向。
+- **改名**：`cfg.Name` 改名后重启，旧名下的持有会被当成他机、永久保留。与「机器永久下线」同归 roadmap，不在本轮。
+
+### r1.8 需冻结的外部承诺
+
+**结论：要冻结。** `sched_running` 的 body 不经 HTTP，但它存在共享账本里，由不同机器上、不同版本的 agentd 进程并发读写，是持久化的数据契约。账本本身不解释 body（`ledger/registry.go:5,18`），兼容性全靠读写两端的代码，因此按跨进程 wire 对待。条目接续前一轮编号：
+
+- **F38**（形状）：body 是 JSON 对象。`count` 为非负整数，原名、原义不变。新增可选字段 `holders`：一个对象，键是 agentd 自名，值是正整数。
+- **F39**（缺失 ≡ 空）：`holders` 缺失、为 `{}`、为 `null`，三者同义，都表示「无已知持有者」，都不触发对账写。
+- **F40**（准入判据不变）：准入与满员判断只读 `count`，不读 `holders`。
+- **F41**（旧读者兼容）：只认识 `count` 的解码器解新 body，count 正确且不报错（金样本测试，即 T3）。
+- **F42**（新读者兼容）：新解码器解旧 body `{"count":N}`，得到 `count=N` 与空 holders（T2）。
+- **F43**（保留他人条目）：新写者每次写都保留 `holders` 里非自名条目的原值。
+- **F44**（准入、归还同写）：准入在同一次 CAS 里把 `count` 与 `holders[self]` 各加 1。归还在同一次 CAS 里把 `count` 减 1（下限 0），`holders[self]` 大于 0 时也减 1，减到 0 时删键。
+- **F45**（持有者名）：`self` 是写者 agentd 的 `cfg.Name`，为空时取 `os.Hostname()`（Q-r1-3 甲）。
+- **F46**（对账只动自己）：对账写只改 `count` 与 `holders[self]`，其余键值语义不变。
+- **F47**（对账扣减量）：`d = min(max(0, holders[self] − owned[key]), count)`，写后 `holders[self] = min(holders[self], owned[key])`。若 `d = 0` 且 `holders[self]` 不变，则不写，version 不变。
+- **F48**（对账时序）：对账完成之前，本进程不发生任何 `sched_running` 准入写（Q-r1-1 甲，由 T9 锁定）。
+- **F49**（损坏阻断）：body 解码失败时启动报错，带 key 与 version（沿用现状）。
+
+**拍板记录**（三重闸门）：
+
+- **Q-r1-2 甲**（按 owned 扣，不扣光本机名下）：
+  - 难逆转：误扣会经后续 Release 造成超发；
+  - 无上下文的人会惊讶：spec 字面写的是「全部」；
+  - 反过来写，除 T5 外没有任何既有测试会变红。
+- **Q-r1-1 甲**（对账前置到 `StartAutomation`）：反过来写、保持现在的启动顺序，既有测试全绿，但生产启动窗口里会误扣。
+
+### r1 核实读数（基线 `30b21c5d`）
+
+1. **计数写者**：
+   - 全仓对 `sched_running` 的写只有两处：`casCount`（`scheduling.go:1224-1228`）和 `stepRunning`（`scheduling.go:1231-1262`），body 都是 `map[string]int{"count":N}`。`readCount`（`:1205-1220`）只解 `count`。
+   - `acquire`（`:1100-1174`）经 `casCount` 做两级递增（`:1135,:1146`），半程回滚走 `stepRunning(-1)`（`:1148`）。
+   - 经 `acquire` 准入的有：`admitInto`（`:1054`）、`AdmitFrozen`（`:683`，acquire 在 `:749`）、`AdmitSeatCarrier`（`:787`，acquire 在 `:828`）、`LaunchAdmit`（`:844`）、`Admit`（`:531`）。
+   - `AdmitCarrier`（`:420`）直接调 `casCount`（`:445`）。`Release`（`:879-906`）走 `stepRunning(-1)`。`Select`（`:568`）只读、不占名额。
+   - `orchestration/watchdog.go:451-503` 只 `List`、不写。
+2. **准入机 = 归还机**（承重；静态已核实）：
+   - 协调者路径：准入与 defer 归还都在同一函数、同一进程内。
+     - `runOnCoordinatorCarrier`：准入在 `scheddrain.go:447-451`，`defer release()` 在 `:457-464`；
+     - 续轮 `wakeCoordinatorRoundID`：准入在 `:667`，紧接着 `defer releaseSchedulingBinding`；
+     - 驻场续轮：准入在 `residentpush.go:259`，defer 在 `:263`。
+   - 转交路径：受理端先还后转（F32）；收件端在本端准入、本端归还（F33）。
+   - 执行者路径：
+     - `scheddispatch.go:79` 只 `Select`、不占名额，冻结身份经 HTTP 发到目标机；
+     - 目标机 `handleDispatch` 的 `AdmitFrozen` / `prepareReceiverBinding` 在本机准入（`handlers.go:539`、`receiver_bind.go:71-73`），若 `!IsSelfMachine(binding.Target)`，defer 归还并拒绝（`handlers.go:566-573,585-592`）；
+     - 任务只由 `handleDispatch` 经 `mgr.Dispatch` 建在本机 SQLite store（`handlers.go:593`；`store.CreateTask` 的唯一生产调用在 `orchestration/manager.go:986`）；
+     - 终态归还 `releaseTaskCarrierOccupancy` 只在本机 `handleDone` / `handleStop` 读完本机 store 后调用（`handlers.go:875,933-937,951,982-986`）；
+     - 远端镜像任务在独立的 `mirror_tasks` 表，`ListTasks` 不含它们（`store/mirror.go`、`store.go:452-454`）。
+   - 结论：不存在跨机归还路径，持有者可以按「写者自名」记。
+   - **未验证，需真机**的行为事实只有一条：CLI 的 `done` / `stop` 总是路由到任务所在机。若被路由到他机，结果是 404，不会误还。R7′ 不依赖这条事实。
+3. **本机名**：`Service.selfName` 字段在 `scheduling.go:167-178`，`SetSelfName` 在 `:186`；组装点在 `cmd/agentd.go:753`，取 `cfg.Name`。`scheduling.New` 在 `cmd/agentd.go:734`。账本镜像 holder 的回退规则（自名为空用 hostname）在 `cmd/agentd.go:772-775`。
+4. **启动序**：
+   - `setupLedger`（调用在 `cmd/agentd.go:314`，定义在 `:654`）里先 `SetScheduling`（`:755`），再 `StartAutomation`（`:758`）；
+   - 回到主流程后才调 `RecoverOnStartup`（`:360`），它经 `server.go:1387` 调 `ReconcileSchedRunning`；
+   - 最后 `bootGate.Ready`（`:401`）。
+   - `StartAutomation`（`scheddrain.go:54-71`）的 goroutine 先跑 `sweepInterruptedResidents`（不准入），再进 `automationLoop`；循环首轮立即 `runAutomationPass`，事件唤醒和清队都可能在这里准入。**这证伪了 spec「启动时尚无在途回合」的前提**（见 Q-r1-1）。
+   - `RecoverOnStartup` 只把任务迁到 waiting_review、不迁终态（`watchdog.go:596-602`）。
+   - 现行 owned 是集合，不是计数（`watchdog.go:473-481`）。
+5. **混版本**：
+   - 所有读者都用只含 `Count` 的匿名结构加 `json.Unmarshal`，未知字段被忽略：`registry_read.go:90-95`、`scheduling.go:1213-1219,1237-1242`、`watchdog.go:453-455,491`，测试夹具 `recover_occupancy_test.go:20-22` 也一样。
+   - 旧写者会整体重写 body，丢掉 holders（见第 1 条）。
+   - 账本不解释 body（`ledger/registry.go:5,18,24`）。
+6. **观察面**：
+   - 投影链：`RunningCounts`（`registry_read.go:80-99`）经 `SchedulingClient.RunningCounts`（`scheduling_client.go:49-51`），投影为 `proto.RegistryRunningView{Key,Count}`（`proto/scheduling.go:50-60`）。
+   - 前端类型在 `web/src/api/scheduling.ts:38-39`，契约测试在 `web/src/api/contract.test.ts:637`。
+   - 这条链只取 count，新字段不影响解码；按 Q-r1-5 甲不投影 holders。
+7. **既有测试**：
+   - `internal/agentd/recover_occupancy_test.go` 的五条用例（`:77,:99,:120,:151,:184`）经 `srv.RecoverOnStartup` 测对账，夹具都是只含 count 的 body，按 F39 不触发写。
+   - Q-r1-1 甲把对账移出 `RecoverOnStartup` 后，这五条要改调新入口，断言不变。
+   - 调用 `StartAutomation` 的测试文件只有一个。
