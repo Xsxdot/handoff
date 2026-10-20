@@ -959,3 +959,16 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 
 - 重建唤醒回合（`wakeCoordinatorRoundRaw` 的 `Rebuilt` 分支，expect=旧会话）没有「同会话自坐」兜底：重建首轮若协调者自跑 `card rebind --self`，仍会 CAS 冲突 → `coordinatorSeatConflict`。首轮简报已禁自坐，概率低；需要时照 `adoptSelfSeatedCoordinator` 补。
 - `TestB446LaunchFinalizeAdoptsSelfSeat` 未钉「同会话 id、异 CLI 前缀」不被接管（构造上靠 `EncodeSeatIdentity` 前缀保证）。
+
+## B448 残余（2026-10-19，协调者首轮按载体机转发 spec Out of Scope「本期不做、后续要做」）
+
+- 转交途中受理机已向调用方超时、执行机仍在跑时的结果找回（本机路径同样没有：调用方断开后首轮照跑、席位照落，人刷新可见）。来源：`docs/superpowers/specs/b448.md`。
+- 小队成员跨多台机时的「就近选载体」偏好（LaunchAdmit 选择规则本期不变）。来源同上。
+- 不可达文案在「connection refused」这类必未送达的失败上也带「若请求已送达，首轮可能仍在该机执行或已完成，请刷新查看」，应只在发出后失败（EOF/超时）时追加。来源：B448 真机 R4（`docs/superpowers/plans/b448-ledger.md`）。
+- ~~调度名额计数无 owner：agentd 在回合中被杀，在途回合的名额永不归还。~~ 已由 B448 修订 r1（S7，计数记持有机、启动对账归还本机遗留）修复，真机 R7′ 验过。
+- 机器永久下线、不再重启时，其名下遗留名额无人归还（B448 r1 只在本机重启时归还；可在「从设备表删除机器」时一并清理，或改租约）。来源：B448 spec 修订 r1 Out of Scope。
+- 机器改名后旧名下的持有项永久保留（对账只认当前自名）。来源：B448 plan 增补 r1.7。
+- agentd 被杀后载体 CLI 子进程成孤儿继续跑完（名额已按 S7 归还，但孤儿仍占机器资源、结果无人接收）。来源：B448 真机 R7。
+- 叫机器人 / 建会话的既有 HTTP 入口在首轮超过 ~11 分钟时调用方连接被 server 写超时切断（首轮结果照落），见 plan Q4。来源：B448 真机 R10。
+- PG 测试腿既有缺陷：`TestB439DevicesPG` 对 jsonb attrs 做字节比对（PG 规范化空格）恒红；`TestPGSmokeEndToEnd`、`TestB435DriverModeMigrationPG` 等共用 public schema，项目自动前缀互占导致顺序相关红。来源：B448 真机 R9。
+- 载体登记后须在载体机跑一次 detect 才 online，否则叫机器人报「小队内没有已上线且有空的载体」，文案未提示去探测。来源：B448 真机 R1。

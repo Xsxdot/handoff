@@ -306,9 +306,9 @@ var agentdCmd = &cobra.Command{
 			}
 		}()
 
-		// 恢复前先挂自动化账本：RecoverOnStartup 会通过 Server.autoLedger
-		// 对任务占用做启动期对账，账本尚未装配时必须拒绝启动，而不是让恢复
-		// 进入一个不完整的服务状态。
+		// 恢复前先挂自动化账本：RecoverOnStartup 依赖 Server.autoLedger，账本尚未
+		// 装配时必须拒绝启动，而不是让恢复进入一个不完整的服务状态。启动调度占用
+		// 对账（B448 r1）在 setupLedger 内的 StartAutomation 入口完成，失败即 abortBoot。
 		wdCtx, wdCancel := context.WithCancel(context.Background())
 		defer wdCancel()
 		stopLedger, err := setupLedger(cfg, srv, st, wdCtx, logger,
@@ -755,7 +755,13 @@ func setupLedger(cfg *config.Config, srv *agentd.Server, taskStore *store.Store,
 	srv.SetScheduling(sched)
 	// B156.3 K5：账本打开后才能启动自动化事件流。
 	// ctx 随 agentd 停机取消；首轮先重放事件与队列，再进入轮询。
-	srv.StartAutomation(ctx)
+	// B448 r1：StartAutomation 先同步做启动调度占用对账（归还本机遗留名额）再起循环；
+	// 对账失败（计数 body 损坏等，带 key/version）中止启动，不带着未知计数进服务。
+	if err := srv.StartAutomation(ctx); err != nil {
+		logger.Error("自动化编排启动失败：启动调度占用对账未通过", "error_kind", "reconcile", "cause", err)
+		_ = lst.Close()
+		return nil, fmt.Errorf("启动调度占用对账: %w", err)
+	}
 	// B432 iOS 推送扇出与自动化循环同生命周期：card_events 侧的旁路挂在
 	// 自动化消费循环里，循环不跑推送就不跑，一起起一起停。
 	srv.StartPush(ctx)

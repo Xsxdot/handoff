@@ -1372,8 +1372,12 @@ func (s *Server) SetupAutomation(st *ledger.Store) {
 	}
 }
 
-// RecoverOnStartup 先对账调度占用，再执行既有任务恢复；必须在 HTTP Serve 前调用。
-// 对账失败时不进入 executor 恢复，调用方应让 agentd 启动失败并保留上下文。
+// RecoverOnStartup 执行既有任务恢复；必须在 HTTP Serve 前调用。
+//
+// B448 r1（Q-r1-1 甲）：调度占用对账已移到 StartAutomation 的同步前置——启动期唯一的
+// 准入者是自动化循环，对账钉在它的入口上才能保证先于首次准入（F48）。本方法不再
+// 读写 sched_running。提前对账安全：本方法只把任务迁到 waiting_review、不迁终态，
+// 不改变对账依据的本机非终态任务集。
 func (s *Server) RecoverOnStartup(probe func(string) bool, sweep func(string), log *slog.Logger) error {
 	if s.autoLedger == nil {
 		return errors.New("启动恢复缺少自动化账本")
@@ -1383,9 +1387,6 @@ func (s *Server) RecoverOnStartup(probe func(string) bool, sweep func(string), l
 	}
 	if log == nil {
 		log = slog.Default()
-	}
-	if err := orchestration.ReconcileSchedRunning(s.st, facadeAsRegistry{f: s.autoLedger}, log); err != nil {
-		return err
 	}
 	return orchestration.RecoverOnStartup(s.st, s.hub, probe, sweep, log)
 }

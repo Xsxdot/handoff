@@ -46,10 +46,11 @@ func TestB444ResidentPushMigrationPG(t *testing.T) {
 			cli_session TEXT NOT NULL DEFAULT '',
 			machine TEXT NOT NULL DEFAULT '',
 			sat_at TIMESTAMPTZ NOT NULL)`,
+		// 旧行绕过会话号分配器直写，取 session:900 避开后面 CreateSession 从计数器分到的 session:1（B448 R9 首跑撞主键）。
 		`INSERT INTO ` + schema + `.sessions (id, title, owner, created_at, updated_at)
-			VALUES ('session:1', '旧会话', 'user:owner', now(), now())`,
+			VALUES ('session:900', '旧会话', 'user:owner', now(), now())`,
 		`INSERT INTO ` + schema + `.session_residents (session, identity, desktop_session, cli_session, machine, sat_at)
-			VALUES ('session:1', 'agent:org', 'local_old', 'old-cli', '', now())`,
+			VALUES ('session:900', 'agent:org', 'local_old', 'old-cli', '', now())`,
 	} {
 		if _, err := admin.Exec(stmt); err != nil {
 			t.Fatalf("建 PG 旧库: %v", err)
@@ -65,7 +66,7 @@ func TestB444ResidentPushMigrationPG(t *testing.T) {
 		if err != nil {
 			t.Fatalf("第 %d 次 Open PG 旧库失败: %v", round, err)
 		}
-		r, ok, err := s.SessionResident("session:1")
+		r, ok, err := s.SessionResident("session:900")
 		if err != nil || !ok || r.DriverMode != ResidentDriverDesktop || r.PushSession != "" || r.CLISession != "old-cli" {
 			s.Close()
 			t.Fatalf("第 %d 次 Open 后旧行应 desktop 且零回填: ok=%v err=%v r=%+v", round, ok, err, r)

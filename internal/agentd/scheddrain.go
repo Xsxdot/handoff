@@ -51,14 +51,28 @@ func (e *coordinatorSeatConflict) Error() string {
 }
 
 // StartAutomation 启动 agentd 生命周期内唯一的自动化循环；依赖未装配时只记录可行动告警。
-func (s *Server) StartAutomation(ctx context.Context) {
+//
+// B448 r1（Q-r1-1 甲，F48）：起循环之前先同步跑启动调度占用对账，归还上一进程遗留在
+// 本机名下的名额。循环首轮就可能准入（事件唤醒 / 清队），对账若晚于它，会把本进程
+// 刚准入的活名额当遗留扣掉、日后 Release 再减一次 → 计数偏低超发。顺序由本函数结构
+// 保证，不依赖 cmd 里调用的先后。
+//
+// 返回 error 仅在对账失败（任务表读失败、计数 body 解码失败带 key/version）；此时
+// 循环不启动，调用方（cmd setupLedger）应中止启动。依赖未装配返回 nil（今日行为）。
+func (s *Server) StartAutomation(ctx context.Context) error {
 	if s.scheduling == nil || s.keystone == nil || s.autoLedger == nil {
 		s.log.Warn("自动化循环未启动：依赖尚未装配",
 			"has_scheduling", s.scheduling != nil,
 			"has_keystone", s.keystone != nil, "has_ledger", s.autoLedger != nil)
-		return
+		return nil
 	}
+	var startErr error
 	s.automationStartOnce.Do(func() {
+		if err := orchestration.ReconcileSchedRunning(s.st, s.scheduling, s.log); err != nil {
+			s.log.Error("自动化循环未启动：启动调度占用对账失败", "error_kind", "reconcile", "cause", err)
+			startErr = fmt.Errorf("启动调度占用对账: %w", err)
+			return
+		}
 		s.log.Info("自动化清队与事件唤醒循环启动",
 			"poll", automationPollInterval, "queue_kinds", scheduling.QueueKinds)
 		go func() {
@@ -68,6 +82,7 @@ func (s *Server) StartAutomation(ctx context.Context) {
 			s.automationLoop(ctx)
 		}()
 	})
+	return startErr
 }
 
 func (s *Server) automationLoop(ctx context.Context) {
@@ -251,30 +266,74 @@ func (s *Server) launchCoordinatorRoundWithExpect(ctx context.Context, card, sou
 	lock := s.coordinatorLock(card)
 	lock.Lock()
 	defer lock.Unlock()
-	current, err := s.ledger.GetCard(card)
-	if err != nil {
-		return zero, err
-	}
-	occupied := current.DriverSession != "" || current.DriverMode != ""
-	if !rebind && occupied {
-		err := fmt.Errorf("卡 %s 当前席位状态不适合此操作: %w", card, ledger.ErrCASConflict)
-		s.log.Warn("协调者拉起在 Launch 前被席位拦截", "card", card, "source", source, "rebind", rebind, "cause", err)
-		return zero, err
-	}
-	if rebind && !occupied {
-		err := fmt.Errorf("卡 %s 当前席位状态不适合此操作: %w", card, ledger.ErrCASConflict)
-		s.log.Warn("协调者换绑在 Launch 前被席位拦截", "card", card, "source", source, "cause", err)
+	if err := s.coordinatorSeatGate(card, source, rebind); err != nil {
 		return zero, err
 	}
 	squad, err := s.resolveCoordinatorSquad()
 	if err != nil {
 		return zero, &coordinatorLookupError{err: err}
 	}
-	return s.runOnCoordinatorCarrier(squad.Name, card, []any{"card", card, "source", source, "rebind", rebind},
-		func() string { return s.resolveCoordWorkdir(card) },
-		func(round coordinatorCarrierRound) (keystone.RoundResult, error) {
+	transferExpect := ""
+	if rebind {
+		transferExpect = expect
+	}
+	return s.runOnCoordinatorCarrier(coordinatorCarrierPlan{
+		squad: squad.Name, releaseKey: card,
+		attrs:   []any{"card", card, "source", source, "rebind", rebind},
+		workdir: func() string { return s.resolveCoordWorkdir(card) },
+		launch: func(round coordinatorCarrierRound) (keystone.RoundResult, error) {
 			return s.bindLaunchedCoordinator(ctx, card, source, expect, rebind, round)
-		})
+		},
+		transfer: func(binding scheduling.Binding, carrier scheduling.Carrier) (keystone.RoundResult, error) {
+			return s.transferCoordinatorFirstRound(ctx, card, binding, carrier, transferExpect)
+		},
+	})
+}
+
+// launchCoordinatorRoundFrozen 是卡首轮转交的收件端（B448，plan §3）：受理机已选定小队与载体，本机在卡锁内
+// 重查席位占用，按冻结载体 AdmitSeatCarrier 准入（F15，不重新选载体），载体不在本机即 not_local 拒绝（F37，
+// 绝不再转交），否则走与本机拉起逐字相同的 bindLaunchedCoordinator（含 B446 自坐兜底）。
+// expect 非空 = 换绑（Q1 甲，RebindSeatMode(expect) 落座，F14），空 = 首轮（BindSeatMode）。
+// 错误形状与 launchCoordinatorRoundWithExpect 相同，另加 *firstRoundNotLocalError。
+func (s *Server) launchCoordinatorRoundFrozen(ctx context.Context, card, squad, carrier, expect string) (keystone.RoundResult, error) {
+	var zero keystone.RoundResult
+	const source = "coordinate"
+	rebind := expect != ""
+	lock := s.coordinatorLock(card)
+	lock.Lock()
+	defer lock.Unlock()
+	if err := s.coordinatorSeatGate(card, source, rebind); err != nil {
+		return zero, err
+	}
+	return s.runOnCoordinatorCarrier(coordinatorCarrierPlan{
+		squad: squad, releaseKey: card, frozenCarrier: carrier,
+		attrs:   []any{"card", card, "source", source, "rebind", rebind, "transferred", true},
+		workdir: func() string { return s.resolveCoordWorkdir(card) },
+		launch: func(round coordinatorCarrierRound) (keystone.RoundResult, error) {
+			return s.bindLaunchedCoordinator(ctx, card, source, expect, rebind, round)
+		},
+	})
+}
+
+// coordinatorSeatGate 是 Launch 前的席位占用判定（调用方须持卡的 coordinatorLock）：首轮要求空座，换绑要求
+// 有座；不符返回包 ledger.ErrCASConflict 的错误（HTTP 409）。
+func (s *Server) coordinatorSeatGate(card, source string, rebind bool) error {
+	current, err := s.ledger.GetCard(card)
+	if err != nil {
+		return err
+	}
+	occupied := current.DriverSession != "" || current.DriverMode != ""
+	if !rebind && occupied {
+		err := fmt.Errorf("卡 %s 当前席位状态不适合此操作: %w", card, ledger.ErrCASConflict)
+		s.log.Warn("协调者拉起在 Launch 前被席位拦截", "card", card, "source", source, "rebind", rebind, "cause", err)
+		return err
+	}
+	if rebind && !occupied {
+		err := fmt.Errorf("卡 %s 当前席位状态不适合此操作: %w", card, ledger.ErrCASConflict)
+		s.log.Warn("协调者换绑在 Launch 前被席位拦截", "card", card, "source", source, "cause", err)
+		return err
+	}
+	return nil
 }
 
 // bindLaunchedCoordinator 是卡「叫机器人」在名额窗口内的卡专属半边：keystone.LaunchForCard 跑首轮 → 编码
@@ -363,44 +422,90 @@ type coordinatorCarrierRound struct {
 	spec    keysclient.SessionSpec
 }
 
+// coordinatorCarrierPlan 是 runOnCoordinatorCarrier 的一次调用：
+//   - squad：已由调用方选定的协调小队；releaseKey：名额归还日志的归属键（卡号或 resident:<会话>）；
+//     attrs：调用方日志上下文。
+//   - frozenCarrier 空 = 受理端：LaunchAdmit(squad) 选载体；载体在远端 → 先归还名额（F32）再调 transfer。
+//     非空 = 收件端（B448 转交来的）：AdmitSeatCarrier(squad, frozenCarrier) 冻结准入（F15）；载体不在本机 →
+//     归还名额并返回 *firstRoundNotLocalError，绝不出站（F37）。
+//   - workdir 在本机分支校验之后调用；launch 在名额窗口内执行；transfer 只在受理端远端分支调用，名额已归还。
+type coordinatorCarrierPlan struct {
+	squad         string
+	releaseKey    string
+	attrs         []any
+	frozenCarrier string
+	workdir       func() string
+	launch        func(coordinatorCarrierRound) (keystone.RoundResult, error)
+	transfer      func(scheduling.Binding, scheduling.Carrier) (keystone.RoundResult, error)
+}
+
+// firstRoundNotLocalError 是收件端的防环拒绝（S5）：转交来的首轮，载体却不在本机（两机设备表不一致）。
+type firstRoundNotLocalError struct{ carrier, machine string }
+
+func (e *firstRoundNotLocalError) Error() string {
+	return fmt.Sprintf("转交到本机的协调者首轮，但载体 %s 不在本机（设备表不一致？）", e.carrier)
+}
+
 // runOnCoordinatorCarrier 是「用协调小队拉起一轮新会话」的共用骨架（B444 P2 自卡「叫机器人」抽出，卡席位与
-// push 驻场者两个调用方共用，plan §3 P2「抽共用，不复制」）：LaunchAdmit(squad) 两级准入 → 名额在回合结束
-// 即归还（defer）→ 读载体 → 远端载体 fail-closed → 组 spec（workdir 由调用方回调解析）→ 规范化 → 在名额
-// 窗口内执行 launch（调用方的 keystone 首轮与落账）。
+// push 驻场者两个调用方共用，plan §3 P2「抽共用，不复制」），也是 B448 首轮转交的唯一收口点：准入 → 读载体 →
+// 载体在远端：受理端归还名额后转交载体机（plan.transfer），收件端防环拒绝 → 载体在本机：名额在回合结束即
+// 归还 → 组 spec（workdir 由调用方回调解析）→ 规范化 → 在名额窗口内执行 launch（调用方的 keystone 首轮与落账）。
 //
-// 参数：squad 已由调用方选定且是协调小队；releaseKey 是名额归还日志的归属键（卡号或 resident:<会话>）；
-// attrs 是调用方的日志上下文；workdir 在本机校验之后调用；launch 在名额窗口内执行。
-// 返回 launch 的结果。错误：准入失败 → *coordinatorAdmissionError（调用方据此 409 / 排队）；载体读失败、
-// 载体非本机、spec 规范化失败 → 普通错误（文案沿用卡路径既有措辞）；launch 的错误原样返回。
-func (s *Server) runOnCoordinatorCarrier(squad, releaseKey string, attrs []any, workdir func() string,
-	launch func(coordinatorCarrierRound) (keystone.RoundResult, error)) (keystone.RoundResult, error) {
+// 返回 launch / transfer 的结果。错误：准入失败 → *coordinatorAdmissionError（调用方据此 409 / 排队）；载体读
+// 失败、spec 规范化失败 → 普通错误；收件端载体非本机 → *firstRoundNotLocalError；launch / transfer 的错误原样返回。
+// 名额：每条出口都恰归还一次本次准入（released 标志防重复 Release 误减别人的计数）。
+func (s *Server) runOnCoordinatorCarrier(plan coordinatorCarrierPlan) (keystone.RoundResult, error) {
 	var zero keystone.RoundResult
-	binding, err := s.scheduling.LaunchAdmit(squad)
+	squad, attrs := plan.squad, plan.attrs
+	var binding scheduling.Binding
+	var err error
+	if plan.frozenCarrier != "" {
+		binding, err = s.scheduling.AdmitSeatCarrier(squad, plan.frozenCarrier)
+	} else {
+		binding, err = s.scheduling.LaunchAdmit(squad)
+	}
 	if err != nil {
 		return zero, &coordinatorAdmissionError{squad: squad, err: err}
 	}
 	// 名额在本回合结束即归还：协调者是 print 一次性回合（无窗口可挂），
 	// 不再依赖「关 tab」释放，否则一次拉起会把该载体的协调者名额永久占住。
-	defer s.releaseSchedulingBinding(releaseKey, binding)
+	released := false
+	release := func() {
+		if !released {
+			released = true
+			s.releaseSchedulingBinding(plan.releaseKey, binding)
+		}
+	}
+	defer release()
 	carrier, err := s.scheduling.Carrier(binding.Carrier)
 	if err != nil {
 		s.log.Error("读协调者载体失败", append(attrs[:len(attrs):len(attrs)],
 			"squad", binding.Squad, "carrier", binding.Carrier, "cause", err)...)
 		return zero, fmt.Errorf("读载体 %s: %w", binding.Carrier, err)
 	}
-	// 远端载体 fail-closed：print 回合由本进程的 hostapi 拉起（载体 CLI 在本机执行），
-	// 载体登记的那台机器若不是本机，会话就落在错误的机器上、且 HomeDir 是对端路径。
-	// 旧 TUI 形态有远端 PTY 分支，print 形态没有——故显式拒绝，不静默跑错机器。
+	// print 回合由本进程的 hostapi 拉起（载体 CLI 在本机执行）：载体登记在别的机器时，这一轮必须在那台机器
+	// 的 agentd 上跑（B448），与续轮唤醒的转交同形。
 	if !scheduling.IsLocalMachine(carrier.Machine) && !s.IsSelfTarget(carrier.Machine) {
-		err := fmt.Errorf("协调者载体 %s 在机器 %s（远端）：print 协调者只支持本机载体，"+
-			"请把协调者小队的成员指向本机载体", binding.Carrier, carrier.Machine)
-		s.log.Warn("协调者载体非本机，拒绝拉起", append(attrs[:len(attrs):len(attrs)], "carrier", binding.Carrier,
-			"machine", carrier.Machine, "cause", err)...)
-		return zero, err
+		// 先归还再出站（F32）：转交可能持续整个回合（≤30m），名额只由执行机持有、执行机归还。
+		release()
+		if plan.frozenCarrier != "" {
+			err := &firstRoundNotLocalError{carrier: binding.Carrier, machine: carrier.Machine}
+			s.log.Warn("转交来的协调者首轮载体不在本机，防环拒绝且不再转交", append(attrs[:len(attrs):len(attrs)],
+				"squad", binding.Squad, "carrier", binding.Carrier, "machine", carrier.Machine, "cause", err)...)
+			return zero, err
+		}
+		if plan.transfer == nil {
+			err := fmt.Errorf("协调者载体 %s 在 %s，调用方未提供转交路径", binding.Carrier, carrier.Machine)
+			s.log.Error("协调者载体在远端但无转交路径", append(attrs[:len(attrs):len(attrs)], "cause", err)...)
+			return zero, err
+		}
+		s.log.Info("协调者载体在远端，名额已归还，转交首轮到载体机", append(attrs[:len(attrs):len(attrs)],
+			"squad", binding.Squad, "carrier", binding.Carrier, "machine", carrier.Machine)...)
+		return plan.transfer(binding, carrier)
 	}
 	spec := keysclient.SessionSpec{
 		CLI: binding.Executor, HomeDir: carrier.HomeDir, Model: binding.Model,
-		Workdir: workdir(),
+		Workdir: plan.workdir(),
 	}
 	normalized, err := orchestration.NormalizeCoordinatorSpec(spec)
 	if err != nil {
@@ -413,7 +518,7 @@ func (s *Server) runOnCoordinatorCarrier(squad, releaseKey string, attrs []any, 
 		"squad", binding.Squad, "carrier", binding.Carrier,
 		"cli", spec.CLI, "home_dir", spec.HomeDir, "workdir", spec.Workdir,
 		"machine", carrier.Machine)...)
-	return launch(coordinatorCarrierRound{binding: binding, carrier: carrier, spec: spec})
+	return plan.launch(coordinatorCarrierRound{binding: binding, carrier: carrier, spec: spec})
 }
 
 // localMachineName 返回本机名（与 IsLocalMachine 的 hostname 判据同源），用于

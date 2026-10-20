@@ -5,6 +5,7 @@
 //	POST /api/cards/{id}/coordinator/rebind  叫机器人换绑
 //	POST /api/cards/{id}/coordinator/forget  驱逐进程内旧会话引用
 //	POST /api/cards/{id}/attach              attach 接管/交回（人工接管互斥的牙齿）
+//	POST /api/cards/{id}/coordinator/first-round  B448 首轮转交收件端（agentd↔agentd，firstround.go）
 //
 // 职责：组装点在此解析协调者小队产出 SessionSpec（契约 §15 澄清 2——SquadRows
 // 过滤 role=coordinator → LaunchAdmit → Binding → Carrier 读 HomeDir），这是编制域
@@ -46,6 +47,8 @@ func (s *Server) registerCoordRoutes(api *http.ServeMux) {
 	api.HandleFunc("POST /api/cards/{id}/coordinator/rebind", s.withLedger(s.withCoordinator(s.handleCoordRebind)))
 	api.HandleFunc("POST /api/cards/{id}/coordinator/forget", s.withLedger(s.withCoordinator(s.handleCoordForget)))
 	api.HandleFunc("POST /api/cards/{id}/coordinator/wake", s.withLedger(s.withCoordinator(s.handleCoordWake)))
+	// B448：卡首轮转交收件端（agentd↔agentd，与 wake 同形；不要求控制台身份）。
+	api.HandleFunc("POST /api/cards/{id}/coordinator/first-round", s.withLedger(s.withCoordinator(s.handleCoordFirstRound)))
 	api.HandleFunc("POST /api/cards/{id}/attach", s.withLedger(s.withCoordinator(s.handleCoordAttach)))
 }
 

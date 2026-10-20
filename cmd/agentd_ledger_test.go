@@ -214,6 +214,26 @@ func TestB23314SetSchedulingBeforeStartAutomation(t *testing.T) {
 	}
 }
 
+// TestB448R1SetupLedgerAbortsWhenReconcileFails 锁住 Q-r1-1 甲 / F49 的组装点一半：
+// StartAutomation 的错误（启动调度占用对账失败）必须让 setupLedger 返回错误走
+// abortBoot，而不是丢弃返回值带着未知计数继续启动。行为一半（StartAutomation 对
+// 损坏 body 返回带 key 的错误、循环不起）由 agentd 包 TestB23310RecoverRejectsMalformedSchedRunning 锁。
+func TestB448R1SetupLedgerAbortsWhenReconcileFails(t *testing.T) {
+	body := goFuncBody(t, "agentd.go", "setupLedger")
+	guard := "if err := srv.StartAutomation(ctx); err != nil {"
+	idx := strings.Index(body, guard)
+	if idx < 0 {
+		t.Fatalf("setupLedger 必须检查 StartAutomation 的返回错误（缺 %q）", guard)
+	}
+	block := body[idx:]
+	if end := strings.Index(block, "\n\t}\n"); end >= 0 {
+		block = block[:end]
+	}
+	if !strings.Contains(block, "return nil, ") {
+		t.Fatalf("StartAutomation 失败分支必须返回错误中止启动：%s", block)
+	}
+}
+
 // goFuncBody 读取同包 go 文件并返回命名函数的函数体（从 func 声明到下一个顶层
 // func 之前）。边界：文本切分，只答调用顺序，不解析 AST / 注释。
 func goFuncBody(t *testing.T, file, fn string) string {

@@ -87,11 +87,11 @@ func (s *Service) RunningCounts() (map[string]int, error) {
 	}
 	out := make(map[string]int, len(recs))
 	for _, rec := range recs {
-		var body struct {
-			Count int `json:"count"`
-		}
-		if err := json.Unmarshal(rec.Body, &body); err != nil {
-			return nil, fmt.Errorf("运行计数 %s 解码失败: %w", rec.ID, err)
+		// 与准入写者同一 body 类型解码；对外只投影 count（B448 r1 Q-r1-5 甲：持有分布
+		// 只服务启动对账，不进观察面）。
+		body, err := decodeRunning(rec)
+		if err != nil {
+			return nil, err
 		}
 		out[rec.ID] = body.Count
 	}

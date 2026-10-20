@@ -37,6 +37,9 @@ type SchedulingClient interface {
 	// （B389 §3.4）；唤醒路径不再经 LaunchAdmit 重选载体。
 	AdmitSeatCarrier(squad, carrier string) (scheduling.Binding, error)
 	Release(squadName, carrierName string) error
+	// ReclaimLocalOccupancy 归还上一进程遗留在本机名下的占用（B448 S7）；只在
+	// StartAutomation 入口、本进程首次准入之前经 orchestration.ReconcileSchedRunning 调用。
+	ReclaimLocalOccupancy(owned map[string]int) (scheduling.ReclaimReport, error)
 
 	// —— 点火队列（scheddispatch / scheddrain）——
 	Enqueue(req scheduling.IgnitionRequest, kind string) (int, error)
