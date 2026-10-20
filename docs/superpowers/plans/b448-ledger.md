@@ -313,3 +313,25 @@
 - `go test ./internal/agentd/ -count=1`：`ok`（88.6s）
 - `go build ./...`、`go vet ./...`：无输出
 - `gofmt -l internal/agentd/b448_card_test.go internal/agentd/b448_review_test.go`：空
+
+## 增补 r1 实现（S7）
+
+- 执行者：implement 节点 subagent；基线 `9efc09c5`（分支 `cards/B448-charter-1`）。
+- 输入：plan 末节「增补 r1」（Q-r1-1..5 全甲）、spec 末节「修订 r1」。
+- 读码确认：plan「r1 核实读数」与 `9efc09c5` 一致——`sched_running` 写者只有 `casCount` / `stepRunning`；`StartAutomation` 在 `setupLedger` 内、早于 `RecoverOnStartup`；`ReconcileSchedRunning` 只读。
+
+### r1 步 1–3：scheduling 持有分布与归还方法（T1–T8）
+
+- 新测 `internal/scheduling/b448_holders_test.go`（经 ledger SQLite + `facadeRegistry` 真实门面）。
+- 首红（编译红）：`go test ./internal/scheduling/ -run B448R1 -count=1` → `a.ReclaimLocalOccupancy undefined`。
+- 空壳（`ReclaimLocalOccupancy` 返回空报告）后断言红，摘录：
+  - `squad/sq/c1 body={Count:2 Holders:map[]}，want {Count:2 Holders:map[A:1 B:1]}`（T1）
+  - `直派 body={Count:1 Holders:map[]}，want count=1 holders={A:1}`（T1 直派）
+  - `旧 body 上新写 body={Count:4 Holders:map[]}，want count=4 holders={A:1}`（T2）
+  - `新 body 应带 holders（否则金样本无意义）: {"count":2}`（T3）
+  - `对账后 body={Count:3 Holders:map[A:2 B:1]} v=1，want count=1 holders={B:1} v=2`（T4）
+  - T5/T7/F49/T8 两条同样断言红；T6（不写）在空壳下天然绿——它是守卫，不是新行为。
+- 步 1 金样本（承重假设）判断：旧形 `struct{Count}` 解新 body 不报错、count 正确由 T3 断言；新解码器解 `{"count":3}` 由 T2 断言。实现后两者皆绿，不阻塞。
+- 实现：`scheduling.go` 新增 `runningBody{Count, Holders omitempty}`、`decodeRunning`（错误带 key/version）、`stepped`、`reclaimed`、`holderName`、`readRunning`；`casCount` 改为吃本次读到的 body 并在同一次 Put 里 `count+1/holders[self]+1`；`stepRunning` 同步维护；`AdmitCarrier`/`acquire` 改传 body；`ReclaimLocalOccupancy(owned)` 新增。`registry_read.go` `RunningCounts` 改用 `decodeRunning`，仍只投影 count。
+- 绿：`go test ./internal/scheduling/ -run B448R1 -count=1` → `ok`；整包 `go test ./internal/scheduling/ -count=1` → `ok  github.com/Xsxdot/handoff/internal/scheduling 0.957s`。
+- `go build ./...`、`go vet ./...`：无输出（exit 0）；`gofmt -l internal/scheduling/` 空。

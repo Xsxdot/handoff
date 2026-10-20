@@ -432,17 +432,18 @@ func (s *Service) AdmitCarrier(name string) (Binding, error) {
 	}
 	_, carrierKey := OccupancyKeys("", c.Name)
 	for attempt := 0; attempt < maxCASAttempts; attempt++ {
-		running, expect, err := s.readCount(carrierKey)
+		cur, expect, err := s.readRunning(carrierKey)
 		if err != nil {
 			statusLog().Error("scheduling.admit_carrier.error", "carrier", c.Name, "carrier_key", carrierKey, "attempt", attempt+1, "error_kind", "counter_read", "cause", err)
 			return Binding{}, err
 		}
+		running := cur.Count
 		if c.MaxConcurrency > 0 && running >= c.MaxConcurrency {
 			err := fmt.Errorf("%w: 载体 %s", ErrNoSlot, c.Name)
 			statusLog().Warn("scheduling.admit_carrier.full", "carrier", c.Name, "carrier_key", carrierKey, "running", running, "carrier_cap", c.MaxConcurrency, "error_kind", "no_slot", "cause", err)
 			return Binding{}, err
 		}
-		if err := s.casCount(carrierKey, expect, running+1); err != nil {
+		if err := s.casCount(carrierKey, expect, cur); err != nil {
 			if errors.Is(err, schedclient.ErrCASConflict) {
 				continue
 			}
@@ -1100,10 +1101,10 @@ func (s *Service) admitInto(q Squad, req IgnitionRequest) (Binding, error) {
 func (s *Service) acquire(q Squad, member SquadMember, c Carrier, req IgnitionRequest) (Binding, error) {
 	squadKey, carrierKey := OccupancyKeys(q.Name, member.Carrier)
 	for attempt := 0; attempt < maxCASAttempts; attempt++ {
-		squadRunning, squadExpect := 0, 0
+		squadBody, squadExpect := runningBody{}, 0
 		if squadKey != "" {
 			var err error
-			squadRunning, squadExpect, err = s.readCount(squadKey)
+			squadBody, squadExpect, err = s.readRunning(squadKey)
 			if err != nil {
 				slog.Default().Error("scheduling.acquire.error", "squad", q.Name,
 					"carrier", c.Name, "member_policy", member.MaxConcurrency,
@@ -1112,13 +1113,14 @@ func (s *Service) acquire(q Squad, member SquadMember, c Carrier, req IgnitionRe
 				return Binding{}, err
 			}
 		}
-		carrierRunning, carrierExpect, err := s.readCount(carrierKey)
+		carrierBody, carrierExpect, err := s.readRunning(carrierKey)
 		if err != nil {
 			slog.Default().Error("scheduling.acquire.error", "squad", q.Name,
 				"carrier", c.Name, "member_policy", member.MaxConcurrency,
 				"carrier_cap", c.MaxConcurrency, "error_kind", "carrier_counter_read", "cause", err)
 			return Binding{}, err
 		}
+		squadRunning, carrierRunning := squadBody.Count, carrierBody.Count
 		if squadKey != "" && member.MaxConcurrency > 0 && squadRunning >= member.MaxConcurrency {
 			slog.Default().Warn("scheduling.acquire.member_full", "squad", q.Name,
 				"carrier", c.Name, "member_policy", member.MaxConcurrency,
@@ -1132,7 +1134,7 @@ func (s *Service) acquire(q Squad, member SquadMember, c Carrier, req IgnitionRe
 			return Binding{}, errMemberFull
 		}
 		if squadKey != "" {
-			if err := s.casCount(squadKey, squadExpect, squadRunning+1); err != nil {
+			if err := s.casCount(squadKey, squadExpect, squadBody); err != nil {
 				if errors.Is(err, schedclient.ErrCASConflict) {
 					continue
 				}
@@ -1143,7 +1145,7 @@ func (s *Service) acquire(q Squad, member SquadMember, c Carrier, req IgnitionRe
 				return Binding{}, err
 			}
 		}
-		if err := s.casCount(carrierKey, carrierExpect, carrierRunning+1); err != nil {
+		if err := s.casCount(carrierKey, carrierExpect, carrierBody); err != nil {
 			if squadKey != "" {
 				if rollbackErr := s.stepRunning(squadKey, -1); rollbackErr != nil {
 					slog.Default().Error("scheduling.acquire.rollback_error", "squad", q.Name,
@@ -1200,56 +1202,147 @@ func bindingFor(q Squad, c Carrier, req IgnitionRequest) Binding {
 	}
 }
 
-// readCount 读一条运行计数的当前值与 CAS 期望版本；缺失视为 0、期望版本 0
+// runningBody 是 sched_running/<key> 行的 body（B448 r1 冻结 F38–F44）。
+//
+// Count 是准入判据的唯一读数（F40）；Holders 是「哪个 agentd 自名名下占着几个」的
+// 持有分布，只服务启动对账（ReclaimLocalOccupancy），准入与满员判断不读它。
+// Holders 缺失 / {} / null 同义（F39），写出时空分布省略字段，于是无持有的 body
+// 与旧二进制写出的 {"count":N} 逐字节相同。旧读者只解 count、忽略未知字段（F41）；
+// 旧写者每写一次会丢掉整个 Holders——那部分占用退化为「无主保留」，只少扣不多扣。
+type runningBody struct {
+	Count   int            `json:"count"`
+	Holders map[string]int `json:"holders,omitempty"`
+}
+
+// decodeRunning 解一条 sched_running 记录；失败带 key 与 version（F49 的排障上下文）。
+func decodeRunning(rec schedclient.Record) (runningBody, error) {
+	var b runningBody
+	if err := json.Unmarshal(rec.Body, &b); err != nil {
+		return runningBody{}, fmt.Errorf("运行计数 %s（version=%d）解码失败: %w", rec.ID, rec.Version, err)
+	}
+	return b, nil
+}
+
+// stepped 返回 count 与 holders[holder] 同步加 delta 后的新 body（F44），不改原值。
+// count 下限 0；holder 条目减到 0 即删键。其它持有者条目原值照抄（F43）——读改写
+// 必须基于本次读到的 body，不能拿旧读数回写，否则会抹掉并发写入的他机条目。
+// holder 为空（自名与 hostname 都取不到）时只动 count，退化为无主占用。
+func (b runningBody) stepped(holder string, delta int) runningBody {
+	next := runningBody{Count: b.Count + delta}
+	if next.Count < 0 {
+		next.Count = 0
+	}
+	next.Holders = make(map[string]int, len(b.Holders)+1)
+	for k, v := range b.Holders {
+		next.Holders[k] = v
+	}
+	if holder != "" {
+		if n := next.Holders[holder] + delta; n > 0 {
+			next.Holders[holder] = n
+		} else {
+			delete(next.Holders, holder)
+		}
+	}
+	if len(next.Holders) == 0 {
+		next.Holders = nil
+	}
+	return next
+}
+
+// reclaimed 按 F47 计算本机遗留归还：d = min(max(0, h−owned), count)，
+// holders[self] 写成 min(h, owned)。changed=false 表示无需写（version 不变）。
+// owned 是本机仍存活任务落在该键上的数目——这些名额日后会经 Release 正常归还，
+// 对账再扣一次就是重复扣（计数偏低 → 超发），所以必须留着（Q-r1-2 甲）。
+func (b runningBody) reclaimed(self string, owned int) (next runningBody, deducted int, changed bool) {
+	h := b.Holders[self]
+	if owned < 0 {
+		owned = 0
+	}
+	deducted = h - owned
+	if deducted < 0 {
+		deducted = 0
+	}
+	if deducted > b.Count {
+		deducted = b.Count
+	}
+	keep := h
+	if owned < keep {
+		keep = owned
+	}
+	if deducted == 0 && keep == h {
+		return b, 0, false
+	}
+	next = runningBody{Count: b.Count - deducted, Holders: make(map[string]int, len(b.Holders))}
+	for k, v := range b.Holders {
+		next.Holders[k] = v
+	}
+	if keep > 0 {
+		next.Holders[self] = keep
+	} else {
+		delete(next.Holders, self)
+	}
+	if len(next.Holders) == 0 {
+		next.Holders = nil
+	}
+	return next, deducted, true
+}
+
+// holderName 是本进程写入持有分布时用的名字（F45 / Q-r1-3 甲）：自名（cfg.Name）
+// 优先，空则 os.Hostname()——与账本镜像 holder 的回退同口径。两者都取不到返回空，
+// 调用方据此只动 count 不记持有。
+func (s *Service) holderName() string {
+	if s.selfName != "" {
+		return s.selfName
+	}
+	host, err := os.Hostname()
+	if err != nil {
+		slog.Default().Warn("scheduling.holder_name.hostname_error", "error_kind", "hostname", "cause", err)
+		return ""
+	}
+	return host
+}
+
+// readRunning 读一条运行计数的 body 与 CAS 期望版本；缺失视为空 body、期望版本 0
 // （agentd 重启后计数随用随建，权威状态在账本不在内存）。
-func (s *Service) readCount(id string) (count, expect int, err error) {
+func (s *Service) readRunning(id string) (runningBody, int, error) {
 	rec, err := s.repo.Get(kindRunning, id)
 	if err != nil {
 		if errors.Is(err, schedclient.ErrNotFound) {
-			return 0, 0, nil
+			return runningBody{}, 0, nil
 		}
-		return 0, 0, err
+		return runningBody{}, 0, err
 	}
-	var body struct {
-		Count int `json:"count"`
+	rec.ID = id
+	body, err := decodeRunning(rec)
+	if err != nil {
+		return runningBody{}, 0, err
 	}
-	if err := json.Unmarshal(rec.Body, &body); err != nil {
-		return 0, 0, fmt.Errorf("运行计数 %s 解码失败: %w", id, err)
-	}
-	return body.Count, rec.Version, nil
+	return body, rec.Version, nil
 }
 
-// casCount 以 CAS 把一条运行计数置为 next；冲突原样透传
-// schedclient.ErrCASConflict 供调用方重试。
-func (s *Service) casCount(id string, expect, next int) error {
-	bodyBytes, _ := json.Marshal(map[string]int{"count": next})
+// readCount 只取运行计数的 count 与期望版本（只读选择路径用；准入判据只看 count，F40）。
+func (s *Service) readCount(id string) (count, expect int, err error) {
+	body, expect, err := s.readRunning(id)
+	return body.Count, expect, err
+}
+
+// casCount 以 CAS 把一条运行计数写成 cur 加一个本机名额（count+1、holders[self]+1，
+// 同一次写，F44）；冲突原样透传 schedclient.ErrCASConflict 供调用方带新读数重试。
+func (s *Service) casCount(id string, expect int, cur runningBody) error {
+	bodyBytes, _ := json.Marshal(cur.stepped(s.holderName(), 1))
 	_, err := s.repo.Put(kindRunning, id, expect, bodyBytes, "scheduling")
 	return err
 }
 
-// stepRunning 对一条运行计数记录做带符号增量，CAS 重试读改写。
+// stepRunning 对一条运行计数记录做带符号增量（count 与 holders[self] 同步），CAS 重试读改写。
 func (s *Service) stepRunning(id string, delta int) error {
+	holder := s.holderName()
 	for attempt := 0; attempt < maxCASAttempts; attempt++ {
-		rec, err := s.repo.Get(kindRunning, id)
-		count := 0
-		expect := 0
-		if err == nil {
-			var body struct {
-				Count int `json:"count"`
-			}
-			if json.Unmarshal(rec.Body, &body) != nil {
-				return fmt.Errorf("运行计数 %s 解码失败", id)
-			}
-			count = body.Count
-			expect = rec.Version
-		} else if !errors.Is(err, schedclient.ErrNotFound) {
+		body, expect, err := s.readRunning(id)
+		if err != nil {
 			return err
 		}
-		next := count + delta
-		if next < 0 {
-			next = 0
-		}
-		bodyBytes, _ := json.Marshal(map[string]int{"count": next})
+		bodyBytes, _ := json.Marshal(body.stepped(holder, delta))
 		if _, err := s.repo.Put(kindRunning, id, expect, bodyBytes, "scheduling"); err != nil {
 			if errors.Is(err, schedclient.ErrCASConflict) {
 				continue
@@ -1259,6 +1352,121 @@ func (s *Service) stepRunning(id string, delta int) error {
 		return nil
 	}
 	return fmt.Errorf("%w: %s", ErrRetryExhausted, id)
+}
+
+// ReclaimedKey 是一把被对账改写的计数键的明细。
+type ReclaimedKey struct {
+	Key      string
+	Version  int // 写入前版本
+	Deducted int // 本次归还的名额数
+	Count    int // 写后保留的 count
+	Owned    int // 本机仍存活任务在该键上的数目
+}
+
+// ReclaimReport 是一次本机遗留归还的结果。
+type ReclaimReport struct {
+	Self      string         // 本次对账认定的本机持有者名
+	Rows      int            // 扫描的 sched_running 行数
+	Reclaimed []ReclaimedKey // 实际改写的键
+	Deducted  int            // 归还名额总数
+	Skipped   []string       // 写失败（CAS 耗尽 / Put 报错 / 重读失败）而跳过的键
+}
+
+// ReclaimLocalOccupancy 把上一进程遗留在本机名下的占用归还（B448 S7，F46/F47）。
+//
+// 参数 owned：键 → 本机任务表里非终态、带载体的任务落在该键上的数目（由调用方按
+// OccupancyKeys(task.Squad, task.Carrier) 计数，与 Release 归还时同源）。
+//
+// 规则只动 count 与 holders[self]：他机条目、无主部分（旧格式 / 旧写者丢掉的持有）
+// 一个不动。调用时序由调用方保证：必须先于本进程的任何准入（F48），否则会把本进程
+// 刚准入、尚未记进 owned 的活名额当遗留扣掉。
+//
+// 返回 error 仅在列表读失败或 body 解码失败（F49，带 key/version）；单键写失败按
+// Q-r1-4 甲记 Error 跳过——写不进去的后果就是今天的现状（遗留保留到下次重启）。
+func (s *Service) ReclaimLocalOccupancy(owned map[string]int) (ReclaimReport, error) {
+	self := s.holderName()
+	report := ReclaimReport{Self: self}
+	log := slog.Default().With("self", self)
+	log.Info("scheduling.reclaim.start", "owned_keys", len(owned), "error_kind", "start")
+	if self == "" {
+		log.Warn("scheduling.reclaim.skip", "error_kind", "no_holder_name",
+			"cause", "自名与 hostname 都为空，本机名下无可认领的持有")
+		return report, nil
+	}
+	rows, err := s.repo.List(kindRunning)
+	if err != nil {
+		log.Error("scheduling.reclaim.error", "error_kind", "running_list", "cause", err)
+		return report, fmt.Errorf("对账读取 sched_running: %w", err)
+	}
+	report.Rows = len(rows)
+	for _, row := range rows {
+		rec := row
+		body, err := decodeRunning(rec)
+		if err != nil {
+			log.Error("scheduling.reclaim.error", "key", rec.ID, "version", rec.Version,
+				"error_kind", "decode", "cause", err)
+			return report, err
+		}
+		for attempt := 1; ; attempt++ {
+			next, deducted, changed := body.reclaimed(self, owned[rec.ID])
+			if !changed {
+				log.Info("scheduling.reclaim.keep", "key", rec.ID, "version", rec.Version,
+					"count", body.Count, "held", body.Holders[self], "owned", owned[rec.ID],
+					"error_kind", "nothing_to_reclaim")
+				break
+			}
+			if attempt > maxCASAttempts {
+				log.Error("scheduling.reclaim.error", "key", rec.ID, "version", rec.Version,
+					"deduct", deducted, "error_kind", "retry_exhausted",
+					"cause", fmt.Errorf("%w: %s", ErrRetryExhausted, rec.ID))
+				report.Skipped = append(report.Skipped, rec.ID)
+				break
+			}
+			bodyBytes, _ := json.Marshal(next)
+			_, err := s.repo.Put(kindRunning, rec.ID, rec.Version, bodyBytes, "scheduling")
+			if err == nil {
+				log.Warn("scheduling.reclaim.reclaimed", "key", rec.ID, "version", rec.Version,
+					"deducted", deducted, "kept", next.Count, "held_before", body.Holders[self],
+					"owned", owned[rec.ID], "error_kind", "reclaimed")
+				report.Reclaimed = append(report.Reclaimed, ReclaimedKey{Key: rec.ID, Version: rec.Version,
+					Deducted: deducted, Count: next.Count, Owned: owned[rec.ID]})
+				report.Deducted += deducted
+				break
+			}
+			if !errors.Is(err, schedclient.ErrCASConflict) {
+				log.Error("scheduling.reclaim.error", "key", rec.ID, "version", rec.Version,
+					"deduct", deducted, "error_kind", "write", "cause", err)
+				report.Skipped = append(report.Skipped, rec.ID)
+				break
+			}
+			// CAS 冲突：他机在读后写前动了这一行。重读重算，绝不拿旧读数回写。
+			fresh, getErr := s.repo.Get(kindRunning, rec.ID)
+			if getErr != nil {
+				if errors.Is(getErr, schedclient.ErrNotFound) {
+					log.Info("scheduling.reclaim.keep", "key", rec.ID, "error_kind", "row_gone")
+					break
+				}
+				log.Error("scheduling.reclaim.error", "key", rec.ID, "version", rec.Version,
+					"deduct", deducted, "error_kind", "reread", "cause", getErr)
+				report.Skipped = append(report.Skipped, rec.ID)
+				break
+			}
+			fresh.ID = rec.ID
+			rec = fresh
+			if body, err = decodeRunning(rec); err != nil {
+				log.Error("scheduling.reclaim.error", "key", rec.ID, "version", rec.Version,
+					"error_kind", "decode", "cause", err)
+				return report, err
+			}
+		}
+	}
+	done := log.Info
+	if report.Deducted > 0 || len(report.Skipped) > 0 {
+		done = log.Warn // 默认 warn 级别下有归还/跳过必须可见（B390 R4 先例）
+	}
+	done("scheduling.reclaim.done", "rows", report.Rows, "reclaimed_keys", len(report.Reclaimed),
+		"deducted", report.Deducted, "skipped", report.Skipped, "error_kind", "success")
+	return report, nil
 }
 
 // position 计算某请求在当前队序中的 1 基位置。
