@@ -22,14 +22,12 @@ package orchestration
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"time"
 
 	"github.com/Xsxdot/handoff/internal/proto"
-	"github.com/Xsxdot/handoff/internal/schedclient"
 	"github.com/Xsxdot/handoff/internal/scheduling"
 	"github.com/Xsxdot/handoff/internal/store"
 )
@@ -448,67 +446,64 @@ func emitReclaimFailed(st *store.Store, hub *Hub, taskID string, used, hardLimit
 	log.Warn("已向协调者发出强制回收失败提示", "task", taskID, "used", used, "hard_limit", hardLimit)
 }
 
-const schedRunningKind = "sched_running"
-
-type schedRunningBody struct {
-	Count int `json:"count"`
+// OccupancyReclaimer 是启动对账对调度域的窄依赖（使用方定义，B448 r1）：
+// 扣减规则只在调度域（scheduling.Service.ReclaimLocalOccupancy）定义，本包只算
+// owned 交过去，不直接解码或改写 sched_running。
+type OccupancyReclaimer interface {
+	ReclaimLocalOccupancy(owned map[string]int) (scheduling.ReclaimReport, error)
 }
 
-// ReconcileSchedRunning 是启动对账，对共享 sched_running **只读不写**。
+// ReconcileSchedRunning 是启动对账：从本机任务表算出仍存活任务的占用 owned，交
+// 调度域把上一进程遗留在本机名下的名额归还（B448 S7）。
 //
-// 为什么不清零：sched_running 在共享账本上跨机可见。本机 ListTasks 看不到 owner
-// 不等于集群里没有占用者（他机执行、没有 Task 的 LaunchAdmit 会话都在同一把键上
-// 计数）。以「本机无非终态 owner」或「本机对应任务已终态」为由把共享计数写成 0，
-// 会跨机误伤别人的占用。本机 pending/running/waiting_review owner 本就不该被改写，
-// 一并原样保留。
+// owned 的口径：非终态（pending/running/waiting_*，含 waiting_review）且带载体的任务，
+// 按 scheduling.OccupancyKeys(task.Squad, task.Carrier) 逐键计数——是计数不是集合，
+// 且与 releaseTaskCarrierOccupancy 归还时取键同源。这些任务跨重启仍存活，名额日后
+// 由 done/stop 经 Release 归还；对账若也扣它们就是重复扣（计数偏低 → 超发）。
 //
-// 仍保留解码校验：损坏记录在启动时带 key/version 暴露并阻断后续 executor 恢复，
-// 而不是被悄悄清零或跳过。对账本身不再产生任何写者。
-func ReconcileSchedRunning(st *store.Store, repo schedclient.Registry, log *slog.Logger) error {
+// 他机名下与无主（旧格式）的占用一个不动：本机任务表看不到不等于集群里没人占着。
+//
+// 时序：调用方必须在本进程第一次准入之前调用（F48，agentd 钉在 StartAutomation 入口）。
+// 返回 error 仅在任务表读失败或计数 body 解码失败（带 key/version，F49）；调用方
+// 应据此中止启动。
+func ReconcileSchedRunning(st *store.Store, reclaimer OccupancyReclaimer, log *slog.Logger) error {
+	if st == nil || reclaimer == nil {
+		log.Error("启动对账缺少依赖", "has_store", st != nil, "has_reclaimer", reclaimer != nil,
+			"error_kind", "missing_dependency")
+		return fmt.Errorf("启动对账缺少依赖（store=%t reclaimer=%t）", st != nil, reclaimer != nil)
+	}
 	tasks, err := st.ListTasks()
 	if err != nil {
 		log.Error("启动对账读取任务列表失败", "error_kind", "task_list", "cause", err)
 		return fmt.Errorf("启动对账读取任务列表: %w", err)
 	}
-	owned := make(map[string]struct{})
+	owned := make(map[string]int)
 	for _, task := range tasks {
 		if task.State.IsTerminal() || task.Carrier == "" {
 			continue
 		}
-		owned[scheduling.OccupancyCarrierKey(task.Carrier)] = struct{}{}
-		if task.Squad != "" {
-			owned[scheduling.OccupancyMemberKey(task.Squad, task.Carrier)] = struct{}{}
+		memberKey, carrierKey := scheduling.OccupancyKeys(task.Squad, task.Carrier)
+		if memberKey != "" {
+			owned[memberKey]++
+		}
+		if carrierKey != "" {
+			owned[carrierKey]++
 		}
 	}
-	rows, err := repo.List(schedRunningKind)
+	report, err := reclaimer.ReclaimLocalOccupancy(owned)
 	if err != nil {
-		log.Error("启动对账读取 sched_running 失败", "error_kind", "running_list", "cause", err)
-		return fmt.Errorf("启动对账读取 sched_running: %w", err)
+		log.Error("启动对账归还本机遗留名额失败", "self", report.Self, "task_count", len(tasks),
+			"owned_keys", len(owned), "error_kind", "reclaim", "cause", err)
+		return fmt.Errorf("启动对账: %w", err)
 	}
-	foreignPreserved := 0
-	for _, row := range rows {
-		var body schedRunningBody
-		if err := json.Unmarshal(row.Body, &body); err != nil {
-			log.Error("启动对账解码运行计数失败", "key", row.ID, "version", row.Version,
-				"count", body.Count, "error_kind", "decode", "cause", err)
-			return fmt.Errorf("启动对账解码 %s: %w", row.ID, err)
-		}
-		if body.Count <= 0 {
-			log.Info("启动对账跳过非正运行计数", "key", row.ID, "version", row.Version,
-				"count", body.Count, "error_kind", "non_positive")
-			continue
-		}
-		if _, ok := owned[row.ID]; ok {
-			log.Info("启动对账保留本机任务所有的运行计数", "key", row.ID, "count", body.Count,
-				"version", row.Version, "error_kind", "owned")
-			continue
-		}
-		foreignPreserved++
-		log.Info("启动对账保留无本机 owner 的运行计数（跨机占用不得清零）", "key", row.ID,
-			"count", body.Count, "version", row.Version, "error_kind", "foreign_preserved")
+	done := log.Info
+	if report.Deducted > 0 || len(report.Skipped) > 0 {
+		done = log.Warn // 默认 warn 级别下，有归还/跳过必须可见（B390 R4 先例）
 	}
-	log.Info("启动调度占用对账完成（只读，不清零）", "task_count", len(tasks),
-		"record_count", len(rows), "owned_count", len(owned), "foreign_preserved", foreignPreserved)
+	done("启动调度占用对账完成", "self", report.Self, "task_count", len(tasks),
+		"owned_keys", len(owned), "record_count", report.Rows,
+		"reclaimed_keys", len(report.Reclaimed), "deducted", report.Deducted,
+		"skipped", report.Skipped)
 	return nil
 }
 

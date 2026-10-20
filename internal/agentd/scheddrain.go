@@ -51,14 +51,28 @@ func (e *coordinatorSeatConflict) Error() string {
 }
 
 // StartAutomation 启动 agentd 生命周期内唯一的自动化循环；依赖未装配时只记录可行动告警。
-func (s *Server) StartAutomation(ctx context.Context) {
+//
+// B448 r1（Q-r1-1 甲，F48）：起循环之前先同步跑启动调度占用对账，归还上一进程遗留在
+// 本机名下的名额。循环首轮就可能准入（事件唤醒 / 清队），对账若晚于它，会把本进程
+// 刚准入的活名额当遗留扣掉、日后 Release 再减一次 → 计数偏低超发。顺序由本函数结构
+// 保证，不依赖 cmd 里调用的先后。
+//
+// 返回 error 仅在对账失败（任务表读失败、计数 body 解码失败带 key/version）；此时
+// 循环不启动，调用方（cmd setupLedger）应中止启动。依赖未装配返回 nil（今日行为）。
+func (s *Server) StartAutomation(ctx context.Context) error {
 	if s.scheduling == nil || s.keystone == nil || s.autoLedger == nil {
 		s.log.Warn("自动化循环未启动：依赖尚未装配",
 			"has_scheduling", s.scheduling != nil,
 			"has_keystone", s.keystone != nil, "has_ledger", s.autoLedger != nil)
-		return
+		return nil
 	}
+	var startErr error
 	s.automationStartOnce.Do(func() {
+		if err := orchestration.ReconcileSchedRunning(s.st, s.scheduling, s.log); err != nil {
+			s.log.Error("自动化循环未启动：启动调度占用对账失败", "error_kind", "reconcile", "cause", err)
+			startErr = fmt.Errorf("启动调度占用对账: %w", err)
+			return
+		}
 		s.log.Info("自动化清队与事件唤醒循环启动",
 			"poll", automationPollInterval, "queue_kinds", scheduling.QueueKinds)
 		go func() {
@@ -68,6 +82,7 @@ func (s *Server) StartAutomation(ctx context.Context) {
 			s.automationLoop(ctx)
 		}()
 	})
+	return startErr
 }
 
 func (s *Server) automationLoop(ctx context.Context) {

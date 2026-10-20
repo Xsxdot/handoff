@@ -1,11 +1,16 @@
 package agentd
 
-// B233.11 启动对账接缝测试：启动对账对共享 sched_running 只读不清——本机任务表
-// 没有非终态 owner 不构成清零授权，本机终态任务也不是。测试一律打 RecoverOnStartup
-// 接缝，不改变既有 watchdog 的 executor 恢复测试。
+// B233.11 启动对账接缝测试：启动对账对共享 sched_running 不清无主占用——本机任务表
+// 没有非终态 owner 不构成清零授权，本机终态任务也不是。
+//
+// B448 r1（Q-r1-1 甲）：对账从 RecoverOnStartup 迁到 StartAutomation 的同步前置，
+// 本文件五条用例改打新入口（startAutomationForTest），断言语义不变；夹具 body 都是
+// 只含 count 的旧格式，按 F39 不触发对账写。RecoverOnStartup 仍随后调用，只为保留
+// 原有的 executor 探活断言。
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"log/slog"
 	"strings"
@@ -61,8 +66,20 @@ func createRecoveryTask(t *testing.T, env *ledgerEnv, id string, state proto.Tas
 	}
 }
 
+// startAutomationForTest 打启动对账的真实入口 StartAutomation（对账成功后才起循环）；
+// 循环 ctx 随测试结束取消。
+func startAutomationForTest(t *testing.T, srv *Server) error {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	return srv.StartAutomation(ctx)
+}
+
 func recoverWithoutProbe(t *testing.T, srv *Server) error {
 	t.Helper()
+	if err := startAutomationForTest(t, srv); err != nil {
+		return err
+	}
 	probed := false
 	err := srv.RecoverOnStartup(func(string) bool {
 		probed = true
@@ -130,6 +147,9 @@ func TestB23311RecoverKeepsForeignKeysAlongsideLocalOwner(t *testing.T) {
 		putSchedRunning(t, facade, key, 1)
 	}
 
+	if err := startAutomationForTest(t, env.srv); err != nil {
+		t.Fatalf("启动对账: %v", err)
+	}
 	probes := 0
 	err := env.srv.RecoverOnStartup(func(string) bool {
 		probes++
@@ -163,6 +183,9 @@ func TestB23311RecoverKeepsLiveAndTerminalOwners(t *testing.T) {
 		putSchedRunning(t, facade, key, 1)
 	}
 
+	if err := startAutomationForTest(t, env.srv); err != nil {
+		t.Fatalf("启动对账: %v", err)
+	}
 	probes := 0
 	err := env.srv.RecoverOnStartup(func(string) bool {
 		probes++
@@ -196,17 +219,13 @@ func TestB23310RecoverRejectsMalformedSchedRunning(t *testing.T) {
 		t.Fatalf("写入 malformed 记录: %v", err)
 	}
 	var logs bytes.Buffer
-	logger := slog.New(slog.NewTextHandler(&logs, nil))
-	probed := false
-	err = env.srv.RecoverOnStartup(func(string) bool {
-		probed = true
-		return true
-	}, func(string) {}, logger)
+	env.srv.log = slog.New(slog.NewTextHandler(&logs, nil))
+	err = startAutomationForTest(t, env.srv)
 	if err == nil || !strings.Contains(err.Error(), key) {
 		t.Fatalf("malformed sched_running 应返回带 key 错误，实际 %v", err)
 	}
-	if probed {
-		t.Fatal("对账失败后不得继续进入 executor 启动恢复")
+	if strings.Contains(logs.String(), "自动化清队与事件唤醒循环启动") {
+		t.Fatal("对账失败后不得启动自动化循环")
 	}
 	if !strings.Contains(logs.String(), key) || !strings.Contains(logs.String(), "version=2") {
 		t.Fatalf("malformed 日志缺少 key/version：%s", logs.String())
