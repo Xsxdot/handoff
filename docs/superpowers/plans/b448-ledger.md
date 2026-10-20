@@ -435,3 +435,5 @@
 - R7′：mac 建会话 session:7（T10），10s 时读在途 body：`carrier/t448-oc` 与 `squad/t448-coord/t448-oc` 均 `{"count": 1, "holders": {"t448-linux": 1}}`（v56）；`kill -9` linux 隔离实例 → mac 侧 `resident.error` …EOF；杀后、重启前计数仍 1（遗留）；重启后启动日志 `scheduling.reclaim.reclaimed self=t448-linux … deducted=1 kept=0 held_before=1 owned=0`（两键）、`scheduling.reclaim.done reclaimed_keys=2 deducted=2`，随后驻场者启动清扫请下 session:7 在途行；body 变 `{"count": 0}`（v57，holders 省略）；对照行 `t448-foreign` v3 与 `t448-legacy` v1 body/version 均不变。**S7 通过。**
 - 操作失误披露：r7p.sh 用了 `pkill -9 -f "opencode run"`，匹配范围是 linux-01 全机而非只限隔离实例。核对在役 `/root/.handoff/agentd.log`：最后一行在 2026-10-19T22:57Z，03:00–03:02Z 无任何记录，判定当时无在役回合被波及。后续脚本不再用全机 pkill。
 - R7′b（混版本旧二进制写回）未跑：机内 T6/F44 已覆盖旧写者丢 holders 后只少扣不多扣；按 plan 为可选。
+- R7′ 补记（final review M-r1-3）：重启后 `session resident launch session:7` 成功（12:14:11→12:16:30，resident@t448-linux），回合后 `carrier/t448-oc`、`squad/t448-coord/t448-oc` 均 `{"count": 0}`（v63）；session:7 恰一条 `system:pointer`（被重启打断）。对照行不变。
+- final review I-r1-1（F48 测试无牙）已写入卡验收栏，修复轮 2 进行中。roadmap 已销「名额无 owner」并补三条 r1 残余（永久下线、改名、孤儿子进程）。
