@@ -471,3 +471,7 @@
   - 根因（手工复现于 linux-01）：`opencode run -m cline-pass/cline-pass/glm-5.3-flash` 返回 `403 ENTITLEMENT_ERROR: the user is not subscribed to required model plan`——cline 账号订阅问题，非 B448；且 opencode 把错误写在 stdout JSON，hostapi 只截 stderr，所以失败原因显示为空。
   - 结论：B448 跨机转交、回执映射、名额归还、指针行在生产成立；载体本身不可用，成功闭环（首轮在载体机跑完并落座）未在生产复核。B449 已废弃关闭、session:32 已归档。
 - 生产 `squad/leader/cmd` 与 `carrier/cmd` 计数各为 1（载体 cmd 已不在登记表），是 r1 之前的旧格式无主遗留，按 S7 规则保留不动。
+- R11 重跑（2026-10-20 12:46，用户重配小队后，「不要用 mbp」）：leader 仍为 `cline`@linux-01，模型改 `opencode-go/deepseek-v4.1-flash`。
+  - 叫机器人（一次性卡 B450，mac-mini 受理）：21s 返回 `{"woke":true,"session_id":"ses_ea894d594ffe…"}`；卡 `driver_mode=push`；mac-mini「受理机发出 / 收到回执」handled_by=linux-01、linux-01「执行机收件 / 完成」对上。
+  - 建会话（session:33，`session create --project handoff --squad leader`）：41s 返回 resident `cline@linux-01`；驻场者首轮发言 #28241、不改名；人发话 #28242 → 驻场者续轮回「收到。」#28244 并改名「新会话」→「B448 生产复核」（#28243 renamed）。
+  - 计数 `carrier/cline`、`squad/leader/cline` 回合后均 0。**R11 成功闭环通过。** B450 已废弃关闭、session:33 已归档。
