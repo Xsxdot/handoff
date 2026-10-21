@@ -634,6 +634,22 @@ describe('scheduling wire', () => {
     expect(s.members[1].max_concurrency).toBeUndefined() // omitempty：0 以键缺席表达
     expect(squadsFixture.squads[1].members).toEqual([])
   })
+  it('SquadsResp 载体行带所选账号与指纹不符标记（B453 F13，键缺席 ≠ false）', () => {
+    const plain: CarrierView = squadsFixture.carriers[0]
+    expect(Object.prototype.hasOwnProperty.call(plain, 'account')).toBe(false)
+    expect(Object.prototype.hasOwnProperty.call(plain, 'account_mismatch')).toBe(false)
+    const bound: CarrierView = squadsFixture.carriers[1]
+    expect(bound.account).toBe('og-mac')
+    expect(bound.account_mismatch).toBe(true)
+  })
+  it('HomeWake 携带指纹键（B453 F15）', () => {
+    const wakeReq: HomeWakeReq = homeWakeReqFixture
+    expect(wakeReq.fingerprint_kind).toBe('codex')
+    expect(wakeReq.fingerprint_entry).toBe('tokens')
+    expect(wakeReq.account).toBe('cx-mbp')
+    const wakeResp = homeWakeRespFixture as HomeWakeResp
+    expect(wakeResp.fingerprint).toBe('sha256:3f9a1b2cc21e')
+  })
   it('SquadsResp 携带 sched_running 占用行（B390 运行位）', () => {
     const r: RegistryRunningView = squadsFixture.running[0]
     expect(r.key).toBe('carrier/mac-01-opencode')
