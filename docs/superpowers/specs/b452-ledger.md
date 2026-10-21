@@ -81,3 +81,9 @@
 - 收尾检查：`go build ./...` 通过；`go vet ./...` → `VET_OK`；`gofmt -l $(git diff --name-only cf0c0ad6 HEAD -- '*.go')` 空。全量 `env -u CLAUDE_CODE_SESSION_ID -u CLAUDE_CODE_ENTRYPOINT go test ./... -count=1` → 64 包 `ok`、8 包 no test files，唯一红 `--- FAIL: TestProductionHTTPClientCallersAreGatewayOnly (1.06s)` / `FAIL github.com/Xsxdot/handoff/internal/client 10.653s`，名单全为 `.claude/worktrees/*`。干净副本复核（scratchpad `git clone --branch cards/B452-charter-1`，HEAD `d2c5d4b7`）：`go test ./internal/client/ -count=1` → `ok … 9.975s`，`-run TestProductionHTTPClientCallersAreGatewayOnly -v` → `--- PASS (0.02s)`；副本已删。
 - 真机提示（写进交回物 R6）：保留期清扫只在启动时跑一轮、之后每 1h；plan R6「重启后等 3 分钟」观察不到删除，须在任务终态超 2m 之后再重启。
 - 段 3/4 提交：`129bdfc2`（段 3）、`d2c5d4b7`（段 4）；交回物 `docs/superpowers/plans/b452-implement-report.md` 与本行随下一提交入库。
+
+## 协调者核对（2026-10-21，主会话）
+
+- implement 交回 fad850eb；`git diff --stat cf0c0ad6..HEAD` 56 文件 +5242/-41，含 orchestration/agentd/client/ledger/workspace/store/scheduling/proto/config 产品代码与测试，非空转、非越轨（plan §3 边界内，`internal/config` 偏离已在交回物登记）。
+- 发现协调者自身失误：c37b6d66（spec r1.1）用 `git add -A docs/` 误把用户工作树里 `docs/superpowers/specs/b434-ledger.md` 的 7 行未提交改动收进本卡分支。处置：0c48f234 将该文件还原为 origin/main 版本；用户改动从 scratchpad 备份原样写回工作树，保持未提交。核验：`git diff origin/main..HEAD --stat -- docs/superpowers/specs/b434-ledger.md` 为空；`git diff --stat` = 该文件 +7。
+- review 派独立 subagent（只读，范围 cf0c0ad6..HEAD）。
