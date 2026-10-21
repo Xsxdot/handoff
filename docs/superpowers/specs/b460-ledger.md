@@ -113,3 +113,4 @@
 - 机内审查（独立 subagent，HEAD 4abe2a7e）：**FAIL**。全量 65 ok / 0 FAIL（非嵌套工作树），gofmt/vet 净；变异 M1–M32 除 M17（HANDOFF_ARTIFACTS_DIR 重绑定守卫关掉无测试变红）外均有测试变红。阻塞：B1 `cd -`/`--`/`-P`/`-L` 被当相对目录，`cd $TMPDIR && cd -- && echo x > .bashrc` 新路径 auto_allow（基线 consult）；B1b 同族旧缺陷 heredoc/rm 出口（基线即 auto_allow）；B2 `printf -vTMPDIR /etc && echo x > $TMPDIR/passwd` auto_allow（重绑定检测不认连写 `-vNAME`；基线 consult）。加固：N1 WaitFinal 丢弃 seq<=start 事件；N2 测试桩连接接管后不随客户端关闭；N3 scopedwrite 头注释；N4 judgeWebFetch 要求 Command/Paths 为空；N5 补钉住 B1 展开字符规则与产物目录重绑定守卫的测试。端口耗尽定性：审查自身变异运行（M1+桩重发旧事件+桩不释放）所致，未改代码无泄漏（HEAD 全包峰值 CLOSE_WAIT 21 vs 基线 15）。架构轴通过。
 - **S1（需用户裁决，非本 diff 引入）**：`cat ~/.codex/auth.json`、`cat ~/.ssh/id_rsa` 在基线即 safe-command 自动放行，不经审批链；spec「网页抓取放行的外带风险由审批链拦凭据读取兜底」的前提不成立——读凭据 + 网页抓取外带可零审批完成。
 - 裁决（主会话）：review 退回 implement 修 B1/B1b/B2/N1–N5；S1 交用户。
+- 用户裁决 S1（2026-10-21 原话「收紧吧」）：spec 升 r1.3 加 S10——白名单只读命令读凭据路径或打印密钥类环境变量改交审批链，不再自动放行。主会话在用户所批路径清单之外补了环境变量一类（同一风险），汇报时告知。
