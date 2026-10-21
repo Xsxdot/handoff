@@ -35,7 +35,7 @@
 - 以下回归锁在基线上就是绿的，按设计如此（锁的是「不得因新功能改变」），不是缺失功能：permgate、approval 两支权限门锁（`Gate.Judge` 直打、`Authority.Judge`）；V4 的 turn_failed、Stop 留树、基线缺失 400、与外部 done 并发四条；V2 执行机侧组合锁 `TestB452CardlessPromptReachesPlanContent`。
 
 段 3–4：
-- **拒用守卫同时放进 `ledgerstep.PreflightDiscipline`。** CLI `card dispatch` 和 agentd 卡节点共用这个前置解析；只在 `ViaTemplate` 拦的话，`target=here` 会先被调用方当成目标机解析，报出一个无关的错。两处共用私有 `rejectSkilledForCard`，报同一句话。只对熟练工定义生效，既有模板行为不变。
+- **拒用守卫同时放进 `ledgerstep.PreflightDiscipline`。** CLI `card dispatch` 和 agentd 卡节点共用这个前置解析；只在 `ViaTemplate` 拦的话，`target=here` 会先被调用方当成目标机解析，报出一个无关的错。两处共用私有 `rejectSkilledForCard`，报同一句话。只对熟练工定义生效，既有模板行为不变。**协调者追认（2026-10-21）。**
 - **`--template` 下定义点名的 discipline 经账本解析**，走 `resolveCardDispatchDiscipline`，与卡派发是同一个缝 1 入口；显式给 `--discipline-file` 时它覆盖定义。只读定义可以不点名 discipline，此时只注入平台层。
 - **能力位核对复用缝 1 的那次 Status。** 做法是 `statusOnceClient` 缓存包装；`resolveBareDiscipline`、`resolveCardDispatchDiscipline` 的签名被锁定，没有改。
 - 定义的 `model_by_target` 不用于熟练工派发：落点由 agentd 决定，`--model` 可以覆盖。
@@ -152,3 +152,34 @@
   - 新 CLI 对老 agentd 发 `--template`：应因能力位缺席被 CLI 拒发，零 `POST /api/tasks`；
   - 新受理机转发只读请求到老执行机：应得 502「…版本过旧，不支持只读形态…」。
 - 收尾提醒：生产账本的 `template put code-investigate`（receiver=mimo）留到 finish 换版后单独请示；roadmap 残余补一行「跨转发自动补登记（Q13）」。
+
+## 6. 修复轮（2026-10-21）
+
+独立审查两轴通过后，协调者给出六条裁决。按 implement 纪律执行：先红后绿，一条逻辑修复一个新提交，不 amend。原始读数见台账「implement 修复轮」小节。
+
+| # | 提交 | 改动 | 先红 / 变异红 |
+|---|---|---|---|
+| 1 | `c79e9d42` | `--template` 接受 plan 文件代替 `--prompt`。plan 文件内容即「## 本次任务」，组装结果走 `plan_b64`。**同给时的选择**：照裸派发语义两者合法，`--prompt` 原样走 `prompt`，由 agentd 既有规则拼成「## 附加指令（派发时提供）」接在最后。SKILL.md 与 flag 帮助同步。 | `cmd/b452_plan_file_test.go`：CLI 捕获的请求体喂给真实 `orchestration.NewManager(...).Dispatch`，断言执行器收到的 `PlanContent`。先红为「--template 不接 plan 文件」。 |
+| 2 | （无代码） | `PreflightDiscipline` 的熟练工拒用守卫：**协调者追认（2026-10-21）**，已记入 1.3 节与台账。 | — |
+| 3 | `f9901145` | `WaitFinal` 在 waiting_review 下，只有能证明结果属于本回合才下结论，否则退避重取快照，判据见下。completed / failed 下没有本回合结果，才判「未完成就归档」（退出码 3）。 | `internal/client/b452_waitfinal_turn_test.go` 四支：首回合落在「迁状态 → 落结果」之间、续接任务不得返回上一回合、亲见水位以内的结果不采信、结果后有写入时两次快照确认（不无限等）。四支先红。 |
+| 4 | `8a3c7fb9` | `artifacts_dir` 为空即按无产物处理：不下载，stdout 只有最终文本，退出 0。`handoff artifacts` 同样适用。 | `TestB452DispatchWaitNoArtifactsDirMeansNoArtifacts`。先红：多出一行 `artifacts:`，且真去下载了。 |
+| 5 | `d992bc38` | `SetManager` 的可选接口断言失败时，在启动时打一行 Error：「编排实现不支持终态回调接线：只读任务自动归档后不会归还载体/小队名额」。接线位置不变。 | `TestB452SetManagerWithoutNotifierLogsErrorOnce`，先红为空记录；同一测试反向断言真实编排实现不打这行。 |
+| 6 | `dfb014cc` | 补四支直接锁：F14 带转发头时忽略 machine、不再转发；F6 亲和拒绝零出站（计数对端）；F2/F5 在 HTTP 层返回 400，零出站、零任务；F12 `/api/status` 原始 JSON 为 `true`。顺带 gofmt 了 `d992bc38` 漏格式化的测试文件。 | 四支在现码上即绿，属锁测；变异取红：去掉转发头判断、短路 `CheckMode` / `checkAffinityFields`、亲和谓词置 false、不上报能力位。 |
+
+**第 3 条的判据，以及残余边界。** 读码确认两个事实：`handleResult` 先 `transitToReview` 再 `AppendEvent`；`Continue` 只迁到 running，不落任何事件。所以库里没有「回合起点」记录。waiting_review 下按以下三条判断结果是否属于本回合：
+
+1. **本次等待亲见过「进行中」，且结果的 seq 大于亲见时的水位。** 这一条是确定性的。`dispatch --wait`，以及所有在运行中开始的等待，都走这条。
+2. **结果的 `created_at` 不早于任务的 `updated_at`。** 迁入 waiting_review 必然先于本回合结果写库；上一回合的结果必然早于续接与迁入。这条只会假阴，不会假阳。
+3. **兜底：隔一次退避的前后两次快照，都是 waiting_review，且最后一条结果的 seq 相同。** 用来兜住第 2 条的假阴——结果落库后，清扫作废工单之类的写入会把 `updated_at` 顶高，没有第 3 条就会无限等。
+
+残余边界只有一种：首个快照就已是 waiting_review，且结果落库被拖慢、超过一次退避（生产 ≥1s）。此时第 3 条仍可能采信上一回合的结果。第 1、2 条不受影响。要彻底消除，需要编排在续接时落一个回合起点事件。这超出本卡改动边界，未做；如需要，记 roadmap。
+
+**复跑结果：**
+- `go build ./...` → `BUILD_OK`；`go vet ./...` → `VET_OK`；改动 Go 文件 `gofmt -l` → 空。
+- `go test -race -run B452 -count=1` 三个包：
+  - `ok github.com/Xsxdot/handoff/internal/orchestration 7.130s`
+  - `ok github.com/Xsxdot/handoff/internal/agentd 7.512s`
+  - `ok github.com/Xsxdot/handoff/internal/client 1.997s`
+- 全量 `env -u CLAUDE_CODE_SESSION_ID -u CLAUDE_CODE_ENTRYPOINT go test ./... -count=1`：63 个包 ok，8 个包 no test files，红 2 支：
+  - `TestProductionHTTPClientCallersAreGatewayOnly`：环境性，名单全为 `.claude/worktrees/*`，同第 4 节。
+  - **新出现** `--- FAIL: TestProbeReplayClassification/S3 … S3 回放未产出任何终结事件，实际事件 [usage progress usage]`（`internal/executor/opencode`）。本卡对 `internal/executor/` 零改动（`git diff --name-only cf0c0ad6 HEAD -- internal/executor/` 为 0 行）。单跑 `-run TestProbeReplayClassification -count=5` 得 `ok … 21.937s`，整包复跑得 `ok … 28.318s`。判为全量负载下的时序抖动，不是本卡回归；建议 review 复跑时留意。
