@@ -83,3 +83,13 @@
   - 判断：probe 的「失败结论」按「最近尝试晚于最近成功读数」判，不按 state（撞额度标记优先会把失败掩成 out）；表格多一列「说明」放 `△ 原因`（S11 列之外，便于终端判断）。
 - 收尾编译：`go build ./... && go vet ./...` 通过。
 - 提交：T1+T2 `c94944f6`；T3+T4 `c929fb97`（均只按显式路径提交，未碰 b434-ledger.md / .playwright-mcp / prototypes）。段 1 交回主会话，R1 由协调者在隔离实例上跑。
+
+## 真机 R1（2026-10-22，主会话；隔离实例 t453-linux @ linux-01:7795、t453-mac @ mac-mini 127.0.0.1:7796，共享测试库 handoff_b453；二进制 f65e5628 普通 go build）
+
+- 段 1 交回裁决：偏离 4（403/EntitlementError → 读数 blocked、状态无额度）采纳，以 Q4 为准；偏离 7（AccountView 原样回显 proxy 含 userinfo）**不采纳**——响应中代理 userinfo 的密码段打码，PUT 收到打码值时保留原值，并入段 2；其余偏离认可。
+- 凭据条目存在性（只读条目名与 type，不读值）：linux-01 root 主 HOME auth.json 仅 `deepseek: api`；载体 HOME 中只有 `/root/.handoff/home/muse` 含 `opencode-go: api`。
+- 登记 `og-muse`（kind opencode-go，machine t453-linux，home `/root/.handoff/home/muse`）→ PUT 200，state none。立即探测 → 真实调用 `https://opencode.ai/zen/go/v1/usage` 得 **HTTP 401 `api_key_expired`**（「This API key has expired. Create a new API key in OpenCode Console…」）；分类 `unauthorized`，state fail，读数写回共享账本，日志 `opencode-go 额度接口结果为失败 status=401`、`账号探测失败 category=unauthorized`，未见请求头。结论：接口存在、Bearer API key 鉴权形态成立（U1 部分证实）；成功响应的字段形状（percent 量纲、resetsAt 格式）**仍未验证**——机队无有效 opencode-go API key。
+- 转发：t453-mac `GET /api/accounts` 读到 og-muse（共享账本）；`POST /api/accounts/og-muse/probe` 在 mac 发起 → linux 执行（linux 日志「账号探测失败」计数 1→2，last_attempt_at 前进），mac 不写读数。
+- 反例：t453-mac 登记 `og-mini`（home = mac-mini 主 HOME）→ 探测 `credential_missing`「凭据文件 …/opencode/auth.json 不存在（在该机执行 opencode auth login 登记 opencode-go API key）」。`handoff account list` 两行均「探测失败」+ △ 原因。
+- 按 plan 拍板 Q2 (b)：首故事的成功读数改由 codex 在 R2 取得；**opencode-go 记欠交**，待用户二选一：在 OpenCode Console 新建 API key 写入某载体 HOME 的 auth.json，或同意新增 `opencode.db › account`（OAuth token）凭据位置。卡 note 已记。
+- 事故（主会话）：准备 DSN 时一条打码 sed 未匹配表格，把 credentials.md 中 linux-01/vm-prod PostgreSQL 超管密码与 sq SK 打印进会话；已在卡 note 请用户轮换，记忆 never-print-credentials-registry 已存。DSN 改由脚本直写配置、不输出。
