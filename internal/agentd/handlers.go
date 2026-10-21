@@ -1744,6 +1744,10 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 				return false
 			}
 			lastWrittenSeq = ev.Seq
+			// 段 0（B460 S5）永久观测点：实时事件离开本进程的时刻与落库时刻之差。
+			// 两端（远端 agentd、本机 agentd）都走这里，逐跳比对 lag 即可定位晚在哪一跳
+			s.log.Debug("WS 实时事件已写出", "task", taskID, "seq", ev.Seq, "type", ev.Type,
+				"lag_ms", time.Since(ev.CreatedAt).Milliseconds())
 			if ev.Seq <= storeMax {
 				deliveredInGap++
 			}
