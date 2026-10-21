@@ -36,3 +36,11 @@
 - 判断（plan 出稿）：Q1 CLI 侧解析模板、wire 不带模板名；Q2 S3 复用冻结身份 `POST /api/tasks`，不新开端点；Q3 `--wait` 走 `/ws/events?machine=` 显式转发，加受理机即时登记镜像行；Q4 只读自动归档在编排内部另起 goroutine 调 `Done`，名额由组装点注入的终态回调归还，turn_failed 不自动归档；Q5 `scheduling.SelectWhere` 加谓词，wire `machine`+`here`；Q6 422 / 退出码 4（亲和），3（任务未完成），124（超时），`--wait` 缺省 30m；Q7 产物目录 `<DataDir>/tasks/<id>/artifacts`（已在权限门 TaskDir 范围，权限门零改动），`HANDOFF_ARTIFACTS_DIR`，保留期 168h；Q8 `GET /api/tasks/{id}/artifacts` tar.gz / 204 / 413，跳符号链接；Q9 产物行 `artifacts: <路径>`；Q11 能力位 `skilled_dispatch_supported`；Q12 真机共用 PG 测试库（需用户：凭据）；Q15 不扇出，分四段。
 - 产出：`docs/superpowers/plans/b452-plan.md`（待拍板）。
 - plan 拍板（主会话，2026-10-21）：Q1 甲、Q2 甲、Q3 甲、Q4 甲（瞬时经过 waiting_review 读法确认）、Q5 照推荐、Q6 照推荐（422/0·3·4·124·1/30m）、**Q7 改判乙**（产物小节只给 readonly，目录与环境变量全建）、Q8 照推荐、Q9 甲（`artifacts: ` 前缀行）、Q10–Q11 照推荐、Q12 甲（复用 `handoff_b448` 测试库）、Q13 照推荐、Q14 mimo、Q15 不扇出。Q6/Q9 不回人：spec 实现决定 5、7 授权 plan 定值。spec 修订 r1.3 五条事实更正。
+
+## implement（2026-10-21，subagent）
+- 起点：分支 `cards/B452-charter-1` @ `cf0c0ad6`；工作树既有无关改动 `docs/superpowers/specs/b434-ledger.md`、未跟踪 `.playwright-mcp/`，全程不动不暂存。
+- 读：plan 全文（拍板节覆盖待拍板；Q7 取乙）、spec r1.3、台账 spec/plan 两节；载入 `charter:implement`、`charter:defect-families`。
+- 段 0 三条承重假设（均不改产品代码）：
+  - ① 两 Server 共账本竖切：新夹具 `internal/agentd/b452_pair_test.go`（`newB452Pair`：共享 `*ledger.Store`，A=t452-mac 无执行器，B=t452-linux 装 fake、登记真 git 项目；A.targets→B）。`TestB452PairFrozenDispatchOverRealHTTP`：A 经 `clientForTarget("t452-linux")` 发冻结身份派发，B 建任务、A 零行、共享名额 1，B 的 HTTP stop 后归零。`go test ./internal/agentd/ -run TestB452Pair -count=1` → `ok  github.com/Xsxdot/handoff/internal/agentd 0.829s`。成立。
+  - ② detached 树：`internal/workspace/b452_detached_probe_test.go`。`worktree add --detach` 后 `branch --show-current` 空串、HEAD==sha、`for-each-ref refs/heads` 前后一致；既有 `RemoveManagedWorktree` 删得掉。`--- PASS: TestB452ProbeDetachedWorktreeLifecycle (0.17s)`。成立。
+  - ③ 另起 goroutine 调 Done：`internal/orchestration/b452_probe_test.go`，hub 订阅收到 completed 即 `go m.Done(...)`（不改产品代码的近似：此刻 mediate 仍在 handleResult 尾部或已回 range）。`go test ./internal/orchestration/ -run TestB452Probe -count=3 -race` → `ok ... 2.492s`；Done 5s 内返回、任务 completed、`fk.Stops()` 恰一次。成立；产品实现里改为 handleResult 内 `go`，段 1 的 V4 再以真实路径复验。
