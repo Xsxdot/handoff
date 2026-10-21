@@ -116,3 +116,19 @@
   - 绿：`-run 'TestAccount|NoDirectHttptest' -race -count=2` ok；触及包 `go test ./internal/agentd/ ./internal/proto/ ./internal/quota/ ./internal/scheduling/... ./cmd/` 全 ok（agentd 90.6s、cmd 78.4s）。`go build ./... && go vet ./...` 通过。
   - 判断：DELETE 成功回 `{"name","version":expect}`（沿用载体删除回包形状）；拒删 409 体 `{"error","carriers":[…]}`（proto.AccountDeleteRefusal）；`AccountsClient` 增 Delete 一法（消费点 DELETE handler）。退避 `retryWait`：失败 30s×2^(streak−1) 封顶间隔，成功按间隔，全由读数行推出（重启续上）；失败日志的 next 用同一函数算。日志里代理一律 `MaskProxy`（段 1 用的 proxycfg.Redact 在账号 API 处改为同一打码口径）。组装点注册 opencode-go/codex/grok/agy 四适配，凭据相对路径取 toolchain 表，agy 走 PATH。
 - 段 2 提交：T5 `5c4c17ba`；T6 `a677cc6d`；T7 `6914de70`（显式路径提交，未碰 b434-ledger.md / .playwright-mcp / prototypes；未 push）。R2 待协调者：codex/grok/agy 真样本替换三份 `*.synthetic.json`，agy 未登录 stderr 关键字、信封身份键位按真样本校正。
+
+## 真机 R2（2026-10-22，主会话；三隔离实例 t453-linux:7795 / t453-mac:7796 / t453-mbp:7797（macbook-pro，只读 grok），二进制 9adc0cc7）
+
+- 段 2 交回裁决：偏离 1–12 全部认可（5：agy 版本无法识别按版本门拒，更保守，认可）。
+- 首次重启隔离实例时又踩 `ssh … 'pkill -f "<含自身命令行的模式>"'` 自杀坑（linux 侧 ssh 会话被杀、后半命令未执行），mac 旧进程因相对路径启动未被 `pkill -f "$S/…"` 匹配；改用 `[h]andoff-mac` 括号模式定位后重启，三实例均报 revision 9adc0cc7。
+- 真实探测（登记于 t453-mac，探测在所在机）：
+  - `cx-linux`（codex，t453-linux，HOME /root）→ 正常，plan_type `plus`，指纹 `sha256:281e4cdbb6bc`，session 19%（resets 19:17Z）、weekly 18%（resets 10-27），与用户同时刻 orca 截图一致（19%/18%）。
+  - `gk-mbp`（grok，t453-mbp，HOME /Users/xushixin）→ 正常，指纹 `sha256:8bb629b008f0`，weekly 64%（与 orca 截图 64% 一致），**缺 resets_at、无 monthly、无 plan**——解析器未覆盖真实字段位置。
+  - `agy-linux`（agy 1.4.4，t453-linux，HOME /root）→ 正常，四窗口：Gemini Models 周 13.3% / 5h 5.9%，Claude and GPT models 周 0% / 5h 0%，均带 resets_at；指纹空（真实信封无登录身份字段，按 spec 留空）。
+- 真样本（在所在机用同一接口经本机代理抓取，凭据只在远端临时头文件里用、用后即删，不打印；id/邮箱脱敏后拷回 scratchpad `t453/samples/`）：
+  - codex `wham/usage` 200：顶层 `user_id, account_id, email, plan_type, rate_limit{allowed, limit_reached, primary_window{used_percent, limit_window_seconds, reset_after_seconds, reset_at(epoch 秒)}, secondary_window{…}}, credits{has_credits, unlimited, overage_limit_reached, balance(字符串), …}, rate_limit_reset_credits{available_count, applicable_available_count}, model_usage, spend_control, …`。
+  - grok `billing?format=credits` 200：`config{currentPeriod{type,start,end}, creditUsagePercent(float), onDemandCap{val}, onDemandUsed{val}, productUsage[{product,usagePercent}], isUnifiedBillingUser, prepaidBalance{val}, topUpMethod, billingPeriodStart, billingPeriodEnd}`——**数值包在 `{"val":…}`**，重置时刻 = `currentPeriod.end` / `billingPeriodEnd`；无 `subscriptionTier`。`/billing` 200：`config{monthlyLimit{val}, used{val}, onDemandCap{val}, billingPeriodStart, billingPeriodEnd, history[…]}`，本账号 monthlyLimit=0（= 无月窗口）。
+  - agy `/usage` 200（exit 0，stderr 空）：信封 `conversation_id, status:"SUCCESS", response, duration_seconds, num_turns, usage{…tokens 全 0}, command{name:"usage", data{description, groups[{name, description, buckets[{id, name, description, window:"weekly"|"5h", remaining_fraction(float 或 int 1), reset_time(RFC3339)}]}]}}`——usage token 全 0，佐证 1.4.4 的 /usage 不耗额度。
+- 代理反例：cx-linux 填 `socks5://u:secretpw@127.0.0.1:1` → PUT 回显 `socks5://u:***@127.0.0.1:1`；探测 fail `proxy`，旧读数 [19,18] 保留；linux 日志 `secretpw` 0 命中。**瑕疵**：失败文案里代理被写成 `socks5://%2A%2A%2A@127.0.0.1:1`（打码后又被 URL 转义、用户名丢失），应与回显同形。清空代理（PUT `proxy:""`）→ 回显无 proxy 键，再探测正常。
+- DELETE og-mini（无引用）→ `{"name":"og-mini","version":1}`；`account list` 四行：agy 正常、codex 正常、grok 正常、og-muse 探测失败（新文案「API key 已过期（在 OpenCode Console 新建 API key…）」）。
+- 待段 3 并修：grok 真实字段（val 包装、重置时刻、monthlyLimit=0 不出月窗口、无套餐时不报）；代理打码文案统一；CLI/界面百分比显示取整（读数保留原值）；三份合成样本换真样本。
