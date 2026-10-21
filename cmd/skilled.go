@@ -12,6 +12,7 @@ package cmd
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -35,7 +36,9 @@ const remoteMachinePrefix = "执行机 "
 // skilledFields 是熟练工派发最终进 wire 的字段（定义 + 命令行覆盖合成后的结果）。
 type skilledFields struct {
 	receiver, executor, mode, machine, prompt, name string
-	here                                            bool
+	// planB64 非空 = --template 带了 plan 文件：模板正文 + 「## 本次任务」+ plan 文件内容（base64）。
+	planB64 string
+	here    bool
 }
 
 // loadDispatchTemplate 开账本取最新版定义。账本由调用方关闭。
@@ -80,11 +83,8 @@ func checkSkilledDispatchFlags(cmd *cobra.Command, nArgs int, tpl *ledger.Templa
 		return fmt.Errorf("--timeout 只与 --wait 同用（它是等待时限，不是任务时限）")
 	}
 	if tpl != nil {
-		if nArgs > 0 {
-			return fmt.Errorf("--template 不接 plan 文件：模板正文就是计划，本次任务文本用 --prompt 给")
-		}
-		if dispatchPrompt == "" {
-			return fmt.Errorf("--template 需要 --prompt 给出本次任务（会接在模板正文后的「## 本次任务」一节）")
+		if nArgs == 0 && dispatchPrompt == "" {
+			return fmt.Errorf("--template 需要 --prompt 或 plan 文件给出本次任务（会接在模板正文后的「## 本次任务」一节）")
 		}
 		if tpl.Def.Mode == ledger.TemplateModeReadonly {
 			for _, f := range []string{"branch", "new-branch", "worktree", "new-worktree"} {
@@ -101,7 +101,12 @@ func checkSkilledDispatchFlags(cmd *cobra.Command, nArgs int, tpl *ledger.Templa
 }
 
 // buildSkilledFields 合成派发字段：命令行显式值覆盖定义缺省。tpl 为 nil 时只取命令行。
-func buildSkilledFields(tpl *ledger.Template) skilledFields {
+//
+// 本次任务文本的来源（spec 方案「或 plan 文件代替 --prompt」）：
+//   - 只有 --prompt：提示词 = 模板正文 + 「## 本次任务」+ --prompt，走 wire 的 prompt；
+//   - 有 plan 文件：plan 文件内容即本次任务，组装结果走 plan_b64；--prompt 若同给则原样走 prompt，
+//     由 agentd 照裸派发语义拼成「## 附加指令（派发时提供）」接在其后（与不带 --template 时同一规则）。
+func buildSkilledFields(tpl *ledger.Template, plan []byte, hasPlan bool) skilledFields {
 	f := skilledFields{receiver: dispatchReceiver, executor: dispatchExecutor, prompt: dispatchPrompt, name: dispatchName}
 	f.machine, f.here = effectiveAffinity(tpl)
 	if tpl == nil {
@@ -117,6 +122,10 @@ func buildSkilledFields(tpl *ledger.Template) skilledFields {
 		f.name = tpl.Name
 	}
 	f.mode = tpl.Def.Mode
+	if hasPlan {
+		f.planB64 = base64.StdEncoding.EncodeToString([]byte(ledgerstep.RenderCardlessPrompt(tpl.Def.Prompt, string(plan))))
+		return f
+	}
 	f.prompt = ledgerstep.RenderCardlessPrompt(tpl.Def.Prompt, dispatchPrompt)
 	return f
 }

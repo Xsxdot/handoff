@@ -119,7 +119,7 @@ handoff wait <task> --notify --timeout 1h
     handoff template list                                   # 有哪些熟练工
     handoff dispatch --template code-investigate --prompt "查 Foo 的调用方与失败路径" --wait
 
-- 提示词 = 模板正文 + `## 本次任务` + `--prompt` 原文；占位符 `{{CARD}}{{TITLE}}{{ACCEPT}}` 无卡时为空串。stderr 回显 `熟练工 <名> v<版本>`，那是审计留痕。
+- 提示词 = 模板正文 + `## 本次任务` + `--prompt` 原文；也可用 plan 文件代替 `--prompt`（`handoff dispatch --template <名> question.md`，文件内容即本次任务；两者同给时 `--prompt` 作「附加指令」接在最后，与裸派发同一规则）；占位符 `{{CARD}}{{TITLE}}{{ACCEPT}}` 无卡时为空串。stderr 回显 `熟练工 <名> v<版本>`，那是审计留痕。
 - 命令行显式值覆盖定义：`--receiver` 换接收者，`--here` / `--machine <M>` 换亲和（二者互斥；`--here` 不能与 `--target` 同用）。
 - 定义示例在仓内 `skills/handoff/skilled/code-investigate.json`，`handoff template put <名> --file <json>` 写入。卡派发（`card dispatch`）拒用熟练工定义。
 

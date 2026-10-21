@@ -258,26 +258,33 @@ var dispatchCmd = &cobra.Command{
 		if err := checkSkilledDispatchFlags(cmd, len(args), tpl); err != nil {
 			return err
 		}
-		fields := buildSkilledFields(tpl)
-		if tpl != nil {
-			// 审计回显：wire 不带模板名（Q1 甲），用的是哪个定义哪一版只在这里留痕
-			fmt.Fprintf(cmd.ErrOrStderr(), "熟练工 %s v%d（receiver=%s mode=%s）\n",
-				tpl.Name, tpl.Version, fields.receiver, modeLabel(fields.mode))
-		}
 		// B62：派发的项目由 cwd 识别，路径不再出现在命令上。只依赖本机信息，
 		// 多跑一次网络毫无意义——识别不了的，这里就直接说清楚怎么补。
+		var planContent []byte
 		var planB64, planName string
 		if len(args) == 1 {
 			content, err := os.ReadFile(args[0])
 			if err != nil {
 				return fmt.Errorf("读取计划文件 %s: %w", args[0], err)
 			}
+			planContent = content
 			planB64 = base64.StdEncoding.EncodeToString(content)
 			planName = filepath.Base(args[0])
 		}
 		// plan 文件与 --prompt 都缺：本地先报错，省一次网络往返（服务端也会拒）
 		if planB64 == "" && dispatchPrompt == "" {
 			return fmt.Errorf("必须提供 plan 文件或 --prompt（至少其一）")
+		}
+		// B452：熟练工字段合成（定义 + 命令行覆盖）。--template 带 plan 文件时，plan 文件内容即
+		// 「## 本次任务」，--prompt 照裸派发语义作附加指令由 agentd 接在其后。
+		fields := buildSkilledFields(tpl, planContent, len(args) == 1)
+		if fields.planB64 != "" {
+			planB64 = fields.planB64
+		}
+		if tpl != nil {
+			// 审计回显：wire 不带模板名（Q1 甲），用的是哪个定义哪一版只在这里留痕
+			fmt.Fprintf(cmd.ErrOrStderr(), "熟练工 %s v%d（receiver=%s mode=%s）\n",
+				tpl.Name, tpl.Version, fields.receiver, modeLabel(fields.mode))
 		}
 		// B62：项目识别。这一条在 CLI 侧判是因为它只依赖本机信息，多跑一次网络毫无意义。
 		projectID := ""
@@ -443,7 +450,7 @@ func init() {
 		"临时捏一份纪律块正文直接下发：读文件作本次派发的角色层正文（与平台层组装），不落账本、版本记 0")
 	dispatchCmd.MarkFlagsMutuallyExclusive("branch", "new-branch")
 	dispatchCmd.Flags().StringVar(&dispatchTemplate, "template", "",
-		"按名派发熟练工定义（handoff template list 查看）：提示词 = 模板正文 + 「## 本次任务」（--prompt），接收者/形态/亲和取自定义，命令行显式值覆盖")
+		"按名派发熟练工定义（handoff template list 查看）：提示词 = 模板正文 + 「## 本次任务」（--prompt 或 plan 文件；同给时 --prompt 作附加指令），接收者/形态/亲和取自定义，命令行显式值覆盖")
 	dispatchCmd.Flags().BoolVar(&dispatchWait, "wait", false,
 		"阻塞到任务终态：stdout 只输出最终文本（产物非空时另起一行 artifacts: <本机路径>），任务 JSON 改打 stderr；退出码 0 完成 / 3 未完成 / 4 亲和拒绝 / 124 超时")
 	dispatchCmd.Flags().DurationVar(&dispatchWaitTimeout, "timeout", 30*time.Minute,

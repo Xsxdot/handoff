@@ -87,3 +87,6 @@
 - implement 交回 fad850eb；`git diff --stat cf0c0ad6..HEAD` 56 文件 +5242/-41，含 orchestration/agentd/client/ledger/workspace/store/scheduling/proto/config 产品代码与测试，非空转、非越轨（plan §3 边界内，`internal/config` 偏离已在交回物登记）。
 - 发现协调者自身失误：c37b6d66（spec r1.1）用 `git add -A docs/` 误把用户工作树里 `docs/superpowers/specs/b434-ledger.md` 的 7 行未提交改动收进本卡分支。处置：0c48f234 将该文件还原为 origin/main 版本；用户改动从 scratchpad 备份原样写回工作树，保持未提交。核验：`git diff origin/main..HEAD --stat -- docs/superpowers/specs/b434-ledger.md` 为空；`git diff --stat` = 该文件 +7。
 - review 派独立 subagent（只读，范围 cf0c0ad6..HEAD）。
+
+### implement 修复轮（2026-10-21，subagent；独立审查两轴通过后，协调者裁决六条）
+- 修 1（plan 文件代替 --prompt）：先红 `cmd/b452_plan_file_test.go`——CLI 捕获的请求体原样喂真实 `orchestration.NewManager(...).Dispatch`，断言执行器收到的 `PlanContent`；红文 `--template + plan 文件应可派发: --template 不接 plan 文件：模板正文就是计划，本次任务文本用 --prompt 给`（两子例同因）。改：`checkSkilledDispatchFlags` 只要求「--prompt 或 plan 文件」其一；`buildSkilledFields(tpl, plan, hasPlan)`：有 plan 文件时 `plan_b64 = base64(RenderCardlessPrompt(正文, plan 文件内容))`，`--prompt` 原样走 `prompt`，由 agentd 既有规则拼成「## 附加指令（派发时提供）」（选择：照裸派发语义，两者同给合法、prompt 作附加）；只有 --prompt 时不变。字段合成与回显挪到读 plan 文件之后。SKILL.md 与 `--template` 帮助同步一句。改后 `go test ./cmd/ -run B452` → `ok …/cmd 1.474s`。
