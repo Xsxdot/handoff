@@ -32,6 +32,8 @@ type SchedulingClient interface {
 	Admit(req scheduling.IgnitionRequest) (scheduling.Binding, error)
 	AdmitFrozen(binding scheduling.Binding) (scheduling.Binding, error)
 	Select(req scheduling.IgnitionRequest) (scheduling.Binding, error)
+	// SelectWhere 是带机器亲和谓词的只读选择（B452 dispatchroute）。
+	SelectWhere(req scheduling.IgnitionRequest, accept func(scheduling.Carrier) bool) (scheduling.Binding, error)
 	LaunchAdmit(squadName string) (scheduling.Binding, error)
 	// AdmitSeatCarrier 按承载记录里的冻结载体对协调者小队做两级 CAS 准入
 	// （B389 §3.4）；唤醒路径不再经 LaunchAdmit 重选载体。

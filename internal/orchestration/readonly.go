@@ -51,17 +51,27 @@ func TaskArtifactsDir(dataDir, taskID string) string {
 	return filepath.Join(dataDir, "tasks", taskID, proto.ArtifactsDirName)
 }
 
+// CheckMode 是任务形态取值的唯一判据（F1/F2）：空串、branch、readonly 合法，其余包
+// workspace.ErrBadDispatchRequest（门面映射 400）。受理机在转发前用它先挡一道，避免把非法
+// 形态送进一台会静默忽略 mode 的老 agentd。
+func CheckMode(mode string) error {
+	switch mode {
+	case "", proto.TaskModeBranch, proto.TaskModeReadonly:
+		return nil
+	}
+	return fmt.Errorf("%w: mode=%q 非法（合法值 %s、%s）", workspace.ErrBadDispatchRequest,
+		mode, proto.TaskModeBranch, proto.TaskModeReadonly)
+}
+
 // validateDispatchMode 校验派发形态并就地规整请求：只读形态强制 NewWorktree。
 //
 // 返回：readonly 是否只读形态；err 非 nil 时调用方必须零副作用拒发（此刻尚未落库建树）。
 func validateDispatchMode(req *DispatchReq) (readonly bool, err error) {
-	switch req.Mode {
-	case "", proto.TaskModeBranch:
+	if err := CheckMode(req.Mode); err != nil {
+		return false, err
+	}
+	if req.Mode != proto.TaskModeReadonly {
 		return false, nil
-	case proto.TaskModeReadonly:
-	default:
-		return false, fmt.Errorf("%w: mode=%q 非法（合法值 %s、%s）", workspace.ErrBadDispatchRequest,
-			req.Mode, proto.TaskModeBranch, proto.TaskModeReadonly)
 	}
 	if req.Branch != "" || req.NewBranch != "" || req.Worktree != "" {
 		return true, fmt.Errorf("%w: 只读形态（mode=readonly）不接受 branch/new-branch/worktree，它总在基线提交上建 detached 托管树",

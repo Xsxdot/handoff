@@ -955,7 +955,10 @@ func (s *Server) Handler() http.Handler {
 	// s.mgr.Reclaim 的 store.ErrNotFound → 404，什么也回收不了；包上 byTask 才
 	// 会把请求转发到真正持有那个 worktree 的机器。「资源只在本机」恰恰是
 	// **要转发**的论据，不是不转发的论据。
-	api.HandleFunc("GET /api/tasks/{id}", s.byTask(s.handleGetTask))
+	// B452 F15/F16：任务详情与产物下载先认显式 ?machine=（跟随刚转发、镜像还没有的他机任务），
+	// 再按任务归属路由。
+	api.HandleFunc("GET /api/tasks/{id}", s.machineFirst(s.byTask(s.handleGetTask)))
+	api.HandleFunc("GET /api/tasks/{id}/artifacts", s.machineFirst(s.byTask(s.handleTaskArtifacts)))
 	api.HandleFunc("POST /api/tasks/{id}/reply", s.byTask(s.handleReply))
 	api.HandleFunc("POST /api/tasks/{id}/continue", s.byTask(s.handleContinue))
 	api.HandleFunc("POST /api/tasks/{id}/done", s.byTask(s.handleDone))

@@ -567,6 +567,15 @@ func (s *Service) Admit(req IgnitionRequest) (Binding, error) {
 // 当时的物理身份快照。它只读 Registry，不为后续执行预占任何运行计数；调用方
 // 必须把返回的 Binding 原样交给执行侧 AdmitFrozen，容量竞态由后者的 CAS 裁决。
 func (s *Service) Select(req IgnitionRequest) (Binding, error) {
+	return s.SelectWhere(req, nil)
+}
+
+// SelectWhere 同 Select，但只在 accept 放行的载体里选（B452 机器亲和）。accept 为 nil 等于全放行。
+//
+// 谓词是**过滤**不是排序：被拒的成员视同不存在——放行集合里没有在线成员返回 ErrNoHealthy，
+// 放行的在线成员全满返回 ErrNoSlot；绝不退到被拒的成员上（「不静默换机」）。
+// 谓词不进 IgnitionRequest：那个结构会随排队行持久化，给它加过滤语义会改变存量排队行的行为。
+func (s *Service) SelectWhere(req IgnitionRequest, accept func(Carrier) bool) (Binding, error) {
 	logger := statusLog().With("squad", req.Squad, "card", req.Card, "node", req.Node,
 		"target", req.Target, "executor", req.Executor, "model", req.Model)
 	logger.Info("冻结身份选择开始", "error_kind", "select_start")
@@ -600,6 +609,11 @@ func (s *Service) Select(req IgnitionRequest) (Binding, error) {
 				"member_key", OccupancyMemberKey(q.Name, member.Carrier),
 				"carrier_key", OccupancyCarrierKey(member.Carrier), "error_kind", "carrier_read", "cause", carrierErr)
 			return Binding{}, carrierErr
+		}
+		if accept != nil && !accept(carrier) {
+			logger.Info("冻结身份选择按谓词过滤掉载体", "carrier", carrier.Name,
+				"machine", carrier.Machine, "error_kind", "carrier_filtered")
+			continue
 		}
 		if carrier.Status != StatusOnline {
 			logger.Info("冻结身份选择跳过离线载体", "carrier", carrier.Name,

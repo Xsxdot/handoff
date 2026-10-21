@@ -798,6 +798,12 @@ type DispatchOpts struct {
 	// BaseCommit 是协调者本地 HEAD 的提交号，随请求上送让 agentd 校验任务仓库
 	// 不落后于本地（空=不校验）。
 	BaseCommit string
+	// Mode 是任务形态（B452 F1）：空=分支形态（键缺席），"readonly"=只读形态。
+	Mode string
+	// Machine / Here 是机器亲和（B452 F4/F5），互斥；只在非零值时进 wire。
+	// Here=调用方所在机（由受理机解析成自名）；Machine=指定机器名。
+	Machine string
+	Here    bool
 }
 
 // Dispatch 派发一个新任务到 agentd 执行。
@@ -835,7 +841,19 @@ func (c *Client) Dispatch(ctx context.Context, opts DispatchOpts) (*proto.Task, 
 	if opts.FrozenTarget != "" {
 		body["frozen_target"] = opts.FrozenTarget
 	}
-	c.log().Info("Dispatch 进入", "url", c.baseURL, "relay", c.relayBacked,
+	// B452 F4：三键只在非零值时出现——缺席与零值对老 agentd 同义，但对新 agentd 的
+	// 「here 与 machine 同给」判据而言，零值不能被当成「给了」。
+	if opts.Mode != "" {
+		body["mode"] = opts.Mode
+	}
+	if opts.Machine != "" {
+		body["machine"] = opts.Machine
+	}
+	if opts.Here {
+		body["here"] = true
+	}
+	c.log().Info("Dispatch 进入", "url", c.baseURL, "relay", c.relayBacked, "mode", opts.Mode,
+		"machine", opts.Machine, "here", opts.Here,
 		"executor", opts.Executor, "target", opts.Target, "carrier", opts.Carrier, "squad", opts.Squad,
 		"home_dir_set", opts.HomeDir != nil, "prompt_runes", len([]rune(opts.Prompt)))
 	resp, err := c.do(ctx, http.MethodPost, "/api/tasks", body)
