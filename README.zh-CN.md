@@ -243,7 +243,7 @@ handoff dispatch --target devbox --new-worktree plan.md
 | `handoff gc` | 预览或清理目标 agentd 上终态任务的缓存叶子（`tmp/<id8>` 与 `tasks/<id>/tmp`）和残留 managed 工作树 | `--yes` 执行；`--force` 仅脏树；`--json`；`--target` |
 | `handoff footprint` | 各任务进程占用与本机进程余量 | — |
 | `handoff status` | agentd 能不能用、版本、活跃任务与 executor 存活 | `--target <名>`；`--json`；退出码 0=能用 1=够不着 |
-| `handoff upgrade` | 巡检/升级本机与全部 target | `--now`；`--target <名>`；`--force`；`--rollback` |
+| `handoff upgrade` | 巡检/升级本机与全部 target | `--now`；`--target <名>`；`--force`；`--rollback`；`--from <目录>`（本机构建） |
 | `handoff version` | 打印版本（首行纯版本号，供脚本比对） | — |
 | `handoff skill [install]` | 查看/重装内嵌 AI skill（安装升级时自动同步，日常无需手工） | — |
 
@@ -372,6 +372,27 @@ handoff upgrade --now                 # 升级所有落后的机器（远端先�
 handoff upgrade --now --target devbox # 只升一台
 handoff upgrade --rollback            # 本机回滚到 <二进制>.prev
 ```
+
+**换到本机构建**（例如合并后、发版前把全队换到新提交）：先把当前提交打成 release 形态，
+再让 `upgrade` 从这个目录取包而不是 GitHub。判决、安全闸、自检、`.prev`、重启、等新版上线
+与 release 升级走同一条代码路径。
+
+```bash
+scripts/build-deploy.sh --pack /tmp/handoff-pack darwin/arm64 linux/amd64   # 每平台一个包 + checksums.txt
+handoff upgrade --from /tmp/handoff-pack                    # 巡检：「最新」行显示 <tag>（本机构建 <目录>）
+handoff upgrade --now --from /tmp/handoff-pack [--target devbox] [--force]
+```
+
+- tag 是 HEAD 前 12 位（不冒充 `vX.Y.Z`）；`--pack` 拒绝脏树（已跟踪改动、未跟踪的 `*.go`、
+  `web/` 下的未跟踪文件），保证部署物对应一个提交；输出目录须不存在或为空。
+- 远端一律**推送**（对端无法自拉本机目录）。目录里缺某平台的包时，该机单独失败并点名缺的
+  资产，其余机器照常；`checksums.txt` 缺行或 sha 不符则拒绝推送。
+- `--from` 可与 `--now`、`--target`、`--force` 组合（隐含 `--push`），与 `--rollback` 互斥。
+
+任何 `--now` 升级（release 或本机构建）之后：换版前账本可读的机器，换版后必须仍可读
+（探针 `GET /api/disciplines`），否则该机判失败「新版已上线但账本未挂载」——看该机 agentd
+日志。换版前账本就不可读或未知的机器不检查。agentd 启动时自登记撞上瞬时错误（如
+`too many clients`）会退避重试而不是放弃挂载，不必再手工重启第二次。
 
 两道安全闸：有活跃任务（`running` / `waiting_answer`）的机器默认拒升（`--force` 可越过）；agentd 非托管的机器拒升且 `--force` 也不越过——先在那台机器 `handoff service install`。升级不会自动回滚，旧二进制保留在 `<路径>.prev`。
 

@@ -427,7 +427,7 @@ log states which path this run used.
 | `handoff gc` | Preview or delete terminal-task cache leaves (`tmp/<id8>` and `tasks/<id>/tmp`) and leftover managed worktrees on the target agentd | `--yes` (apply); `--force` (dirty trees only); `--json`; `--target` |
 | `handoff footprint` | Per-task process usage and this machine's process headroom | — |
 | `handoff status` | Is agentd usable, version, active tasks, executor liveness | `--target <name>`; `--json`; exit code 0=usable 1=unreachable |
-| `handoff upgrade` | Survey/upgrade this machine and all targets | `--now`; `--target <name>`; `--force`; `--rollback` |
+| `handoff upgrade` | Survey/upgrade this machine and all targets | `--now`; `--target <name>`; `--force`; `--rollback`; `--from <dir>` (local build) |
 | `handoff version` | Print the version (first line is the bare version, for scripts to compare) | — |
 | `handoff skill [install]` | Show/reinstall the embedded AI skill (synced automatically on install and upgrade; normally hands-off) | — |
 
@@ -641,6 +641,34 @@ handoff upgrade --now                 # upgrade every machine that's behind (rem
 handoff upgrade --now --target devbox # upgrade one machine
 handoff upgrade --rollback            # roll this machine back to <binary>.prev
 ```
+
+**Upgrading to a local build** (e.g. the fleet right after a merge, before any release):
+pack the current commit in release form, then point `upgrade` at that directory instead of
+GitHub. Everything else — verdicts, safety gates, self-check, `.prev`, restart, waiting
+for the new version — is the same code path as a release upgrade.
+
+```bash
+scripts/build-deploy.sh --pack /tmp/handoff-pack darwin/arm64 linux/amd64   # one package per platform + checksums.txt
+handoff upgrade --from /tmp/handoff-pack                    # survey: "latest" shows <tag> (local build <dir>)
+handoff upgrade --now --from /tmp/handoff-pack [--target devbox] [--force]
+```
+
+- The tag is the first 12 hex digits of HEAD (not a fake `vX.Y.Z`); `--pack` refuses a
+  dirty tree (tracked changes, untracked `*.go`, untracked files under `web/`) so the
+  deployed binary always maps to one commit. The output directory must be empty or absent.
+- Remotes are always **pushed** (they can't pull your local directory). A machine whose
+  platform has no package in the directory fails alone, naming the missing asset; the
+  rest proceed. A missing or mismatching `checksums.txt` line refuses the push.
+- `--from` combines with `--now`, `--target`, `--force` (and implies `--push`); it is
+  mutually exclusive with `--rollback`.
+
+After any `--now` upgrade (release or local build), a machine whose ledger was readable
+before the swap must still be readable afterwards (probe: `GET /api/disciplines`);
+otherwise that machine is reported as failed with "new version is up but the ledger is
+not mounted" — check that machine's agentd log. Machines whose ledger was unreadable or
+unknown beforehand are not checked. On startup, agentd retries transient ledger errors
+(e.g. `too many clients`) during self-registration with backoff instead of giving up, so
+a second manual restart is no longer needed.
 
 Two safety gates: a machine with active tasks (`running` / `waiting_answer`) refuses to
 upgrade by default (`--force` overrides); a machine whose agentd is unmanaged refuses,
