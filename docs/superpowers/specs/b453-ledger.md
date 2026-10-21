@@ -175,3 +175,4 @@
 - T13 提交：`3a3eb18a feat(B453): 派发落点查载体账号快照、任务行三列、三处执行器环境以账号代理覆盖代理键`。
 - T14 收尾：`web/src/api/contract.test.ts` 新增两条 TS 侧穿链断言（载体行 account/account_mismatch 键缺席 ≠ false、HomeWake 指纹键）——fixture 已由 Go 侧先红后 `-update`，TS 断言首跑即绿（如实记：无独立的 TS 红）；`npx vitest run src/api/contract.test.ts` 60 passed、`npm run typecheck` 过。
   - 收尾检查：`go build ./... && go vet ./...` 过；本段改过的 Go 文件 gofmt 无输出。触及包：`go test ./cmd/` ok（78s）、`./internal/agentd/` ok（87s）、`./internal/orchestration/` ok（38s）、`./internal/scheduling/...`、`./internal/accounts`、`./internal/quota/`、`./internal/proxycfg/`、`./internal/hostapi/`、`./internal/proto/`、`./internal/store/` 全 ok；`./internal/client/` 唯一红 `TestProductionHTTPClientCallersAreGatewayOnly`，列出的全是 `.claude/worktrees/*` 下的文件（已知环境假红，memory handoff-env-sensitive-tests）。
+- 段 3 交回裁决（0a759338）：D1 采纳（预计恢复 = 越线窗口最晚重置，spec S5 措辞更正 r1.2）；D2 采纳（HomeWakeReq 带 account 名，目标机本机查代理）；D3 采纳（proxycfg 收口 Mask/WithProxyEnv）；协调者拉起回合（keystone）也套账号代理，并入段 4。
