@@ -115,3 +115,4 @@
   - 修一处自伤：用 python 区间替换 probeDue 时把夹在中间的 `probeFlight` 类型一并删了（编译错 `undefined: probeFlight`），补回；非产品逻辑失败，不计修复轮。
   - 绿：`-run 'TestAccount|NoDirectHttptest' -race -count=2` ok；触及包 `go test ./internal/agentd/ ./internal/proto/ ./internal/quota/ ./internal/scheduling/... ./cmd/` 全 ok（agentd 90.6s、cmd 78.4s）。`go build ./... && go vet ./...` 通过。
   - 判断：DELETE 成功回 `{"name","version":expect}`（沿用载体删除回包形状）；拒删 409 体 `{"error","carriers":[…]}`（proto.AccountDeleteRefusal）；`AccountsClient` 增 Delete 一法（消费点 DELETE handler）。退避 `retryWait`：失败 30s×2^(streak−1) 封顶间隔，成功按间隔，全由读数行推出（重启续上）；失败日志的 next 用同一函数算。日志里代理一律 `MaskProxy`（段 1 用的 proxycfg.Redact 在账号 API 处改为同一打码口径）。组装点注册 opencode-go/codex/grok/agy 四适配，凭据相对路径取 toolchain 表，agy 走 PATH。
+- 段 2 提交：T5 `5c4c17ba`；T6 `a677cc6d`；T7 `6914de70`（显式路径提交，未碰 b434-ledger.md / .playwright-mcp / prototypes；未 push）。R2 待协调者：codex/grok/agy 真样本替换三份 `*.synthetic.json`，agy 未登录 stderr 关键字、信封身份键位按真样本校正。
