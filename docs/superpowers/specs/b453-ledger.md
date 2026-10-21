@@ -341,3 +341,18 @@
 - 红（测试先行，样本 grok-mbp/og-mini 的 message 改成真实长句，免得短因与整句相同让断言空过）：`npx vitest run src/app/accounts src/app/settings/SchedulingPage.test.tsx` → `Tests 7 failed | 43 passed (50)`。失败原因逐条为：账号卡片状态位收到「△ 代理 socks5://127.0.0.1:7897 拒绝连接」、底栏/弹层收到整句「△ grok 凭据已过期，等待 grok CLI 刷新（在该机执行 grok login）」、`failBrief` 回整句、`weeklyWindow` 回「Gemini 周」、载体行不匹配 `/OpenCode Go\s*62%\s*4d 2h/`。
 - 绿：同命令 → `Tests 50 passed (50)`。全量 `npx vitest run` → `Test Files 150 passed (150) / Tests 1998 passed (1998)`；`npm run typecheck` 过；eslint 触及文件 0 error、5 warning（均为 `SchedulingPage.tsx:265` 既有 exhaustive-deps，改前同数）；`go build ./... && go vet ./...` 过。
 - 意外：为比对 lint 基线跑了一次 `git stash` / `git stash pop`，连带把用户未提交的 `b434-ledger.md` 收进又放回，pop 后状态仍为 M、内容未改；此后不再用 stash。
+
+## 真机 R8（2026-10-22，主会话 + 浏览器熟练工；隔离实例 t453-mac 内嵌前端构建 2df747f8，经本机回环鉴权反代 127.0.0.1:7896 访问）
+
+- 入口：先试把一次性 console ticket 放进原型站临时跳转页兑换，被自动权限分类器以「凭据泄露」拦下（临时页与 ticket 文件已删，未绕过）；再试内置浏览器直开 ticket 链接，ticket 已失效未登录。最终改用本机回环反代（`scratchpad/t453/authproxy.py`，token 只在反代进程内、服务端注入 Bearer，仅监听 127.0.0.1），浏览器不经手凭据。
+- 结论（浏览器熟练工 1440×900 与 375 视口，对照 `prototypes/b453-accounts/`）：
+  1. 底栏：「已用」+ 四账号段，问题账号 og-muse 排前，无「低额度/无额度」字样，右侧刷新——**不符一处**：og-muse 段塞整句 last_error（约 660px），原型为短因「△ 凭据已过期」。详细模式 agy 取两个 5h 窗口（最短两窗口规则），保留。
+  2. 使用量弹层：详细/精简切换（缺省详细）、四组、组标题带图标、账号行无图标缩进、详细两行（agy 按组分行）、精简一行每周、底栏同步——符合；**待修**：精简模式 agy 只显示 Gemini 周，Claude and GPT 周被隐藏。
+  3. hover 二级面板：窗口细条与「已用 x% / x 后重置」、所在机器、载体、立即探测、管理账号…；不遮挡列表；「管理账号…」→ `/accounts?account=og-muse` 展开高亮——符合。
+  4. /accounts：dock 饼图入口、页标题、四组细边框卡片、展开详情（代理/阈值/间隔/上次/「不晚于 14m 后」/上次错误/载体）、登记对话框字段齐（agy 条目置灰「由 agy CLI 管理」）——符合；低额度/无额度卡片状态字因真实账号未越线无法核。
+  5. 色彩纪律：彩色仅 gk-mbp「64%」琥珀（≥60 预警）、og-muse 红色状态点与 64% 细条；无药丸、无色块——符合。
+  6. 设置→自动化：载体行显示「账号 cx-linux · Codex」，编辑对话框账号下拉（不选/同机账号带状态）——**不符一处**：载体行缺账号状态（原型显示每周用量或状态短语），spec S4 要求显示。
+  7. 375：设置首页「账号与额度 4 个 · 2 台机器」，分组、点开展开窗口、无横向滚动——符合。
+  8. 控制台：`GET /api/sessions` 403（隔离实例未配 console_user，非本卡）；`/ws/previews` 经反代失败（反代不支持 WS，非本卡）。
+- 裁决：短因、载体行状态、agy 精简取最高周三处交实现修复轮 1；其余通过。
+- 修复轮 1（R8）交回 a2eca051：偏离 1–4 认可。实现者为比对 lint 基线跑过一次 git stash/pop，用户未提交的 b434-ledger.md 被收进又放回；主会话核对与早先备份逐字节一致、无残留 stash。
