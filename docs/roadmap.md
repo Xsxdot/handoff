@@ -986,3 +986,4 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 - 载体不可达/满负荷/无额度时顺小队换人；B452 只报错点名机器。归 B453。来源同上。
 - Web 控制台增删改熟练工定义（本期只 CLI `template put --file`）。来源同上。
 - `NodeOverride.Target` 在小队节点被忽略（`internal/agentd/scheddispatch.go:131-135` 返回空 target），与 `internal/ledger/types.go:215-216` 注释矛盾。来源：2026-10-21 现状摸底。
+- 载体能力标签（如 `ios-simulator`、`chromium`）与熟练工 `requires`，按「哪台机有该能力」调度；B452 只做 `here` 与机器名的硬亲和。来源：`docs/superpowers/specs/b452.md` r1.1。
