@@ -659,13 +659,21 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 }
 
 // newQuotaRegistry 组装额度适配注册表（B453，组装点唯一）。凭据相对路径沿用
-// toolchain 唯一维护的表；本平台无已知落点时适配器报 unsupported_platform。
+// toolchain 唯一维护的表；本平台无已知落点时适配器报 unsupported_platform。agy 不读
+// 凭据文件（登录态归 CLI 自管），经 PATH 找 agy（启动时 pathenv 已扩 PATH）。
 func newQuotaRegistry() *quota.Registry {
-	og := &quota.OpencodeGo{}
-	if rel, ok := toolchain.CredRelPathFor("opencode"); ok {
-		og.CredRelPath = rel
+	rel := func(cli string) string {
+		if p, ok := toolchain.CredRelPathFor(cli); ok {
+			return p
+		}
+		return ""
 	}
-	return quota.NewRegistry(map[string]quota.Prober{quota.KindOpencodeGo: og})
+	return quota.NewRegistry(map[string]quota.Prober{
+		quota.KindOpencodeGo: &quota.OpencodeGo{CredRelPath: rel("opencode")},
+		quota.KindCodex:      &quota.Codex{CredRelPath: rel("codex")},
+		quota.KindGrok:       &quota.Grok{CredRelPath: rel("grok")},
+		quota.KindAgy:        &quota.Agy{},
+	})
 }
 
 func setupLedger(cfg *config.Config, srv *agentd.Server, taskStore *store.Store, ctx context.Context,

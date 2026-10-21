@@ -109,3 +109,9 @@
   - 红（断言，空壳后）：「want ErrInvalid 含 "HOME" / "代理" / "og-linux", got <nil>」「读面应列出引用载体（排序）: []」「MaskProxy(...) = "socks5://user:secret@…", want "socks5://user:***@…"」。
   - 绿：同命令 ok；`-race -count=20` ok（含段 1 并发负载）。
   - 判断：查重键 = 机器 + 归一 HOME（`path.Clean`，`~`/`~/` 单独归一）+ kind + 条目；先扫后写的并发双登记按 plan §7 接受。HOME 只认绝对路径、`~`、`~/…`（`~bob` 拒）。代理在登记时 `proxycfg.Validate`（错误文本已由 proxycfg 脱敏）。打码只打密码段（`user:***@host`，裁决 7），无密码 userinfo 原样；Put 在 expect>0 且来值恰为原值的打码形式时保留原值。载体引用查询是注入位 `SetReferrers`（段 3 由组装点接编制域；未注入 = 无引用，读面 carriers = []），删除先查引用、再 CAS 删定义行、读数行删除失败只 Warn。Reading 增 `fingerprint`、`extra_usage{unit,balance,used,limit,unlimited}`（F8 的 extra_usage 形状由本段定）。
+- T7 agentd：DELETE、读面打码与新键、退避、组装四适配（`internal/agentd/{account_api,account_prober}.go`、新测 `account_api_b453s2_test.go`、`internal/proto/scheduling.go`、`cmd/agentd.go newQuotaRegistry`）：
+  - 红（编译）：`go test ./internal/agentd/ -run TestAccount` → `r.Fingerprint undefined … r.ExtraUsage undefined`。
+  - 红（断言，proto 加键后）：「被引用应 409 并列出载体: 405 Method Not Allowed」「PUT 回执 proxy 应打码: 200 {…"proxy":"socks5://u:s3cr3t-proxy-pass@…"}」「失败 1 次满 30s: probeDue = false, want true」。
+  - 修一处自伤：用 python 区间替换 probeDue 时把夹在中间的 `probeFlight` 类型一并删了（编译错 `undefined: probeFlight`），补回；非产品逻辑失败，不计修复轮。
+  - 绿：`-run 'TestAccount|NoDirectHttptest' -race -count=2` ok；触及包 `go test ./internal/agentd/ ./internal/proto/ ./internal/quota/ ./internal/scheduling/... ./cmd/` 全 ok（agentd 90.6s、cmd 78.4s）。`go build ./... && go vet ./...` 通过。
+  - 判断：DELETE 成功回 `{"name","version":expect}`（沿用载体删除回包形状）；拒删 409 体 `{"error","carriers":[…]}`（proto.AccountDeleteRefusal）；`AccountsClient` 增 Delete 一法（消费点 DELETE handler）。退避 `retryWait`：失败 30s×2^(streak−1) 封顶间隔，成功按间隔，全由读数行推出（重启续上）；失败日志的 next 用同一函数算。日志里代理一律 `MaskProxy`（段 1 用的 proxycfg.Redact 在账号 API 处改为同一打码口径）。组装点注册 opencode-go/codex/grok/agy 四适配，凭据相对路径取 toolchain 表，agy 走 PATH。

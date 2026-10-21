@@ -8,7 +8,7 @@
 //   - 路由挂在 Handler() 的 api mux，与 /api/squads 同一鉴权门；
 //   - 账号规则（校验、合并写、状态推导）全在 internal/scheduling/accounts，这里
 //     只做缺省值填充（区分键缺席与「给了 0」，F9）与形状翻译；
-//   - 本段只有 GET/PUT 与 probe；DELETE（F3）与载体引用计算在段 2/3。
+//   - 读面里 proxy 的密码段打码（accounts.MaskProxy）；载体引用由账号域经注入的查询给出。
 package agentd
 
 import (
@@ -20,7 +20,6 @@ import (
 	"time"
 
 	"github.com/Xsxdot/handoff/internal/proto"
-	"github.com/Xsxdot/handoff/internal/proxycfg"
 	"github.com/Xsxdot/handoff/internal/schedclient"
 	"github.com/Xsxdot/handoff/internal/scheduling/accounts"
 )
@@ -30,11 +29,13 @@ import (
 //   - List：GET /api/accounts、探测器周期扫描；
 //   - Get：立即探测查所在机、探测器读账号；
 //   - Put：PUT /api/accounts/{name}；
+//   - Delete：DELETE /api/accounts/{name}；
 //   - RecordProbe：探测器写回读数行。
 type AccountsClient interface {
 	List() ([]accounts.View, error)
 	Get(name string) (accounts.View, error)
 	Put(a accounts.Account, expect int) (int, error)
+	Delete(name string, expect int) error
 	RecordProbe(name string, o accounts.ProbeOutcome) error
 }
 
@@ -51,6 +52,7 @@ func (s *Server) SetAccountProber(p *AccountProber) { s.accountProber = p }
 func (s *Server) registerAccountRoutes(api *http.ServeMux) {
 	api.HandleFunc("GET /api/accounts", s.withAccounts(s.handleAccountsGet))
 	api.HandleFunc("PUT /api/accounts/{name}", s.withAccounts(s.handleAccountPut))
+	api.HandleFunc("DELETE /api/accounts/{name}", s.withAccounts(s.handleAccountDelete))
 	api.HandleFunc("POST /api/accounts/{name}/probe", s.withAccounts(s.handleAccountProbe))
 }
 
@@ -100,7 +102,7 @@ func (s *Server) handleAccountPut(w http.ResponseWriter, r *http.Request) {
 	}
 	a := accountFromInput(name, in)
 	s.log.Info("登记账号", "name", name, "expect", expect, "kind", a.Kind, "machine", a.Machine,
-		"entry", a.Entry, "proxy", proxycfg.Redact(a.Proxy), "interval_minutes", a.IntervalMinutes)
+		"entry", a.Entry, "proxy", accounts.MaskProxy(a.Proxy), "interval_minutes", a.IntervalMinutes)
 	if _, err := s.accounts.Put(a, expect); err != nil {
 		switch {
 		case errors.Is(err, accounts.ErrInvalid):
@@ -121,6 +123,36 @@ func (s *Server) handleAccountPut(w http.ResponseWriter, r *http.Request) {
 	}
 	s.log.Info("登记账号成功", "name", name, "version", v.Version, "state", v.State)
 	writeJSON(w, http.StatusOK, accountView(v))
+}
+
+// handleAccountDelete DELETE /api/accounts/{name}?expect=N（F3）：被载体引用 409 且体含
+// carriers；不存在 404；版本冲突 409；缺 expect 400。成功连带删读数行。
+func (s *Server) handleAccountDelete(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	expect, ok, err := expectVersion(r)
+	if !ok {
+		s.log.Warn("删除账号 expect 校验未过", "name", name, "cause", err)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	s.log.Info("删除账号", "name", name, "expect", expect)
+	if err := s.accounts.Delete(name, expect); err != nil {
+		var ref *accounts.ReferencedError
+		switch {
+		case errors.As(err, &ref):
+			writeJSON(w, http.StatusConflict, proto.AccountDeleteRefusal{Error: err.Error(), Carriers: ref.Carriers})
+		case errors.Is(err, accounts.ErrNotFound):
+			writeErr(w, http.StatusNotFound, err)
+		case errors.Is(err, schedclient.ErrCASConflict):
+			writeErr(w, http.StatusConflict, fmt.Errorf("账号 %s 已被修改（重新读取版本后再删）: %w", name, err))
+		default:
+			s.log.Error("删除账号失败", "name", name, "expect", expect, "cause", err)
+			writeErr(w, http.StatusInternalServerError, err)
+		}
+		return
+	}
+	s.log.Info("删除账号成功", "name", name, "expect", expect)
+	writeJSON(w, http.StatusOK, proto.SquadPutResp{Name: name, Version: expect})
 }
 
 // accountFromInput 填缺省值：键缺席取缺省（间隔 15、预警 60、低额度 80、条目按 kind）；
@@ -228,13 +260,17 @@ func accountView(v accounts.View) proto.AccountView {
 	a, rec := v.Account, v.Record
 	out := proto.AccountView{
 		Name: a.Name, Kind: a.Kind, Machine: a.Machine, HomeDir: a.HomeDir, Entry: a.Entry,
-		Proxy: a.Proxy, IntervalMinutes: a.IntervalMinutes, WarnPercent: a.WarnPercent,
+		Proxy: accounts.MaskProxy(a.Proxy), IntervalMinutes: a.IntervalMinutes, WarnPercent: a.WarnPercent,
 		LowPercent: a.LowPercent, Version: v.Version, State: string(v.State), Stale: v.Stale,
-		LastAttemptAt: utcPtr(rec.LastAttemptAt), Carriers: []string{},
+		LastAttemptAt: utcPtr(rec.LastAttemptAt), Carriers: append([]string{}, v.Carriers...),
 	}
 	if r := rec.Reading; r != nil {
 		rv := &proto.AccountReadingView{Windows: make([]proto.AccountWindowView, 0, len(r.Windows)),
-			PlanType: r.PlanType, ProbedAt: r.ProbedAt.UTC()}
+			PlanType: r.PlanType, Fingerprint: r.Fingerprint, ProbedAt: r.ProbedAt.UTC()}
+		if e := r.ExtraUsage; e != nil {
+			rv.ExtraUsage = &proto.AccountExtraUsageView{Unit: e.Unit, Balance: e.Balance, Used: e.Used,
+				Limit: e.Limit, Unlimited: e.Unlimited}
+		}
 		for _, w := range r.Windows {
 			rv.Windows = append(rv.Windows, proto.AccountWindowView{Key: w.Key, Group: w.Group,
 				UsedPercent: w.UsedPercent, ResetsAt: utcPtr(w.ResetsAt)})

@@ -10,7 +10,7 @@
 //   - 不代探他机账号（凭据只在所在机）；不碰账号定义行；
 //   - 调度状态全在账本读数行（last_attempt_at），进程内只有在飞集合——重启后按
 //     读数行重建节拍，不突发全量重探；
-//   - 失败退避（30s×2ⁿ）属段 2，本段失败与成功同按账号间隔重试；
+//   - 失败按 30s×2ⁿ 退避、封顶为账号间隔（probeDue）；
 //   - 生命周期跟 cmd/agentd.go 既有周期任务同形：ticker + ctx，Stop() 取消并等
 //     扫描循环与在飞探测全部退出。
 package agentd
@@ -33,7 +33,9 @@ const (
 	accountProbeScan = 30 * time.Second
 	// accountProbeConcurrency 是同时在飞的探测上限（plan §6 ≥ 2）。
 	accountProbeConcurrency = 2
-	// accountProbeBudget 是单次探测的总时限上界；适配器自身 HTTP 超时更短（20s）。
+	// accountProbeBackoffBase 是失败退避的起点（30s×2ⁿ，封顶为账号间隔）。
+	accountProbeBackoffBase = 30 * time.Second
+	// accountProbeBudget 是单次探测的总时限上界；适配器自身 HTTP 超时更短（20s），agy 40s。
 	accountProbeBudget = 60 * time.Second
 )
 
@@ -171,17 +173,31 @@ func (p *AccountProber) scan(ctx context.Context) {
 	}
 }
 
-// probeDue：从未尝试 → 到期；否则上次尝试 + 间隔已过。
+// probeDue：从未尝试 → 到期；否则上次尝试 + retryWait 已过。节拍全由读数行推出，
+// 重启后自然续上，不突发全量重探。
 func probeDue(v accounts.View, now time.Time) bool {
 	last := v.Record.LastAttemptAt
 	if last == nil {
 		return true
 	}
-	interval := time.Duration(v.Account.IntervalMinutes) * time.Minute
+	return !now.Before(last.Add(retryWait(v.Account, v.Record)))
+}
+
+// retryWait：最近一次成功 → 账号间隔；最近一次失败 → 30s×2^(连续失败数−1)，封顶为
+// 间隔（spec S2）。
+func retryWait(a accounts.Account, rec accounts.ReadingRecord) time.Duration {
+	interval := time.Duration(a.IntervalMinutes) * time.Minute
 	if interval <= 0 {
 		interval = accounts.DefaultIntervalMinutes * time.Minute
 	}
-	return !now.Before(last.Add(interval))
+	if rec.LastError == nil || rec.FailureStreak <= 0 {
+		return interval
+	}
+	wait := accountProbeBackoffBase
+	for i := 1; i < rec.FailureStreak && wait < interval; i++ {
+		wait *= 2
+	}
+	return min(wait, interval)
 }
 
 // probeFlight 是一次在飞探测：done 关闭后 err 可读（nil = 结果已写回读数行）。
@@ -307,13 +323,15 @@ func (p *AccountProber) probeOnce(ctx context.Context, a accounts.Account, prevS
 		p.log.Error("账号探测结果写回失败", "account", a.Name, "kind", a.Kind, "cause", werr)
 		return fmt.Errorf("账号 %s 的探测结果写回账本失败: %w", a.Name, werr)
 	}
-	next := outcome.FinishedAt.Add(time.Duration(a.IntervalMinutes) * time.Minute)
 	if outcome.Failure != nil {
+		next := outcome.FinishedAt.Add(retryWait(a, accounts.ReadingRecord{
+			LastError: outcome.Failure, FailureStreak: prevStreak + 1}))
 		p.log.Warn("账号探测失败", "account", a.Name, "kind", a.Kind, "machine", a.Machine,
 			"category", outcome.Failure.Category, "cause", outcome.Failure.Message,
 			"failure_streak", prevStreak+1, "next", next, "elapsed", elapsed)
 		return nil
 	}
+	next := outcome.FinishedAt.Add(time.Duration(a.IntervalMinutes) * time.Minute)
 	p.log.Info("账号探测成功", "account", a.Name, "kind", a.Kind, "machine", a.Machine,
 		"windows", len(outcome.Reading.Windows), "blocked", outcome.Reading.Blocked != nil,
 		"elapsed", elapsed, "next", next)
@@ -332,7 +350,11 @@ func problemOf(err error) *accounts.Problem {
 // readingOf 把额度适配读数映射成编制域读数（两侧值类型各自定义，映射只在这里）。
 func readingOf(s quota.Snapshot, probedAt time.Time) *accounts.Reading {
 	r := &accounts.Reading{Windows: make([]accounts.Window, 0, len(s.Windows)),
-		PlanType: s.PlanType, ProbedAt: probedAt.UTC()}
+		PlanType: s.PlanType, Fingerprint: s.Fingerprint, ProbedAt: probedAt.UTC()}
+	if e := s.Extra; e != nil {
+		r.ExtraUsage = &accounts.ExtraUsage{Unit: e.Unit, Balance: e.Balance, Used: e.Used,
+			Limit: e.Limit, Unlimited: e.Unlimited}
+	}
 	for _, w := range s.Windows {
 		r.Windows = append(r.Windows, accounts.Window{Key: w.Key, Group: w.Group,
 			UsedPercent: w.UsedPercent, ResetsAt: w.ResetsAt})

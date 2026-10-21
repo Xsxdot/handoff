@@ -197,7 +197,8 @@ type AccountsResp struct {
 	Accounts []AccountView `json:"accounts"`
 }
 
-// AccountView 是账号读面（F5）。可缺席键：entry（agy）、proxy、reading（从无成功）、
+// AccountView 是账号读面（F5）。proxy 若含 userinfo 密码，密码段打码为 ***（段 1 裁决 7；
+// PUT 收到与打码形式相同的值时服务端保留原值）。可缺席键：entry（agy）、proxy、reading（从无成功）、
 // last_attempt_at、last_error。state ∈ ok|low|out|fail|none（F6）；kind ∈
 // opencode-go|codex|grok|agy（F7）。carriers 是引用该账号的载体名，无引用为 []。
 type AccountView struct {
@@ -221,9 +222,27 @@ type AccountView struct {
 
 // AccountReadingView 是最近一次成功读数（F8）。windows 无窗口时为 []。
 type AccountReadingView struct {
-	Windows  []AccountWindowView `json:"windows"`
-	PlanType string              `json:"plan_type,omitempty"`
-	ProbedAt time.Time           `json:"probed_at"`
+	Windows     []AccountWindowView    `json:"windows"`
+	PlanType    string                 `json:"plan_type,omitempty"`
+	ExtraUsage  *AccountExtraUsageView `json:"extra_usage,omitempty"`
+	Fingerprint string                 `json:"fingerprint,omitempty"` // sha256:<12 位十六进制>，凭据身份短指纹
+	ProbedAt    time.Time              `json:"probed_at"`
+}
+
+// AccountExtraUsageView 是窗口之外的额外额度（codex credits、grok 预付/按需）。各键可缺席：
+// balance 余额、used/limit 按需已用与上限、unit 计量单位（接口未给则缺席）、unlimited 不限量。
+type AccountExtraUsageView struct {
+	Unit      string   `json:"unit,omitempty"`
+	Balance   *float64 `json:"balance,omitempty"`
+	Used      *float64 `json:"used,omitempty"`
+	Limit     *float64 `json:"limit,omitempty"`
+	Unlimited bool     `json:"unlimited,omitempty"`
+}
+
+// AccountDeleteRefusal 是 DELETE /api/accounts/{name} 因被载体引用拒删时的 409 体（F3）。
+type AccountDeleteRefusal struct {
+	Error    string   `json:"error"`
+	Carriers []string `json:"carriers"`
 }
 
 // AccountWindowView 是一个额度窗口（F8）：key ∈ session|weekly|monthly；group 仅
