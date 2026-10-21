@@ -42,3 +42,4 @@
   - `--pack <dir> windows/amd64` → exit=0，`unzip -l` 只有 `handoff.exe`，checksums 一行。
   - 旧用法 `scripts/build-deploy.sh`（无参）→ 产物仍为 `dist/handoff-darwin-arm64`，输出段落与改前一致（前端构建/注入自检/嵌入自检抽成函数共用），version 首行 a5e0ff38a05f；dist/ 与各临时目录已删。
 - 段 6 S5：README 中英命令表加 `--from <dir>`、升级节加「换到本机构建」小节与 S3/S4 说明；skills/handoff/SKILL.md 延伸阅读加一条一命令换版；CHANGELOG [Unreleased] 新增 ×2、变更 ×2、修复 ×1。对照 `handoff upgrade --help`（Long 与 flag 文案一致）。`go test ./internal/skill/ ./cmd/ -run 'Skill|Readme|README|Changelog'` ok；`(cd mobile && go test . -run Checklinkname)` ok（脚本未引入 checklinkname）。全局记忆的手工换版步骤不在仓内，留主会话 finish 改。
+- 收尾：`go build ./... && go vet ./...` 过（vet=0）；`gofmt -l <本卡改过的 .go>` 为空；`env -u CLAUDE_CODE_SESSION_ID go test ./cmd/ ./internal/upgrade/... ./internal/release/... ./internal/client/... ./internal/agentd/... -count=1` → cmd ok 77.7s、upgrade ok、release ok、client ok、agentd ok 92.6s。真机 R1–R8 未执行（归主会话）。
