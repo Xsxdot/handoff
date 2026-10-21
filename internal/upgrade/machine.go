@@ -31,6 +31,9 @@ type Machine struct {
 	Pull    *bool
 	Busy    int
 	Err     error
+	// LedgerReadable 是换版前账本可读探针的结果（B462 S3）。三态同 Managed：
+	// nil = 未知（没探、探不到、对端过旧），不检查换版后；与「对端说不可读」是两回事。
+	LedgerReadable *bool
 }
 
 // Verdict 是一台机器的唯一结论。
@@ -127,4 +130,54 @@ func (m Machine) IsLatest(latest string) bool {
 		return m.Bin == latest && m.Agentd == latest
 	}
 	return m.Agentd == latest
+}
+
+// LedgerCheck 是「换版后账本是否仍可读」的结论（B462 S3）。
+type LedgerCheck int
+
+const (
+	// LedgerCheckSkip 换版前账本就不可读或未知：不检查，不误报（有 DSN 缺身份、
+	// 自登记撞名、对端过旧、换版前探针够不着都落这里）。
+	LedgerCheckSkip LedgerCheck = iota
+	// LedgerCheckOK 换版前后都可读。
+	LedgerCheckOK
+	// LedgerCheckNotMounted 换版前可读、换版后探针回 503：新版已上线但账本未挂载。
+	LedgerCheckNotMounted
+	// LedgerCheckUnconfirmed 换版前可读、换版后探针出错：说不清。调用方重试，
+	// 仍说不清则判失败——报成功等于「主张不是事实」。
+	LedgerCheckUnconfirmed
+)
+
+// String 让 LedgerCheck 在日志与测试失败信息里可读。
+func (c LedgerCheck) String() string {
+	switch c {
+	case LedgerCheckSkip:
+		return "skip"
+	case LedgerCheckOK:
+		return "ok"
+	case LedgerCheckNotMounted:
+		return "not_mounted"
+	case LedgerCheckUnconfirmed:
+		return "unconfirmed"
+	}
+	return "unknown"
+}
+
+// JudgeLedgerAfter 是 S3 四格判据：换版前账本可读，则换版后必须仍可读。
+//
+// 参数：before 是换版前探针结果（nil = 未知）；readable / probeErr 是换版后一次探针的
+// 结果（probeErr 非空时 readable 无意义）。
+// 返回：结论。前提（由调用方保证）：换版后的探针紧跟 WaitVersion 成功——启动闸已放行，
+// 此时的 503 才代表账本未挂载。
+func JudgeLedgerAfter(before *bool, readable bool, probeErr error) LedgerCheck {
+	if before == nil || !*before {
+		return LedgerCheckSkip
+	}
+	if probeErr != nil {
+		return LedgerCheckUnconfirmed
+	}
+	if !readable {
+		return LedgerCheckNotMounted
+	}
+	return LedgerCheckOK
 }

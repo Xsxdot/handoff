@@ -65,6 +65,29 @@ type fakeMachine struct {
 	pushErr   error
 	waitErr   error
 	pushed    bool
+	// B462 S3：账本探针脚本（按序消费，耗尽后重复最后一个；空 = 探针报错 → 未知）
+	ledger      []ledgerReply
+	ledgerCalls int
+	waitCalls   int
+}
+
+// ledgerReply 是一次账本可读探针的脚本化回答。
+type ledgerReply struct {
+	readable bool
+	err      error
+}
+
+// nextLedgerReply 消费一条脚本化回答；脚本为空时回「对端过旧」→ 调用方按未知处理，
+// 让既有用例的行为与 B462 之前一字不差。
+func nextLedgerReply(script *[]ledgerReply) (bool, error) {
+	if len(*script) == 0 {
+		return false, client.ErrLedgerProbeUnsupported
+	}
+	r := (*script)[0]
+	if len(*script) > 1 {
+		*script = (*script)[1:]
+	}
+	return r.readable, r.err
 }
 
 // fakeMachines 是当前测试的机器表。键 __本机 的数据用于本机端点。
@@ -88,6 +111,18 @@ type fakePeer struct {
 	lastSum   string
 	lastTag   string // B462：推送的 tag
 	lastBody  []byte // B462：推送的归档原文
+
+	ledger      []ledgerReply // B462 S3（自拉测试形态）
+	ledgerCalls int
+}
+
+func (p *fakePeer) LedgerReadable(context.Context) (bool, error) {
+	if p.m != nil {
+		p.m.ledgerCalls++
+		return nextLedgerReply(&p.m.ledger)
+	}
+	p.ledgerCalls++
+	return nextLedgerReply(&p.ledger)
 }
 
 func (p *fakePeer) Status(ctx context.Context) (*proto.StatusResp, error) {
@@ -141,6 +176,7 @@ func (p *fakePeer) RestartAgentd(_ context.Context, _ bool) (*proto.UpdateResp, 
 
 func (p *fakePeer) WaitVersion(_ context.Context, _ string, _, _ time.Duration, _ bool) error {
 	if p.m != nil {
+		p.m.waitCalls++
 		return p.m.waitErr
 	}
 	return nil

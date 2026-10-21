@@ -72,6 +72,8 @@ type agentdPeer interface {
 	PullUpdate(ctx context.Context, tag, sum string, force bool) (*proto.UpdateResp, error)
 	RestartAgentd(ctx context.Context, force bool) (*proto.UpdateResp, error)
 	WaitVersion(ctx context.Context, want string, timeout, interval time.Duration, checkPull bool) error
+	// LedgerReadable 是账本可读探针（B462 S3，GET /api/disciplines）
+	LedgerReadable(ctx context.Context) (bool, error)
 }
 
 // upgradeDialErr 是构造 client 失败时的失败替身。
@@ -93,6 +95,7 @@ func (u upgradeDialErr) RestartAgentd(context.Context, bool) (*proto.UpdateResp,
 func (u upgradeDialErr) WaitVersion(context.Context, string, time.Duration, time.Duration, bool) error {
 	return u.err
 }
+func (u upgradeDialErr) LedgerReadable(context.Context) (bool, error) { return false, u.err }
 
 // 七个缝，测试替换它们以避免联网、动真实二进制与真实 agentd。
 var (
@@ -208,8 +211,11 @@ type machineState struct {
 	// 就会干等到超时报一句误导性的「已换版但新进程未上线」。与同结构里的
 	// Managed *bool 同款纪律
 	Pull *bool
-	Busy int
-	Err  error
+	// LedgerReadable 是换版前账本可读探针（B462 S3），只在 --now 时探。三态同 Managed：
+	// nil = 未知（没探、探不到、对端过旧）→ 换版后不检查
+	LedgerReadable *bool
+	Busy           int
+	Err            error
 }
 
 // toUpgrade 投影 CLI 侧的探测载体，供结论判据包消费。
@@ -220,7 +226,7 @@ func (ms *machineState) toUpgrade() upgrade.Machine {
 	return upgrade.Machine{
 		Name: ms.Ep.Name, Local: ms.Ep.Local, Bin: ms.Bin, Agentd: ms.Agentd,
 		Revision: ms.Revision, Platform: ms.Platform, Managed: ms.Managed,
-		Pull: ms.Pull, Busy: ms.Busy, Err: ms.Err,
+		Pull: ms.Pull, Busy: ms.Busy, Err: ms.Err, LedgerReadable: ms.LedgerReadable,
 	}
 }
 
@@ -431,7 +437,8 @@ func probeMachine(ctx context.Context, ep Endpoint) machineState {
 			return ms
 		}
 	}
-	st, err := newAgentdClient(ep).Status(ctx)
+	peer := newAgentdClient(ep)
+	st, err := peer.Status(ctx)
 	switch {
 	case errors.Is(err, client.ErrStatusUnsupported):
 		// 对端过旧：连 /api/status 都没有，平台视为空。这是结论不是失败
@@ -455,8 +462,25 @@ func probeMachine(ctx context.Context, ep Endpoint) machineState {
 				ms.Busy++
 			}
 		}
+		// B462 S3：换版前账本可读探针，紧跟 status 成功（启动闸已放行，503 才代表未挂载）。
+		// 只在 --now 时探：巡检表不用它，不为只读巡检多打一轮请求。探不到 = 未知，不拦升级
+		if upgradeNow {
+			ms.LedgerReadable = probeLedgerBefore(ctx, peer, ep.Name)
+		}
 	}
 	return ms
+}
+
+// probeLedgerBefore 探换版前账本是否可读，返回三态：可读/不可读/nil（未知）。
+// 出错（含对端过旧 404）一律记为未知——不为一次网络抖动拦住整次升级（Q4）。
+func probeLedgerBefore(ctx context.Context, peer agentdPeer, name string) *bool {
+	readable, err := peer.LedgerReadable(ctx)
+	if err != nil {
+		slog.Default().Warn("换版前账本探针读不出结论，按未知处理（换版后不检查账本）", "name", name, "cause", err)
+		return nil
+	}
+	slog.Default().Info("换版前账本探针", "name", name, "readable", readable)
+	return &readable
 }
 
 // renderCheckRow 渲染巡检表的一行（--check 默认行为）。
@@ -646,6 +670,30 @@ func (ms *machineState) localUpgrade(ctx context.Context, out io.Writer, peer ag
 		slog.Default().Error("触发本机 agentd 重启失败", "name", name, "cause", err)
 		fmt.Fprintf(out, "%-8s 失败   触发重启: %s\n", name, err)
 		return outcomeFail
+	}
+	// B462 S3：换版前账本可读时，本机也要等新版上线再确认账本仍可读（远端由 RemoteOne
+	// 同一判据施加）。换版前不可读或未知时保持原行为：触发重启即返回，不等待。
+	if ms.LedgerReadable != nil && *ms.LedgerReadable {
+		slog.Default().Info("等待本机 agentd 以新版上线以确认账本", "name", name, "version", rel.Tag,
+			"timeout", upgradeWaitTimeoutPush)
+		if err := peer.WaitVersion(ctx, rel.Tag, upgradeWaitTimeoutPush, upgradeWaitInterval, false); err != nil {
+			slog.Default().Error("本机 agentd 未以新版上线", "name", name, "version", rel.Tag, "cause", err)
+			fmt.Fprintf(out, "%-8s 失败   已换文件并触发重启，但 agentd 未在 %s 内以新版上线：%s\n",
+				name, upgradeWaitTimeoutPush, err)
+			fmt.Fprintf(out, "         prev: %s  回滚：handoff upgrade --rollback\n", prev)
+			return outcomeFail
+		}
+		check, perr := upgrade.VerifyLedgerAfterUpgrade(ctx, slog.Default(), name, ms.LedgerReadable, peer, upgradeWaitInterval)
+		switch check {
+		case upgrade.LedgerCheckNotMounted:
+			fmt.Fprintf(out, "%-8s 失败   新版已上线但账本未挂载\n", name)
+			fmt.Fprintf(out, "         看本机 agentd 日志（自登记/账本挂载失败原因）；prev: %s\n", prev)
+			return outcomeFail
+		case upgrade.LedgerCheckUnconfirmed:
+			fmt.Fprintf(out, "%-8s 失败   新版已上线，但账本是否挂载未能确认：%s\n", name, perr)
+			fmt.Fprintf(out, "         handoff status 与本机 agentd 日志；prev: %s\n", prev)
+			return outcomeFail
+		}
 	}
 	slog.Default().Info("本机升级完成", "name", name, "target", target, "prev", prev, "version", rel.Tag)
 	fmt.Fprintf(out, "%-8s 成功   已换到 %s，已触发 agentd 重启\n", name, rel.Tag)
