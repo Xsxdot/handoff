@@ -96,6 +96,49 @@
 - 真机 R1–R7（R8 随 S5 作废）；S5 = 无代码改动、根因在 handoff 之外，不列待办。
 - 主会话复核：偏离 1② 与 3。
 
+### 修复轮 1（2026-10-21，机内审查 B1/B1b/B2/N1–N5 + 用户裁决 S10）
+
+#### 偏离与自主决定
+
+1. **落点范围循环也认「选项形 cd 破坏基准」**（B1）：共用判据 `cdTarget` 不只进三处放行出口（经 `cdChainTrusted`），也进 `cdResolvedTargets` / `cdWalkBase`。后果：`cd $TMPDIR && cd -- && echo x > .bashrc` 由基线的 Consult 变为 **Escalate**（「cd 落点不可静态证明，其后相对写落点无法解释」）。理由：同函数既有注释已把「带旗标 cd」判为基准破坏（`cd -P /x && echo > f` 早就 Escalate），`cd -` / `cd --` 只是漏网的同类；不改的话范围循环会把 `$OLDPWD/.bashrc` 当成 `<基准>/--/.bashrc` 判在范围内。审查要求是「Consult, never AutoAllow」，此处落 Escalate 更严，主会话可推翻（改回只动 `cdChainTrusted` 即可）。
+2. `cdTarget` 判前剥前导 `\` `"` `'`（`cd "-"`、`cd \-` 与 `cd -` 同义），空目标（`cd ""`）也不可信；真名以 `-` 开头的目录须写 `cd ./-x`，仍可信。
+3. **重绑定判据是原串子串规则**（B2，`scopeVarNameMisused`）：变量名除紧跟在 `$` 后、或 `${NAME}` 恰好闭合外，任何出现即嫌疑。代价：`$MYTMPDIR` 这类含名字子串的无关变量、单引号里的字面 `TMPDIR` 也连坐（over-reject）。`${!` 间接展开的既有拦截保留。
+4. `printf -v` 判定：参数里任何位置出现（剥前导引号/反斜杠后）以 `-v` 开头的词元即非静默，含格式串之后的数据参数（over-reject）。
+5. **N2 超出字面要求**：除把桩改成「读连接直到客户端挂断」（`b452HoldUntilHangup`），`newB452FinalServer` 还记未退出的 WS 处理器数，清理时等 2s 仍有未退出即 `t.Errorf`——这样「客户端漏关连接」的回归直接变红，而不是只表现为端口耗尽。
+6. N4：带 Command 或 Paths 的 webfetch 载荷回落 `judgeCommand(req.Text)`（与未知工具同判据）。
+7. **S10 收口位置**：没有在五个出口各调一次，而是在 `Gate.Judge` 出口唯一收口（`credentialGuard`，网页抓取分支先 return 不经过）——任何 AutoAllow 都过它，含写文件工具（判 `Paths`）与 Tool=other（判 `Text`），比要求的五个出口多覆盖两类；新规则名 `credential-guard`（Consult 的 `Verdict.Rule`）。
+8. **S10 清单取并集**：以原审批政策段为底（它比本轮列表宽）：保留 `~/.gemini/` 整目录（协调者写的是 agy 的 oauth 文件；实名 `~/.gemini/antigravity-cli/antigravity-oauth-token` 作说明附在条目上）、`~/.claude/infra/` 整目录（协调者写的是其中 `credentials.md`）、`~/.git-credentials`；`~/.handoff/` 的「env 文件」落实为 `~/.handoff/env/`（envfile 包的目录）；grok 实名 `~/.grok/auth.json`（authsync.go `authFileName`）。另加只匹配不单列的两项：任务目录 `grokhome/auth.json`（grok 任务级副本，authsync 刷新后可能是普通文件）、`/proc/*/environ`。
+9. **S10 匹配比要求宽**：清单项在路径组件的**任意位置**都算（`/root/.ssh/…`、隔离实例的 `…/.handoff/config.yaml`、仓里的 `.gemini/` 都会 Consult；协调者原话「keep to the home one」，这里没收窄——收窄需要可靠判家目录，`~user`、他人家目录、`cd` 后相对路径都会漏）；相对路径按 cwd/Workdir 解析后落在家目录下的按家目录锚定判；家目录锚定形态另判**祖先**（`grep -r x ~`、`ls ~/.config`、`ls ~` 都 Consult）与残留变量（`~/.s$X`）；echo/printf 段不判路径词元（只输出字面，`echo $HOME/.ssh/x` 维持放行，密钥类变量展开仍判）；heredoc 闭集正文不判（数据）。`.env.example` 这类也 Consult（按协调者列的 `.env.*`）。
+10. **审批政策段文案改动**（plan §9 措辞归 plan）：凭据清单改由 `credentialListText()` 从 `permgate.CredentialLocations()` 渲染，`readonlyApproverPolicy` 由 const 变 var；措辞「读取其中任何一项即升级」→「读取或执行其中任何一项即升级」，条目顺序与写法按清单（`~/.handoff/ 下的 config.yaml 与 env 文件` → `~/.handoff/config.yaml；~/.handoff/env/ 下任何文件`），新增「任何 .env 与 .env.* 文件」与 `SecretEnvCommandsText`（打印环境变量的命令）。零值上下文金样本不受影响（政策段只在 readonly 出现）。
+11. **既有断言改动：无。** 预期会翻转的「`cat <凭据>` 应 AutoAllow」类断言在仓内不存在，全量无一翻转。
+12. 已知残余（均为构造型绕过，记此不扩范围）：`cd` 到家目录的非锚定祖先后用不含清单组件的相对路径读（如工作树在 `~/.handoff/x/y` 时 `cd ../.. && cat config.yaml`：`../..` 本身按 cwd 解析落在家目录内会被锚定判中，但若 cwd 未知则漏）；变量间接拼名（`X=.s; cat ~/${X}sh/k` 会被「锚定残留变量」判中，`cat $P` 且 `P` 整值为凭据路径则不识别）。
+
+#### 红 → 绿
+
+- B1/B1b/B2/N5（`internal/permgate/b460_fix1_test.go`）：修前 `go test ./internal/permgate/ -run 'TestB460(UntrustedCD|Rebind|PrintfV|ExpansionChar)' -count=1 -v` → 23 处 `--- FAIL`：`TestB460UntrustedCDNeverAutoAllows`（如 `cd $TMPDIR && cd -- && rm -rf foo` 得 rule=rm-in-scope、`cd $TMPDIR && cd - && cat > .bashrc <<'EOF'…` 得 heredoc-in-scope、`cd -- && echo x > .bashrc`（cwd=产物目录）得 safe-command）、`TestB460UntrustedCDBreaksChain`（12 种形态全真）、`TestB460UntrustedCDRangeLoopBroken`、`TestB460RebindGuardPerVar`（`printf -vNAME`、`declare -n x=NAME`、`${NAME:=…}`、`${NAME=…}` 两个变量名都漏）、`TestB460RebindNeverAutoAllows`（`printf -vTMPDIR /etc && echo x > $TMPDIR/passwd` 等 6 条 AutoAllow）、`TestB460PrintfVNeverSilent`（6 种写法全静默）；`TestB460ExpansionCharRule` 修前即绿（钉子测试，靠变异证明有效）。修后全包 `ok`。原始输出 scratchpad `fix1/permgate_red.txt`。
+- 变异（每条单独施加、跑 permgate 全包、复原）：F1 关 HANDOFF_ARTIFACTS_DIR 守卫 → `TestB460RebindGuardPerVar` 红（即审查 M17，修前无测试变红）；F2 关 TMPDIR 守卫 → `TestB460RebindGuardPerVar`、`TestJudgeCDRelativeWriteWitnessesUnchanged`、`TestCDWalkBase`、`TestJudgeHeredocUnmatchedKeepsStatusQuo` 红；F3 关变量后缀展开字符拒绝 → `TestB460ExpansionCharRule` 红；F4 关 `proveScopedToken` 展开字符拒绝 → `TestB460ExpansionCharRule`、`TestJudgeCDRelativeWriteEscalatesWhenUnprovable` 红；F5 关 `printf -v` → `TestB460PrintfVNeverSilent` 红；F6 `cdChainTrusted` 不认选项形 cd → `TestB460UntrustedCDBreaksChain` 红；F7 `cdTarget` 前缀拒绝关 → 三个 UntrustedCD 测试红；F8 `${NAME:=}` 放过 → `TestB460RebindGuardPerVar` 红。
+- N4（`TestB460WebFetchRequiresBareShape`）：修前两条带 Command / Paths 的载荷均 `auto_allow rule="webfetch"`；修后绿。
+- N2：`newB452FinalServer` 加处理器退出检查、桩未改时 `go test ./internal/client/ -run 'TestB452|TestB460' -count=1` → 7 条红（`TestB452WaitFinalCompletedInStreamByMachine`、`…ReconnectsAfterDrop`、`…ReplaysWhenResultBeyondWindow`、`TestB452WaitFinalDeadline`（2 个未退出）、`TestB460WaitFinalWakeOnPermissionRequest`、`…WakeButAnsweredContinues`（2 个）、`…WakeByMachine`，均「客户端返回后仍有 N 个 WS 处理器未退出」，用时 2.0x s/条）；七处 `<-r.Context().Done()` 换成 `b452HoldUntilHangup(conn)` 后 `ok 0.994s`——同时证明客户端确实关了连接（无泄漏）。
+- N1（`TestB460WaitFinalIgnoresReplayedOldEvents`）：修前「旧唤醒事件」子测 `context deadline exceeded`（5s，重取快照紧循环）、「旧回合结果」子测拿到 `"上一回合"`；回调首行 `if ev.Seq <= start { return nil }`（Debug 日志）后绿。
+- S10（`internal/permgate/b460_credential_test.go`、`internal/orchestration` `TestB460PolicyCredentialListSingleSource`）：守卫未接线时 `go test ./internal/permgate/ -run TestB460Credential -count=1 -v` → 57 处 FAIL（凭据路径族、`$HOME`/绝对/glob/花括号/转义/重定向/赋值/祖先/回家 cd/相对/任务目录副本/软链/.env//proc/environ/复合与范围内写入出口/密钥变量展开全部 AutoAllow），12 条修前即 Consult（`env`/`printenv`/`set`/`export`/`declare`/`typeset` 本就不在白名单，`cat ${HOME}/.netrc` 本就 Consult），形似例 `TestB460CredentialLookalikesUnchanged` 修前修后都绿；接线后全绿。政策同源测试修前缺 `~/.handoff/config.yaml`（原文写法不同）、`~/.handoff/env/`、`.env.*`、打印环境变量说明，渲染后绿。原始输出 scratchpad `fix1/s10_red.txt`。
+- S10 变异：C1 家目录本身 / C2 祖先 / C3a 任意位置匹配 / C3b `.env` / C4 软链 / C5 密钥变量 / C6 花括号 / C7 glob 点规则（反向：`wc -l */*.go` 变 Consult）/ C8 回家 cd / C9 echo 免判（反向：`echo $HOME/.ssh/id_rsa` 变 Consult）/ C10 锚定残留变量（补 `cat ~/.s$X/id_rsa`、`cat $HOME/$D/credentials` 两例后红）/ C11 grokhome / C12 /proc environ，各自至少一条测试变红。
+
+#### 全量与静态检查
+
+- `gofmt -l $(git ls-files '*.go')` 空；`go vet ./internal/permgate ./internal/orchestration ./internal/client` 净。
+- `env -u CLAUDE_CODE_SESSION_ID go test ./... -count=1`：64 ok，`internal/client` 仅 `TestProductionHTTPClientCallersAreGatewayOnly` 红——它扫到 `.claude/worktrees/*` 下其他工作树的生产文件（嵌套工作树，已知非回归）；`go test ./internal/client/ -count=1 -p 1` 同此一条。`TestProbeReplayClassification` 本次未抖。
+
+#### 提交
+
+`aee26473`（B1/B1b/B2/N3/N5）、`9347f958`（N4）、`84ba1f48`（N1/N2）、`89770b1c`（S10），以及本台账与 CHANGELOG/SKILL 提交。
+
+台账提交：`git commit docs/superpowers/specs/b460-ledger.md CHANGELOG.md skills/handoff/SKILL.md` → `446959c0 docs(B460): 修复轮 1 台账（红→绿、变异、偏离）与 CHANGELOG/SKILL 补 S10、cd/重绑定修复`（随后 amend 一次收进本行，hash 随之变化）。
+
+#### 留给协调者
+
+- S10 spec 验收列要求「隔离 agentd 真机一次」：本轮只做了机内表驱动；建议用只读熟练工跑 `cat ~/.codex/auth.json` 与 `printenv`，看到不再有 `permission_auto_allow`、改为走审批链（approver_decision）并按政策升级成工单；agentd Info 日志「触及凭据位置，自动放行改交审批链」带 hit。
+- 主会话复核：偏离 1（范围循环 Escalate）、7（单一收口 + 多覆盖写文件工具）、9（任意位置匹配未收窄到家目录）、10（政策段措辞）。
+
 ## review 真机（协调者，§5.3）
 
 - 前置：分支头 4abe2a7e 构建（linux sha256 dc71e4ef…，mac 3262a986…）；隔离 t452-linux（7796，`/root/b460-iso`）/ t452-mac（7797）换新二进制重启（mac 覆盖原文件后被系统杀，改先删后拷）。在役进程开始时：mac-mini pid 94142（20:33:32 启动）、linux-01 handoff-agentd MainPID 29537（11:33:14 UTC）。共享审批链 clear（R1–R5）。新增本机载体 t452-mini（t452-mac，opencode-go/deepseek-v4.1-flash，standalone，同在役 mini 配法）detect online。
