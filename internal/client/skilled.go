@@ -79,6 +79,12 @@ type FinalOutcome struct {
 	// Pending 非空表示任务停在需人答的工单上（B460 F1/F4：取自快照 pending_tickets，
 	// 已被审批链处理的工单不在其中）。此时 Event/Completed 无意义，调用方以退出码 5 交回人。
 	Pending []proto.Ticket
+	// FollowedFrom 是本次等待沿重跑链（B453 S6）跟过的原任务，按跟链先后；空 = 没跟链。
+	// 非空时 Task/Event/产物都取自链尾的新任务。
+	FollowedFrom []proto.TaskRef
+	// Machine 是 Task 所在机器（本次等待最后使用的 machine 参数；空 = 起始机器）。跟链后与
+	// 调用方传入的 machine 不同，产物下载与续等命令须用它。
+	Machine string
 }
 
 // isTurnResult 判定事件是否是一个回合的结果（completed / turn_failed）或任务终结（failed）。
@@ -164,7 +170,71 @@ func lastArchivedIn(events []proto.Event) proto.Event {
 // 参数：machine 非空时快照与事件流都按机转发（F14/F15）。
 // 返回：结论（Pending 非空 = 有待答工单）；ctx 到期返回 ctx.Err()（调用方转 124，任务照跑）；
 // 任务不存在等永久错误原样返回。
+//
+// 重跑链（B453 S6）：结论是 failed 且任务带 rerun_by（只读任务撞额度、已改由别的成员重跑）时，
+// 透明跟到新任务继续等（machine 换成 rerun_by.machine），最终结论与产物取自链尾任务；跟过的原任务
+// 记在 FollowedFrom。链接先于 failed 落库（编排侧保证），故事件流里拿到 failed 时重取一次快照即可。
+//
+// notice 工单（B453 Q8/F-B460-2 窄改）：waiting_review 且快照有 notice 待答工单时先交回工单（5），
+// gate/ask 的旧次序不变（waiting_review 下今天不会出现它们，旧用例锁着）。
 func (c *Client) WaitFinal(ctx context.Context, taskID, machine string) (*FinalOutcome, error) {
+	var followed []proto.TaskRef
+	seen := map[string]bool{machine + "/" + taskID: true}
+	for {
+		out, err := c.waitFinalOne(ctx, taskID, machine)
+		if err != nil {
+			return nil, err
+		}
+		out.FollowedFrom, out.Machine = followed, machine
+		next := c.rerunNext(ctx, taskID, machine, out)
+		if next == nil {
+			return out, nil
+		}
+		key := next.Machine + "/" + next.Task
+		if seen[key] {
+			c.log().Error("终态等待：重跑链成环，停在当前任务", "task", taskID, "machine", machine, "next", next.Task)
+			return out, nil
+		}
+		seen[key] = true
+		c.log().Info("终态等待：原任务撞额度已改由新任务重跑，跟链继续等", "task", taskID, "machine", machine,
+			"next_task", next.Task, "next_machine", next.Machine, "hop", len(followed)+1)
+		followed = append(followed, proto.TaskRef{Task: taskID, Machine: machine})
+		taskID, machine = next.Task, next.Machine
+	}
+}
+
+// rerunNext 判结论是否该沿重跑链继续：只有 failed（任务终态）且带 rerun_by 才跟。事件流路径的
+// 结论携带的是进入流之前的快照（那时还没有链接），这里重取一次快照补读 rerun_by。
+func (c *Client) rerunNext(ctx context.Context, taskID, machine string, out *FinalOutcome) *proto.TaskRef {
+	if out.Completed || len(out.Pending) > 0 || out.Event.Type != proto.EventTypeFailed {
+		return nil
+	}
+	if out.Task.RerunBy != nil {
+		return out.Task.RerunBy
+	}
+	snap, err := c.AttachOn(ctx, taskID, machine)
+	if err != nil {
+		c.log().Warn("终态等待：读快照以查重跑链接失败，按无链接结束", "task", taskID, "machine", machine, "cause", err)
+		return nil
+	}
+	if snap.Task.RerunBy != nil {
+		out.Task = snap.Task.Task
+	}
+	return snap.Task.RerunBy
+}
+
+// hasNotice 报告待答工单里是否有 notice（B453 Q8 窄改只对它生效）。
+func hasNotice(tickets []proto.Ticket) bool {
+	for _, tk := range tickets {
+		if tk.Kind == proto.TicketKindNotice {
+			return true
+		}
+	}
+	return false
+}
+
+// waitFinalOne 是单个任务的终态等待（不跟重跑链），判据见 WaitFinal。
+func (c *Client) waitFinalOne(ctx context.Context, taskID, machine string) (*FinalOutcome, error) {
 	backoff := c.wsInitialBackoff
 	emptyRechecks := 0
 	// sawProgress/progressW：本次等待亲见任务「进行中」时的最大水位——确定性的回合起点。
@@ -198,6 +268,11 @@ func (c *Client) WaitFinal(ctx context.Context, taskID, machine string) (*FinalO
 		var w int64
 		if n := len(snap.RecentEvents); n > 0 {
 			w = snap.RecentEvents[n-1].Seq
+		}
+		if task.State == proto.TaskStateWaitingReview && hasNotice(snap.PendingTickets) {
+			c.log().Info("终态等待结束：回合已停在 waiting_review 且有告知工单，先交回人", "task", taskID,
+				"machine", machine, "tickets", len(snap.PendingTickets))
+			return &FinalOutcome{Task: task, Pending: snap.PendingTickets}, nil
 		}
 		if turnEnded(task.State) {
 			res, rerr := c.lastResultFor(ctx, taskID, machine, snap.RecentEvents, w)
@@ -298,6 +373,17 @@ func (c *Client) WaitFinal(ctx context.Context, taskID, machine string) (*FinalO
 		})
 		lived := time.Since(started)
 		if out != nil {
+			if out.Event.Type == proto.EventTypeTurnFailed {
+				// Q8：分支任务撞额度时告知工单先于 turn_failed 落库——重取一次快照，有 notice 先交回
+				if snap2, serr := c.AttachOn(ctx, taskID, machine); serr == nil &&
+					snap2.Task.State == proto.TaskStateWaitingReview && hasNotice(snap2.PendingTickets) {
+					c.log().Info("终态等待结束：回合失败且有告知工单，先交回人", "task", taskID,
+						"machine", machine, "tickets", len(snap2.PendingTickets))
+					return &FinalOutcome{Task: snap2.Task.Task, Pending: snap2.PendingTickets}, nil
+				} else if serr != nil {
+					c.log().Warn("终态等待：回合失败后重取快照查告知工单失败，按回合结论结束", "task", taskID, "cause", serr)
+				}
+			}
 			c.log().Info("终态等待完成：事件流收到回合结果", "task", taskID, "machine", machine,
 				"seq", out.Event.Seq, "type", out.Event.Type, "completed", out.Completed)
 			return out, nil

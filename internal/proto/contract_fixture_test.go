@@ -66,6 +66,8 @@ func TestContractFixtures(t *testing.T) {
 		{"Task", taskSample(now, taskID)},
 		{"Event", eventSample(now, taskID)},
 		{"Ticket", ticketSample(now, taskID)},
+		{"TaskRerunLinks", taskRerunLinksSample(now)},
+		{"TicketNotice", ticketNoticeSample(now)},
 		{"ProjectLocation", projectLocationSample(now)},
 		{"ProjectTreeResp", projectTreeSample()},
 		{"PreviewOpenReq", previewOpenReqSample()},
@@ -955,4 +957,29 @@ func b435VocabSample() map[string][]string {
 		},
 		"session_member_kinds": {SessionMemberHuman, SessionMemberAgent, SessionMemberSeat, SessionMemberResident},
 	}
+}
+
+// taskRerunLinksSample 是 B453 F17 任务快照的重跑链两键：中间一跳的任务同时带 rerun_of 与 rerun_by，
+// machine 可为空（未配自名的单机部署）。
+func taskRerunLinksSample(now time.Time) Task {
+	return Task{
+		ID: "b453-mid", Target: "linux-01", RepoPath: "/home/dev/handoff", Carrier: "oc-linux", Squad: "skilled",
+		State: TaskStateFailed, CreatedAt: now, UpdatedAt: now.Add(time.Minute), Executor: "opencode",
+		Mode:    TaskModeReadonly,
+		RerunOf: &TaskRef{Task: "b453-orig", Machine: "mac-mini"},
+		RerunBy: &TaskRef{Task: "b453-next", Machine: ""},
+	}
+}
+
+// ticketNoticeSample 是 B453 F-B460-1 notice 工单：请求体 kind=notice，人读全文在 notice。
+func ticketNoticeSample(now time.Time) Ticket {
+	recover := now.Add(2*time.Hour + 41*time.Minute)
+	body, _ := json.Marshal(NoticeRequest{
+		Kind: TicketKindNotice, Reason: "quota_exhausted",
+		Notice:  "分支任务撞额度，已停下：不自动换人，工作树保留。\n接管见 B459；本工单答「已知悉」即关单，不会在原会话续跑。",
+		Carrier: "oc-mini", Machine: "mac-mini", Account: "og-mini",
+		Windows: []string{"5h 已用 100%"}, RecoverAt: &recover,
+		Branch: "handoff/b453", Worktree: "/home/dev/.handoff/worktrees/b453",
+	})
+	return Ticket{ID: "tk-notice", TaskID: "b453-branch", Kind: TicketKindNotice, Request: body, CreatedAt: now}
 }

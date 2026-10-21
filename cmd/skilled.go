@@ -241,6 +241,17 @@ func runFinalWait(cmd *cobra.Command, cli finalWaitClient, taskID, machine strin
 	slog.Info("等待任务终态", "task", taskID, "machine", machine, "timeout", timeout.String())
 	errOut := cmd.ErrOrStderr()
 	out, err := cli.WaitFinal(waitCtx, taskID, machine)
+	if err == nil && len(out.FollowedFrom) > 0 {
+		// B453 S6：原任务撞额度已换人重跑，等待已跟到链尾——之后的输出、产物与续等都以新任务为准
+		from := make([]string, 0, len(out.FollowedFrom))
+		for _, r := range out.FollowedFrom {
+			from = append(from, refLabel(r))
+		}
+		fmt.Fprintf(errOut, "提示: 任务 %s 撞额度已换人重跑，结论取自新任务 %s\n",
+			strings.Join(from, " → "), refLabel(proto.TaskRef{Task: out.Task.ID, Machine: out.Machine}))
+		slog.Info("终态等待已跟随重跑链", "from", from, "task", out.Task.ID, "machine", out.Machine)
+		taskID, machine = out.Task.ID, out.Machine
+	}
 	resume := resumeCommand(taskID, machine)
 	if err != nil {
 		if timeout > 0 && errors.Is(err, context.DeadlineExceeded) {
@@ -344,6 +355,14 @@ func localArtifactsPath(ctx context.Context, cli artifactsClient, taskID, machin
 	return dest, nil
 }
 
+// refLabel 是任务引用的人读形「<任务>@<机器>」（机器空时只写任务）。
+func refLabel(r proto.TaskRef) string {
+	if r.Machine == "" {
+		return r.Task
+	}
+	return r.Task + "@" + r.Machine
+}
+
 // modeLabel 是形态的人读名：空串即分支形态（F1）。
 func modeLabel(mode string) string {
 	if mode == "" {
@@ -368,6 +387,7 @@ type pendingTicketRequest struct {
 	Permission string `json:"permission"`
 	Question   string `json:"question"`
 	Reason     string `json:"reason"`
+	Notice     string `json:"notice"` // B453 F-B460-1：kind=notice 的告知全文
 }
 
 // writePendingTickets 按 F2（B460 冻结）写出待答工单块：每张一块、块间空一行，最后一行续等命令。
@@ -381,6 +401,10 @@ type pendingTicketRequest struct {
 //	reply: handoff reply <任务ID> --ticket <工单ID> --approve          ← permission 两行
 //	reply: handoff reply <任务ID> --ticket <工单ID> --deny --reason "<原因>"
 //	reply: handoff reply <任务ID> --ticket <工单ID> --answer "<回答>"  ← question 一行
+//	reply: handoff reply <任务ID> --ticket <工单ID> --answer "已知悉"   ← notice 一行（B453 F-B460-1）
+//
+// notice 块（系统告知，如分支任务撞额度）：kind: notice，全文取请求体 notice，不打 reason 行
+// （它的 reason 是机读类别，人读内容都在全文里）。
 //
 //	resume: handoff wait <任务ID> --final[ --machine <M>]
 //
@@ -402,6 +426,8 @@ func writePendingTickets(w io.Writer, taskID, resume string, tickets []proto.Tic
 				kindRaw = req.Kind
 			}
 			switch {
+			case kindRaw == proto.TicketKindNotice && req.Notice != "":
+				full = req.Notice
 			case kindRaw == "ask" && req.Question != "":
 				full = req.Question
 			case req.Permission != "":
@@ -409,19 +435,25 @@ func writePendingTickets(w io.Writer, taskID, resume string, tickets []proto.Tic
 			}
 		}
 		kind := "permission"
-		if kindRaw == "ask" {
+		switch kindRaw {
+		case "ask":
 			kind = "question"
+		case proto.TicketKindNotice:
+			kind = proto.TicketKindNotice
 		}
 		b.WriteString("ticket: " + tk.ID + "\n")
 		b.WriteString("kind: " + kind + "\n")
-		if req.Reason != "" {
+		if req.Reason != "" && kind != proto.TicketKindNotice {
 			b.WriteString("reason: " + req.Reason + "\n")
 		}
 		b.WriteString("--- 全文 ---\n" + full + "\n--- 全文完 ---\n")
 		prefix := "reply: handoff reply " + taskID + " --ticket " + tk.ID
-		if kind == "question" {
+		switch kind {
+		case proto.TicketKindNotice:
+			b.WriteString(prefix + " --answer \"已知悉\"\n")
+		case "question":
 			b.WriteString(prefix + " --answer \"<回答>\"\n")
-		} else {
+		default:
 			b.WriteString(prefix + " --approve\n")
 			b.WriteString(prefix + " --deny --reason \"<原因>\"\n")
 		}

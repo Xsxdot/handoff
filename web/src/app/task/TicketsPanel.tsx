@@ -2,7 +2,7 @@
 //
 // 浏览器点「批准」与 CLI 敲 `reply --approve` 是同一件事，因此应答编码与 agentd
 // 的契约严格对齐（review.ts）：gate 批准 → "allow"，gate 拒绝 → "deny: <理由>"，
-// ask → 自由文本原样透传。
+// ask → 自由文本原样透传，notice（B453 系统告知）→ 只有「已知悉」一个动作。
 //
 // 展示纪律：
 //   - 权限/提问**全文完整展示、不截断**——读工单的 request 字段，不读事件
@@ -16,6 +16,7 @@ import type { Ticket } from '../../api/types'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
+  NOTICE_ACK,
   buildTicketAnswer,
   parseTicketRequest,
   ticketKindLabel,
@@ -85,13 +86,14 @@ function TicketCard({
 }) {
   const req = parseTicketRequest(ticket)
   const isGate = req.kind === 'gate'
+  const isNotice = req.kind === 'notice'
   const [mode, setMode] = useState<'idle' | 'deny'>('idle')
   const [reason, setReason] = useState('')
   const [freeText, setFreeText] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  const submit = async (action: 'approve' | 'deny' | 'answer') => {
+  const submit = async (action: 'approve' | 'deny' | 'answer' | 'acknowledge') => {
     const validation = validateReply(req.kind, action, reason)
     if (validation) {
       setError(validation)
@@ -130,7 +132,13 @@ function TicketCard({
         </p>
       )}
 
-      {isGate ? (
+      {isNotice ? (
+        <div>
+          <Button size="sm" disabled={blocked} onClick={() => void submit('acknowledge')}>
+            {submitting ? '提交中…' : NOTICE_ACK}
+          </Button>
+        </div>
+      ) : isGate ? (
         mode === 'idle' ? (
           <div className="flex flex-wrap gap-2">
             <Button size="sm" disabled={blocked} onClick={() => void submit('approve')}>

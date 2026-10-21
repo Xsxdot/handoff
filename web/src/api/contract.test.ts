@@ -42,6 +42,8 @@ import statusFixture from './testdata/StatusResp.json'
 import taskFixture from './testdata/Task.json'
 import tasksRespFixture from './testdata/TasksResp.json'
 import ticketFixture from './testdata/Ticket.json'
+import taskRerunLinksFixture from './testdata/TaskRerunLinks.json'
+import ticketNoticeFixture from './testdata/TicketNotice.json'
 import frameFixture from './testdata/Frame.json'
 import envRespFixture from './testdata/EnvResp.json'
 import envKeysFixture from './testdata/EnvKeysResp.json'
@@ -99,6 +101,7 @@ import {
   type TaskPlan,
   type TasksResp,
   type Ticket,
+  type NoticeRequest,
   type PreviewOpenReq,
   type PreviewSession,
   type PreviewListResp,
@@ -282,6 +285,25 @@ describe('契约 fixture 与 TS 类型', () => {
     // 指针字段类型是可选的：把值赋成 undefined 必须能通过类型检查
     const optional: Ticket = { ...tk, answer: undefined, answered_at: undefined, delivered_at: undefined }
     expect(optional.answer).toBeUndefined()
+  })
+
+  it('B453 F17 Task.rerun_of / rerun_by：形状 {task, machine}，machine 可为空串', () => {
+    const t: Task = taskRerunLinksFixture
+    expect(t.rerun_of).toEqual({ task: 'b453-orig', machine: 'mac-mini' })
+    expect(t.rerun_by).toEqual({ task: 'b453-next', machine: '' })
+    const plain: Task = taskFixture
+    expect(Object.keys(plain)).not.toContain('rerun_of')
+    expect(Object.keys(plain)).not.toContain('rerun_by')
+  })
+
+  it('B453 F-B460-1 notice 工单：kind=notice，request 是 NoticeRequest（全文在 notice）', () => {
+    expect(ticketNoticeFixture.kind).toBe('notice')
+    const req: NoticeRequest = ticketNoticeFixture.request as NoticeRequest
+    expect(req.kind).toBe('notice')
+    expect(req.reason).toBe('quota_exhausted')
+    expect(req.notice).toContain('接管见 B459')
+    expect(req.windows).toEqual(['5h 已用 100%'])
+    expect(req.recover_at).toMatch(/^2026-08-11T13:11/)
   })
 
   it('ProjectLocation / AuthTicketResp / SessionInfo：可解析且关键字段齐全', () => {

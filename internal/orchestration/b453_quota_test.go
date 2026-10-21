@@ -245,3 +245,22 @@ func TestB453QuotaReadonlyWithoutHandlerFallsBackToReview(t *testing.T) {
 		return indexOfType(e.eventTypes(t, task.ID), proto.EventTypeTurnFailed) >= 0
 	})
 }
+
+// 续接（人已拍板接着干）关掉未答的 notice：否则续接回合进行中 --wait 会因陈旧告知立即以 5 返回。
+func TestB453ContinueVoidsPendingNotice(t *testing.T) {
+	e := newB452Env(t, []fake.Step{{Finish: executor.Result{OK: false, FailReason: b453QuotaText}}})
+	e.m.SetQuotaHandler(&fakeQuotaHandler{st: e.st})
+	task := b453Dispatch(t, e, "")
+	waitTaskState(t, e.st, task.ID, proto.TaskStateWaitingReview)
+	eventually(t, 3*time.Second, "notice 落库", func() bool {
+		p, _ := e.st.PendingTickets(task.ID)
+		return len(p) == 1
+	})
+	e.fk.Add(task.ID, fake.Step{Finish: executor.Result{OK: true, Summary: "s"}})
+	if err := e.m.Continue(context.Background(), task.ID, "额度已恢复，接着做"); err != nil {
+		t.Fatalf("continue: %v", err)
+	}
+	if p, _ := e.st.PendingTickets(task.ID); len(p) != 0 {
+		t.Fatalf("续接后告知工单应作废，仍有 %+v", p)
+	}
+}

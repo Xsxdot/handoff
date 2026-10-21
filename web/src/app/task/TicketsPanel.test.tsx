@@ -28,7 +28,25 @@ const askTicket: Ticket = {
   created_at: '2026-08-11T10:30:00+08:00',
 }
 
+const noticeTicket: Ticket = {
+  id: 'tk-notice',
+  task_id: 't1',
+  kind: 'notice',
+  request: { kind: 'notice', reason: 'quota_exhausted', notice: '分支任务撞额度，已停下：不自动换人，工作树保留。\n接管见 B459' },
+  created_at: '2026-10-22T10:30:00+08:00',
+}
+
 describe('TicketsPanel 审批交互', () => {
+  it('notice 告知工单：全文展示，只有「已知悉」一个动作，提交 answer=已知悉', async () => {
+    const onReply = vi.fn().mockResolvedValue(undefined)
+    render(<TicketsPanel tickets={[noticeTicket]} disabled={false} onReply={onReply} />)
+    expect(screen.getByText(/接管见 B459/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /批准/ })).toBeNull()
+    expect(screen.queryByPlaceholderText(/输入你的回答/)).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: '已知悉' }))
+    await waitFor(() => expect(onReply).toHaveBeenCalledWith(noticeTicket, '已知悉'))
+  })
+
   it('批准 gate 工单提交 answer=allow', async () => {
     const onReply = vi.fn().mockResolvedValue(undefined)
     render(<TicketsPanel tickets={[gateTicket]} disabled={false} onReply={onReply} />)

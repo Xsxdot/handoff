@@ -1480,6 +1480,9 @@ func (m *Manager) Continue(ctx context.Context, taskID, instructions string) (er
 	if err := m.transit(taskID, proto.TaskStateRunning, "continue"); err != nil {
 		return err
 	}
+	// B453 S7：waiting_review 下唯一可能挂着的是 notice 告知工单（Q8 事实）。续接即人已拍板接着干，
+	// 告知作废——留着它，续接回合进行中 --wait 会被陈旧告知立即以 5 打回。
+	VoidTicketsWithAudit(m.st, taskID, "continue：已续接，未确认的告知工单作废", m.log)
 	// 只有 taskID：经 adapterFor 解析该任务实际使用的 adapter（executor 已不在
 	// 按 ErrTaskNotRunning 同语义处置——Send 由 executor 实现方自身包装该哨兵）
 	ad, err := m.adapterFor(taskID)

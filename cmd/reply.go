@@ -1,4 +1,4 @@
-// 本文件实现 handoff reply 子命令：回答一个待办工单（权限门/提问）。
+// 本文件实现 handoff reply 子命令：回答一个待办工单（权限门/提问/告知）。
 //
 // 职责：
 //   - 把协调者的裁决转成应答原文：--approve → "allow"、--deny [--reason] → "deny[:原因]"、
@@ -42,7 +42,7 @@ var (
 // 使用方式：handoff reply <task> --ticket <id> (--approve | --deny [--reason r] | --answer "text")
 var replyCmd = &cobra.Command{
 	Use:   "reply <task>",
-	Short: "回答一个待办工单（权限门/提问）",
+	Short: "回答一个待办工单（权限门/提问/告知）",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		taskID := args[0]
@@ -97,6 +97,6 @@ func init() {
 	replyCmd.Flags().BoolVar(&replyApprove, "approve", false, "批准权限门（对应 allow）")
 	replyCmd.Flags().BoolVar(&replyDeny, "deny", false, "拒绝权限门（对应 deny）")
 	replyCmd.Flags().StringVar(&replyReason, "reason", "", "拒绝原因（可选，与 --deny 搭配）")
-	replyCmd.Flags().StringVar(&replyAnswer, "answer", "", "自由文本回答（提问场景）")
+	replyCmd.Flags().StringVar(&replyAnswer, "answer", "", "自由文本回答（提问场景；告知工单答「已知悉」即关单）")
 	rootCmd.AddCommand(replyCmd)
 }

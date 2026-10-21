@@ -8,13 +8,15 @@
 //   - gate 拒绝 → "deny: <理由>"（理由会回到模型手里；无理由时 UI 不允许提交，
 //     否则 executor 会原地重试同样的操作、白烧一轮）
 //   - ask 提问  → 自由文本原样透传
+//   - notice 告知（B453）→ 恒为 "已知悉"（与 CLI 退出 5 打印的答复行一致；agentd 只记送达，
+//     不回传执行器）
 //
 // 工单 request 的展示契约：权限/提问全文只在工单里（事件 payload 的是截断摘要），
 // 解析必须读工单的 request 字段。完整展示、不截断。
 import type { Ticket } from '../../api/types'
 
 // TicketAction 是审核者对一张工单的裁决动作。
-export type TicketAction = 'approve' | 'deny' | 'answer'
+export type TicketAction = 'approve' | 'deny' | 'answer' | 'acknowledge'
 
 // validateReply 校验一次应答是否可以提交。
 //
@@ -49,6 +51,9 @@ export function buildTicketAnswer(
   reason: string,
   freeText: string,
 ): string {
+  if (kind === 'notice') {
+    return NOTICE_ACK
+  }
   if (kind === 'ask') {
     return freeText
   }
@@ -60,6 +65,9 @@ export function buildTicketAnswer(
   }
   return freeText
 }
+
+// NOTICE_ACK 是告知工单的唯一答复（F-B460-1）。
+export const NOTICE_ACK = '已知悉'
 
 // ParsedTicketRequest 是工单 request 的可读视图：kind 与要展示的全文文本。
 export interface ParsedTicketRequest {
@@ -95,6 +103,9 @@ export function parseTicketRequest(ticket: Ticket): ParsedTicketRequest {
     if (typeof obj.question === 'string' && obj.question !== '') {
       return { kind, text: obj.question }
     }
+    if (typeof obj.notice === 'string' && obj.notice !== '') {
+      return { kind, text: obj.notice }
+    }
     // 形状不符（如历史样本 {"cmd":…}）：把整个对象原样展示，不猜不丢
     return { kind, text: JSON.stringify(obj, null, 2) }
   }
@@ -108,6 +119,8 @@ export function ticketKindLabel(kind: string): string {
       return '权限请求'
     case 'ask':
       return '提问'
+    case 'notice':
+      return '告知'
     default:
       return kind
   }
