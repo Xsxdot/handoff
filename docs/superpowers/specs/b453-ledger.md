@@ -52,3 +52,4 @@
 - 放弃的尝试：曾考虑由所在机探测器顺带算同机载体指纹以免改 `/api/host/wake` wire——spec S4 明写「载体检测时」算，弃；曾考虑分支撞额度停在 `waiting_answer` 以免改 F4——答复后 `ResumeIfIdle` 会迁回 running 而执行器已不在，弃（Q8）。
 - 自审（plan skill「自审」节）：S1–S12 均有交付行与验收；待验证假设 U1–U8 有动作与阻塞范围；决策权限 §6；待拍板在稿首；行为闭环 12 行五格齐；段间依赖分硬依赖/施工排序（§4）；真机清单 §5.3 汇总；冻结节有结论（F1–F19 + F-B460-1/2）。
 - 提交：`git commit docs/superpowers/plans/b453-plan.md docs/superpowers/specs/b453-ledger.md -m "docs(B453): plan 出稿（待拍板）…"` → `[cards/B453-charter-1 ceb8a28d] … 2 files changed, 413 insertions(+)`；本行随后 amend 一次收进同批提交（hash 会变，不回写）。
+- plan 拍板（2026-10-22 主会话，891ede8f 稿）：Q1–Q19 除 Q2 备选（opencode.db OAuth 凭据位置，凭据类留用户）外全部采纳；SC1–SC7 认可、spec 不升版。详见 plan「拍板」节。
