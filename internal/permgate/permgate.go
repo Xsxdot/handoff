@@ -289,18 +289,24 @@ func (g *Gate) judgeBash(req Request, scope Scope) Verdict {
 		g.log.Info("heredoc 闭集放行", "command", req.Command, "rule", RuleHeredocInScope)
 		return v
 	}
-	// B383 S4：人工清单显式 Escalate——用户裁定的形态不允许 Consult 审批
-	// 模型直批，只能在判定层硬升级（建 gate 工单）。挂在本处：落点循环之后
-	// （越界理由优先），judgeCommand 之前（Consult 出口之前）。
-	if v, ok := manualGateVerdict(judged); ok {
-		g.log.Info("人工清单命中，保持人工裁决", "command", req.Command, "rule", RuleManualGate)
-		return v
-	}
 	// Existing self-command, blacklist, and wrapper rules remain authoritative;
 	// the positive whitelist only handles their ordinary Consult result.
 	verdict := g.judgeCommand(judged)
 	if verdict.Action != Consult {
 		return verdict
+	}
+	// B451：人工清单交审批链（撤销 B383 S4 的显式 Escalate）。选点承重：
+	//   - 在 judgeCommand 之后：自指令/黑名单加包装器/eval 的 Escalate 先原样
+	//     返回，人工清单的 Consult 截不走硬升级（越界落点、截断更早已返回）；
+	//   - 在白名单与复合只读静默之前、命中即返回：人工清单形态永不 AutoAllow；
+	//   - 前面的 rm/heredoc 两个 AutoAllow 出口要求全部段是 cd/rm 或裸 cat，
+	//     人工清单形态天然进不去。
+	// judgeCommand 仅因引号内字面量命中黑名单而给出 Consult 时，整条裁决换成
+	// 人工清单的 Consult——审批者读的是权限原文，不读 Reason。
+	if v, ok := manualGateVerdict(judged); ok {
+		g.log.Info("人工清单命中，交审批链裁决", "command", req.Command,
+			"rule", RuleManualGate, "reason", v.Reason)
+		return v
 	}
 	if id, ok := safeCommandID(judged); ok {
 		g.log.Info("安全命令白名单命中", "command", req.Command, "id", id,

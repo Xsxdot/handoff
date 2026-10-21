@@ -750,3 +750,64 @@ func TestApprovalClientPerCandidateModelReachesEventPayload(t *testing.T) {
 		t.Fatalf("approver_decision payload model = %v，期望 gpt-6-luna", got[0]["model"])
 	}
 }
+
+// TestApprovalClientManualChecklistConsultsApprover 锁 B451 S1（OpenCode 路径）：
+// 经真实 gate 与 approval.Client.Request 送 heredoc 内联 Python，人工清单判出
+// Consult 后由审批者批准——allow/Rule=approver、approver_decision approve 一条、
+// 无 permission_request。真机执行器 opencode 走的就是这条消费路径。
+func TestApprovalClientManualChecklistConsultsApprover(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	app, err := NewApprover(config.ApproverConfig{Executor: config.ExecutorList{"opencode"}, Timeout: time.Second}, nil, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	app.BindOneShot(&stubShot{fn: func(_ context.Context, req executor.OneShotReq) (executor.OneShotReply, error) {
+		calls++
+		return executor.OneShotReply{
+			Text:   injectNonceForTest(`{"decision":"approve","reason":"只改工作树内文件"}`, extractNonceForTest(req.Prompt)),
+			Status: executor.OneShotOK,
+		}, nil
+	}})
+	st, err := store.Open(filepath.Join(looseTempDir(t), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	cfg := &config.Config{Token: "test", DataDir: t.TempDir(), Executor: config.ExecutorConfig{Default: "fake"}}
+	m := NewManager(st, NewHub(), map[string]executor.Adapter{"fake": &chanAdapter{evCh: make(chan executor.AdapterEvent, 1)}}, cfg, nil, app, newTestGate(t), logger)
+
+	const taskID = "T-manual-oc"
+	task := &proto.Task{ID: taskID, RepoPath: t.TempDir(), WorkDir: t.TempDir(),
+		State: proto.TaskStateRunning, Executor: "fake"}
+	mustCreateTask(t, st, task)
+	scope := executor.ApprovalScope{
+		Workdir:    task.Workdir(),
+		TaskDir:    taskDirOf(m, taskID),
+		TaskTmpDir: executor.TaskTmpDir(m.cfg.DataDir, taskID),
+	}
+	c := m.bindApproval(taskID, executor.PolicySnapshot{Version: "v1", TaskID: taskID, Scope: scope})
+
+	cmd := "python3 - <<'PY'\nopen('a.txt','w').write('x')\nPY"
+	res, err := c.Request(context.Background(), executor.ApprovalRequest{
+		NativeID: "perm-manual",
+		Text:     "bash: " + cmd,
+		Perm:     &executor.PermRequest{Tool: executor.PermToolBash, Command: cmd},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Decision.Status != executor.ApprovalAllow || res.Decision.Rule != "approver" {
+		t.Fatalf("decision = %+v，期望审批者放行（allow/approver）", res.Decision)
+	}
+	if calls == 0 {
+		t.Fatal("人工清单形态必须经审批链裁决，审批者未被调用")
+	}
+	ds := approverDecisions(t, st, taskID)
+	if len(ds) != 1 || ds[0].Decision != "approve" {
+		t.Fatalf("approver_decision = %+v，期望 1 条 approve", ds)
+	}
+	if got := countEvents(mustEvents(t, st, taskID), proto.EventTypePermissionRequest); got != 0 {
+		t.Fatalf("审批者批准不得发 permission_request，实得 %d", got)
+	}
+}

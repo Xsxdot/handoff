@@ -182,7 +182,7 @@ func TestSearchPatternExceptionThroughJudge(t *testing.T) {
 		{"grep -c 计数加搜索词落白名单", `grep -c handoff docs/x.md`, AutoAllow, RuleSafeCommand},
 		{"rg --no-config 落白名单", `rg --no-config -e handoff internal/`, AutoAllow, RuleSafeCommand},
 		{"rg 无 --no-config 维持升级", `rg -e handoff internal/`, Escalate, RuleSelfCommand},
-		{"rg --pre 走人工门", `rg --pre cat pattern .`, Escalate, RuleManualGate},
+		{"rg --pre 走人工清单交审批链", `rg --pre cat pattern .`, Consult, RuleManualGate},
 		{"env 包装的 rg 维持升级", `env rg --no-config -e handoff x`, Escalate, RuleSelfCommand},
 	}
 	for _, tc := range cases {

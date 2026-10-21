@@ -65,7 +65,7 @@ func TestJudgeHeredocUnmatchedKeepsStatusQuo(t *testing.T) {
 		{"终止符后还有命令", "cat > f <<'EOF'\nx\nEOF\necho more", Consult},
 		{"cat 段带额外旗标", "cat -n > f <<'EOF'\nx\nEOF", Consult},
 		{"操作符后还有词元", "cat > f <<'EOF' extra\nx\nEOF", Consult},
-		{"python 消费正文走人工门", "python <<'EOF'\nprint(1)\nEOF", Escalate},
+		{"python 消费正文走人工清单交审批链", "python <<'EOF'\nprint(1)\nEOF", Consult},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
