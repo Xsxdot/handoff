@@ -78,10 +78,21 @@ type Problem struct {
 
 // Reading 是一次成功探测的读数。Blocked 非空 = 接口明示不可用（如无订阅），按无额度推导。
 type Reading struct {
-	Windows  []Window  `json:"windows"`
-	PlanType string    `json:"plan_type,omitempty"`
-	Blocked  *Problem  `json:"blocked,omitempty"`
-	ProbedAt time.Time `json:"probed_at"`
+	Windows     []Window    `json:"windows"`
+	PlanType    string      `json:"plan_type,omitempty"`
+	ExtraUsage  *ExtraUsage `json:"extra_usage,omitempty"`
+	Fingerprint string      `json:"fingerprint,omitempty"` // 凭据身份短指纹（sha256 前缀），取不到为空
+	Blocked     *Problem    `json:"blocked,omitempty"`
+	ProbedAt    time.Time   `json:"probed_at"`
+}
+
+// ExtraUsage 是窗口之外的额外额度（codex credits、grok 预付/按需）。各字段可缺。
+type ExtraUsage struct {
+	Unit      string   `json:"unit,omitempty"`
+	Balance   *float64 `json:"balance,omitempty"`
+	Used      *float64 `json:"used,omitempty"`
+	Limit     *float64 `json:"limit,omitempty"`
+	Unlimited bool     `json:"unlimited,omitempty"`
 }
 
 // QuotaMark 是撞额度标记：由任务/检测撞额度时写入，持续到开始时刻晚于它的成功探测。
@@ -133,4 +144,6 @@ type View struct {
 	State   State
 	Stale   bool
 	Record  ReadingRecord
+	// Carriers 是引用该账号的载体名（排序；组装点未注入引用查询时为空）。
+	Carriers []string
 }

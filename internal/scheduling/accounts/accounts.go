@@ -18,11 +18,14 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand/v2"
+	"path"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/Xsxdot/handoff/internal/proxycfg"
 	"github.com/Xsxdot/handoff/internal/schedclient"
 )
 
@@ -43,7 +46,8 @@ func logger() *slog.Logger { return slog.Default().With("mod", "scheduling", "do
 
 // Service 是账号领域的规则入口。无内存权威状态，全部经 Registry 持久。
 type Service struct {
-	repo schedclient.Registry
+	repo      schedclient.Registry
+	referrers func(account string) ([]string, error) // 载体引用查询；nil = 无引用（见 SetReferrers）
 }
 
 // New 用组装点绑定的注册表端口构造服务。
@@ -58,6 +62,24 @@ func (s *Service) Put(a Account, expect int) (int, error) {
 		logger().Warn("账号登记校验失败", "name", a.Name, "kind", a.Kind, "machine", a.Machine,
 			"expect", expect, "cause", err)
 		return 0, err
+	}
+	existing, err := s.definitions()
+	if err != nil {
+		return 0, err
+	}
+	for _, other := range existing {
+		if other.Name == a.Name {
+			if expect > 0 && isMaskedEcho(a.Proxy, other.Proxy) {
+				a.Proxy = other.Proxy // 编辑回填的是打码值：保留原代理
+			}
+			continue
+		}
+		if sameCredential(other, a) {
+			err := fmt.Errorf("%w: 账号 %s 与已登记账号 %s 指向同一凭据（机器 %s、HOME %s、类型 %s、条目 %q），同一凭据只能登记一次",
+				ErrInvalid, a.Name, other.Name, a.Machine, a.HomeDir, a.Kind, a.Entry)
+			logger().Warn("账号登记校验失败：重复凭据", "name", a.Name, "conflict", other.Name, "expect", expect)
+			return 0, err
+		}
 	}
 	body, err := json.Marshal(a)
 	if err != nil {
@@ -75,9 +97,45 @@ func (s *Service) Put(a Account, expect int) (int, error) {
 	return version, nil
 }
 
-// validate 是段 1 的最小校验：必填、kind 词表、间隔可选值、两条阈值次序。
-// 同机同 HOME 同条目查重与 HOME 形态校验在段 2（plan V1）。
+// definitions 读全部账号定义（查重用）。
+func (s *Service) definitions() ([]Account, error) {
+	recs, err := s.repo.List(KindAccount)
+	if err != nil {
+		return nil, fmt.Errorf("列账号定义失败: %w", err)
+	}
+	out := make([]Account, 0, len(recs))
+	for _, r := range recs {
+		var a Account
+		if err := json.Unmarshal(r.Body, &a); err != nil {
+			return nil, fmt.Errorf("account/%s 解码失败: %w", r.ID, err)
+		}
+		out = append(out, a)
+	}
+	return out, nil
+}
+
+// sameCredential：同机、同 HOME（归一后）、同类型、同条目即同一凭据。并发两人同时登记
+// 同一凭据可能都成功（先扫后写，plan §7 接受：人工低频，第二个可删）。
+func sameCredential(a, b Account) bool {
+	return a.Machine == b.Machine && a.Kind == b.Kind && a.Entry == b.Entry &&
+		normalizeHome(a.HomeDir) == normalizeHome(b.HomeDir)
+}
+
+func normalizeHome(h string) string {
+	h = strings.TrimSpace(h)
+	if h == "~" || strings.HasPrefix(h, "~/") {
+		return "~" + path.Clean("/"+strings.TrimPrefix(h, "~"))
+	}
+	return path.Clean(h)
+}
+
+// validate 是单条定义的形态校验（spec S1）：必填、kind 词表、HOME 形态（绝对路径或 ~、~/
+// 开头）、间隔可选值、两条阈值次序、代理形态。跨账号的查重在 Put。
 func validate(a Account) error {
+	if err := proxycfg.Validate(a.Proxy); err != nil {
+		return fmt.Errorf("%w: 账号 %s 的代理无效：%v", ErrInvalid, a.Name, err)
+	}
+	home := strings.TrimSpace(a.HomeDir)
 	switch {
 	case strings.TrimSpace(a.Name) == "" || strings.TrimSpace(a.Name) != a.Name || strings.Contains(a.Name, "/"):
 		return fmt.Errorf("%w: 账号名必填，且不能含首尾空白或 /", ErrInvalid)
@@ -85,8 +143,10 @@ func validate(a Account) error {
 		return fmt.Errorf("%w: 账号 %s 的类型 %q 不在 opencode-go/codex/grok/agy 之内", ErrInvalid, a.Name, a.Kind)
 	case strings.TrimSpace(a.Machine) == "":
 		return fmt.Errorf("%w: 账号 %s 必须指定所在机器", ErrInvalid, a.Name)
-	case strings.TrimSpace(a.HomeDir) == "":
+	case home == "":
 		return fmt.Errorf("%w: 账号 %s 必须指定凭据 HOME", ErrInvalid, a.Name)
+	case !(home == "~" || strings.HasPrefix(home, "~/") || path.IsAbs(home) || filepath.IsAbs(home)):
+		return fmt.Errorf("%w: 账号 %s 的凭据 HOME %q 必须是绝对路径或以 ~/ 开头", ErrInvalid, a.Name, a.HomeDir)
 	case !slices.Contains(AllowedIntervals, a.IntervalMinutes):
 		return fmt.Errorf("%w: 账号 %s 的探测间隔 %d 分钟不在 %v 之内", ErrInvalid, a.Name, a.IntervalMinutes, AllowedIntervals)
 	case a.WarnPercent <= 0 || a.WarnPercent >= a.LowPercent || a.LowPercent > 100:
@@ -112,7 +172,13 @@ func (s *Service) Get(name string) (View, error) {
 	if err != nil {
 		return View{}, err
 	}
-	return newView(a, def.Version, rec, time.Now()), nil
+	refs, err := s.carriersOf(name)
+	if err != nil {
+		return View{}, err
+	}
+	v := newView(a, def.Version, rec, time.Now())
+	v.Carriers = refs
+	return v, nil
 }
 
 // List 列出全部账号（按名称排序）。没有定义行的读数行（孤儿）不出现。
@@ -142,7 +208,11 @@ func (s *Service) List() ([]View, error) {
 		if err := json.Unmarshal(d.Body, &a); err != nil {
 			return nil, fmt.Errorf("account/%s 解码失败: %w", d.ID, err)
 		}
-		out = append(out, newView(a, d.Version, byID[d.ID], now))
+		v := newView(a, d.Version, byID[d.ID], now)
+		if v.Carriers, err = s.carriersOf(a.Name); err != nil {
+			return nil, err
+		}
+		out = append(out, v)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Account.Name < out[j].Account.Name })
 	return out, nil
