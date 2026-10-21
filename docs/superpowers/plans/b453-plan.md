@@ -1,6 +1,6 @@
 # B453 实现计划：账号与额度（手工登记、所在机定时探测、派发看账号额度）
 
-- 状态：**已拍板（2026-10-22，主会话协调者；用户外出，按 2026-10-22 自主授权裁决）**。裁决见下方「拍板」节；与下方各 Q 的「荐」不一致处以「拍板」节为准。 **§8 修订 r1**（2026-10-22，审查第 1 轮 I1 回写）。
+- 状态：**已拍板（2026-10-22，主会话协调者；用户外出，按 2026-10-22 自主授权裁决）**。裁决见下方「拍板」节；与下方各 Q 的「荐」不一致处以「拍板」节为准。 **§8 修订 r1**（2026-10-22，审查第 1 轮 I1 回写）。 **§8 修订 r2**（2026-10-22，审查第 1 轮 I2：F5 增 `recover_at`）。
 - 输入：`docs/superpowers/specs/b453.md` **r1.1**（r1 2026-10-22 用户批准；r1.1 同日增第四种 kind `agy`，提交 `9043ba71`）。L3，形态甲（本地盯），**不扇出**：一张卡、单分支 `cards/B453-charter-1`、按段串行。
 - 事实：`b453-facts-code.md`（基线 fad1aadf，本稿复核过的行号见 §10）、`b453-facts-orca.md`（三家 HTTP + agy CLI 的外部形状）、`b453-facts-providers.md`。台账 `docs/superpowers/specs/b453-ledger.md`「plan」节是本稿全部读数、命令与判断的原始记录。
 - 基线：分支 `cards/B453-charter-1` @ `9043ba71`（已含 main/B460；代码与 `a4e206d8` 相同，之后只有文档提交）。
@@ -398,6 +398,9 @@
 - **F8 增补**：`extra_usage` 形状 `{unit?, balance?, used?, limit?, unlimited?}`（codex credits → `unit:"credits"` + balance；grok prepaidBalance/onDemandUsed/onDemandCap → balance/used/limit）；`windows[].group?` 为模型组名（agy）；`fingerprint` 形如 `sha256:` + 12 位十六进制。
 - **F15 增补**（D2）：`HomeWakeReq` 另增可选键 `account`（所选账号名）——目标机凭它在本机账号域查代理（代理串不过机间 wire），只认所在机为本机的账号；旧版目标机忽略该键 = 检测回合不走账号代理（可接受降级）。
 - **F-B460-2 实际范围（收窄）**：只有任务处于 `waiting_review` 且快照待答工单中**含 `kind: notice`** 时，「有待答工单（5）」先于「回合已结束（3）」；`gate`/`ask`（permission/question）工单在 `waiting_review` 下维持 B460 F4 原序（回合结论 0/3 优先）；`completed`/`failed` 下次序不变。原文「`pending_tickets` 非空」作废。B460 plan F4 已加交叉注。
+
+**§8 修订 r2（2026-10-22，主会话据审查第 1 轮 I2 与修复轮 2 回写）**
+- **F5 增补**：AccountView 新增可选键 `recover_at`（RFC3339，omitempty）。有值时等于全部越线窗口里最晚的那个重置时刻（与 spec r1.2 D1 同义，由服务端在推导 `state` 的同一时刻算出）。以下情况缺席：不阻挡；撞了额度标记；接口明示不可用；任一越线窗口缺重置时刻。控制台只读此键，不再用窗口重置时刻自行推算，缺席显示「未知」。Go/TS 契约 fixture 同批更新（`internal/proto/contract_fixture_test.go`、`web/src/api/testdata/AccountsResp.json`）。被否方案：前端照 D1 自算（审查 I2 发现前端取了最早而非最晚的重置——同一规则两处实现，正是漂移的成因）。
 
 **拍板记录**（难逆转、无上下文会惊讶、真取舍）：
 - **定义与读数分两行**（F18，Q1）。被否方案：同行分字段。反过来写不会有任何单测变红（单线程下两种都对），只有 V3 并发负载与 R1 人侧编辑体验能看出差别。
