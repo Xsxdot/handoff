@@ -2606,22 +2606,20 @@ func (m *Manager) approvePermission(taskID, ticketID, permID, permission, fp, re
 	m.log.Info("权限自动批准", "task", taskID, "ticket", ticketID,
 		"perm", permID, "source", source, "reason", turn.TruncateRunes(reason, 80))
 	req, _ := json.Marshal(ticketRequest{Kind: "gate", Permission: permission})
-	if _, err := m.st.CreateTicket(&proto.Ticket{
-		ID: ticketID, TaskID: taskID, Kind: "gate",
-		Request: req, CreatedAt: time.Now().UTC(),
-		Fingerprint: fp,
-	}); err != nil {
-		// 工单建不起来批准就无法落审计，按裁决失败处理（fail-closed）
-		m.log.Error("审批者批准：创建工单失败", "task", taskID, "ticket", ticketID, "source", source, "cause", err)
-		m.countApproverFail(taskID)
-		return
-	}
+	// 建单即已答（B460 Q3 甲，一次事务）：批准工单从不以 answer IS NULL 形态出现在
+	// 待答列表里，等待命令不会被一张已批准的单误叫醒。
+	//
 	// 工单 answer 落**精确 "allow"**（P0-2）：gate 翻译规则是 answer 严格等于
 	// "allow" 才放行，塞理由进 answer 会让审批者的批准在 resume 重投
 	// （RelayAnswer）时被翻转成 reject；理由已完整落在 approver_decision 事件的
 	// Reason 字段，answer 只需表达「批准」这一动作。
-	if err := m.st.AnswerTicket(ticketID, "allow"); err != nil {
-		m.log.Error("审批者批准：应答失败", "task", taskID, "ticket", ticketID, "source", source, "cause", err)
+	if _, err := m.st.CreateAnsweredTicket(&proto.Ticket{
+		ID: ticketID, TaskID: taskID, Kind: "gate",
+		Request: req, CreatedAt: time.Now().UTC(),
+		Fingerprint: fp,
+	}, "allow"); err != nil {
+		// 工单建不起来批准就无法落审计，按裁决失败处理（fail-closed）
+		m.log.Error("审批者批准：建已答工单失败", "task", taskID, "ticket", ticketID, "source", source, "cause", err)
 		m.countApproverFail(taskID)
 		return
 	}

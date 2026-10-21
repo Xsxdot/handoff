@@ -41,7 +41,9 @@ type b452Agentd struct {
 	attach       func() client.AttachInfo
 	stream       func(conn *websocket.Conn, r *http.Request)
 	artifacts    http.HandlerFunc
-	ts           *httptest.Server
+	// fallback 接住上面未列的路由（B460：reply 端点捕获）；nil = 404。
+	fallback http.HandlerFunc
+	ts       *httptest.Server
 }
 
 func (a *b452Agentd) count(prefix string) int {
@@ -112,6 +114,10 @@ func newB452Agentd(t *testing.T, a *b452Agentd) *b452Agentd {
 			}
 			<-r.Context().Done()
 		default:
+			if a.fallback != nil {
+				a.fallback(w, r)
+				return
+			}
 			http.NotFound(w, r)
 		}
 	}))

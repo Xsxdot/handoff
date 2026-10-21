@@ -13,6 +13,7 @@ package cmd
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -217,7 +218,7 @@ func wrapDispatchError(err error) error {
 
 // finalWaitClient 是终态等待与产物解析的消费面（接口定义在使用方）。
 type finalWaitClient interface {
-	WaitFinal(ctx context.Context, taskID, machine string, onAttention func(proto.Event)) (*client.FinalOutcome, error)
+	WaitFinal(ctx context.Context, taskID, machine string) (*client.FinalOutcome, error)
 	AttachOn(ctx context.Context, taskID, machine string) (*client.AttachInfo, error)
 	Artifacts(ctx context.Context, taskID, machine string) (io.ReadCloser, error)
 }
@@ -225,7 +226,8 @@ type finalWaitClient interface {
 // runFinalWait 等任务最后一回合的终态并按 F19–F21 输出：
 //   - 完成：stdout = final_text 原文（不以换行结尾时补一个）；产物非空再加一行 `artifacts: <本机绝对路径>`；退出 0；
 //   - 非完成：stdout 空，退出码 3，错误文案含任务 id 与原因；
-//   - 超时：退出码 124，任务照跑，文案给出接着等的命令。
+//   - 超时：退出码 124，任务照跑，文案给出接着等的命令；
+//   - 有待答工单（B460 F1/F2）：stdout = 工单块（见 writePendingTickets），退出码 5，任务照跑。
 //
 // timeout<=0 表示不设时限。
 func runFinalWait(cmd *cobra.Command, cli finalWaitClient, taskID, machine string, timeout time.Duration) error {
@@ -238,21 +240,27 @@ func runFinalWait(cmd *cobra.Command, cli finalWaitClient, taskID, machine strin
 	}
 	slog.Info("等待任务终态", "task", taskID, "machine", machine, "timeout", timeout.String())
 	errOut := cmd.ErrOrStderr()
-	out, err := cli.WaitFinal(waitCtx, taskID, machine, func(ev proto.Event) {
-		fmt.Fprintf(errOut, "提示: 任务 %s 在等人回答（%s，seq=%d）：handoff show %s 查看，handoff reply 应答\n",
-			taskID, ev.Type, ev.Seq, taskID)
-	})
+	out, err := cli.WaitFinal(waitCtx, taskID, machine)
+	resume := resumeCommand(taskID, machine)
 	if err != nil {
 		if timeout > 0 && errors.Is(err, context.DeadlineExceeded) {
-			resume := "handoff wait " + taskID + " --final"
-			if machine != "" {
-				resume += " --machine " + machine
-			}
 			slog.Warn("等待任务终态超时，任务照跑", "task", taskID, "machine", machine, "timeout", timeout.String())
 			return &exitCodeError{code: ExitTimeout, err: fmt.Errorf(
 				"等待任务 %s 终态超时（%s），任务照跑、未被停止；接着等：%s", taskID, timeout, resume)}
 		}
 		return err
+	}
+	if len(out.Pending) > 0 {
+		ids := make([]string, 0, len(out.Pending))
+		for _, tk := range out.Pending {
+			ids = append(ids, tk.ID)
+		}
+		slog.Info("任务有待答工单，以退出码 5 交回人", "task", taskID, "machine", machine, "tickets", ids)
+		if err := writePendingTickets(cmd.OutOrStdout(), taskID, resume, out.Pending); err != nil {
+			return fmt.Errorf("写出待答工单: %w", err)
+		}
+		return &exitCodeError{code: ExitPendingTicket, err: fmt.Errorf(
+			"任务 %s 有 %d 张待答工单（%s），答复后续等：%s", taskID, len(ids), strings.Join(ids, ", "), resume)}
 	}
 	if !out.Completed {
 		slog.Warn("任务以非完成告终", "task", taskID, "machine", machine, "type", out.Event.Type, "reason", out.Reason)
@@ -342,4 +350,83 @@ func modeLabel(mode string) string {
 		return ledger.TemplateModeBranch
 	}
 	return mode
+}
+
+// resumeCommand 是续等命令串：超时（124）与待答工单（5）共用同一构造。
+func resumeCommand(taskID, machine string) string {
+	resume := "handoff wait " + taskID + " --final"
+	if machine != "" {
+		resume += " --machine " + machine
+	}
+	return resume
+}
+
+// pendingTicketRequest 是工单请求体里退出码 5 要用的字段（生产方形状见
+// orchestration.ticketRequest / approval.ticketRequest：kind=gate|ask）。
+type pendingTicketRequest struct {
+	Kind       string `json:"kind"`
+	Permission string `json:"permission"`
+	Question   string `json:"question"`
+	Reason     string `json:"reason"`
+}
+
+// writePendingTickets 按 F2（B460 冻结）写出待答工单块：每张一块、块间空一行，最后一行续等命令。
+//
+//	ticket: <工单ID>
+//	kind: permission | question
+//	reason: <升级理由>            ← 仅请求体带 reason 时
+//	--- 全文 ---
+//	<请求体 permission / question 原文，不截断>
+//	--- 全文完 ---
+//	reply: handoff reply <任务ID> --ticket <工单ID> --approve          ← permission 两行
+//	reply: handoff reply <任务ID> --ticket <工单ID> --deny --reason "<原因>"
+//	reply: handoff reply <任务ID> --ticket <工单ID> --answer "<回答>"  ← question 一行
+//
+//	resume: handoff wait <任务ID> --final[ --machine <M>]
+//
+// 全文取工单记录（F3），不取事件 payload（那里截断到 200 rune）。请求体解不开时全文退回
+// 请求原文，类型按工单 kind 判——宁可多打原文也不吞掉要人看的内容。
+func writePendingTickets(w io.Writer, taskID, resume string, tickets []proto.Ticket) error {
+	var b strings.Builder
+	for i, tk := range tickets {
+		if i > 0 {
+			b.WriteString("\n")
+		}
+		var req pendingTicketRequest
+		full := string(tk.Request)
+		kindRaw := tk.Kind
+		if err := json.Unmarshal(tk.Request, &req); err != nil {
+			slog.Warn("待答工单请求体解析失败，全文退回原文", "task", taskID, "ticket", tk.ID, "cause", err)
+		} else {
+			if req.Kind != "" {
+				kindRaw = req.Kind
+			}
+			switch {
+			case kindRaw == "ask" && req.Question != "":
+				full = req.Question
+			case req.Permission != "":
+				full = req.Permission
+			}
+		}
+		kind := "permission"
+		if kindRaw == "ask" {
+			kind = "question"
+		}
+		b.WriteString("ticket: " + tk.ID + "\n")
+		b.WriteString("kind: " + kind + "\n")
+		if req.Reason != "" {
+			b.WriteString("reason: " + req.Reason + "\n")
+		}
+		b.WriteString("--- 全文 ---\n" + full + "\n--- 全文完 ---\n")
+		prefix := "reply: handoff reply " + taskID + " --ticket " + tk.ID
+		if kind == "question" {
+			b.WriteString(prefix + " --answer \"<回答>\"\n")
+		} else {
+			b.WriteString(prefix + " --approve\n")
+			b.WriteString(prefix + " --deny --reason \"<原因>\"\n")
+		}
+	}
+	b.WriteString("\nresume: " + resume + "\n")
+	_, err := io.WriteString(w, b.String())
+	return err
 }

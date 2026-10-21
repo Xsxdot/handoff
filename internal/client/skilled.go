@@ -76,6 +76,9 @@ type FinalOutcome struct {
 	HasFinalText bool
 	// Reason 是非完成时给人读的原因（fail_reason 原文，或「未完成就已归档」）。
 	Reason string
+	// Pending 非空表示任务停在需人答的工单上（B460 F1/F4：取自快照 pending_tickets，
+	// 已被审批链处理的工单不在其中）。此时 Event/Completed 无意义，调用方以退出码 5 交回人。
+	Pending []proto.Ticket
 }
 
 // isTurnResult 判定事件是否是一个回合的结果（completed / turn_failed）或任务终结（failed）。
@@ -153,16 +156,24 @@ func lastArchivedIn(events []proto.Event) proto.Event {
 //
 // 断线（含正常关闭）一律回到「重取快照」：快照是权威，断线期间落库的结果不会漏。
 //
-// 参数：machine 非空时快照与事件流都按机转发（F14/F15）；onAttention 收到 question /
-// permission_request 时回调（可 nil），供调用方在 stderr 提醒有人要回答。
-// 返回：结论；ctx 到期返回 ctx.Err()（调用方转 124，任务照跑）；任务不存在等永久错误原样返回。
-func (c *Client) WaitFinal(ctx context.Context, taskID, machine string, onAttention func(proto.Event)) (*FinalOutcome, error) {
+// 待答工单（B460 F4/F5）：判据优先级 回合已结束 > 快照 pending_tickets 非空 > 继续等。进入时
+// 就有待答工单 → 首轮快照即返回（不拨事件流）；跟流时 question / permission_request 事件**只作
+// 唤醒**——收流、立即（不退避）重取快照，回到判据。工单是否已被审批链处理不在这里判：进入
+// 待答列表的就是要人答的（审批链批准工单建单即已答，见 store.CreateAnsweredTicket）。
+//
+// 参数：machine 非空时快照与事件流都按机转发（F14/F15）。
+// 返回：结论（Pending 非空 = 有待答工单）；ctx 到期返回 ctx.Err()（调用方转 124，任务照跑）；
+// 任务不存在等永久错误原样返回。
+func (c *Client) WaitFinal(ctx context.Context, taskID, machine string) (*FinalOutcome, error) {
 	backoff := c.wsInitialBackoff
 	emptyRechecks := 0
 	// sawProgress/progressW：本次等待亲见任务「进行中」时的最大水位——确定性的回合起点。
 	// candidate：上一轮 waiting_review 快照里待确认的结果（见下方判据 ③）。
 	sawProgress, progressW := false, int64(0)
 	var candidate *proto.Event
+	// wakeFloor：上次唤醒事件的 seq。续跟起点取 max(快照水位, wakeFloor)，保证同一条唤醒事件
+	// 不会因快照窗口滞后被重放回来、形成无退避的紧循环。
+	wakeFloor := int64(0)
 	c.log().Info("终态等待开始", "addr", c.baseURL, "task", taskID, "machine", machine)
 	for attempt := 1; ; attempt++ {
 		if err := ctx.Err(); err != nil {
@@ -240,6 +251,11 @@ func (c *Client) WaitFinal(ctx context.Context, taskID, machine string, onAttent
 			}
 			continue
 		}
+		if len(snap.PendingTickets) > 0 {
+			c.log().Info("终态等待结束：任务有待答工单，交回人", "task", taskID, "machine", machine,
+				"tickets", len(snap.PendingTickets), "first_ticket", snap.PendingTickets[0].ID, "state", task.State)
+			return &FinalOutcome{Task: task, Pending: snap.PendingTickets}, nil
+		}
 		candidate = nil
 		sawProgress = true
 		if w > progressW {
@@ -247,9 +263,14 @@ func (c *Client) WaitFinal(ctx context.Context, taskID, machine string, onAttent
 		}
 
 		var out *FinalOutcome
-		from := w
+		woke := false
+		start := w
+		if wakeFloor > start {
+			start = wakeFloor
+		}
+		from := start
 		started := time.Now()
-		streamErr := c.streamOnceOn(ctx, taskID, machine, w, nil, func(ev proto.Event) error {
+		streamErr := c.streamOnceOn(ctx, taskID, machine, start, nil, func(ev proto.Event) error {
 			// 只在内存推进水位：绝不 writeCursor（见文件头边界）
 			from = ev.Seq
 			switch {
@@ -260,9 +281,10 @@ func (c *Client) WaitFinal(ctx context.Context, taskID, machine string, onAttent
 				out = archivedWithoutResult(task, ev)
 				return errStopStream
 			case ev.Type == proto.EventTypeQuestion || ev.Type == proto.EventTypePermissionRequest:
-				if onAttention != nil {
-					onAttention(ev)
-				}
+				// 只作唤醒：工单是否仍待答以快照为准（可能已被审批链或人答掉）
+				woke = true
+				wakeFloor = ev.Seq
+				return errStopStream
 			}
 			return nil
 		})
@@ -274,6 +296,11 @@ func (c *Client) WaitFinal(ctx context.Context, taskID, machine string, onAttent
 		}
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
+		}
+		if woke {
+			c.log().Debug("终态等待被工单事件唤醒，立即重取快照", "task", taskID, "machine", machine, "seq", wakeFloor)
+			backoff = c.wsInitialBackoff
+			continue
 		}
 		switch {
 		case errors.Is(streamErr, errArchived):

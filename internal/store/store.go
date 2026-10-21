@@ -1046,6 +1046,78 @@ VALUES (?, ?, ?, ?, NULL, ?, NULL, ?)`,
 	return n == 1, nil
 }
 
+// CreateAnsweredTicket 建一张「建单即已答」的工单（B460 Q3 甲：审批链批准路径专用）。
+//
+// 参数：
+//   - tk: 工单数据；ID 必须非空（tk.Answer/AnsweredAt 被忽略）
+//   - answer: 答案（审批链批准恒为 "allow"）
+//
+// 返回：
+//   - created: true 表示本次新建（id 此前不存在）
+//   - err: ErrTicketConflict（已有不同答案或已作废）或数据库错误
+//
+// 为什么不是「CreateTicket + AnswerTicket」两步：两步之间这张工单 answer IS NULL，出现在
+// PendingTickets 里——等待命令恰在此刻取快照就会把一张已被批准的单当成「要人答」叫醒
+// 主会话。这里在一个事务里完成，外部读者看不到未答中间态。
+//
+// 语义与旧两步写对齐：id 不存在 → 新建即带答案；id 已存在且未答（升级路径崩溃留下的半截
+// 状态）→ 补答；已有相同答案 → 幂等；已有不同答案或已作废 → ErrTicketConflict。
+func (s *Store) CreateAnsweredTicket(tk *proto.Ticket, answer string) (created bool, err error) {
+	ctx := context.Background()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("开启事务（建已答工单 %s）: %w", tk.ID, err)
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+	now := fmtTime(time.Now())
+	res, err := tx.ExecContext(ctx, `
+INSERT OR IGNORE INTO tickets (id, task_id, kind, request, answer, created_at, answered_at, fingerprint)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		tk.ID, tk.TaskID, tk.Kind, string(tk.Request), answer, fmtTime(tk.CreatedAt), now, tk.Fingerprint)
+	if err != nil {
+		return false, fmt.Errorf("写入已答工单 %s: %w", tk.ID, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("读取工单影响行数: %w", err)
+	}
+	created = n == 1
+	if !created {
+		res, err = tx.ExecContext(ctx,
+			"UPDATE tickets SET answer = ?, answered_at = ? WHERE id = ? AND answer IS NULL",
+			answer, now, tk.ID)
+		if err != nil {
+			return false, fmt.Errorf("补答既有工单 %s: %w", tk.ID, err)
+		}
+		if n, err = res.RowsAffected(); err != nil {
+			return false, fmt.Errorf("读取工单影响行数: %w", err)
+		}
+		if n == 0 {
+			var cur sql.NullString
+			if err = tx.QueryRowContext(ctx, "SELECT answer FROM tickets WHERE id = ?", tk.ID).Scan(&cur); err != nil {
+				return false, fmt.Errorf("读取既有工单答案 %s: %w", tk.ID, err)
+			}
+			switch {
+			case cur.String == VoidAnswer:
+				err = fmt.Errorf("%w: 工单已作废", ErrTicketConflict)
+				return false, err
+			case cur.String != answer:
+				err = fmt.Errorf("%w", ErrTicketConflict)
+				return false, err
+			}
+		}
+	}
+	if err = tx.Commit(); err != nil {
+		return false, fmt.Errorf("提交已答工单 %s: %w", tk.ID, err)
+	}
+	s.touchTaskUpdatedAt(tk.ID)
+	return created, nil
+}
+
 // CountEvents 统计任务在 (afterSeq, throughSeq] 区间内的事件条数。
 //
 // 参数：

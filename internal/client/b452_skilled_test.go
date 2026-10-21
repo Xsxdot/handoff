@@ -106,7 +106,7 @@ func TestB452WaitFinalCompletedInStreamByMachine(t *testing.T) {
 			<-r.Context().Done()
 		},
 	})
-	out, err := b452Client(s.ts.URL).WaitFinal(t.Context(), "t1", "linux-01", nil)
+	out, err := b452Client(s.ts.URL).WaitFinal(t.Context(), "t1", "linux-01")
 	if err != nil {
 		t.Fatalf("WaitFinal: %v", err)
 	}
@@ -144,7 +144,7 @@ func TestB452WaitFinalReconnectsAfterDrop(t *testing.T) {
 			<-r.Context().Done()
 		},
 	})
-	out, err := b452Client(s.ts.URL).WaitFinal(t.Context(), "t1", "", nil)
+	out, err := b452Client(s.ts.URL).WaitFinal(t.Context(), "t1", "")
 	if err != nil || !out.Completed || out.FinalText != "重连后的回文" {
 		t.Fatalf("outcome=%+v err=%v", out, err)
 	}
@@ -163,7 +163,7 @@ func TestB452WaitFinalLastTurnAfterContinue(t *testing.T) {
 		},
 		stream: func(int32, *websocket.Conn, *http.Request) { t.Error("回合已结束不应建流") },
 	})
-	out, err := b452Client(s.ts.URL).WaitFinal(t.Context(), "t1", "", nil)
+	out, err := b452Client(s.ts.URL).WaitFinal(t.Context(), "t1", "")
 	if err != nil || !out.Completed || out.FinalText != "末回合" || out.Event.Seq != 7 {
 		t.Fatalf("应取最后一回合，得 outcome=%+v err=%v", out, err)
 	}
@@ -198,7 +198,7 @@ func TestB452WaitFinalNonCompletion(t *testing.T) {
 					_ = conn.Close(websocket.StatusNormalClosure, "task archived")
 				},
 			})
-			out, err := b452Client(s.ts.URL).WaitFinal(t.Context(), "t1", "", nil)
+			out, err := b452Client(s.ts.URL).WaitFinal(t.Context(), "t1", "")
 			if err != nil {
 				t.Fatalf("WaitFinal: %v", err)
 			}
@@ -223,7 +223,7 @@ func TestB452WaitFinalReplaysWhenResultBeyondWindow(t *testing.T) {
 			<-r.Context().Done()
 		},
 	})
-	out, err := b452Client(s.ts.URL).WaitFinal(t.Context(), "t1", "", nil)
+	out, err := b452Client(s.ts.URL).WaitFinal(t.Context(), "t1", "")
 	if err != nil || !out.Completed || out.FinalText != "窗外的回文" {
 		t.Fatalf("outcome=%+v err=%v", out, err)
 	}
@@ -232,24 +232,33 @@ func TestB452WaitFinalReplaysWhenResultBeyondWindow(t *testing.T) {
 	}
 }
 
-// TestB452WaitFinalDeadline：总时限到 → ctx 错误（调用方转 124），期间提问事件交给 onAttention。
+// TestB452WaitFinalDeadline：总时限到 → ctx 错误（调用方转 124）。
+//
+// B460 改写（plan §6 允许类 1）：提问事件不再交给 onAttention 回调——事件只作唤醒、立即重取
+// 快照；快照始终无待答工单（如提问已被答复）时继续等，直到时限。
 func TestB452WaitFinalDeadline(t *testing.T) {
 	s := newB452FinalServer(t, &b452FinalServer{
-		attach: func(int32) *AttachInfo { return snapshot("t1", proto.TaskStateRunning) },
-		stream: func(_ int32, conn *websocket.Conn, r *http.Request) {
-			writeWSEvent(t, conn, r.Context(), b452Ev(1, proto.EventTypeQuestion))
+		attach: func(n int32) *AttachInfo {
+			if n == 1 {
+				return snapshot("t1", proto.TaskStateRunning)
+			}
+			return snapshot("t1", proto.TaskStateRunning, b452Ev(1, proto.EventTypeQuestion))
+		},
+		stream: func(n int32, conn *websocket.Conn, r *http.Request) {
+			if n == 1 {
+				writeWSEvent(t, conn, r.Context(), b452Ev(1, proto.EventTypeQuestion))
+			}
 			<-r.Context().Done()
 		},
 	})
 	ctx, cancel := context.WithTimeout(t.Context(), 300*time.Millisecond)
 	defer cancel()
-	var seen []proto.EventType
-	_, err := b452Client(s.ts.URL).WaitFinal(ctx, "t1", "", func(ev proto.Event) { seen = append(seen, ev.Type) })
+	_, err := b452Client(s.ts.URL).WaitFinal(ctx, "t1", "")
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("应 DeadlineExceeded，得 %v", err)
 	}
-	if len(seen) != 1 || seen[0] != proto.EventTypeQuestion {
-		t.Fatalf("提问事件应交给 onAttention，得 %v", seen)
+	if n := s.attachN.Load(); n < 2 {
+		t.Fatalf("提问事件应唤醒一次重取快照，快照只取了 %d 次", n)
 	}
 }
 
@@ -257,7 +266,7 @@ func TestB452WaitFinalDeadline(t *testing.T) {
 func TestB452AttachOnNotFoundIsPermanent(t *testing.T) {
 	ts := httptest.NewServer(http.NotFoundHandler())
 	t.Cleanup(ts.Close)
-	_, err := b452Client(ts.URL).WaitFinal(t.Context(), "t1", "m", nil)
+	_, err := b452Client(ts.URL).WaitFinal(t.Context(), "t1", "m")
 	if code, ok := StatusCode(err); !ok || code != http.StatusNotFound {
 		t.Fatalf("应 404 立即失败，得 %v", err)
 	}
