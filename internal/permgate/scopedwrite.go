@@ -4,7 +4,9 @@
 //   - 认一小类「写」形态：`mkdir`（全部目标）与 `echo`/`printf` 带写重定向（全部
 //     落点），每个落点都可静态证明落在任务范围（Workdir/TaskDir/TaskTmpDir）内时，
 //     整条命令按白名单同档 AutoAllow，审计 id 为 mkdir / echo-write / printf-write
-//   - 允许它们与 cd、既有只读静默段用 `&&` `||` `;` 串成复合命令
+//   - 允许它们与 cd、既有只读静默段串成复合命令：无 cd 时段间可用 `&&` `||` `;`；
+//     一旦出现 cd，首个 cd 之后只认 `&&`（cdChainTrusted），cd 前不得接 `||`，
+//     且 cd 目标须是普通路径（`cd -`、`cd --`、`cd +1`、裸 `cd`、`cd ~` 不认，cdTarget）
 //
 // 边界（plan §3 硬边界，改动须回主会话）：
 //   - B1 门禁不扩大：落点只认绝对字面路径、已证明基准 + 不含展开字符的相对路径、
@@ -33,7 +35,8 @@ import (
 // 任一段、任一落点证明不了即 ("", false)，调用方维持原裁决（通常 Consult）。
 //
 // 闭集（逐段一票否决，绝不半段放行）：
-//   - cd 段：`cd <目标>` 两词元，目标可证明在范围内；相对目标要求已有基准
+//   - cd 段：`cd <目标>` 两词元（cdTarget：非选项形 / 非 ~ / 非空），目标可证明在范围内；
+//     相对目标要求已有基准
 //   - mkdir 段：已知旗标（-p -v -m MODE 及其聚簇/长形态），全部目标可证明
 //   - echo/printf 段：无管道，全部非丢弃写重定向落点可证明；无写重定向的
 //     echo/printf 段按只读段处理
@@ -62,10 +65,11 @@ func scopedWriteID(cmd, cwd string, scope Scope) (string, bool) {
 		}
 		switch toks[0] {
 		case "cd":
-			if len(toks) != 2 || hasUnquotedShellOp(seg) {
+			tgt, ok := cdTarget(toks)
+			if !ok || hasUnquotedShellOp(seg) {
 				return "", false
 			}
-			dir, ok := proveScopedToken(toks[1], base, scope, rebind)
+			dir, ok := proveScopedToken(tgt, base, scope, rebind)
 			if !ok {
 				return "", false
 			}

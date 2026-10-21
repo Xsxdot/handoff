@@ -99,12 +99,13 @@ func cdResolvedTargets(cmd string, scope Scope, cwd string) (targets []string, u
 			continue
 		}
 		if len(toks) > 0 && toks[0] == "cd" {
-			if len(toks) != 2 {
-				// 裸 cd（回家目录）、带旗标、多词元：落点不可证明
+			tgt, ok := cdTarget(toks)
+			if !ok {
+				// 裸 cd（回家目录）、带旗标、`cd -`/`cd --`/`cd +1`、多词元：落点不可证明
 				broken = true
 				continue
 			}
-			dir, ok := proveCDInBases(toks[1], base, scope, rebindSuspect())
+			dir, ok := proveCDInBases(tgt, base, scope, rebindSuspect())
 			if !ok {
 				broken = true
 				continue
@@ -135,11 +136,12 @@ func cdWalkBase(cmd string, scope Scope) (base string, broken bool) {
 			continue
 		}
 		if len(toks) > 0 && toks[0] == "cd" {
-			if len(toks) != 2 {
+			tgt, ok := cdTarget(toks)
+			if !ok {
 				broken = true
 				continue
 			}
-			dir, ok := proveCDInBases(toks[1], base, scope, rebindSuspect())
+			dir, ok := proveCDInBases(tgt, base, scope, rebindSuspect())
 			if !ok {
 				broken = true
 				continue
@@ -239,21 +241,44 @@ func scopeVarPath(tok string, scope Scope, rebindSuspect bool) (joined string, i
 }
 
 // scopeVarRebindSuspect 是 tmpdirRebindSuspect 的白名单变量全集版：任一白名单变量
-// （TMPDIR、HANDOFF_ARTIFACTS_DIR）在本命令里有赋值 / export / unset 等触碰绑定的
-// 形态，或出现间接展开，即整条有嫌疑。合并判定是刻意的 over-reject：改了 TMPDIR 的
+// （TMPDIR、HANDOFF_ARTIFACTS_DIR）在本命令里以展开之外的形态出现（scopeVarNameMisused），
+// 或出现间接展开，即整条有嫌疑。合并判定是刻意的 over-reject：改了 TMPDIR 的
 // 命令里 $HANDOFF_ARTIFACTS_DIR 也不再信，代价只是少放行一次。
 func scopeVarRebindSuspect(cmd string) bool {
 	if tmpdirRebindSuspect(cmd) {
 		return true
 	}
-	toks, ok := rmTokens(cmd)
-	if !ok {
-		return true
-	}
-	for _, t := range toks {
-		if t == "HANDOFF_ARTIFACTS_DIR" || strings.HasPrefix(t, "HANDOFF_ARTIFACTS_DIR=") {
+	return scopeVarNameMisused(cmd, "HANDOFF_ARTIFACTS_DIR")
+}
+
+// scopeVarNameMisused 判定变量名 name 是否在 cmd 里以「纯展开」之外的形态出现（B460 修复轮 1 B2）。
+//
+// 纯展开只认两种：`$NAME`（紧前一字符是 `$`）与 `${NAME}`（紧前 `${`、紧后 `}`）。其余任何
+// 出现——`printf -vNAME`、`printf -v NAME`、`read NAME`、`for NAME in`、`mapfile NAME`、
+// `export/declare/typeset/local/readonly NAME=`、`NAME=… cmd`、`unset NAME`、`declare -n x=NAME`、
+// `${NAME:=…}`/`${NAME=…}`、`${!NAME}`、`${#NAME}`——都判嫌疑。
+//
+// 为什么不逐个枚举赋值形态：修前按词元认 `NAME` / `NAME=`，连写的 `-vNAME` 就漏了；
+// 能改绑定的内建与语法太多（含 zsh 的），枚举总有漏网。反过来证明「只被展开」只需
+// 一条字面规则。代价是 `$MYTMPDIR` 这类含名字子串的无关变量也被连坐（over-reject，
+// 只是少放行一次）。按原串扫描、不区分引号：`'TMPDIR'` 字面量同样判嫌疑，安全侧。
+func scopeVarNameMisused(cmd, name string) bool {
+	for i := 0; i < len(cmd); {
+		j := strings.Index(cmd[i:], name)
+		if j < 0 {
+			return false
+		}
+		p, end := i+j, i+j+len(name)
+		switch {
+		case p >= 2 && cmd[p-2:p] == "${":
+			if end >= len(cmd) || cmd[end] != '}' {
+				return true // ${NAME:=…}、${NAME=…} 等带操作的形态
+			}
+		case p >= 1 && cmd[p-1] == '$':
+		default:
 			return true
 		}
+		i = end
 	}
 	return false
 }
@@ -306,10 +331,18 @@ func provePathInBases(joined string, scope Scope) (string, bool) {
 //   - `x || cd A && w`：x 成功时 cd 被跳过，w 在旧 cwd 执行。
 //
 // 只有全 `&&` 链保证「走到写段时，前面每个 cd 都执行且成功了」。
+//
+// 另外任一 cd 段的目标不可信（cdTarget 判假：`cd -`、`cd --`、`cd -P`、`cd +1`、裸 `cd`、
+// `cd ~…`）时整条链不可信——cd 成功了也不知道去了哪里。
 func cdChainTrusted(segs, ops []string) bool {
 	first := -1
 	for i, seg := range segs {
 		if toks, ok := rmTokens(seg); ok && len(toks) > 0 && toks[0] == "cd" {
+			if _, ok := cdTarget(toks); !ok {
+				// B460 修复轮 1 B1：选项形 / 特殊目标 / 无参 cd 的去向是 $OLDPWD、$HOME 或
+				// 目录栈，静态不可知——整条 cd 链不可信，三处出口一律回落。
+				return false
+			}
 			if i > 0 && i-1 < len(ops) && ops[i-1] == "||" {
 				return false
 			}
@@ -327,4 +360,26 @@ func cdChainTrusted(segs, ops []string) bool {
 		}
 	}
 	return true
+}
+
+// cdTarget 从 cd 段词元（rmTokens 结果，toks[0] == "cd"）取可当路径解读的目标（B460 修复轮 1 B1）。
+//
+// 返回 ok=false 的形态（cd 的去向不是「名为该词元的目录」）：
+//   - 词元数不是 2：裸 `cd`（回 $HOME）、`cd -P dir` 等带旗标或多参数形态；
+//   - 目标以 `-` 开头：`cd -`（回 $OLDPWD）、`cd --`（等同裸 cd）、`cd -P`/`cd -L`、zsh `cd -1`；
+//   - 目标以 `+` 开头：zsh 目录栈 `cd +1`；
+//   - 目标以 `~` 开头：家目录展开；
+//   - 空目标。
+//
+// 判前剥掉前导的引号与反斜杠：`cd "-"`、`cd '--'`、`cd \-` 在 shell 里与 `cd -` 同义。
+// 选项形的相对目录（真名为 `-x` 的目录）须写成 `cd ./-x`，那仍可信。
+func cdTarget(toks []string) (string, bool) {
+	if len(toks) != 2 {
+		return "", false
+	}
+	t := strings.TrimLeft(toks[1], "\\\"'")
+	if t == "" || strings.HasPrefix(t, "-") || strings.HasPrefix(t, "+") || strings.HasPrefix(t, "~") {
+		return "", false
+	}
+	return toks[1], true
 }

@@ -498,6 +498,11 @@ func matchSilentFields(fields []string, command string) (id string, ok bool) {
 		if hasNonDiscardWriteRedirect(command) {
 			return "", false
 		}
+		// B460 修复轮 1 B2：`printf -v NAME` 给变量赋值（可改写 TMPDIR 等白名单变量），
+		// 不是只读段。
+		if fields[0] == "printf" && hasPrintfAssign(fields[1:]) {
+			return "", false
+		}
 		return fields[0], true
 	}
 	if len(fields) >= 2 && fields[0] == "git" {
@@ -544,6 +549,19 @@ func matchSilentFields(fields []string, command string) (id string, ok bool) {
 		}
 	}
 	return "", false
+}
+
+// hasPrintfAssign 判断 printf 参数里是否有 `-v` 赋值旗标（`-v x`、连写 `-vx`）。
+//
+// 判前剥前导引号与反斜杠：`"-vx"`、`'-v'`、`\-vx`、`""-vx` 在 shell 里都还原成 `-v…`。
+// 任何位置出现都算（含格式串之后的数据参数）：over-reject，安全侧。
+func hasPrintfAssign(args []string) bool {
+	for _, a := range args {
+		if strings.HasPrefix(strings.TrimLeft(a, "\\\"'"), "-v") {
+			return true
+		}
+	}
+	return false
 }
 
 // hasNonDiscardWriteRedirect 判断命令是否含会真正写文件的输出重定向。

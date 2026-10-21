@@ -127,10 +127,12 @@ func rmInScopeVerdict(cmd string, scope Scope) (Verdict, bool) {
 		case "cd":
 			// 条件 c：cd 本批只读解析。只认 `cd <目标>` 两词元形态——裸 cd
 			//（回家目录）、`cd -L …` 带旗标形态都不在闭集。
-			if len(toks) != 2 {
+			// B460 修复轮 1：`cd -`/`cd --`/`cd +1`/`cd ~` 同样不在闭集（cdTarget 共用判据）。
+			tgt, ok := cdTarget(toks)
+			if !ok {
 				return Verdict{}, false
 			}
-			dir, ok := proveDirInTmp(toks[1], cdBase, scope.TaskTmpDir, root)
+			dir, ok := proveDirInTmp(tgt, cdBase, scope.TaskTmpDir, root)
 			if !ok {
 				return Verdict{}, false
 			}
@@ -293,17 +295,15 @@ func rmDeletionTargets(args []string) ([]string, bool) {
 	return targets, true
 }
 
-// tmpdirRebindSuspect 扫全命令词元，回答「本命令中 TMPDIR 是否有重绑定嫌疑」。
+// tmpdirRebindSuspect 回答「本命令中 TMPDIR 是否有重绑定嫌疑」。
 //
 // 两类嫌疑（任一出现即整条不放宽）：
-//   - 词元以 TMPDIR= 开头：同名赋值的所有形态——`TMPDIR=/etc; …`、
-//     `TMPDIR=/etc rm …`（env 前缀）、`export TMPDIR=/x`，引号剥掉后都在
-//     这一类里；
-//   - 裸 TMPDIR 词元（无 $ 前缀）：`unset TMPDIR`、`export TMPDIR`、
-//     `env -u TMPDIR`、`read TMPDIR` 等触碰绑定本身的形态。$TMPDIR/${TMPDIR}
-//     的**引用**不在嫌疑内（放行面正是要证明引用值未变）。
-//
-// 另拦 ${! （间接展开）：展开目标由运行时值决定，静态不可证明。
+//   - TMPDIR 这个名字以 `$TMPDIR` / `${TMPDIR}` 纯展开之外的任何形态出现
+//     （scopeVarNameMisused，B460 修复轮 1）：赋值、env 前缀、export/declare/
+//     local/readonly、unset、read/mapfile/readarray、`printf -v`（含连写
+//     `-vTMPDIR`）、for 循环变量、`${TMPDIR:=…}` 等。$TMPDIR/${TMPDIR} 的
+//     **引用**不在嫌疑内（放行面正是要证明引用值未变）；
+//   - ${! （间接展开）：展开目标由运行时值决定，静态不可证明。
 //
 // 为什么是全命令扫描而不只看段首：重绑定嫌疑是整条命令的属性——先序段里的
 // `export TMPDIR=/x` 污染后续所有段的 $TMPDIR 语义，一票否决到整条。
@@ -314,14 +314,13 @@ func tmpdirRebindSuspect(cmd string) bool {
 		return true
 	}
 	for _, t := range toks {
-		if t == "TMPDIR" || strings.HasPrefix(t, "TMPDIR=") {
-			return true
-		}
 		if strings.Contains(t, "${!") {
 			return true
 		}
 	}
-	return false
+	// B460 修复轮 1 B2：修前按词元认 `TMPDIR` / `TMPDIR=`，`printf -vTMPDIR /etc` 连写漏检；
+	// 改为「除 $TMPDIR / ${TMPDIR} 展开外任何出现即嫌疑」（见 scopeVarNameMisused）。
+	return scopeVarNameMisused(cmd, "TMPDIR")
 }
 
 // splitRmSegments 把命令按引号外的 `&&` / `||` / `;` 切成段，供闭集逐段判定。
