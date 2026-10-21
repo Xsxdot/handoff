@@ -6,6 +6,8 @@ import userEvent from '@testing-library/user-event'
 import { fetchMachines } from '../../api/client'
 import { detectCarrier, deleteCarrier, getCarrierRunCommand, getSquads, probeHome, putCarrier, putSquad } from '../../api/scheduling'
 import { SchedulingPage } from './SchedulingPage'
+import { __resetAccountsStoreForTest, __setAccountsForTest } from '../accounts/store'
+import { sampleAccounts } from '../accounts/testAccounts'
 
 vi.mock('../../api/client', async () => {
   const actual = await vi.importActual<typeof import('../../api/client')>('../../api/client')
@@ -293,5 +295,61 @@ describe('SchedulingPage 编辑弹窗对齐原型（B287）', () => {
     expect(screen.getByText('载体名（唯一，登记后不可改）')).toBeVisible()
     expect(screen.getByText('模型（留空 = CLI 默认）')).toBeVisible()
     expect(screen.getByRole('dialog').querySelector('form')?.className).toContain('max-w-[480px]')
+  })
+
+  // B453 S4（plan W2）：载体选账号——下拉只列同机账号、可不选；PUT 回传所选账号（不选则键缺席）；
+  // 指纹不一致一行红字（载体行与编辑对话框），可以保存、不拦派发。
+  describe('载体选账号（B453 S4）', () => {
+    beforeEach(() => {
+      __resetAccountsStoreForTest()
+      __setAccountsForTest(sampleAccounts())
+    })
+
+    it('账号下拉只列载体同机账号；本机别名列不在任何远端机上的账号（W2）', async () => {
+      const user = userEvent.setup()
+      render(<SchedulingPage />)
+      await user.click(await screen.findByRole('button', { name: '登记载体' }))
+      const dlg = screen.getByRole('dialog')
+      await user.selectOptions(within(dlg).getByLabelText('机器'), 'linux-01')
+      const names = () => [...within(dlg).getByLabelText('账号').querySelectorAll('option')].map((o) => o.value)
+      expect(names()).toEqual(['', 'og-main', 'og-team', 'codex-spare', 'agy-main'])
+      await user.selectOptions(within(dlg).getByLabelText('机器'), '本机')
+      expect(names()).toEqual(['', 'og-mini', 'codex-plus', 'grok-mbp'])
+      expect(within(dlg).getByText('不选账号时，派发不看额度。')).toBeInTheDocument()
+    })
+
+    it('编辑带账号的载体：预选当前账号，保存回传 account；改成不选则键缺席（W2）', async () => {
+      const user = userEvent.setup()
+      vi.mocked(getSquads).mockResolvedValue({
+        carriers: [{ name: 'mimo', machine: 'linux-01', cli: 'opencode', home_dir: '/root/.handoff/home/mimo', credential: 'standalone', status: 'online', version: 7, account: 'og-main' }],
+        squads: [], running: [],
+      })
+      render(<SchedulingPage />)
+      await user.click(await screen.findByRole('button', { name: '编辑 mimo' }))
+      const dlg = screen.getByRole('dialog')
+      expect(within(dlg).getByLabelText('账号')).toHaveValue('og-main')
+      await user.click(within(dlg).getByRole('button', { name: '保存' }))
+      expect(putCarrier).toHaveBeenLastCalledWith('mimo', 7, expect.objectContaining({ account: 'og-main' }))
+      await user.click(await screen.findByRole('button', { name: '编辑 mimo' }))
+      await user.selectOptions(within(screen.getByRole('dialog')).getByLabelText('账号'), '')
+      await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: '保存' }))
+      expect(vi.mocked(putCarrier).mock.lastCall?.[2]).not.toHaveProperty('account')
+    })
+
+    it('指纹不一致：载体行与编辑对话框一行红字；载体行带账号与状态短语（W2）', async () => {
+      const user = userEvent.setup()
+      vi.mocked(getSquads).mockResolvedValue({
+        carriers: [{ name: 'dp', machine: 'linux-01', cli: 'opencode', home_dir: '/root/.handoff/home/dp', credential: 'standalone', status: 'online', version: 4, account: 'og-team', account_mismatch: true }],
+        squads: [], running: [],
+      })
+      render(<SchedulingPage />)
+      const row = (await screen.findByText('dp', { selector: 'strong' })).closest('article')!
+      const red = within(row).getByText('凭据指纹与所选账号不一致')
+      expect(red).toHaveClass('q-out')
+      expect(within(row).getByText('og-team')).toBeInTheDocument()
+      expect(row.textContent).toContain('无额度')
+      await user.click(within(row).getByRole('button', { name: '编辑 dp' }))
+      expect(within(screen.getByRole('dialog')).getByText('凭据指纹与所选账号不一致')).toHaveClass('q-out')
+    })
   })
 })

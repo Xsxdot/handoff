@@ -45,7 +45,7 @@
 import { useEffect, useMemo, useRef, useState, type DragEvent } from 'react'
 import '../workbench/desktop-workspace.css'
 import {
-  AppWindow, Archive, ChevronDown, ChevronRight, FolderOpen, FileText, FolderGit2, LayoutGrid, MessageSquarePlus, MessagesSquare, Monitor, Plus, Search, Server, Settings, SquareKanban, SquareTerminal, Terminal, Ticket, WifiOff, Workflow, X,
+  AppWindow, Archive, ChartPie, ChevronDown, ChevronRight, FolderOpen, FileText, FolderGit2, LayoutGrid, MessageSquarePlus, MessagesSquare, Monitor, Plus, Search, Server, Settings, SquareKanban, SquareTerminal, Terminal, Ticket, WifiOff, Workflow, X,
 } from 'lucide-react'
 import dispatchTaskUrl from '../../assets/dispatch-task.png'
 import { filterTree, taskMatchesQuery } from './search'
@@ -144,6 +144,9 @@ export interface ProjectTreeProps {
   cardNeedsCount?: number
   onOpenTickets: () => void
   onOpenSettings: () => void
+  // onOpenAccounts（B453 S8）：dock「◔ 账号与额度」进账号页。账号域依赖共享账本，
+  // 与工作项/流程同一门控（ledgerEnabled）；缺省不渲染。
+  onOpenAccounts?: () => void
   // compact（B369.7）：紧凑视口形态。缺省 false = 桌面行为零改动。
   // 三个处置：①项目行右侧簇常驻渲染「工作项」钮（触屏无 hover 也可见可点）；
   // ②底部「流程」钮配合回调缺席一并隐藏——/flows 整页路由只在桌面注册，紧凑下
@@ -395,7 +398,7 @@ function TaskIconSlot({ kind }: { kind: 'tui' | 'terminal' | 'file' | 'preview' 
   )
 }
 
-export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDir, openItems, focusedTaskId, onFocusOpenItem, onCloseOpenItem, onOpenTerminalAt, onOpenDirectory, onOpenTask, onOpenBoard, onOpenCards, onOpenProjectCards, ledgerEnabled = false, onOpenFlows, cardNeedsCount = 0, unlinkedCount = 0, onOpenTickets, onOpenSettings, compact = false, onAddProject, onUnregister, onEdit, onOpenProjectDetail, onWorktreeCreated, previews = [], previewMachines = [], previewOpenKeys = new Set<string>(), previewOpeningKeys = new Set<string>(), onOpenPreview = () => {}, sessions = [], onOpenSession, onOpenArchive, onCreateSession, currentBrowseBase }: ProjectTreeProps) {
+export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDir, openItems, focusedTaskId, onFocusOpenItem, onCloseOpenItem, onOpenTerminalAt, onOpenDirectory, onOpenTask, onOpenBoard, onOpenCards, onOpenProjectCards, ledgerEnabled = false, onOpenFlows, cardNeedsCount = 0, unlinkedCount = 0, onOpenTickets, onOpenSettings, onOpenAccounts, compact = false, onAddProject, onUnregister, onEdit, onOpenProjectDetail, onWorktreeCreated, previews = [], previewMachines = [], previewOpenKeys = new Set<string>(), previewOpeningKeys = new Set<string>(), onOpenPreview = () => {}, sessions = [], onOpenSession, onOpenArchive, onCreateSession, currentBrowseBase }: ProjectTreeProps) {
   // collapsed：空集 = 全展开。为什么用「收起集合」而不是「展开集合」：默认全展开
   // 意味着初值空集，渲染时 `!collapsed.has(key)` 天然为真，不用为每个节点预填。
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
@@ -1455,7 +1458,7 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
       </div>
 
       {/* 第三段：钉在底部 */}
-      {/* 底部只放跳转入口：工作项 / 看板 / 流程 / 工单 / 设置。
+      {/* 底部只放跳转入口：工作项 / 看板 / 流程 / 工单 / 账号 / 设置。
           它们是同一类东西——都是「离开这棵树去别处看」的全局入口，所以摆在
           一起（看板原先单独钉在顶部，那个位置让它看起来像是树的一部分）。
           「添加项目」不在这里：它改变树本身，已上移到「项目 N」那一行。
@@ -1524,6 +1527,17 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
             </span>
           )}
         </button>
+        {ledgerEnabled && onOpenAccounts && (
+          <button
+            type="button"
+            aria-label="账号与额度"
+            title="账号与额度"
+            onClick={onOpenAccounts}
+            className="rounded-md p-1.5 text-muted-foreground hover:bg-accent/60 hover:text-foreground"
+          >
+            <ChartPie className="size-4" />
+          </button>
+        )}
         <button
           type="button"
           aria-label="设置"

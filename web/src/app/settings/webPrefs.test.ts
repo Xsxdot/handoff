@@ -2,7 +2,7 @@
 
 import { describe, expect, it, beforeEach, vi } from 'vitest'
 import {
-  PREFS_KEY, DEFAULT_WEB_PREFS, loadPrefs, savePrefs,
+  PREFS_KEY, DEFAULT_WEB_PREFS, loadPrefs, savePrefs, usageModeOf,
   type WebPrefs,
 } from './webPrefs'
 import { __resetWebPrefsForTest, useWebPrefs } from './useWebPrefs'
@@ -38,6 +38,19 @@ describe('webPrefs', () => {
     ['版本不认识', JSON.stringify({ v: 2, sessionOpenMode: 'chat', badges: true })],
   ])('%s → 整份回默认', (_name, raw) => {
     localStorage.setItem(PREFS_KEY, raw)
+    expect(loadPrefs()).toEqual(DEFAULT_WEB_PREFS)
+  })
+
+  // B453 S9：额度弹层「详细 / 精简」记住选择，缺省详细。键是后加的可选键：
+  // 旧版落盘（无该键）必须原样读回其余偏好，不能因形状多一键/少一键整份回默认。
+  it('使用量模式：旧落盘无该键 → 其余偏好保留、模式取详细；精简落盘读回；词表外 → 整份回默认', () => {
+    localStorage.setItem(PREFS_KEY, JSON.stringify(aPrefs))
+    expect(loadPrefs()).toEqual(aPrefs)
+    expect(usageModeOf(loadPrefs())).toBe('detail')
+    savePrefs({ ...aPrefs, usageMode: 'compact' })
+    expect(usageModeOf(loadPrefs())).toBe('compact')
+    expect(loadPrefs().sessionOpenMode).toBe('scene')
+    localStorage.setItem(PREFS_KEY, JSON.stringify({ ...aPrefs, usageMode: 'tiny' }))
     expect(loadPrefs()).toEqual(DEFAULT_WEB_PREFS)
   })
 

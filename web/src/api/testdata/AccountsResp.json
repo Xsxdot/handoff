@@ -1,0 +1,194 @@
+{
+  "accounts": [
+    {
+      "name": "og-main",
+      "kind": "opencode-go",
+      "machine": "linux-01",
+      "home_dir": "/root/.handoff/home/mimo",
+      "entry": "opencode-go",
+      "interval_minutes": 15,
+      "warn_percent": 60,
+      "low_percent": 80,
+      "version": 3,
+      "state": "ok",
+      "stale": false,
+      "reading": {
+        "windows": [
+          {
+            "key": "session",
+            "used_percent": 34,
+            "resets_at": "2026-08-11T13:11:00+08:00"
+          },
+          {
+            "key": "weekly",
+            "used_percent": 58.4,
+            "resets_at": "2026-08-15T12:30:00+08:00"
+          },
+          {
+            "key": "monthly",
+            "used_percent": 22,
+            "resets_at": "2026-08-28T10:30:00+08:00"
+          }
+        ],
+        "plan_type": "Go",
+        "fingerprint": "sha256:3f9a1b2cc21e",
+        "probed_at": "2026-08-11T10:28:00+08:00"
+      },
+      "last_attempt_at": "2026-08-11T10:28:00+08:00",
+      "carriers": [
+        "mimo"
+      ]
+    },
+    {
+      "name": "og-team",
+      "kind": "opencode-go",
+      "machine": "linux-01",
+      "home_dir": "/root/.handoff/home/dp",
+      "entry": "opencode-go",
+      "interval_minutes": 15,
+      "warn_percent": 60,
+      "low_percent": 80,
+      "version": 1,
+      "state": "out",
+      "stale": true,
+      "reading": {
+        "windows": [
+          {
+            "key": "session",
+            "used_percent": 100,
+            "resets_at": "2026-08-11T13:42:00+08:00"
+          },
+          {
+            "key": "weekly",
+            "used_percent": 71,
+            "resets_at": "2026-08-12T19:30:00+08:00"
+          }
+        ],
+        "probed_at": "2026-08-11T09:50:00+08:00"
+      },
+      "last_attempt_at": "2026-08-11T09:50:00+08:00",
+      "carriers": [
+        "dp"
+      ]
+    },
+    {
+      "name": "codex-plus",
+      "kind": "codex",
+      "machine": "macbook-pro",
+      "home_dir": "~/.handoff/home/mbp-codex",
+      "entry": "tokens",
+      "proxy": "socks5://u:***@127.0.0.1:7897",
+      "interval_minutes": 15,
+      "warn_percent": 60,
+      "low_percent": 80,
+      "version": 2,
+      "state": "low",
+      "stale": false,
+      "reading": {
+        "windows": [
+          {
+            "key": "session",
+            "used_percent": 82,
+            "resets_at": "2026-08-11T12:18:00+08:00"
+          },
+          {
+            "key": "weekly",
+            "used_percent": 41
+          }
+        ],
+        "plan_type": "Plus",
+        "extra_usage": {
+          "unit": "credits",
+          "balance": 4.2
+        },
+        "fingerprint": "sha256:e7a033d5c0aa",
+        "probed_at": "2026-08-11T10:29:00+08:00"
+      },
+      "last_attempt_at": "2026-08-11T10:29:00+08:00",
+      "carriers": [
+        "mbp-codex",
+        "mbp-oc-codex"
+      ]
+    },
+    {
+      "name": "codex-spare",
+      "kind": "codex",
+      "machine": "linux-01",
+      "home_dir": "/root/.handoff/home/codex-spare",
+      "entry": "tokens",
+      "interval_minutes": 30,
+      "warn_percent": 50,
+      "low_percent": 90,
+      "version": 1,
+      "state": "none",
+      "stale": false,
+      "carriers": []
+    },
+    {
+      "name": "grok-mbp",
+      "kind": "grok",
+      "machine": "macbook-pro",
+      "home_dir": "~/.handoff/home/mbp-grok",
+      "entry": "https://auth.x.ai",
+      "interval_minutes": 15,
+      "warn_percent": 60,
+      "low_percent": 80,
+      "version": 1,
+      "state": "fail",
+      "stale": false,
+      "last_attempt_at": "2026-08-11T10:27:00+08:00",
+      "last_error": {
+        "category": "credential_expired",
+        "message": "凭据已过期，等待 grok CLI 刷新"
+      },
+      "carriers": []
+    },
+    {
+      "name": "agy-main",
+      "kind": "agy",
+      "machine": "linux-01",
+      "home_dir": "/root/.handoff/home/agy",
+      "interval_minutes": 15,
+      "warn_percent": 60,
+      "low_percent": 80,
+      "version": 1,
+      "state": "ok",
+      "stale": false,
+      "reading": {
+        "windows": [
+          {
+            "key": "session",
+            "group": "Gemini",
+            "used_percent": 22,
+            "resets_at": "2026-08-11T13:50:00+08:00"
+          },
+          {
+            "key": "weekly",
+            "group": "Gemini",
+            "used_percent": 35,
+            "resets_at": "2026-08-16T16:30:00+08:00"
+          },
+          {
+            "key": "session",
+            "group": "Claude/GPT",
+            "used_percent": 61,
+            "resets_at": "2026-08-11T12:35:00+08:00"
+          },
+          {
+            "key": "weekly",
+            "group": "Claude/GPT",
+            "used_percent": 48,
+            "resets_at": "2026-08-16T16:30:00+08:00"
+          }
+        ],
+        "plan_type": "Pro",
+        "fingerprint": "sha256:a91c6e04b2a8",
+        "probed_at": "2026-08-11T10:26:00+08:00"
+      },
+      "last_attempt_at": "2026-08-11T10:26:00+08:00",
+      "carriers": [
+        "agy"
+      ]
+    }
+  ]
+}

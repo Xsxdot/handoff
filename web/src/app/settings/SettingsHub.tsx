@@ -9,6 +9,7 @@
 //   - 偏好读写走 useWebPrefs；「显示与可访问性」的既有偏好仍是 useTreePrefs
 //     （GeneralPage 内部），两族偏好不混键（webPrefs.ts 文件头）
 //   - 根节点挂触点基线类：移动端行与开关均保留至少 44px 触区
+//   - 「账号与额度」一节（B453 S10）读 Shell 级账号快照（accounts/store），本组件仍不自起轮询
 import { ArrowLeftRight, ChevronLeft, ChevronRight, CircleArrowUp, CirclePlay, Eye, FileText, Info, Laptop, ListChecks, Settings2 } from 'lucide-react'
 import { normalizeSettingsSub, type SettingsSub } from '../shell/useMobileNav'
 import type { DesktopState, LatestResp, ProjectTreeResp } from '../../api/types'
@@ -21,6 +22,7 @@ import { SchedulingPage } from './SchedulingPage'
 import { EnvPage } from './EnvPage'
 import { UpdatePage } from './UpdatePage'
 import { useNativeShellContext } from './useNativeShellContext'
+import { MobileAccountsSection } from '../accounts/MobileAccounts'
 
 const SUB_LABELS: Record<SettingsSub, string> = {
   work: '工作方式',
@@ -119,6 +121,9 @@ export function SettingsHub({
           <SettingsRow testId="settings-sub-work" icon={Settings2} label="工作方式" description="会话打开方式与提醒" onClick={() => onSubChange('work')} />
           <SettingsRow testId="settings-sub-display" icon={Eye} label="显示与可访问性" description="显示、项目排序与可见项目" onClick={() => onSubChange('display')} />
         </nav>
+
+        {/* B453 S10：移动端没有底栏额度条，额度只在这里看；只读 + 立即探测。 */}
+        <MobileAccountsSection sectionClass={SECTION_HEAD} />
 
         <h3 data-testid="settings-section-machine" className={SECTION_HEAD}>执行与管理</h3>
         <nav aria-label="执行与管理" className="overflow-hidden rounded-lg border bg-card">

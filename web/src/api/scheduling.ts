@@ -20,7 +20,9 @@ export interface CarrierView {
   account_mismatch?: boolean
 }
 
-export type CarrierStatus = 'pending' | 'online' | 'quota' | 'unreachable'
+// B453：载体状态去掉 quota（限额中退役，额度改看所选账号）；检测结局 WakeOutcome 仍保留
+// quota（F16：机间 wire 值，语义「可达 + 撞额度」）。
+export type CarrierStatus = 'pending' | 'online' | 'unreachable'
 export type ProbeKind = 'empty' | 'logged_in' | 'occupied'
 export type WakeOutcome = 'ready' | 'need_login' | 'quota' | 'unreachable'
 
@@ -198,11 +200,10 @@ export const getCarrierRunCommand = (name: string) =>
     `/api/squads/carriers/${encodeURIComponent(name)}/run-command`,
   )
 
-/** 四态英文键 → 用户可见中文名；与 scheduling.CarrierStatus.Label 同一份词表。 */
+/** 三态英文键 → 用户可见中文名；与 scheduling.CarrierStatus.Label 同一份词表（B453 删限额中）。 */
 export const CARRIER_STATUS_LABEL: Record<CarrierStatus, string> = {
   pending: '未上线',
   online: '已上线',
-  quota: '限额中',
   unreachable: '不可达',
 }
 

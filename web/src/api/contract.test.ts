@@ -124,6 +124,10 @@ import type {
   CardStepReq,
 } from './ledger'
 import squadsFixture from './testdata/SquadsResp.json'
+import accountsRespFixture from './testdata/AccountsResp.json'
+import accountInputFixture from './testdata/AccountInput.json'
+import accountDeleteRefusalFixture from './testdata/AccountDeleteRefusal.json'
+import type { AccountDeleteRefusal, AccountInput, AccountView, AccountsResp } from './accounts'
 import queueFixture from './testdata/QueueResp.json'
 import coordinatorLaunchFixture from './testdata/CoordinatorLaunchResp.json'
 import coordinatorStatusFixture from './testdata/CoordinatorStatus.json'
@@ -916,5 +920,58 @@ describe('B444 TS 镜像', () => {
     expect(timelineKindLabel(row.kind)).toBe('会话改名')
     expect(JSON.parse(row.detail!)).toEqual({ from: '新会话', session: 'session:10', title: '排查登录失败' })
     expect(isSessionTimelineKind('rename')).toBe(false)
+  })
+})
+
+// B453 F1–F9：账号读面与登记体。样本刻意踩可缺席键（entry/proxy/reading/last_attempt_at/
+// last_error）与窗口 group/resets_at 的缺席边界——键缺席 ≠ 空串/零值。
+describe('账号 wire（B453 F1–F9）', () => {
+  it('AccountsResp 四种 kind、五档 state 与可缺席键', () => {
+    const resp: AccountsResp = accountsRespFixture as AccountsResp
+    const byName = new Map(resp.accounts.map((a: AccountView) => [a.name, a]))
+    const ok = byName.get('og-main')!
+    expect(ok.kind).toBe('opencode-go')
+    expect(ok.state).toBe('ok')
+    expect(ok.entry).toBe('opencode-go')
+    expect(ok.reading!.windows.map((w) => w.key)).toEqual(['session', 'weekly', 'monthly'])
+    expect(typeof ok.reading!.windows[0].used_percent).toBe('number')
+    expect(ok.reading!.windows[0].resets_at).toMatch(/^2026-/)
+    expect(ok.reading!.fingerprint).toMatch(/^sha256:/)
+    expect(ok.carriers).toEqual(['mimo'])
+    const agy = byName.get('agy-main')!
+    expect(agy.kind).toBe('agy')
+    expect(Object.prototype.hasOwnProperty.call(agy, 'entry')).toBe(false)
+    expect(agy.reading!.windows.map((w) => w.group)).toEqual(['Gemini', 'Gemini', 'Claude/GPT', 'Claude/GPT'])
+    const fail = byName.get('grok-mbp')!
+    expect(fail.state).toBe('fail')
+    expect(Object.prototype.hasOwnProperty.call(fail, 'reading')).toBe(false)
+    expect(fail.last_error).toEqual({ category: 'credential_expired', message: '凭据已过期，等待 grok CLI 刷新' })
+    expect(fail.last_attempt_at).toMatch(/^2026-/)
+    expect(fail.carriers).toEqual([])
+    const none = byName.get('codex-spare')!
+    expect(none.state).toBe('none')
+    for (const key of ['reading', 'last_attempt_at', 'last_error', 'proxy']) {
+      expect(Object.prototype.hasOwnProperty.call(none, key)).toBe(false)
+    }
+    const low = byName.get('codex-plus')!
+    expect(low.state).toBe('low')
+    expect(low.proxy).toBe('socks5://u:***@127.0.0.1:7897')
+    expect(low.reading!.plan_type).toBe('Plus')
+    expect(low.reading!.extra_usage).toEqual({ unit: 'credits', balance: 4.2 })
+    expect(Object.prototype.hasOwnProperty.call(low.reading!.windows[1], 'resets_at')).toBe(false)
+    expect(byName.get('og-team')!.state).toBe('out')
+    expect(byName.get('og-team')!.stale).toBe(true)
+  })
+  it('AccountInput 不含 state/reading/version，数值键可缺席', () => {
+    const input: AccountInput = accountInputFixture
+    expect(input).toEqual({ kind: 'codex', machine: 'macbook-pro', home_dir: '~/.handoff/home/mbp-codex', entry: 'tokens', interval_minutes: 15, warn_percent: 60, low_percent: 80 })
+    for (const key of ['state', 'reading', 'version', 'name']) {
+      expect(Object.prototype.hasOwnProperty.call(input, key)).toBe(false)
+    }
+  })
+  it('AccountDeleteRefusal 列出引用载体（F3）', () => {
+    const refusal: AccountDeleteRefusal = accountDeleteRefusalFixture
+    expect(refusal.carriers).toEqual(['mbp-codex', 'mbp-oc-codex'])
+    expect(refusal.error).toContain('mbp-codex')
   })
 })

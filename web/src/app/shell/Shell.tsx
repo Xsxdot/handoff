@@ -60,6 +60,9 @@ import { BoardOverlay } from '../overlay/BoardOverlay'
 import { TicketsOverlay } from '../overlay/TicketsOverlay'
 import { useGlobalTickets } from '../overlay/useGlobalTickets'
 import { SettingsPage } from '../settings/SettingsPage'
+import { AccountsPage } from '../accounts/AccountsPage'
+import { UsageStatusBar } from '../accounts/StatusBar'
+import { useAccountsSource } from '../accounts/store'
 import { useWebPrefs } from '../settings/useWebPrefs'
 import { CardsPage } from '../cards/CardsPage'
 import { isRunningRow } from '../cards/taskRun'
@@ -237,6 +240,9 @@ export function Shell() {
     nav.normalize({ ledgerEnabled, ledgerLoading })
   }, [nav, ledgerEnabled, ledgerLoading])
   const cardsState = usePoll(() => fetchCards(), 2500, { enabled: ledgerEnabled })
+  // B453 Q17：账号与额度的 Shell 级唯一数据源（30s）。底栏、弹层、账号页、移动设置节、
+  // 载体对话框都读这一份；账号域依赖共享账本，与账本同一门控。
+  useAccountsSource(ledgerEnabled)
   const decisionsState = usePoll(() => fetchDecisions(true), 2500, { enabled: ledgerEnabled })
   const unlinkedSummary = cardsState.data?.unlinked
   const unlinkedNow = useUnlinkedSummaryClock(unlinkedSummary?.observed_at)
@@ -919,7 +925,7 @@ export function Shell() {
   // 紧凑视口没有「整页路由」形态：底栏 tab 就是整页的移动对应物。加 !compact
   // 前缀后，移动下 /cards?card=X 这类深链不再触发整页分支，而是由 S9 的
   // CardsPage 覆盖层消费 query（同一组件、同一 useSearchParams）。
-  const fullPageRoute = !compact && ['/cards', '/flows', '/settings', '/machines']
+  const fullPageRoute = !compact && ['/cards', '/flows', '/settings', '/machines', '/accounts']
     .some((path) => location.pathname.startsWith(path))
   // B369.8（T7）覆盖层 a11y 硬闸的覆盖判据：compact 首页/目录覆盖层盖住工作台
   //（未下钻），或桌面整页路由盖上（fullPageRoute 恒 desktop）。下钻态工作台是
@@ -1293,6 +1299,8 @@ export function Shell() {
       // B369.7 死入口处置：/flows 整页路由只在桌面注册，紧凑下不注入
       // 回调（ProjectTree 据此隐藏按钮并渲染解释文案）；桌面分支原样。
       onOpenFlows={compact ? undefined : () => navigate('/flows')}
+      // B453：账号页只在桌面注册（移动端额度在设置页「账号与额度」一节）
+      onOpenAccounts={compact ? undefined : () => navigate('/accounts')}
       ledgerEnabled={ledgerEnabled}
       cardNeedsCount={cardNeedsCount}
       unlinkedCount={unlinkedTaskIds?.size ?? 0}
@@ -1581,6 +1589,7 @@ export function Shell() {
               <>
                 <Route path="/cards" element={<FullPageCover><CardsPage onOpenCoordinatorTerminal={openCoordinatorTerminal} /></FullPageCover>} />
                 <Route path="/flows" element={<FullPageCover><FlowsPage /></FullPageCover>} />
+                <Route path="/accounts" element={<FullPageCover><AccountsRoute /></FullPageCover>} />
               </>
             )}
             {!compact && (
@@ -1827,6 +1836,12 @@ export function Shell() {
       )}
       </div>
 
+      {/* B453 S9：全局额度底栏挂在外壳底部（侧栏 + 主区整宽，照原型）；紧凑档不渲染——
+          移动端额度在设置页（S10）。账本未启用时数据源不拉，底栏自身也不渲染。 */}
+      {!compact && ledgerEnabled && (
+        <UsageStatusBar onManage={(name) => navigate(name ? `/accounts?account=${encodeURIComponent(name)}` : '/accounts')} />
+      )}
+
       {/* home 终端走独立浮窗，不进 wb 的 tab 组——它不挂在任何目录上，
           塞进按目录组织的容器里就会跟着目录切换走 */}
       {!compact && caps.pty('') !== false && (
@@ -2031,6 +2046,12 @@ export function Shell() {
       />
     </div>
   )
+}
+
+// AccountsRoute 承接 /accounts?account=<名>：底栏弹层「管理账号…」带名跳来时预先展开并高亮。
+function AccountsRoute() {
+  const [params] = useSearchParams()
+  return <AccountsPage highlight={params.get('account') ?? ''} />
 }
 
 // FullPageCover 把设置/工作项等整页盖在常驻工作台上。

@@ -143,7 +143,9 @@ describe('scheduling fetch seam', () => {
     expect(defaultHomeDir('  ')).toBe('')
     expect(CARRIER_STATUS_LABEL.pending).toBe('未上线')
     expect(CARRIER_STATUS_LABEL.online).toBe('已上线')
-    expect(CARRIER_STATUS_LABEL.quota).toBe('限额中')
+    // B453：「限额中」退役（spec S4 / Q12），词表只剩三态，前后端同一份。
+    expect(Object.keys(CARRIER_STATUS_LABEL).sort()).toEqual(['online', 'pending', 'unreachable'])
+    expect(Object.values(CARRIER_STATUS_LABEL)).not.toContain('限额中')
     expect(CARRIER_STATUS_LABEL.unreachable).toBe('不可达')
   })
 })

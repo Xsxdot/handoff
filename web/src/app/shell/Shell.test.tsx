@@ -70,6 +70,15 @@ vi.mock('../../api/scheduling', async () => {
   }
 })
 const { getCoordinatorStatus, attachCoordinator } = await import('../../api/scheduling')
+// —— B453：账号与额度（Shell 级数据源 + 底栏 + /accounts 整页）。缺省空库：底栏照常挂，
+// 不外发真实请求；账号专项用例内覆写。
+vi.mock('../../api/accounts', async () => {
+  const actual = await vi.importActual<typeof import('../../api/accounts')>('../../api/accounts')
+  return { ...actual, getAccounts: vi.fn().mockResolvedValue({ accounts: [] }), probeAccount: vi.fn() }
+})
+const { getAccounts } = await import('../../api/accounts')
+const { __resetAccountsStoreForTest } = await import('../accounts/store')
+const { sampleAccounts } = await import('../accounts/testAccounts')
 // —— B156.2 C8 追加：房间面路由与 dock 入口（seam 贯穿——点击/挂载最终到达 rooms API）——
 // B358.6：会话面经同一 rooms seam 进壳，fetchSessions/createSession/fetchSessionDetail 一并入桩。
 vi.mock('../../api/rooms', async () => {
@@ -3565,3 +3574,41 @@ describe('B444 新建会话入口在项目上', () => {
     expect(screen.queryByRole('dialog', { name: 'handoff 操作与位置' })).toBeNull()
   })
 })
+
+describe('B453 账号与额度入口（S8/S9）', () => {
+  afterEach(() => {
+    vi.mocked(getAccounts).mockResolvedValue({ accounts: [] })
+    __resetAccountsStoreForTest()
+  })
+
+  it('桌面：所有页面底部挂额度底栏；dock「账号与额度」进 /accounts 整页', async () => {
+    vi.mocked(getAccounts).mockResolvedValue({ accounts: sampleAccounts() })
+    const user = userEvent.setup()
+    renderShell('/')
+    const bar = await screen.findByTestId('usage-statusbar')
+    expect(within(bar).getByTestId('sb-seg-og-team')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '账号与额度' }))
+    expect(screen.getByTestId('test-location').dataset.ref).toBe('/accounts')
+    expect(await screen.findByRole('heading', { name: '账号与额度', level: 1 })).toBeInTheDocument()
+    expect(screen.getByTestId('usage-statusbar')).toBeInTheDocument()
+  })
+
+  it('底栏弹层「管理账号…」落到 /accounts?account= 并展开高亮该账号', async () => {
+    vi.mocked(getAccounts).mockResolvedValue({ accounts: sampleAccounts() })
+    const user = userEvent.setup()
+    renderShell('/settings')
+    await user.click(await screen.findByTestId('sb-seg-codex-plus'))
+    await user.click(within(screen.getByTestId('usage-side')).getByRole('button', { name: /管理账号/ }))
+    expect(screen.getByTestId('test-location').dataset.ref).toBe('/accounts?account=codex-plus')
+    expect(await screen.findByTestId('acard-codex-plus')).toHaveClass('open', 'flash')
+  })
+
+  it('紧凑档不渲染底栏（S10：移动端额度在设置页）', async () => {
+    vi.mocked(getAccounts).mockResolvedValue({ accounts: sampleAccounts() })
+    Object.defineProperty(window, 'innerWidth', { value: 375, configurable: true, writable: true })
+    renderShell('/')
+    await waitFor(() => expect(getAccounts).toHaveBeenCalled())
+    expect(screen.queryByTestId('usage-statusbar')).toBeNull()
+  })
+})
+

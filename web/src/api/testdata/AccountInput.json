@@ -1,0 +1,9 @@
+{
+  "kind": "codex",
+  "machine": "macbook-pro",
+  "home_dir": "~/.handoff/home/mbp-codex",
+  "entry": "tokens",
+  "interval_minutes": 15,
+  "warn_percent": 60,
+  "low_percent": 80
+}

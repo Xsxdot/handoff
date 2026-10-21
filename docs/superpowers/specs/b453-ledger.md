@@ -262,3 +262,52 @@
 - 契约：Go fixture 新 `TaskRerunLinks`、`TicketNotice`（红「读取 fixture … 失败（契约尚未生成？）」→ `-update`）；TS `Task.rerun_of/rerun_by`、`TaskRef`、`NoticeRequest` + `contract.test.ts` 两支（fixture 更新后首跑即绿，如实记）；62 passed。`go build ./... && go vet ./...` OK。
 - keystone 账号代理（段 3 裁决并入）：新测 `internal/agentd/b453_coord_proxy_test.go`（runner 记录型 Coordinator：Launch/Resume 六键 = 账号代理、Resume 席位对保留、无代理不加键；门面按（CLI, 展开 HOME）解析）。首红编译红（`unknown field accountProxy`、`coordinatorAccountProxy undefined`）；桩后断言红「Launch 回合 HTTPS_PROXY 应为账号代理，得 ""（env=0 项）」「应解析到载体账号代理，得 ""」。
 - 实现：runner 是 keystone 全部协调者回合（卡拉起、卡续轮、驻场续轮）的唯一咽喉，在此套代理：`coordinatorRunner.accountProxy` + `withAccountProxy`（`proxycfg.WithProxyEnv` 作用于追加 env；hostapi.buildEnv 让追加键覆盖进程环境，NO_PROXY 不覆盖/缺席补回环——与任务回合同一函数）；Launch 在 prepareHome 后、Resume 在席位对之后套。门面 `coordinatorAccountProxy`：runner 只有 SessionSpec，按物理身份（CLI 基名 + `ExpandHomePath` 后的 HOME + 本机）找载体；同身份多载体账号不一致 → 不套并 Warn；账号不在本机 → 不套（复用 `hostWakeProxy`）。`NewCoordinatorRunner` 加第 5 参（3 处调用同改，测试夹具传 `srv.CoordinatorAccountProxy` / nil）。日志「协调者回合使用账号代理 … proxy=<掩码>」。`go test ./internal/agentd/` ok（90s）、`./cmd/` ok（78s）；`go build ./... && go vet ./...` OK。
+
+## implement 段 5（2026-10-22，本会话 implement subagent，主检出 `cards/B453-charter-1`，基线 `d94b42d9`）
+
+- 段 4 裁决：偏离 1–8 认可；开放项 1 签名表保持合成、真机按 Q16 注入；2–5 收尾落 roadmap；6 留段 6。
+- 读入：原型 `prototypes/b453-accounts/`（README、shared/accounts.js、shared/styles.css B453 段、pages/accounts.html、pages/settings.html B453 段、pages/mobile-settings.html B453 段）；spec S1/S4/S8–S10；plan 段 5、§8 F1–F13、§6 决策权限。
+- 现状读数：账号 API wire 在 `internal/proto/scheduling.go:205-292`（AccountsResp/View/ReadingView/WindowView/ProblemView/ExtraUsageView/DeleteRefusal/Input），契约 fixture 尚无账号用例；`web/src/api/scheduling.ts` CarrierStatus 仍含 quota（段 3 留段 5）；SchedulingPage 载体 PUT 不带 `account`——PUT 为整体替换（`scheduling.go:236 PutCarrier` 不沿用旧 account），今天从控制台编辑一个已绑账号的载体会把账号清掉，段 5 载体对话框必须回传 `account`。
+- 自名缺口：控制台无「本机全队名」读面（`Machine.name=""` 表本机）；账号所在机是全队名。载体对话框「同机账号」判据取：名字相等，或载体在本机别名（空/本机/local）且账号所在机不是任何已登记远端机名。
+
+## 真机 R6b、R7（验收执行者）
+
+环境：当前 HEAD `d94b42d9` 重建 `$S/handoff-linux`/`handoff-mac`，三实例停、起分两次 ssh，`HANDOFF_LOG_LEVEL=info`；`/api/status` 三机 `revision d94b42d9`（modified=true，工作树仅 b434 台账脏）。派发仍在 linux-01 用隔离 CLI、草稿仓 `/root/b453-iso/proj`。
+
+**注入法（未用假 CLI）**：读 `executor/opencode/proc.go`——任务回合走 `opencode serve` + HTTP API，二进制由 agentd 进程的 `exec.LookPath("opencode")` 解析（不随载体变），假 CLI 只能换整个实例的 PATH，且要伪造 serve 协议。改用**真 opencode + 假供应商端点**：linux-01 起 `fakeprov.py`（127.0.0.1:18453，任何请求回 403 `{"error":{"type":"EntitlementError","code":"ENTITLEMENT_ERROR","message":"B453 injected: monthly usage limit reached for this plan (ENTITLEMENT_ERROR)"}}`），注入载体 HOME `/root/b453-iso/inj/home*` 下 `.config/opencode/opencode.json` 覆盖 `provider.opencode-go.options.baseURL/apiKey`（假 key）。手跑 `HOME=… opencode run --format json -m opencode-go/deepseek-v4.1-flash -- ping` → exit 1，stdout `{"type":"error",…,"error":{"name":"APIError","data":{"message":"B453 injected: …","statusCode":403,"isRetryable":false,…,"metadata":{"url":"http://127.0.0.1:18453/v1/chat/completions"}}}}`——与 R6a 真 401 样本同形。执行器路径、检测路径都是真代码。
+- 注入载体先**不绑账号** detect（否则检测回合撞额度会先把账号标无额度、准入就跳过它）：`t453-inj` → `online`，`last_error: "hostapi: 回合失败（exit status 1）stderr 尾部: ；事件流错误: APIError（HTTP 403）: B453 injected: …；响应体: {…}"`——Q14 检测半边已修好（对比 R6a 时只有「stderr 尾部: 」）。再绑 opencode-go 账号 `og-inject`（HOME 无 auth.json，探测失败/未探测，准入照常放行）。
+- 只读形态只能经模板：`template put r6b-ro {"receiver":"t453-pair","mode":"readonly",…}`（测试账本，模板不可删，留存）。
+
+**R6b 只读撞额度换人重跑——通过**
+- 小队 `t453-pair` 临时改为 `[t453-inj, t453-oc]`。`dispatch --template r6b-ro --no-sync-check --prompt "README.md 第一行…" --wait` → **exit 0**；stdout = 新任务结论（`` `# b453 scratch` ``）；stderr `提示: 任务 ecd4b4f9…@t453-linux 撞额度已换人重跑，结论取自新任务 17972650…@t453-linux`。
+- 快照：原任务 `state failed, carrier t453-inj, rerun_by {task:17972650…, machine:t453-linux}`；新任务 `completed, carrier t453-oc, rerun_of {task:ecd4b4f9…, machine:t453-linux}`。原任务时间线 progress `因额度耗尽改由 t453-oc 重跑（新任务 17972650…@t453-linux）`，failed `fail_reason: 额度耗尽（账号 og-inject 已标无额度）：…会话错误：APIError（HTTP 403）: B453 injected…；已改由 t453-oc 重跑，新任务 …`。
+- 日志链：`只读任务已留存重跑输入` → `回合失败判为额度耗尽 … signature=entitlementerror` → `写入撞额度标记 … category=quota_exhausted` → `只读任务撞额度重跑已派出 … chain_accounts=1` → `回写重跑链接` → `stop 进入 trigger=quota` → `running→failed reason=quota`。`account list`：`og-inject … 无额度`。
+- `wait ecd4b4f9 --final` → exit 0，同样打「撞额度已换人重跑」提示并输出新任务结论（跟链）。
+- 产物取自新任务：第二个账号 `og-inject2`/载体 `t453-inj2`，小队 `[t453-inj2, t453-oc]`，prompt 让执行者写 `$HANDOFF_ARTIFACTS_DIR/r6b.txt` → exit 0，`artifacts: /root/b453-iso/data/tasks/676dbd8b…/artifacts`（新任务目录，文件内容 `r6b-artifact`），原任务 43411a9b 产物目录为空。
+- 两成员都撞：`og-inject3`/`og-inject4` 分别绑 `t453-inj`/`t453-inj2`，小队 `[t453-inj, t453-inj2]` → **exit 3**；stderr 先「撞额度已换人重跑…新任务 96063dac」，后 `Error: 任务 96063dac… 未完成（failed）：额度耗尽（账号 og-inject4 已标无额度）：…；没有可换的成员重跑：小队 t453-pair 没有可换的成员——重跑链已排除：t453-inj（账号 og-inject3）、t453-inj2（账号 og-inject4）（已用：og-inject3、og-inject4；每个账号在一次重跑链里只用一次）`。注：plan R6(c) 写「退出 3 + S5 文案」，实际是重跑链排除文案（不是 S5 的「账号 X 无额度，恢复时刻未知」），请协调者裁是否可接受。
+
+**R7 分支任务撞额度——通过**
+- 新账号 `og-inject5` 绑 `t453-inj`；`dispatch --receiver t453-inj --new-worktree --prompt "在 README.md 末尾追加一行 r7，并提交。" --wait` → **exit 5**，stdout notice 块：`kind: notice`，全文「分支任务撞额度，已停下：不自动换人，工作树保留。/ 载体：t453-inj@t453-linux / 账号：og-inject5（已标无额度，持续到下一次成功探测）/ 撞到的窗口：未知（账号最近读数未越线或无读数）/ 预计恢复：未知 / 分支：handoff/5c1d4641 / 工作树：/root/b453-iso/data/worktrees/5c1d4641 / 失败原文：… / 接管见 B459；本工单答「已知悉」即关单，不会在原会话续跑。」，答复行恰一条 `--answer "已知悉"`，无 permission/approve 行。
+- 任务 `waiting_review`；`reply … --answer "已知悉"` → `{"ok":true}`；`wait --final` → **exit 3**，`未完成（turn_failed）：额度耗尽（账号 og-inject5 已标无额度，见告知工单 e304a714…）：…`；工作树目录与分支 `handoff/5c1d4641` 仍在；`og-inject5 无额度`。
+
+**瑕疵（文案，不影响判据）**
+1. 撞额度的失败原因都带着通用零文本分支的句子「回合结束但零文本产出（可能是供应商流中断）；executor 仍在线，可 continue 续接重试」——只读原任务已被 stop（failed），「可 continue 续接」不成立；分支任务按 notice 说「不会在原会话续跑」，同一条原因里又叫人 continue，前后矛盾。复现：上面任一注入派发，看 `fail_reason`/`turn_failed reason`。
+2. 旁见：删除载体后 `squad list` 仍残留 `运行位 carrier/t453-inj`、`squad/t453-pair/t453-inj` 等计数 0 的行（未查是否本卡引入）。
+3. 旁见：R7 任务 `done` 归档后 state 显示 `completed`（撞额度停下的分支任务归档为「完成」，看列表会误读）。
+
+**复原**：小队 `t453-pair` 回 `[t453-agy, t453-oc]`（v5）；删载体 `t453-inj`、`t453-inj2`，删账号 `og-inject`…`og-inject5`；杀 fakeprov、删 `/root/b453-iso/inj`；R7 任务已 `done`；linux 测试任务全部终态。账号回到 4 个（agy-linux、cx-linux、gk-mbp 正常，og-muse 探测失败）；模板 `r6b-ro` 不可删，留在测试账本。三实例保持运行于 `d94b42d9`、info 级。
+
+## implement 段 5（续，接在验收执行者 R6b、R7 节之后）
+
+- 契约（F1–F9 前端镜像）：先写 TS `contract.test.ts`「账号 wire」三支 → 红「Failed to resolve import "./testdata/AccountsResp.json"」；Go fixture 加 `AccountsResp`（四 kind 五档、可缺席键：agy 无 entry、none 无 reading/last_attempt_at/last_error/proxy、fail 无 reading、窗口无 resets_at）、`AccountInput`、`AccountDeleteRefusal` → `go test ./internal/proto/ -run TestContractFixtures` 红「读取 fixture …AccountsResp.json 失败（契约尚未生成？）」×3 → `-update`，`git status` 只多三份新 json（既有 fixture 零改动）→ proto ok。vitest 此时即绿（`import type` 运行期擦除），`tsc -b` 红「Cannot find module './accounts'」→ 新 `web/src/api/accounts.ts`（类型 + getAccounts/putAccount/deleteAccount/probeAccount）→ 65 passed、typecheck 过。
+- 词表删 quota（plan §6 预许改写第 1 类）：`scheduling.fetch.test.ts` 原断言 `CARRIER_STATUS_LABEL.quota === '限额中'` 改为「键只剩 online/pending/unreachable、值不含限额中」→ 红「expected [ 'online', 'pending', 'quota', …(1) ] to deeply equal [ 'online', 'pending', 'unreachable' ]」→ `CarrierStatus` 删 quota、标签删一行（`WakeOutcome` 保留 quota，F16）→ 7 passed；typecheck 过；web 源码再无载体 quota 引用。
+- 协调者来信（段 5 进行中）：R6b/R7 通过；额度失败原因仍拼通用零文本句（「回合结束但零文本产出…可 continue 续接重试」）是缺陷，段 5 交回前同轮先红后绿修；「两成员都撞」退出 3 文案用重跑链排除版，采纳。
+- 展示规则 `web/src/app/accounts/model.ts`（核心方法：问题优先排序、窗口分档与色彩类、底栏两模式取窗、状态短语、窗口名、倒计时、同机判据）：`model.test.ts` 8 支，桩（恒空/恒 ok）上断言红 8 条（例「expected [ 'ok1', 'none', 'low', 'ok2', …(2) ] to deeply equal [ 'out', 'low', 'fail', 'none', …(2) ]」「expected 'ok' to be 'warn'」「expected [] to deeply equal [ 'session', 'weekly' ]」）→ 实现后 8 passed。
+- Shell 级数据源 `store.ts`（Q17：模块级快照 + 订阅；`useAccountsSource` 唯一拉取者 = usePoll 30s；`useAccounts` 读、`probe/apply/remove` 就地合入）：`store.test.tsx` 3 支，桩上红 2 条（toHaveTextContent 等不到「a:none,b:ok」），「无数据源停 loading」桩上即绿（锁不自起轮询的反例）→ 实现后 3 passed，GET 只调一次、探测后快照就地变 `a:low`。
+- 偏好 `webPrefs.usageMode`（可选键，不升 v）：新测先红「TypeError: usageModeOf is not a function」→ 桩恒 detail 再见断言红「expected 'detail' to be 'compact'」→ `isPrefs` 接受缺席/detail/compact、`usageModeOf` 缺席取详细 → 12 passed（既有 11 支不改）。判断：可选键而非升 v——升 v 会把老用户的会话打开方式/角标偏好整份丢回默认。
+- 底栏与弹层 `StatusBar.tsx` + 共用片段 `QuotaBits.tsx` + `accounts.css`（原型 B453 段移植；`--q-warn`=`--state-intervention-text`，`--q-out`=`--state-failed`——移动壳把 `--destructive` 压成灰，无额度在移动端仍须红字）：`StatusBar.test.tsx` 5 支，null 桩上红 4 条（「还没有快照不渲染」桩上即绿，锁反例）；实现后首跑红 3 条均为测试侧问题——倒计时边界（weekly 98h 过几毫秒成「4d 1h」，样本改 98.5h）与选择器（`.q-out` 先命中细条，改 `.q-pct.q-out`），改后 5 passed。溢出「+N」依赖真实宽度，jsdom 量不出（实现里宽度为 0 时不收纳），交 R8 浏览器形态验收。
+- 账号页 `AccountsPage.tsx`（S8 四组卡片 + S1 登记/编辑/删除对话框 + 立即探测）：`AccountsPage.test.tsx` 7 支（W1 缺省值随 kind 预填、agy 条目置灰「由 agy CLI 管理」、expect=0 请求体逐键；编辑名称只读带版本、打码代理原样提交、400 原文显示；删除被引用拦住不发请求、无引用确认删、服务端 409 体 carriers 也列出；?account= 预展开高亮；探测就地刷新），null 桩上 7 红 → 实现后 7 passed（首跑即绿）。所在机器用 input+datalist（候选 = 已登记远端机名 ∪ 已有账号所在机）：控制台无本机全队名读面，下拉会漏掉本机，自由输入兜底。
+- 移动设置节 `MobileAccounts.tsx` + `SettingsHub` 首页挂一节（S10，W6）：`MobileAccounts.test.tsx` 3 支经 SettingsHub 真实入口，未接入时红 2 条（找不到 `settings-section-accounts`），「无快照不出节」即绿（反例）→ 实现后 3 passed。只读 + 立即探测，无编辑/删除入口。
+- 载体对话框与载体行（S4，W2）：`SchedulingPage.test.tsx` 新增 3 支（不改既有 18 支）：红「Unable to find a label with the text of: 账号」×2、「Unable to find an element with the text: 凭据指纹与所选账号不一致」→ 实现：草稿带 `account`、PUT 非空才带键（**修了一个潜在丢写**：今天控制台编辑已绑账号的载体会因 PUT 整体替换把 account 清掉）；下拉只列同机账号（model.sameMachine），换机器时当前账号不在新机则清空；快照未到时保留当前值作选项（不静默清绑定）；指纹不一致红字（行 + 对话框，`q-out`）；载体行「账号」栏带图标/类型/状态短语，低额度/无额度加「暂停派发，预计 x 后恢复」→ 21 passed。顺带把对话框说明里「跨载体账户池的归属归 roadmap 的『限额探测』」改为指向账号（本卡即该 roadmap）。
+- Shell 接线（dock「账号与额度」ChartPie 图标、`/accounts` 整页路由 + `fullPageRoute`、`?account=` 预展开、外壳底部整宽底栏 `!compact && ledgerEnabled`、`useAccountsSource(ledgerEnabled)`）：`Shell.test.tsx` 新增 describe「B453 账号与额度入口」3 支 + 模块层 `api/accounts` 打桩（缺省空库，底栏在全部既有用例里照常挂）→ 红「Unable to find an element by: [data-testid="usage-statusbar"]」「…sb-seg-codex-plus」「expected "vi.fn()" to be called at least once」→ 接线后 3 passed。
+- 全量 web：`npx vitest run` → Test Files 150 passed、Tests 1995 passed；`npm run typecheck` 过；eslint 触及文件 0 error（16 条 warning 均为既有文件既有行）。浏览器形态未自验：本机只有原型静态服务，无挂账号的控制台实例（在役 agentd 不动），交 R8。

@@ -68,6 +68,12 @@ func TestContractFixtures(t *testing.T) {
 		{"Ticket", ticketSample(now, taskID)},
 		{"TaskRerunLinks", taskRerunLinksSample(now)},
 		{"TicketNotice", ticketNoticeSample(now)},
+		{"AccountsResp", accountsRespSample(now)},
+		{"AccountInput", accountInputSample()},
+		{"AccountDeleteRefusal", AccountDeleteRefusal{
+			Error:    "账号 codex-plus 仍被载体引用：mbp-codex、mbp-oc-codex；先在自动化页给它们换账号或清空选择",
+			Carriers: []string{"mbp-codex", "mbp-oc-codex"},
+		}},
 		{"ProjectLocation", projectLocationSample(now)},
 		{"ProjectTreeResp", projectTreeSample()},
 		{"PreviewOpenReq", previewOpenReqSample()},
@@ -982,4 +988,64 @@ func ticketNoticeSample(now time.Time) Ticket {
 		Branch: "handoff/b453", Worktree: "/home/dev/.handoff/worktrees/b453",
 	})
 	return Ticket{ID: "tk-notice", TaskID: "b453-branch", Kind: TicketKindNotice, Request: body, CreatedAt: now}
+}
+
+// accountsRespSample 是 B453 F1/F5–F8 账号读面：四种 kind、五档 state 各一行，刻意踩可缺席键
+// （agy 无 entry；未探测无 reading/last_attempt_at/last_error；探测失败无旧读数；窗口无 resets_at）。
+func accountsRespSample(now time.Time) AccountsResp {
+	at := func(d time.Duration) *time.Time { t := now.Add(d); return &t }
+	f := func(v float64) *float64 { return &v }
+	return AccountsResp{Accounts: []AccountView{{
+		Name: "og-main", Kind: "opencode-go", Machine: "linux-01", HomeDir: "/root/.handoff/home/mimo", Entry: "opencode-go",
+		IntervalMinutes: 15, WarnPercent: 60, LowPercent: 80, Version: 3, State: "ok",
+		Reading: &AccountReadingView{Windows: []AccountWindowView{
+			{Key: "session", UsedPercent: 34, ResetsAt: at(2*time.Hour + 41*time.Minute)},
+			{Key: "weekly", UsedPercent: 58.4, ResetsAt: at(98 * time.Hour)},
+			{Key: "monthly", UsedPercent: 22, ResetsAt: at(17 * 24 * time.Hour)},
+		}, PlanType: "Go", Fingerprint: "sha256:3f9a1b2cc21e", ProbedAt: now.Add(-2 * time.Minute)},
+		LastAttemptAt: at(-2 * time.Minute), Carriers: []string{"mimo"},
+	}, {
+		Name: "og-team", Kind: "opencode-go", Machine: "linux-01", HomeDir: "/root/.handoff/home/dp", Entry: "opencode-go",
+		IntervalMinutes: 15, WarnPercent: 60, LowPercent: 80, Version: 1, State: "out", Stale: true,
+		Reading: &AccountReadingView{Windows: []AccountWindowView{
+			{Key: "session", UsedPercent: 100, ResetsAt: at(3*time.Hour + 12*time.Minute)},
+			{Key: "weekly", UsedPercent: 71, ResetsAt: at(33 * time.Hour)},
+		}, ProbedAt: now.Add(-40 * time.Minute)},
+		LastAttemptAt: at(-40 * time.Minute), Carriers: []string{"dp"},
+	}, {
+		Name: "codex-plus", Kind: "codex", Machine: "macbook-pro", HomeDir: "~/.handoff/home/mbp-codex", Entry: "tokens",
+		Proxy: "socks5://u:***@127.0.0.1:7897", IntervalMinutes: 15, WarnPercent: 60, LowPercent: 80, Version: 2, State: "low",
+		Reading: &AccountReadingView{Windows: []AccountWindowView{
+			{Key: "session", UsedPercent: 82, ResetsAt: at(time.Hour + 48*time.Minute)},
+			{Key: "weekly", UsedPercent: 41},
+		}, PlanType: "Plus", ExtraUsage: &AccountExtraUsageView{Unit: "credits", Balance: f(4.2)},
+			Fingerprint: "sha256:e7a033d5c0aa", ProbedAt: now.Add(-time.Minute)},
+		LastAttemptAt: at(-time.Minute), Carriers: []string{"mbp-codex", "mbp-oc-codex"},
+	}, {
+		Name: "codex-spare", Kind: "codex", Machine: "linux-01", HomeDir: "/root/.handoff/home/codex-spare", Entry: "tokens",
+		IntervalMinutes: 30, WarnPercent: 50, LowPercent: 90, Version: 1, State: "none", Carriers: []string{},
+	}, {
+		Name: "grok-mbp", Kind: "grok", Machine: "macbook-pro", HomeDir: "~/.handoff/home/mbp-grok", Entry: "https://auth.x.ai",
+		IntervalMinutes: 15, WarnPercent: 60, LowPercent: 80, Version: 1, State: "fail",
+		LastAttemptAt: at(-3 * time.Minute),
+		LastError:     &AccountProblemView{Category: "credential_expired", Message: "凭据已过期，等待 grok CLI 刷新"},
+		Carriers:      []string{},
+	}, {
+		Name: "agy-main", Kind: "agy", Machine: "linux-01", HomeDir: "/root/.handoff/home/agy",
+		IntervalMinutes: 15, WarnPercent: 60, LowPercent: 80, Version: 1, State: "ok",
+		Reading: &AccountReadingView{Windows: []AccountWindowView{
+			{Key: "session", Group: "Gemini", UsedPercent: 22, ResetsAt: at(3*time.Hour + 20*time.Minute)},
+			{Key: "weekly", Group: "Gemini", UsedPercent: 35, ResetsAt: at(126 * time.Hour)},
+			{Key: "session", Group: "Claude/GPT", UsedPercent: 61, ResetsAt: at(2*time.Hour + 5*time.Minute)},
+			{Key: "weekly", Group: "Claude/GPT", UsedPercent: 48, ResetsAt: at(126 * time.Hour)},
+		}, PlanType: "Pro", Fingerprint: "sha256:a91c6e04b2a8", ProbedAt: now.Add(-4 * time.Minute)},
+		LastAttemptAt: at(-4 * time.Minute), Carriers: []string{"agy"},
+	}}}
+}
+
+// accountInputSample 是 B453 F9 登记体：三项数值给值（指针在场），不含 name/state/reading/version。
+func accountInputSample() AccountInput {
+	iv, warn, low := 15, 60, 80
+	return AccountInput{Kind: "codex", Machine: "macbook-pro", HomeDir: "~/.handoff/home/mbp-codex", Entry: "tokens",
+		IntervalMinutes: &iv, WarnPercent: &warn, LowPercent: &low}
 }
