@@ -146,7 +146,9 @@ func lastArchivedIn(events []proto.Event) proto.Event {
 // 判定（「先读状态再定起点」）：
 //   - 每轮先取权威快照 S，水位 W = S 最近事件的最大 seq；
 //   - S 表示回合已结束（waiting_review / completed / failed）：答案在历史里——取最近窗口里最后
-//     一条回合结果；窗口里没有就从 0 回放到 W 补找（窗口只有最近 100 条）；
+//     一条回合结果；窗口里没有就从 0 回放到 W 补找（窗口只有最近 100 条）；waiting_review 下
+//     还须证明该结果属于本回合（判据见循环内注释），证明不了就退避重取快照、不下结论；
+//     completed / failed 下没有本回合结果才判「未完成就归档」；
 //   - 否则回合进行中：从 W 起跟事件流，seq > W 的第一条回合结果就是本回合答案。
 //
 // 断线（含正常关闭）一律回到「重取快照」：快照是权威，断线期间落库的结果不会漏。
@@ -157,6 +159,10 @@ func lastArchivedIn(events []proto.Event) proto.Event {
 func (c *Client) WaitFinal(ctx context.Context, taskID, machine string, onAttention func(proto.Event)) (*FinalOutcome, error) {
 	backoff := c.wsInitialBackoff
 	emptyRechecks := 0
+	// sawProgress/progressW：本次等待亲见任务「进行中」时的最大水位——确定性的回合起点。
+	// candidate：上一轮 waiting_review 快照里待确认的结果（见下方判据 ③）。
+	sawProgress, progressW := false, int64(0)
+	var candidate *proto.Event
 	c.log().Info("终态等待开始", "addr", c.baseURL, "task", taskID, "machine", machine)
 	for attempt := 1; ; attempt++ {
 		if err := ctx.Err(); err != nil {
@@ -183,27 +189,61 @@ func (c *Client) WaitFinal(ctx context.Context, taskID, machine string, onAttent
 			w = snap.RecentEvents[n-1].Seq
 		}
 		if turnEnded(task.State) {
-			if ev := lastResultIn(snap.RecentEvents); ev != nil {
-				out := outcomeFromEvent(task, *ev)
-				c.log().Info("终态等待完成：快照已有回合结果", "task", taskID, "seq", ev.Seq,
-					"type", ev.Type, "completed", out.Completed)
+			res, rerr := c.lastResultFor(ctx, taskID, machine, snap.RecentEvents, w)
+			if rerr != nil {
+				if ctx.Err() != nil {
+					return nil, ctx.Err()
+				}
+				if isPermanent(rerr) {
+					return nil, rerr
+				}
+				c.log().Debug("终态等待回放暂时失败，退避重试", "task", taskID, "cause", rerr)
+				if err := waitArchivedRetry(ctx, &backoff, c.wsInitialBackoff, c.wsMaxBackoff, false); err != nil {
+					return nil, err
+				}
+				continue
+			}
+			// 亲见过「进行中」时的水位是确定性的回合起点：不晚于它的结果只能是上一回合的
+			if res != nil && sawProgress && res.Seq <= progressW {
+				res = nil
+			}
+			if task.State != proto.TaskStateWaitingReview {
+				// completed / failed 是终态：没有本回合结果就是未完成就归档/终结
+				if res == nil {
+					c.log().Warn("终态等待：任务已终结但没有本回合结果", "task", taskID, "state", task.State, "watermark", w)
+					return archivedWithoutResult(task, lastArchivedIn(snap.RecentEvents)), nil
+				}
+				out := outcomeFromEvent(task, *res)
+				c.log().Info("终态等待完成：快照已有回合结果", "task", taskID, "seq", res.Seq,
+					"type", res.Type, "completed", out.Completed)
 				return out, nil
 			}
-			out, rerr := c.replayFinal(ctx, taskID, machine, task, w, lastArchivedIn(snap.RecentEvents))
-			if rerr == nil {
+			// waiting_review：handleResult 先迁状态、后落回合结果，快照可能落在两步之间（首回合时看不到
+			// 结果；续接过的任务看到的是上一回合的结果）。只在能证明结果属于本回合时下结论：
+			//   ① 本次等待亲见过进行中（上面已滤掉水位以内的）；
+			//   ② 结果落库时刻不早于任务最近一次写入（迁入 waiting_review 必在结果之前写，故结果晚于它
+			//      即为本回合；上一回合的结果必早于续接与本次迁入）；
+			//   ③ 前后两次快照（间隔一次退避）都是 waiting_review 且最后一条结果相同——覆盖结果落库后
+			//      又有写入顶高 updated_at（如清扫作废工单）的情形；两步之间的窗口是同一 goroutine 里
+			//      相邻的两次写库，一次退避足以越过。
+			if res != nil && (sawProgress || !res.CreatedAt.Before(task.UpdatedAt) || (candidate != nil && candidate.Seq == res.Seq)) {
+				out := outcomeFromEvent(task, *res)
+				c.log().Info("终态等待完成：本回合结果已确认", "task", taskID, "seq", res.Seq,
+					"type", res.Type, "completed", out.Completed, "confirmed_by_resnapshot", candidate != nil && !sawProgress)
 				return out, nil
 			}
-			if ctx.Err() != nil {
-				return nil, ctx.Err()
-			}
-			if isPermanent(rerr) {
-				return nil, rerr
-			}
-			c.log().Debug("终态等待回放暂时失败，退避重试", "task", taskID, "cause", rerr)
+			candidate = res
+			c.log().Info("终态等待：waiting_review 下尚无可证明属于本回合的结果，退避重取快照", "task", taskID,
+				"has_candidate", res != nil, "updated_at", task.UpdatedAt, "watermark", w)
 			if err := waitArchivedRetry(ctx, &backoff, c.wsInitialBackoff, c.wsMaxBackoff, false); err != nil {
 				return nil, err
 			}
 			continue
+		}
+		candidate = nil
+		sawProgress = true
+		if w > progressW {
+			progressW = w
 		}
 
 		var out *FinalOutcome
@@ -260,10 +300,12 @@ func (c *Client) WaitFinal(ctx context.Context, taskID, machine string, onAttent
 	}
 }
 
-// replayFinal 从 0 回放到水位 w，取最后一条回合结果；回放在到达 w 前被正常关闭时用已收到的。
-// 没有任何回合结果 → archivedWithoutResult（任务已结束却无结果，只能是未完成就归档/终结）。
-func (c *Client) replayFinal(ctx context.Context, taskID, machine string, task proto.Task, w int64,
-	archived proto.Event) (*FinalOutcome, error) {
+// lastResultFor 取快照里（窗口没有时从 0 回放到水位 w）最后一条回合结果；没有返回 nil。
+// 回放在到达 w 前被正常关闭时用已收到的。是否属于本回合由调用方判。
+func (c *Client) lastResultFor(ctx context.Context, taskID, machine string, recent []proto.Event, w int64) (*proto.Event, error) {
+	if ev := lastResultIn(recent); ev != nil {
+		return ev, nil
+	}
 	var last *proto.Event
 	err := c.streamOnceOn(ctx, taskID, machine, 0, nil, func(ev proto.Event) error {
 		if ev.Seq > w {
@@ -281,12 +323,10 @@ func (c *Client) replayFinal(ctx context.Context, taskID, machine string, task p
 	if err != nil && !errors.Is(err, errArchived) {
 		return nil, err
 	}
-	if last == nil {
-		c.log().Warn("终态等待：任务已结束但历史里没有回合结果", "task", taskID, "state", task.State, "watermark", w)
-		return archivedWithoutResult(task, archived), nil
+	if last != nil {
+		c.log().Info("终态等待：回放补找到回合结果", "task", taskID, "seq", last.Seq, "type", last.Type)
 	}
-	c.log().Info("终态等待完成：回放补找到回合结果", "task", taskID, "seq", last.Seq, "type", last.Type)
-	return outcomeFromEvent(task, *last), nil
+	return last, nil
 }
 
 // Artifacts 取任务产物包（F16）。
