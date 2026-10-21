@@ -7,3 +7,4 @@
 - 现状：仓内熟练工定义只有 `skills/handoff/skilled/code-investigate.json`（receiver mimo、readonly）；生产 `template list` 有 code-investigate v1。
 - 范围收窄：handoff 自身命令被权限门硬升级（B451/B460），换版后冒烟不归本卡；前端 vitest 缺 node_modules，不归本卡。
 - 定级 L1，spec 即 plan。
+- 实现：`skills/handoff/skilled/finish-check.json`（receiver mimo、readonly，五项检查 + 回报格式），SKILL.md 熟练工节加 finish-check 段，CHANGELOG 新增一条。`go test ./internal/skill/ ./cmd/ -run 'Skill|Template'` 见下行。

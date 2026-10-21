@@ -12,6 +12,8 @@
 
 ### 新增
 
+- 熟练工定义 `finish-check`（`skills/handoff/skilled/finish-check.json`）：charter finish 的只读机械检查——gofmt、vet、新鲜全量（已知抖动单包复跑判别）、README 命令表对 `--help`、残余是否入 roadmap、CHANGELOG 是否提到本卡——交熟练工，主会话只读结论。（B461）
+
 - **`dispatch --wait` / `wait --final` 遇待答工单以退出码 5 交回（B460）。** 任务停在审批链判不了、要人答的权限请求或提问上时立即退出（进入时已有待答工单也一样，不连事件流），stdout 每张工单一块：`ticket:` / `kind:` / 可选 `reason:`、`--- 全文 ---` 定界的工单全文（取工单记录，不截断）、可直接执行的 `reply:` 答复命令，最后一行 `resume: handoff wait <id> --final[ --machine <M>]`。判据是任务快照的待答工单列表，事件只作唤醒；优先级：回合已结束（0/3）> 待答工单（5）> 超时（124）。
 - **网页抓取统一放行并审计（B460）。** 权限门新增 `webfetch` 路由：截断或描述命中黑名单仍升级，其余直接放行，写一条 `permission_auto_allow`（`rule=webfetch`，新键 `url`）。opencode 与 claude（WebFetch / WebSearch）的抓取请求改为产出结构化载荷，agy 补 URL；codex 无抓取审批类型。**风险（用户接受）**：抓取可经 URL 外带数据，由审批链拦凭据读取兜底（读凭据不再自动放行，见「变更」），不设域名白名单。
 - **任务范围内建目录与写入自动放行（B460）。** `mkdir`、`echo` / `printf` 写重定向在每个落点都能静态证明落在工作树、任务目录（含产物目录）、任务临时目录内时放行（审计 id `mkdir` / `echo-write` / `printf-write`）：认绝对路径、`&&` 链里已证明的 `cd` 之后的相对路径、`$TMPDIR` 与 `$HANDOFF_ARTIFACTS_DIR` 前缀、codex 审批报文的 `cwd`；`$HOME`、`~`、通配、无基准的相对路径不放行。`mkdir` 越出任务范围由「交审批者」收紧为直接升级人工。
