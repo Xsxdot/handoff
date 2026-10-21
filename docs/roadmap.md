@@ -975,3 +975,4 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 - 载体 CLI 回合失败时只截 stderr 尾部；opencode 把错误（如 403 ENTITLEMENT_ERROR）写在 stdout JSON，导致失败原因显示为空。来源：B448 R11。
 - 生产遗留无主计数 `carrier/cmd`、`squad/leader/cmd` = 1（载体已删除，r1 前旧格式），需一次性人工清理或随「删载体清计数」处理。来源：B448 R11。
 - 执行者偏好用内联 Python heredoc 改文件（E21 实测 bash 82 次、edit 7 次），B451 后每次多一次 10–15s 审批链调用；可在 implement 纪律块或执行者指令里要求改文件用 edit/write 工具。来源：B451 spec Out of Scope。
+- `judgeCommand` 会扫到 Python heredoc 正文：B451 起人工清单检查排在硬升级之后，正文含 `handoff dispatch`、黑名单字样时整条硬升级人工（改前同样人工，非回退）；在 handoff 仓改字符串时较易触发，可考虑让 heredoc 正文对黑名单/自指令判据不可见。来源：B451 plan 拍板。

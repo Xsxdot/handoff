@@ -1,6 +1,6 @@
 # B451 实现计划：人工清单改走审批链（硬升级不动）
 
-- 状态：**待拍板**（出稿者：plan subagent；拍板者：主会话协调者）
+- 状态：**已拍板（2026-10-21）**（出稿者：plan subagent；拍板者：主会话协调者）
 - 输入：`docs/superpowers/specs/b451.md`（r1，2026-10-21 用户批准，L2，执行形态甲：本地盯）；台账 `docs/superpowers/specs/b451-ledger.md`
 - 基线：分支 `cards/B451-charter-1` @ `60722bef`
 - 读者：零上下文执行者。§8「核实读数」列出本稿引用的代码事实和出处，动手前可以复核。
@@ -15,6 +15,12 @@
    - OpenCode 路径（`approval.Client.Request`）复用在 Consult 之前（`approval/client.go:164-168`），那里「不经审批者」照旧成立。
    - **荐 甲**：Manager 路由不动。这样符合 spec 的「Consult 出口的既有路由不变」和「和其他 Consult 请求完全一样」：今天普通 Consult 请求在 Manager 路径上也是先问审批者、后复用。复用腿改写成：审批者判 escalate → 走升级出口 → 命中同任务人工 allow 复用 → 回传 `once`，`permission_reuse`=1，`permission_request`=0。S3 的「不建第二张工单」仍然锁住；去掉的只是「不咨询审批者」这一句。代价：Manager 路径上，已有人工 allow 的同指纹人工清单命令，会先多花一次审批链调用（10–15s）。
    - 乙：在 `handlePermission` 里对 `Rule==manual-gate` 的 Consult 先跑复用判定，再问审批者。缺点有三：编排层要认判据的规则名，判据结果就不再只靠 Action 路由；人工清单和其他 Consult 走的路不一样；改动超出 spec「Consult 出口既有路由不变」的边界。不荐。
+
+**裁决（2026-10-21 主会话）**：
+- **Q1 → 甲。** 理由：spec 的承诺是「和其他 Consult 请求完全一样」与「不建第二张工单」，甲两条都兑现。乙要让编排层认判据规则名，越过 spec「Consult 出口既有路由不变」的边界。代价（Manager 路径多一次审批链调用）可接受；spec 测试决定里「有复用腿保持断言不变」一句是事实读数错误，已在 spec r1.1 更正。
+- §7 偏差 1–6 均认可，在 spec 授权内。
+- 已知残余（落 roadmap，不在本卡特判）：人工清单检查挪到 `judgeCommand` 之后，Python heredoc 正文会被黑名单与自指令判据扫到，正文里含 `handoff dispatch` 一类字样时硬升级人工。这与改前同样走人工，不是回退。
+- finish 提醒：远端审批环用自己机器的二进制拼提示词，三台换版之前，旧版环看不到新增那一行。
 
 ## 0. 交付目标
 

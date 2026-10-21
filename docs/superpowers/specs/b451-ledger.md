@@ -25,3 +25,4 @@
 - 读测试：`manualgate_test.go:1-83`（`wantEqual` 零值跳过 = AutoAllow 被跳过，既有怪癖）；`selfcmd_test.go:170-197`（`:185` rg --pre）；`permgate_wire_test.go:300-458`（无复用腿 `:352-399`、复用腿 `:401-458`；spec 写 `:352`/`:390`）；**`heredoc_test.go:68`「python 消费正文走人工门」期望 Escalate——spec 漏列，plan 列入必改**；`permgate_test.go:219-221` 只断言非 AutoAllow，不受影响；`blacklist_test.go:53` 直调 judgeCommand，不受影响。
 - **与 spec 偏差**：S4「理由与规则名同现状」——现状下组合命令先命中人工清单，记 `manual-gate`，不是硬升级的规则名；plan 将参照定为「该硬升级单独出现时的裁决」（实现决定 2 的推论），并记审计面变化（自指令组合命令日志 Info→Warn，`approval/authority.go:221-226`）。
 - `/usr/bin/grep -rn manual-gate|人工清单`（除 b383 文档）：产品代码引用仅 permgate 两文件；`internal/ledgerstep/node.go:246` 的「人工清单」是另一概念，无关。
+- plan 拍板（主会话，2026-10-21）：Q1 → 甲；§7 偏差 1–6 认可；spec 修订 r1.1 事实更正；roadmap 记 heredoc 正文被硬升级判据扫描一条。
