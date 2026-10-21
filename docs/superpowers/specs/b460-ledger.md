@@ -62,3 +62,36 @@
 - 段 3 实现（S1/S2/S3 + Q3 甲）：store 新增 `CreateAnsweredTicket(tk, answer)`——一个事务内「INSERT OR IGNORE 带答案」，id 已存在且未答（升级路径崩溃半截状态）则补答、相同答案幂等、不同答案/已作废 `ErrTicketConflict`，与旧「CreateTicket + AnswerTicket」外部语义对齐但无未答中间态；`approval.Client` 审批批准分支与 `Manager.approvePermission`（approver / reuse 两来源）改用它，其后 ticket_answered 事件、Publish、原生回传顺序不变。client `WaitFinal` **去掉 `onAttention` 参数**（§6 授权的二选一）：`FinalOutcome.Pending []proto.Ticket`；判据：回合已结束 > 快照 `pending_tickets` 非空（首轮即返回、零拨号）> 跟流；question/permission_request 只作唤醒（收流、重置退避、立即重取快照），续跟起点取 max(快照水位, 唤醒 seq) 防紧循环。cmd：`ExitPendingTicket = 5`；`runFinalWait` 删 stderr「在等人回答」提示行，待答时按 F2 写 stdout（`writePendingTickets`，工单请求体解码放 cmd）并以 5 退出，Info 日志带任务、工单、机器；续等串与 124 分支共用 `resumeCommand`。
 - 段 3 测试：`internal/store/b460_answered_ticket_test.go`；`internal/approval/b460_atomic_approve_test.go` 与 `internal/orchestration/b460_atomic_approve_test.go`（同库 AFTER INSERT 触发器探针记录任何 answer 为 NULL 的工单插入——Hooks.Store / m.st 是具体类型无法包装，触发器等价于「每次写后读 PendingTickets」且无时序依赖；改前两条均红：「批准工单曾以未答形态落库」）；`internal/client/b460_waitfinal_test.go` V1(a)(b)(c)(d)(f)，(e) 为改写的 `TestB452WaitFinalDeadline`（§6 允许类 1：onAttention 断言改为「提问事件唤醒一次重取快照、快照无待答则等到时限」）；`cmd/b460_pending_ticket_test.go` V2（权限工单 stdout 全等 F2、>300 rune 末尾标记不截断、stderr 无提示；提问 + reason + 两张工单；打印的 `--approve` 行原样喂 `handoff reply` → `POST /api/tasks/t1/reply` 带 `ticket_id=t1:p1`、`answer=allow`）。`cmd/b452_skilled_test.go` 的桩加可选 `fallback` 路由（测试设施，非断言）；client 包既有 B452 用例只随签名去掉末参 `nil`（机械）。断言红：去掉唤醒 → V1(b) 超时红；去掉 pending 判据 → V1(a) 超时红（B460 用例另加 5s 上限，回归时快速红）；全文截 200 rune → V2 红；批准路径两步写 → V3 两条红。
 - 段 3 过关：`env -u CLAUDE_CODE_SESSION_ID go test ./internal/client/ ./cmd/ ./internal/store/ ./internal/approval/... -count=1` 除已知环境敏感 `TestProductionHTTPClientCallersAreGatewayOnly`（嵌套 `.claude/worktrees/`）外全绿。
+- 段 5 文档（d33978a7）：SKILL.md 熟练工节（`--wait` 首选后台；退出码 5 工单块格式与处置；5 与 124 区别；退出码表加 5；「长连接流别接 shell grep」）、「审批」节静态放行补 webfetch 与范围内建目录/写入；README / README.zh-CN `dispatch --wait` 退出码加 5（`wait --final` 行写「同 dispatch --wait」，未改）；CHANGELOG [Unreleased] 新增 4 条、变更 2 条、修复 3 条（含 cd 链漏洞与 S5 结论）。协调者要求的 `HANDOFF_QUIET=1` **未写进 skill**：仓内 Go 代码无此变量（`/usr/bin/grep -rn HANDOFF_QUIET --include=*.go` 零命中，只在 b452 台账的命令示例里出现），写进去就是文档承诺一个不存在的开关；改写为「确需过滤用 `/usr/bin/grep --line-buffered`，只去日志噪声用 `2>/dev/null`」。
+- 全量（`env -u CLAUDE_CODE_SESSION_ID go test ./... -count=1`，d33978a7 代码态，跑两遍）：73 个包，63 ok、8 无测试文件、2 FAIL——①`internal/client` `TestProductionHTTPClientCallersAreGatewayOnly`（扫到仓内 `.claude/worktrees/` 嵌套工作树，memory 已记的环境敏感项）；②`internal/executor/opencode` `TestProbeReplayClassification/S3` 与 `/S4`（「回放未产出任何终结事件」）。②做了基线对照：同命令在 fad1aadf 临时工作树（`git worktree add --detach`，跑完已 remove + prune）全量跑，同一测试红在 `/S1`（64 ok、1 FAIL；client 那条在非嵌套位置不红）——是 roadmap 已记的并行负载抖动、子用例随机，非回归；且 probe-s3/s4 夹具里零 permission 事件，本卡对 opencode 的唯一改动（`mapPermissionAsked` webfetch 分支）不在其路径上；opencode 包单跑多次绿（另见基线单包跑也会红 `TestCoordinatorCancelTurnUsesSessionID`）。`gofmt -l $(git ls-files '*.go')` 空；`go vet ./...` 无输出。
+
+### 交回物（implement，2026-10-21）
+
+#### 偏离与自主决定
+
+1. **既有测试断言改写 ×2（越出 §6 允许类，均即时报主会话）**：①`cdbase_test.go`「cd 进 TMPDIR 后写草稿」Consult → AutoAllow/safe-command（S6 预期后果，**主会话已批准**，并按其要求补两条反例）；②`permgate_test.go` `TestJudgeNonBashToolsRemainNonAutoAllowed` 的 `{Tool:"webfetch"}` 条改为 `{Tool:"other", Text:"WebFetch: …"}`（S4 直接后果，原意「文本形如抓取不放行」保留，结构化 webfetch 的断言移入 `TestB460WebFetchRoute`）——**此条未单独取得主会话确认**，请复核。§6 允许类内的改写：`TestB452WaitFinalDeadline`（类 1）；审批/WaitFinal 签名下传的机械改调用（类 2，断言不变）。
+2. **存量门禁漏洞修复（主会话裁定本卡修，越出原 plan 范围）**：cd 后接 `;` / `||` / 换行时 heredoc-in-scope 与 rm-in-scope 把失败的 cd 当生效；共用 `cdChainTrusted`。rm 出口同族一并修（主会话裁定原文「any proof that relies on a cd base」覆盖它）。无既有断言因此翻转。
+3. **`HANDOFF_QUIET=1` 未写进 skill**（协调者要求项）：代码里不存在该变量，见上条。改给 `2>/dev/null`。需主会话裁定是否另行实现该开关。
+4. **S6 新出口比 plan 文字更严的自主收紧**（§6「匹配实现」授权内，均为不放行方向）：cd 链只认全 `&&`（与 2 同判据）；相对 `cd` 也要求已有基准（B2 的直接推论：无 Cwd 时相对 cd 同样依赖 Workdir 假设）；echo/printf 写落点按 shell 词元重解，`"$TMPDIR"/../x` 拼接词元、单引号字面量不放行；mkdir 只认 `-p -v -m` 及其聚簇/长形态，未知旗标不放行；段内写面只认重定向（echo 段带管道不放行）；白名单写形态（gofmt -w、git add）不进本闭集。
+5. **`mkdir` 进写命令表的连带收紧**：`mkdir -p /etc/x` 由 Consult 变 Escalate（plan V4 N1 即此预期）；`cd <越界> && mkdir rel` 由 Consult 变 Escalate（与其他写命令同待遇）。
+6. **`$HANDOFF_ARTIFACTS_DIR` 进 `proveCDInBases` / `cdResolvedTargets`**（plan §3 指定）：合并重绑定嫌疑判定（任一白名单变量被触碰即整条不信两者，over-reject）；`cdResolvedTargets` 有基准时白名单变量前缀落点按注入值绝对化（此前一律「不可解释」→ Escalate，现在交 InScope 判），属证明面扩大但严格可证。
+7. **`WaitFinal` 去掉 `onAttention` 参数**（§6 二选一，选去掉）；唤醒后续跟起点取 max(快照水位, 唤醒 seq)（防快照窗口滞后造成无退避紧循环，自主加的护栏）。工单请求体解码放 cmd（§6 二选一）。
+8. **`Decide` 加参数**而非请求结构体（§6 授权）；上下文结构 `orchestration.ApproverTaskContext`，wire `proto.ApproverTaskContext`，转换在 `agentd/approverapi.go`。上下文段作为 Sprintf 参数拼进「任务背景」之后，模板常量一字不改。空 `Mode` 显示为 `branch`、wire 保留原值。
+9. **V3 观测手段**：plan 写「包装 store 每次写后读 PendingTickets」，`Hooks.Store` / `m.st` 是具体类型无法包装，改用同库 SQLite AFTER INSERT 触发器探针（记录任何 answer 为 NULL 的工单插入），语义等价且无时序依赖（§6「测试命名/帮手」授权内）。
+10. **`CreateAnsweredTicket` 语义**：事务内两步（INSERT OR IGNORE 带答案；已存在未答则补答），与旧「建单 + AnswerTicket」外部语义对齐，外部读者看不到未答中间态（§6 授权）。
+11. **`skills/handoff/SKILL.md`「审批」节**补了 B460 两类静态放行的一句（plan §4 段 5 未列，属文档对齐）。
+12. **段 4 / Q2 / S5 修复**：按 spec r1.2 作废，代码零改动；`38b2099d` 观测日志保留为永久观测点。
+
+#### 提交
+
+`38b2099d`（段 0 观测日志）、`762ba6ae`（段 1）、`f57a3129`（段 2）、`7eb01169`（段 3）、`d33978a7`（段 5 文档），以及本台账提交。
+
+#### 留给协调者
+
+- **U1** opencode webfetch `permission.asked` 真机样本 → 替换 `internal/executor/opencode/testdata/perm_webfetch.json`（现为合成样本：`metadata.url` + `patterns[0]`），字段名不符时改 `mapPermissionAsked` 的 webfetch 分支（R4a）。
+- **U2** opencode `external_directory` bash 形态的 `directories` 真实取值（R5）。
+- **U3** claude WebFetch / WebSearch 入参字段名（现按 `url` / `query`，R4b）。
+- **U4** grok 网页抓取 ACP 载荷：本卡未动 grok 适配（Q6），取不到样本则落 roadmap「B460 残余」。
+- **U5** 审批模型对新政策的实际裁决（R6 回放 12 次）。
+- 真机 R1–R7（R8 随 S5 作废）；S5 = 无代码改动、根因在 handoff 之外，不列待办。
+- 主会话复核：偏离 1② 与 3。
