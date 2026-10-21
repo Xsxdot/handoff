@@ -982,7 +982,7 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 ## B452 残余（2026-10-21，熟练工派发 spec Out of Scope「本期不做、后续要做」）
 
 - 对本机**未提交**改动做只读调查（就地只读形态）：B452 的只读形态在接收机以基线提交建 detached 工作树，读不到调用方未提交内容。来源：`docs/superpowers/specs/b452.md`。
-- 只读任务的文件产物通道（报告文件、截图、快照）；`FinalTextLimit` 16 KiB 字符截断长报告。归 B454。来源同上。
+- ~~只读任务的文件产物通道（报告文件、截图、快照）；`FinalTextLimit` 16 KiB 字符截断长报告。归 B454。~~ 已并入 B452 spec r1.2 S8（2026-10-21 用户同意）。来源同上。
 - 载体不可达/满负荷/无额度时顺小队换人；B452 只报错点名机器。归 B453。来源同上。
 - Web 控制台增删改熟练工定义（本期只 CLI `template put --file`）。来源同上。
 - `NodeOverride.Target` 在小队节点被忽略（`internal/agentd/scheddispatch.go:131-135` 返回空 target），与 `internal/ledger/types.go:215-216` 注释矛盾。来源：2026-10-21 现状摸底。
