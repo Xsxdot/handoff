@@ -8,3 +8,4 @@
 - 代码读数：人工清单判据 `internal/permgate/manualgate.go:48-82`；调用点 `internal/permgate/permgate.go:292-298`（在 `judgeCommand` 之前）；Consult 出口 `internal/orchestration/manager.go:2090-2108`；审批者收 `ev.Text` 全文 `manager.go:2366`；审批者 escalate 走 `escalatePermission`（无理由）`manager.go:2440`；提示词模板 `internal/orchestration/approver.go:703-712`。
 - 受影响测试：`internal/permgate/manualgate_test.go`、`internal/permgate/selfcmd_test.go:185`、`internal/orchestration/permgate_wire_test.go:352`（无复用腿）与 `:390`（复用腿）。
 - 共享审批链现状：`handoff approver show` → 版本 1，linux-01/agy → linux-01/codex gpt-6-luna，单环 1m。
+- 批准：2026-10-21 用户「批准 B451 spec r1，含提示词那一行，按甲推进」；回写 spec 头部状态行。
