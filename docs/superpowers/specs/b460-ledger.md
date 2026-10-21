@@ -139,6 +139,42 @@
 - S10 spec 验收列要求「隔离 agentd 真机一次」：本轮只做了机内表驱动；建议用只读熟练工跑 `cat ~/.codex/auth.json` 与 `printenv`，看到不再有 `permission_auto_allow`、改为走审批链（approver_decision）并按政策升级成工单；agentd Info 日志「触及凭据位置，自动放行改交审批链」带 hit。
 - 主会话复核：偏离 1（范围循环 Escalate）、7（单一收口 + 多覆盖写文件工具）、9（任意位置匹配未收窄到家目录）、10（政策段措辞）。
 
+### 修复轮 2（2026-10-22，机内审查第 2 轮 F1–F6）
+
+#### 偏离与自主决定
+
+1. **F1 根因修法**：新增 `internal/permgate/cmdword.go`，`commandWord(seg)` 是唯一的命令词归一（shell 去引号：单引号原样、双引号内只转义 `$` `` ` `` `"` `\`、引号外 `\x`→x），并报告「朴素」（去引号前后一致且只含 `[A-Za-z0-9._/+-]`）。cd 判定四处（`cdChainTrusted`、`cdResolvedTargets`、`cdWalkBase`、`isCDSegment`）按归一结果认 cd；只读匹配 `matchSilentFields` 要求命令词朴素且等于其首词元——只读面认得的命令词，cd 跟踪一定也认得。非朴素的 cd 一律不可信：落点循环判基准破坏（其后相对写落点 **Escalate**，与修复轮 1 偏离 1 同口径），`cdChainTrusted` 判假。
+2. **纵深防御 (b)**：范围内写入、heredoc 闭集（`closedHeredoc` 构造处，故正文剥离也随之失效）、rm 三出口任一段命令词非朴素即整条不可证明。副作用：`X=1 make`、`"ls"`、`2>/dev/null cd x` 这类命令词非朴素的段**不再静默**（只读白名单不认）——此前 `"ls"` 被剥引号后静默，现在 Consult。全量无既有断言因此翻转。
+3. **F2 不区分递归**：家目录（本用户、`/root`、`/Users/<x>`、`/home/<x>`）本身及其祖先一律 Consult，`ls /`、`ls /Users` 也在内。理由：区分递归要逐命令解析旗标（`grep -r/-R/--recursive`、`ls -R`、`rg` 默认递归……），漏一种即绕过；非递归列根在任务里罕见。`/Users/Shared` 这类按「他人家目录」也 Consult。
+4. **F2 cd 基准集合**：凭据守卫内按命令顺序跟踪 cd，每个可解析的 cd 目标**加入**基准集合而不替换旧基准（cd 可能失败，按两处都可能判，宁多判）；目标以 `-`/`+` 开头或含未知变量时不加。相对词元对集合里每个基准各判一次。
+5. **F3 一律大小写不敏感**（不只 darwin），组件统一小写后比较；`[A-Z]` 类 glob 随之小写化，语义近似可接受。
+6. **F4/F6 共用 `resolveTargetPath`**（path.go）：已存在最长前缀解软链 + 解不动的那一级 Lstat 为软链则 Readlink 跟随（相对目标按软链所在目录解释），跳数上限 40，超限（软链环）返回错误 → InScope 报错（Escalate）、`provePathInBases` / `proveDirInTmp` 判不可证明。写落点三处都改走它；基准目录本身仍用 `resolveExistingPrefix`（agentd 创建，不是 agent 可控的悬空软链）。凭据守卫的读侧软链复查也走它。副作用：`rm` 删悬空软链（只删链接本身）若链接指向范围外也不再放宽（over-reject）。
+7. **F5**：`..` 按 `filepath.Clean` 化简；相对词元化简后仍在开头的 `..` 只在「任意位置匹配」时去掉（解析成绝对路径的那一路按基准正常回退）。清单按协调者裁决补 10 项（`~/.kube/config` 换成整个 `~/.kube/`）；变量名补 `DATABASE_URL`（子串）与按 `_` 分段恰为 `PAT`、`DSN` 的名字（`$PATH`、`$PATTERN` 不连坐）。审批政策段由同一清单渲染，自动同步。
+8. 未改动：凭据守卫的收口位置、网页抓取路由、CDPATH（主会话已记残余）。
+
+#### 红 → 绿
+
+- 修前 `go test ./internal/permgate/ -run 'TestB460F' -count=1 -v`（`cmdword.go` 先只落函数、未接线）：7 个测试全红，共 76 处断言失败——
+  - `TestB460F1QuotedCommandWordNeverAutoAllows` 20 例中 9 例 AutoAllow（均 `rule=safe-command 范围内写入可证明`）：`cd $TMPDIR && 'cd' /etc && echo x > passwd` 及 `c''d`、`'c'd` 变体，`cd $TMPDIR && 'cd' /etc && printf x > passwd`，Cwd=产物目录的 `'cd' /etc && echo x > passwd` 与 `c''d /etc && printf x > passwd`，`cd <产物> && 'cd' - && echo x > .bashrc`，`cd <产物> && 'cd' .. && 'cd' .. && echo x > f`，Cwd=产物目录的三连 `'cd' ..`；mkdir 变体（`… && mkdir .ssh`）修前因凭据守卫认出 `.ssh` 已是 Consult；其余 10 例（`"cd"`、`c\d`、`\cd`、heredoc/rm 的引号 cd、`'echo'`/`'mkdir'`/`'rm'`/`'cat'` 命令词）修前已非 AutoAllow，留作回归锁；
+  - `TestB460F1CommandWordSharedNormalizer` 6 处（`'cd' /etc`、`c''d /etc`、`"ls"`、`'cat' README.md` 静默；`isCDSegment` 不认引号 cd；`cdChainTrusted` 信非朴素 cd）；
+  - `TestB460F2CredentialAncestors` 13 处（`grep -r token /`、`/Users`、`/Users/`、`/home`、`/root`、`/home/bob`、`ls -laR /`、`ls /`、`$HOME` 的父目录、`cd ~/a && grep -r token ..`、Cwd 在家目录深处的 `../../../..`、`../..`、cd 后 `../../..` 全 AutoAllow）；
+  - `TestB460F3CaseInsensitive` 7 处全 AutoAllow；`TestB460F4SymlinkViaVarsAndCD` 8 处（`$TMPDIR/k`、`"$TMPDIR/k"`、`$TMPDIR/d/…`、`"$HANDOFF_ARTIFACTS_DIR"/k2`、cd 后相对软链 4 例）；
+  - `TestB460F5DotDotAndList` 20 处（`/proc/self/../self/environ` 两例、新清单 13 项、`$GH_PAT` `$GITLAB_PAT_RO` `$SENTRY_DSN` `$DSN` `$DATABASE_URL` `$PG_DATABASE_URL`，以及反例 `cat ~/.ssh/../notes.md` 被误判 Consult）；
+  - `TestB460F6DanglingSymlinkWrites` 13 处（printf/echo/cd 后/Cwd 下/mkdir -p 经悬空目录软链/heredoc 两例/软链环，共 9 条 bash 写 AutoAllow；Write 工具 4 个悬空软链落点 AutoAllow）。
+  原始输出 scratchpad `fix2/red_all.txt`。接线后 permgate 全包 `ok`。
+- 变异（每条单独施加、跑 permgate 全包、复原）：G1 只读匹配不查朴素命令词 → `TestB460F1CommandWordSharedNormalizer` 红；G2 落点循环按旧分词认 cd、G2b cdWalkBase 同 → `TestB460F1EachLayerPinned` 红；G3/G4/G5 三出口各自去掉命令词朴素检查 → `TestB460F1EachLayerPinned` 红（首轮 G2–G5 无测试变红——各层互为兜底，补 `TestB460F1EachLayerPinned` 用双引号命令词 `"mkdir"`/`"echo"`/`"rm"`/`"cat"`/`"cd"` 单独钉每一层，rmTokens 会把它们剥成普通词，只有朴素性检查能拦）；G6 `cdChainTrusted` 不查朴素 → `…SharedNormalizer` 红；G7 不跟悬空软链 → `TestB460F6DanglingSymlinkWrites` 红；G8 家目录祖先关 → `TestB460F2CredentialAncestors` 红；G9 大小写敏感 → F2、F3 红；G10 不跟 cd 基准 → F2、F4 红；G11 不展开白名单变量 → F4 红；G12 不做 Clean（丢弃 `..`）→ F5 红；G13 PAT/DSN 词段关 → F5 红；G14 读侧软链复查关 → `TestB460CredentialReadsConsult`、F4 红；G15 他人家目录关 → F2 红；G16 DATABASE_URL 关 → F5 红。
+
+#### 全量与静态检查
+
+- `gofmt -l $(git ls-files '*.go')` 空；`go vet ./...` 净。
+- `env -u CLAUDE_CODE_SESSION_ID go test ./... -count=1`：63 ok；`internal/client` 仅 `TestProductionHTTPClientCallersAreGatewayOnly`（嵌套工作树，已知）；`internal/executor/opencode` 仅 `TestProbeReplayClassification/S3`（已知抖动，单包重跑 `ok`）。既有断言改动：无。
+
+#### 提交
+
+`6cf326e1`（F1–F6 代码与测试），以及本台账与 CHANGELOG 提交。
+
+台账提交：`git commit docs/superpowers/specs/b460-ledger.md CHANGELOG.md` → `20976881 docs(B460): 修复轮 2 台账（偏离、红→绿、变异 G1–G16）与 CHANGELOG 补 F1/F6 修复、S10 清单扩充`（随后 amend 一次收进本行，hash 随之变化）。
+
 ## review 真机（协调者，§5.3）
 
 - 前置：分支头 4abe2a7e 构建（linux sha256 dc71e4ef…，mac 3262a986…）；隔离 t452-linux（7796，`/root/b460-iso`）/ t452-mac（7797）换新二进制重启（mac 覆盖原文件后被系统杀，改先删后拷）。在役进程开始时：mac-mini pid 94142（20:33:32 启动）、linux-01 handoff-agentd MainPID 29537（11:33:14 UTC）。共享审批链 clear（R1–R5）。新增本机载体 t452-mini（t452-mac，opencode-go/deepseek-v4.1-flash，standalone，同在役 mini 配法）detect online。
