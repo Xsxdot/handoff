@@ -1,0 +1,13 @@
+# B460 台账
+
+## spec（2026-10-21，主会话）
+
+- 来源：B453 spec 期间熟练工 W2/W3 撞权限工单未叫醒主会话（卡 note seq 29349/29351/29352/29353）。工单统计（Monitor 输出原文计数）：W2 17 张——16 张 bash（审批链「审批模型未形成允许」，全为只读 python/strings 读取 `$TMPDIR`）、1 张 webfetch（「adapter 未提供结构化权限载荷」直落人工）；W3 4 张（在产物目录 git clone，被判超出仓库范围）。21 张无一有风险。
+- 用户裁定（2026-10-21）：范围 ①`--wait`/`--final` 遇待答工单立即以专用退出码退出并打印工单；②只读形态自带权限范围，派发时下发给执行器；③审批链拿到任务上下文（形态、产物目录、允许路径）；④网页抓取不需要审批，直接放行。熔断（人工工单超阈值自动停）不做，先观察。挂卡降为可选。排序：B460 先于 B453（用户「先做460」）。
+- 唤醒事实：Monitor 挂 `handoff wait <id> --follow` 逐事件叫醒，W2 后 17 张工单均当场收到；`dispatch --wait` 与 `wait --final` 只在终态输出，遇工单静默挂到超时。
+- 卡：`handoff card move B460 spec`；分支 `git checkout -b cards/B460-charter-1 origin/main`（基线 fad1aadf）。
+- 现状调查交熟练工 W1：`handoff dispatch --template code-investigate`（mimo@linux-01，任务 9b8651d8，基线 fad1aadf），八项：等待与退出码、权限流水线分类、审批链上下文、规则层自动放行、执行器权限配置下发、工单正文截断、熟练工挂卡落点、相关测试与 roadmap 条目。叫醒：Monitor `handoff wait 9b8651d8 --follow`。
+- W1 途中工单（seq 64180）：`external_directory: ls <产物目录>; mkdir -p <产物目录>`，「审批模型未形成允许」升人工——任务对**自己的**产物目录建目录也被拦，B452 S8 放行未覆盖 external_directory/bash。主会话放行。
+- **跨机 `--follow` 漏推（2026-10-21 用户发现「又没收到」）**：W1 在 linux-01，主会话本机 Monitor `handoff wait 9b8651d8 --follow --timeout 30m`（pid 14995，进程一直存活）收到 seq 64180 工单后再无输出；远端事件流里 64181 ticket_answered（12:30:17，主会话 reply）、64182 approver_decision、64183 permission_request（12:30:36）都在（`handoff show` 的 recent_events 与 pending_tickets 可见），本机 follow 一条没推。对照：W2 在本机 mini，17 张工单 follow 全部当场推到。现象指向「本机 agentd 转发远端事件流」在某点后断流而连接未断（推测：断在首张工单或首次 reply 之后，待排查）。任务因此在 64183 静默挂起约 5 分钟，主会话 reply 放行。止血：改用轮询监视（每 20s `handoff show`，新待答工单/状态变化各出一行，scratchpad `watch-task.sh`），旧 follow 留着观察是否迟到。
+- **更正：不是断流，是跨机推送延迟。** 旧 follow（pid 14995）最终输出了 64183 与 64186（completed）。时间线：64183 远端 created 12:30:36Z；主会话 12:32:07Z reply（64184），约 12:32:15Z `tail` 旧监视输出文件仍无 64183；64185 progress 12:33:03Z、64186 completed 12:33:13Z 之后 64183 才出现在输出里。即工单在远端产生后至少 1.6 分钟、实际约 2.5 分钟才推到本机，像是转发层把帧压着、等后续帧才冲出（推测）。64180（12:24:01Z）同样晚到，主会话约 12:30 才收到。本机任务（W2）无此现象。根因待 implement 排查节。
+- W1 交回（exit 0，`handoff wait --final` 拉回产物到本机临时目录）：报告入仓 `docs/superpowers/specs/b460-facts-code.md`。要点：①`WaitFinal`（`internal/client/skilled.go:159`）遇工单只打 stderr 续等，退出码只有 0/3/4/124（`cmd/exit.go:20-28`）；②opencode webfetch 无 command/paths → `Perm==nil` → `Judge` 直接升级「adapter 未提供结构化权限载荷」（`opencode/adapter.go:1790-1826`、`approval/authority.go:166-172`），agy 的 webfetch 有结构走审批链；③审批模型只拿到权限原文 + PlanSummary，无形态/工作树/产物目录（`approval/client.go:334-341`、`orchestration/approver.go:710-718`）；④permgate `Request`/`Scope` 无形态字段，AutoAllow 只出自写文件路由与 bash 安全白名单；产物目录在 TaskDir 子树内，写绝对路径才 AutoAllow，bash 相对路径与 external_directory 落 Consult；⑤五家执行器各自下发原生权限配置，opencode 为 `*` ask 全交 permgate；⑥事件 payload 截 200 rune，工单存全文，`handoff show` 可取；⑦卡镜像靠 TaskLink，裸 dispatch 无 card 字段。
