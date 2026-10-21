@@ -93,3 +93,14 @@
 - 反例：t453-mac 登记 `og-mini`（home = mac-mini 主 HOME）→ 探测 `credential_missing`「凭据文件 …/opencode/auth.json 不存在（在该机执行 opencode auth login 登记 opencode-go API key）」。`handoff account list` 两行均「探测失败」+ △ 原因。
 - 按 plan 拍板 Q2 (b)：首故事的成功读数改由 codex 在 R2 取得；**opencode-go 记欠交**，待用户二选一：在 OpenCode Console 新建 API key 写入某载体 HOME 的 auth.json，或同意新增 `opencode.db › account`（OAuth token）凭据位置。卡 note 已记。
 - 事故（主会话）：准备 DSN 时一条打码 sed 未匹配表格，把 credentials.md 中 linux-01/vm-prod PostgreSQL 超管密码与 sq SK 打印进会话；已在卡 note 请用户轮换，记忆 never-print-credentials-registry 已存。DSN 改由脚本直写配置、不输出。
+
+## implement 段 2（2026-10-22，本会话 implement subagent，主检出 `cards/B453-charter-1`，基线 `e0a57d71`）
+
+- 输入：协调者段 1 裁决（偏离 4 采纳；偏离 7 不采纳 → 响应中 proxy 密码段打码 `user:***`、PUT 收到打码值保留原值）；R1 真样本（opencode-go 401 `api_key_expired` 错误体）；凭据结构事实（grok 顶层键 `https://auth.x.ai::<uuid>`，按「等于 issuer 或以 `issuer::` 开头」选、多条取未过期且 expires_at 最晚；codex 顶层 `OPENAI_API_KEY/auth_mode/last_refresh/tokens{access_token,account_id,id_token,refresh_token}`，OPENAI_API_KEY 可为 null；agy 以账号 home_dir 作 HOME 运行、不硬编码子目录）。
+- 读码：进程组终止样板 `internal/hostapi/group_unix.go`（Setpgid + 负 pid SIGKILL）；agy 执行器找二进制用 `exec.LookPath("agy")`（`executor/agy/proc.go:68`），agentd 启动时 `pathenv.Apply` 已扩 PATH，探测器同用 `exec.LookPath`。
+- T5 quota 其余适配、指纹、V5（`internal/quota/{codex,grok,agy,fingerprint,httpx,procgroup_unix,procgroup_other}.go`，opencodego.go 改用共用出网；testdata 四份）：
+  - 红（编译）：`env -u CLAUDE_CODE_SESSION_ID go test ./internal/quota/` → `undefined: ParseAgyUsage / agyIdentity / Agy / KindAgy / Fingerprint / CategoryVersionTooOld …`。
+  - 红（断言，空壳后）：同命令 12 个测试 FAIL（Agy×5、Codex×2、Grok×3、`OpencodeGoRealSample401ApiKeyExpired`、`SecretsNeverLeakAcrossAdapters`）。
+  - 绿：同命令 ok；`-race -count=3` ok（10.1s）。段 1 的 OpencodeGo 表原样通过（未改既有断言）。
+  - 真样本：`testdata/opencodego_401_api_key_expired.json` = R1 真机错误体（协调者转录，message 末尾「…」原样）→ `credential_expired`「在 OpenCode Console 新建 API key…」。其余三份 `*.synthetic.json` 按 facts-providers §E（codex gist 样例）/ facts-orca §1（grok、agy 字段名）合成，测试文件头注明「未经真机」，R2 替换。
+  - 判断：codex allowed=false/limit_reached=true → Blocked `limit_reached`（Q4 归无额度）；窗口按 limit_window_seconds 归类（≤1d session、≤10d weekly、其余 monthly，缺长度按位置）；reset_at 缺席用 reset_after_seconds；access_token JWT exp 已过 → credential_expired 不发请求；只有 OPENAI_API_KEY → credential_invalid。grok 条目按协调者事实选（等于 issuer 或 `issuer::` 前缀；未过期且 expires_at 最晚；5 分钟偏斜），credits 非鉴权失败回退 /billing、401/403/429 不回退；字段层级未知，顶层与 config/billing 子对象宽容查找。agy 版本无法识别也按版本门拒（宁可不探也不白花额度）；`exec.CommandContext` + Setpgid + `Cancel` 杀负 pid + `WaitDelay=2s`（孙进程占管道时强关）；非 unix 报 unsupported_platform；未登录按 stderr 关键字判 credential_missing（猜测，R2 校正）；窗口未知的 bucket 忽略并 Debug 日志。指纹 `sha256:` + 前 12 位十六进制，opencode-go 取 key、codex account_id、grok user_id→email、agy 信封 email→账号 id。新增失败类别 credential_expired、limit_reached、version_too_old、cli_missing。

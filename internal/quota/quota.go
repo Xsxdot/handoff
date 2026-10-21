@@ -20,9 +20,12 @@ import (
 	"time"
 )
 
-// 账号 kind（spec F7）。本段只注册 opencode-go 适配，其余 kind 走 unsupported_kind。
+// 账号 kind（spec F7）。
 const (
 	KindOpencodeGo = "opencode-go"
+	KindCodex      = "codex"
+	KindGrok       = "grok"
+	KindAgy        = "agy"
 )
 
 // 窗口键（spec F8 `windows[].key`）。
@@ -43,9 +46,20 @@ type Window struct {
 // Snapshot 是一次成功探测的读数。Blocked 非空表示接口明示该账号不可用（如无订阅）——
 // 它是「探测成功、结论为不可用」，不是探测失败（plan Q4：归无额度）。
 type Snapshot struct {
-	Windows  []Window
-	PlanType string
-	Blocked  *Failure
+	Windows     []Window
+	PlanType    string
+	Blocked     *Failure
+	Fingerprint string // 身份值短哈希（Fingerprint），取不到为空
+	Extra       *Extra // 额外额度（credits/预付/按需），没有为 nil
+}
+
+// Extra 是窗口之外的额外额度：余额与/或按需用量。各字段可缺。
+type Extra struct {
+	Unit      string // credits / usd 等；接口未给为空
+	Balance   *float64
+	Used      *float64
+	Limit     *float64
+	Unlimited bool
 }
 
 // Category 是探测失败（或不可用）的类别（plan §9 草案，非冻结）。
@@ -54,6 +68,10 @@ type Category string
 const (
 	CategoryCredentialMissing   Category = "credential_missing"
 	CategoryCredentialInvalid   Category = "credential_invalid"
+	CategoryCredentialExpired   Category = "credential_expired"
+	CategoryLimitReached        Category = "limit_reached"
+	CategoryVersionTooOld       Category = "version_too_old"
+	CategoryCLIMissing          Category = "cli_missing"
 	CategoryUnauthorized        Category = "unauthorized"
 	CategoryNoSubscription      Category = "no_subscription"
 	CategoryNetwork             Category = "network"
