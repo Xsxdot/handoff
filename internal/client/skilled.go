@@ -271,6 +271,14 @@ func (c *Client) WaitFinal(ctx context.Context, taskID, machine string) (*FinalO
 		from := start
 		started := time.Now()
 		streamErr := c.streamOnceOn(ctx, taskID, machine, start, nil, func(ev proto.Event) error {
+			// B460 修复轮 1 N1：起点及以前的事件已由快照覆盖（或是本次已处理过的唤醒），服务端
+			// 若重放回来一律忽略——旧唤醒事件会造成无退避的重取快照紧循环，旧回合结果会冒充
+			// 本回合结论。
+			if ev.Seq <= start {
+				c.log().Debug("终态等待忽略起点以前的重放事件", "task", taskID, "seq", ev.Seq,
+					"type", ev.Type, "start", start)
+				return nil
+			}
 			// 只在内存推进水位：绝不 writeCursor（见文件头边界）
 			from = ev.Seq
 			switch {

@@ -50,6 +50,20 @@ type b452FinalServer struct {
 	stream    func(n int32, conn *websocket.Conn, r *http.Request)
 	ts        *httptest.Server
 	artifacts http.HandlerFunc
+	// active 是尚未退出的 WS 处理器数。被接管（hijack）的连接不随 r.Context() 取消，
+	// httptest.Server.Close 也不等它们——桩若靠 r.Context() 挂住，客户端挂断后处理器
+	// 永不退出，回归（客户端漏关连接）只表现为端口耗尽而不是测试变红（B460 修复轮 1 N2）。
+	active atomic.Int32
+}
+
+// b452HoldUntilHangup 挂住 WS 连接直到客户端挂断（读到错误：对端关闭帧或 TCP 断开）。
+// 刻意用 Background 而不是测试 context：测试结束时的取消会替客户端关连接，掩盖漏关。
+func b452HoldUntilHangup(conn *websocket.Conn) {
+	for {
+		if _, _, err := conn.Read(context.Background()); err != nil {
+			return
+		}
+	}
 }
 
 func newB452FinalServer(t *testing.T, s *b452FinalServer) *b452FinalServer {
@@ -74,6 +88,8 @@ func newB452FinalServer(t *testing.T, s *b452FinalServer) *b452FinalServer {
 			if err != nil {
 				return
 			}
+			s.active.Add(1)
+			defer s.active.Add(-1)
 			defer conn.CloseNow()
 			if s.stream != nil {
 				s.stream(n, conn, r)
@@ -82,7 +98,18 @@ func newB452FinalServer(t *testing.T, s *b452FinalServer) *b452FinalServer {
 			http.NotFound(w, r)
 		}
 	}))
-	t.Cleanup(func() { s.ts.CloseClientConnections(); s.ts.Close() })
+	t.Cleanup(func() {
+		// 被测调用已返回：客户端应已关掉全部 WS 连接，处理器随之退出。2s 内没退完即漏关。
+		deadline := time.Now().Add(2 * time.Second)
+		for s.active.Load() > 0 && time.Now().Before(deadline) {
+			time.Sleep(10 * time.Millisecond)
+		}
+		if n := s.active.Load(); n > 0 {
+			t.Errorf("客户端返回后仍有 %d 个 WS 处理器未退出（客户端漏关连接，或桩未随挂断退出）", n)
+		}
+		s.ts.CloseClientConnections()
+		s.ts.Close()
+	})
 	return s
 }
 
@@ -103,7 +130,7 @@ func TestB452WaitFinalCompletedInStreamByMachine(t *testing.T) {
 			writeWSEvent(t, conn, r.Context(), b452Ev(2, proto.EventTypeProgress))
 			writeWSEvent(t, conn, r.Context(), b452Completed(3, "## 结论\n答案"))
 			writeWSEvent(t, conn, r.Context(), b452Ev(4, proto.EventTypeArchived))
-			<-r.Context().Done()
+			b452HoldUntilHangup(conn)
 		},
 	})
 	out, err := b452Client(s.ts.URL).WaitFinal(t.Context(), "t1", "linux-01")
@@ -141,7 +168,7 @@ func TestB452WaitFinalReconnectsAfterDrop(t *testing.T) {
 				return
 			}
 			writeWSEvent(t, conn, r.Context(), b452Completed(3, "重连后的回文"))
-			<-r.Context().Done()
+			b452HoldUntilHangup(conn)
 		},
 	})
 	out, err := b452Client(s.ts.URL).WaitFinal(t.Context(), "t1", "")
@@ -220,7 +247,7 @@ func TestB452WaitFinalReplaysWhenResultBeyondWindow(t *testing.T) {
 			writeWSEvent(t, conn, r.Context(), b452Completed(10, "窗外的回文"))
 			writeWSEvent(t, conn, r.Context(), b452Ev(51, proto.EventTypeProgress))
 			writeWSEvent(t, conn, r.Context(), b452Ev(52, proto.EventTypeTicketAnswered))
-			<-r.Context().Done()
+			b452HoldUntilHangup(conn)
 		},
 	})
 	out, err := b452Client(s.ts.URL).WaitFinal(t.Context(), "t1", "")
@@ -248,7 +275,7 @@ func TestB452WaitFinalDeadline(t *testing.T) {
 			if n == 1 {
 				writeWSEvent(t, conn, r.Context(), b452Ev(1, proto.EventTypeQuestion))
 			}
-			<-r.Context().Done()
+			b452HoldUntilHangup(conn)
 		},
 	})
 	ctx, cancel := context.WithTimeout(t.Context(), 300*time.Millisecond)

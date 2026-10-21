@@ -70,7 +70,7 @@ func TestB460WaitFinalWakeOnPermissionRequest(t *testing.T) {
 		},
 		stream: func(_ int32, conn *websocket.Conn, r *http.Request) {
 			writeWSEvent(t, conn, r.Context(), b452Ev(2, proto.EventTypePermissionRequest))
-			<-r.Context().Done()
+			b452HoldUntilHangup(conn)
 		},
 	})
 	start := time.Now()
@@ -107,7 +107,7 @@ func TestB460WaitFinalWakeButAnsweredContinues(t *testing.T) {
 			} else {
 				writeWSEvent(t, conn, r.Context(), b452Completed(4, "回文"))
 			}
-			<-r.Context().Done()
+			b452HoldUntilHangup(conn)
 		},
 	})
 	out, err := b460Client(s.ts.URL).WaitFinal(b460Ctx(t), "t1", "")
@@ -151,7 +151,7 @@ func TestB460WaitFinalWakeByMachine(t *testing.T) {
 		},
 		stream: func(_ int32, conn *websocket.Conn, r *http.Request) {
 			writeWSEvent(t, conn, r.Context(), b452Ev(1, proto.EventTypeQuestion))
-			<-r.Context().Done()
+			b452HoldUntilHangup(conn)
 		},
 	})
 	out, err := b460Client(s.ts.URL).WaitFinal(b460Ctx(t), "t1", "linux-01")
@@ -166,4 +166,52 @@ func TestB460WaitFinalWakeByMachine(t *testing.T) {
 	if len(s.attachQ) != 2 || len(s.wsQ) != 1 {
 		t.Fatalf("应两次快照一次流，得 attach %v ws %v", s.attachQ, s.wsQ)
 	}
+}
+
+// N1（B460 修复轮 1）：流里重放到 seq <= 起点的旧事件一律忽略——旧唤醒事件不得触发重取快照的
+// 紧循环，旧回合结果不得冒充本回合结论。
+func TestB460WaitFinalIgnoresReplayedOldEvents(t *testing.T) {
+	t.Run("旧唤醒事件", func(t *testing.T) {
+		s := newB452FinalServer(t, &b452FinalServer{
+			attach: func(int32) *AttachInfo {
+				return snapshot("t1", proto.TaskStateRunning,
+					b452Ev(1, proto.EventTypeProgress), b452Ev(2, proto.EventTypePermissionRequest))
+			},
+			stream: func(_ int32, conn *websocket.Conn, r *http.Request) {
+				writeWSEvent(t, conn, r.Context(), b452Ev(2, proto.EventTypePermissionRequest))
+				writeWSEvent(t, conn, r.Context(), b452Completed(3, "新回合"))
+				b452HoldUntilHangup(conn)
+			},
+		})
+		out, err := b460Client(s.ts.URL).WaitFinal(b460Ctx(t), "t1", "")
+		if err != nil {
+			t.Fatalf("WaitFinal: %v", err)
+		}
+		if !out.Completed || out.FinalText != "新回合" {
+			t.Fatalf("应拿到 seq 3 的结论，得 %+v", out)
+		}
+		if n := s.attachN.Load(); n != 1 {
+			t.Fatalf("重放的旧唤醒事件不得触发重取快照，快照取了 %d 次", n)
+		}
+	})
+	t.Run("旧回合结果", func(t *testing.T) {
+		s := newB452FinalServer(t, &b452FinalServer{
+			attach: func(int32) *AttachInfo {
+				return snapshot("t1", proto.TaskStateRunning,
+					b452Completed(1, "上一回合"), b452Ev(2, proto.EventTypeProgress))
+			},
+			stream: func(_ int32, conn *websocket.Conn, r *http.Request) {
+				writeWSEvent(t, conn, r.Context(), b452Completed(1, "上一回合"))
+				writeWSEvent(t, conn, r.Context(), b452Completed(3, "本回合"))
+				b452HoldUntilHangup(conn)
+			},
+		})
+		out, err := b460Client(s.ts.URL).WaitFinal(b460Ctx(t), "t1", "")
+		if err != nil {
+			t.Fatalf("WaitFinal: %v", err)
+		}
+		if out.FinalText != "本回合" {
+			t.Fatalf("旧回合结果不得冒充本回合，得 %q", out.FinalText)
+		}
+	})
 }
