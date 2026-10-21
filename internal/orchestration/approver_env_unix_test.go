@@ -52,7 +52,7 @@ func TestApproverInjectsEnvIntoDecideCommand(t *testing.T) {
 			return executor.OneShotReply{Text: `{"decision":"escalate"}`, Status: executor.OneShotOK}, nil
 		},
 	})
-	_ = ap.Decide(context.Background(), "test perm", "test")
+	_ = ap.Decide(context.Background(), "test perm", "test", ApproverTaskContext{})
 	out, err := executor.RunOneShotProcess(context.Background(),
 		[]string{"sh", "-c", `printf %s "$HANDOFF_TEST_VAR"`}, capturedEnv, "", "")
 	if err != nil {
@@ -75,7 +75,7 @@ func TestApproverStillInheritsAgentdEnv(t *testing.T) {
 			return executor.OneShotReply{Text: `{"decision":"escalate"}`, Status: executor.OneShotOK}, nil
 		},
 	})
-	_ = ap.Decide(context.Background(), "test perm", "test")
+	_ = ap.Decide(context.Background(), "test perm", "test", ApproverTaskContext{})
 	out, err := executor.RunOneShotProcess(context.Background(),
 		[]string{"sh", "-c", `printf %s "$HANDOFF_INHERITED_VAR"`}, capturedEnv, "", "")
 	if err != nil {
@@ -107,7 +107,7 @@ func TestApproverEnvFailureDoesNotRunCommand(t *testing.T) {
 			return executor.OneShotReply{Status: executor.OneShotOK}, nil
 		},
 	})
-	d := ap.Decide(context.Background(), "test perm", "test")
+	d := ap.Decide(context.Background(), "test perm", "test", ApproverTaskContext{})
 	if d.Err == nil {
 		t.Fatal("env 解析失败时应报错")
 	}
@@ -134,7 +134,7 @@ func TestApproverWithNilResolverStillRuns(t *testing.T) {
 			return executor.OneShotReply{Text: fmt.Sprintf(`{"decision":"approve","nonce":%q}`, nonce), Status: executor.OneShotOK}, nil
 		},
 	})
-	d := ap.Decide(context.Background(), "test perm", "test")
+	d := ap.Decide(context.Background(), "test perm", "test", ApproverTaskContext{})
 	if d.Err != nil {
 		t.Fatalf("Decide: %v", d.Err)
 	}

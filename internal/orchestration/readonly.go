@@ -14,8 +14,8 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 
+	"github.com/Xsxdot/handoff/internal/executor"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/workspace"
 )
@@ -47,8 +47,10 @@ func (m *Manager) terminalNotifier() TerminalNotifier {
 }
 
 // TaskArtifactsDir 返回执行机上任务的产物目录 <dataDir>/tasks/<id>/artifacts（B452 F11，路径布局即契约）。
+//
+// 布局的唯一定义在 executor.TaskArtifactsDir（B460 Q7：审批领域也要用它，不能 import 编排）。
 func TaskArtifactsDir(dataDir, taskID string) string {
-	return filepath.Join(dataDir, "tasks", taskID, proto.ArtifactsDirName)
+	return executor.TaskArtifactsDir(dataDir, taskID)
 }
 
 // CheckMode 是任务形态取值的唯一判据（F1/F2）：空串、branch、readonly 合法，其余包

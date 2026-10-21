@@ -401,6 +401,7 @@ func permTextAndRequest(toolName string, input json.RawMessage) (string, *execut
 			if arg != "" {
 				return fmt.Sprintf("%s: %s", toolName, arg), &executor.PermRequest{
 					Tool: executor.PermToolWebFetch,
+					URL:  in.URL, // B460 S4：审计记录抓取地址；search_web 无地址时为空
 				}
 			}
 		}

@@ -87,6 +87,7 @@ func permRequestFromCommand(a commandApproval) *executor.PermRequest {
 		Tool:    executor.PermToolBash,
 		Command: a.Command,
 		Paths:   paths,
+		Cwd:     a.Cwd, // B460 Q8：相对落点的解释基准（权限门 Request.Cwd）
 	}
 }
 

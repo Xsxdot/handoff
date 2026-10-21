@@ -77,7 +77,7 @@ func TestApproverNilWhenUnconfigured(t *testing.T) {
 
 func TestDecideApprove(t *testing.T) {
 	a := newTestApprover(t, "思考过程...\n{\"decision\":\"approve\",\"reason\":\"项目内读写\"}\n", nil)
-	d := a.Decide(context.Background(), "Edit: main.go", "修 bug")
+	d := a.Decide(context.Background(), "Edit: main.go", "修 bug", ApproverTaskContext{})
 	if !d.Approve || d.Err != nil {
 		t.Fatalf("应 approve: %+v", d)
 	}
@@ -85,7 +85,7 @@ func TestDecideApprove(t *testing.T) {
 
 func TestDecideEscalate(t *testing.T) {
 	a := newTestApprover(t, `{"decision":"escalate","reason":"拿不准"}`, nil)
-	d := a.Decide(context.Background(), "Bash: curl ...", "")
+	d := a.Decide(context.Background(), "Bash: curl ...", "", ApproverTaskContext{})
 	if d.Approve || d.Err != nil || d.Reason != "拿不准" {
 		t.Fatalf("应干净 escalate: %+v", d)
 	}
@@ -99,7 +99,7 @@ func TestDecideFailClosed(t *testing.T) {
 		"无JSON": newTestApprover(t, "我觉得可以批", nil),
 		"取值非法":  newTestApprover(t, `{"decision":"deny"}`, nil),
 	} {
-		if d := a.Decide(context.Background(), "x", ""); d.Approve || d.Err == nil {
+		if d := a.Decide(context.Background(), "x", "", ApproverTaskContext{}); d.Approve || d.Err == nil {
 			t.Fatalf("%s: 应 fail-closed escalate: %+v", name, d)
 		}
 	}
@@ -109,7 +109,7 @@ func TestDecidePromptContainsContext(t *testing.T) {
 	stub := &stubShot{out: `{"decision":"approve"}`}
 	a := newTestApprover(t, `{"decision":"approve"}`, nil)
 	a.BindOneShot(stub)
-	a.Decide(context.Background(), "PERM-TEXT", "TASK-SUMMARY")
+	a.Decide(context.Background(), "PERM-TEXT", "TASK-SUMMARY", ApproverTaskContext{})
 	if !strings.Contains(stub.lastPrompt, "PERM-TEXT") || !strings.Contains(stub.lastPrompt, "TASK-SUMMARY") {
 		t.Fatalf("裁决 prompt 应含权限原文与任务摘要: %v", stub.lastPrompt)
 	}
@@ -904,7 +904,7 @@ func TestDecideRequiresMatchingNonce(t *testing.T) {
 					return executor.OneShotReply{Text: tc.reply(req.Prompt), Status: executor.OneShotOK}, nil
 				},
 			})
-			d := ap.Decide(context.Background(), "bash: ls", "测试任务")
+			d := ap.Decide(context.Background(), "bash: ls", "测试任务", ApproverTaskContext{})
 			if d.Approve != tc.wantApprove {
 				t.Errorf("Approve = %v，期望 %v", d.Approve, tc.wantApprove)
 			}
@@ -922,7 +922,7 @@ func TestDecideInvokesOneShotWithGrokEffortLow(t *testing.T) {
 	}
 	stub := &stubShot{out: `{"decision":"escalate","reason":"x"}`}
 	a.BindOneShot(stub)
-	d := a.Decide(context.Background(), "Bash: ls", "摘要")
+	d := a.Decide(context.Background(), "Bash: ls", "摘要", ApproverTaskContext{})
 	if d.Err != nil && d.Approve {
 		t.Fatalf("unexpected approve: %+v", d)
 	}
@@ -957,7 +957,7 @@ func TestDecideFailoverSecondApproves(t *testing.T) {
 			return executor.OneShotReply{Text: out, Status: executor.OneShotOK}, nil
 		},
 	})
-	d := a.Decide(context.Background(), "Bash: ls", "摘要")
+	d := a.Decide(context.Background(), "Bash: ls", "摘要", ApproverTaskContext{})
 	if !d.Approve || d.Err != nil {
 		t.Fatalf("第二候选干净放行应 approve: %+v", d)
 	}
@@ -994,7 +994,7 @@ func TestDecideFailoverCleanEscalateDoesNotTryNext(t *testing.T) {
 			return executor.OneShotReply{}, nil
 		},
 	})
-	d := a.Decide(context.Background(), "Bash: curl", "摘要")
+	d := a.Decide(context.Background(), "Bash: curl", "摘要", ApproverTaskContext{})
 	if d.Approve || d.Err != nil || d.Reason != "拿不准" {
 		t.Fatalf("应干净 escalate: %+v", d)
 	}
@@ -1017,7 +1017,7 @@ func TestDecideAllCandidatesError(t *testing.T) {
 	}
 	a.BindOneShotFor("codex", &stubShot{err: errors.New("codex 挂了")})
 	a.BindOneShotFor("grok", &stubShot{err: errors.New("grok 挂了")})
-	d := a.Decide(context.Background(), "Bash: ls", "摘要")
+	d := a.Decide(context.Background(), "Bash: ls", "摘要", ApproverTaskContext{})
 	if d.Err == nil {
 		t.Fatalf("全候选失败应返回总 Err: %+v", d)
 	}
@@ -1044,7 +1044,7 @@ func TestDecideUnboundCandidateSkipsToNext(t *testing.T) {
 		t.Fatal(err)
 	}
 	a.BindOneShotFor("grok", &stubShot{out: `{"decision":"approve"}`})
-	d := a.Decide(context.Background(), "Bash: ls", "摘要")
+	d := a.Decide(context.Background(), "Bash: ls", "摘要", ApproverTaskContext{})
 	if !d.Approve || d.Executor != "grok" {
 		t.Fatalf("未绑定候选应跳过试下一个: %+v", d)
 	}
@@ -1055,7 +1055,7 @@ func TestDecideUnboundCandidateSkipsToNext(t *testing.T) {
 
 func TestDecideDoesNotCallOneShotArgs(t *testing.T) {
 	a := newTestApprover(t, `{"decision":"escalate","reason":"x"}`, nil)
-	_ = a.Decide(context.Background(), "Bash: ls", "摘要")
+	_ = a.Decide(context.Background(), "Bash: ls", "摘要", ApproverTaskContext{})
 	// 本测试的存在意义：Decide 源码不得再出现 OneShotArgs。由 T4 收尾 grep 锁。
 }
 
@@ -1093,7 +1093,7 @@ func TestDecidePerCandidateModel(t *testing.T) {
 	a.BindOneShotFor("agy", agyShot)
 	a.BindOneShotFor("codex", codexShot)
 
-	d := a.Decide(context.Background(), "Bash: ls", "摘要")
+	d := a.Decide(context.Background(), "Bash: ls", "摘要", ApproverTaskContext{})
 	if !d.Approve || d.Err != nil {
 		t.Fatalf("codex 干净放行应 approve: %+v", d)
 	}
@@ -1136,7 +1136,7 @@ func TestDecideCandidateEmptyEntryFallsBackToChain(t *testing.T) {
 	a.BindOneShotFor("agy", agyShot)
 	a.BindOneShotFor("codex", codexShot)
 
-	d := a.Decide(context.Background(), "Bash: ls", "摘要")
+	d := a.Decide(context.Background(), "Bash: ls", "摘要", ApproverTaskContext{})
 	if agyShot.last.Model != "chain-m" {
 		t.Fatalf("agy 缺条目应回落链级 chain-m，得到 %q", agyShot.last.Model)
 	}
@@ -1159,7 +1159,7 @@ func TestDecideNoModelAnywhereUsesDefaultLabel(t *testing.T) {
 	}
 	shot := &stubShot{out: `{"decision":"approve","reason":"ok"}`}
 	a.BindOneShot(shot)
-	d := a.Decide(context.Background(), "Bash: ls", "摘要")
+	d := a.Decide(context.Background(), "Bash: ls", "摘要", ApproverTaskContext{})
 	if shot.last.Model != "" {
 		t.Fatalf("无任何模型配置时 OneShotReq.Model 应为空，得到 %q", shot.last.Model)
 	}
@@ -1185,7 +1185,7 @@ func TestDecideChainModelRegression(t *testing.T) {
 	codexShot := &stubShot{out: `{"decision":"approve","reason":"ok"}`}
 	a.BindOneShotFor("agy", agyShot)
 	a.BindOneShotFor("codex", codexShot)
-	if d := a.Decide(context.Background(), "Bash: ls", "摘要"); d.Err != nil {
+	if d := a.Decide(context.Background(), "Bash: ls", "摘要", ApproverTaskContext{}); d.Err != nil {
 		t.Fatalf("Decide: %+v", d)
 	}
 	if agyShot.last.Model != "chain-m" || codexShot.last.Model != "chain-m" {
@@ -1201,7 +1201,7 @@ func TestDecidePromptInlineCodeLine(t *testing.T) {
 	stub := &stubShot{out: `{"decision":"approve"}`}
 	a := newTestApprover(t, `{"decision":"approve"}`, nil)
 	a.BindOneShot(stub)
-	a.Decide(context.Background(), "PERM-TEXT", "TASK-SUMMARY")
+	a.Decide(context.Background(), "PERM-TEXT", "TASK-SUMMARY", ApproverTaskContext{})
 	p := stub.lastPrompt
 	at := strings.Index(p, line)
 	if at < 0 {

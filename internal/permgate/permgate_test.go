@@ -374,7 +374,9 @@ func TestJudgeNonBashToolsRemainNonAutoAllowed(t *testing.T) {
 	sc := Scope{Workdir: t.TempDir(), TaskDir: t.TempDir()}
 	reqs := []Request{
 		{Tool: "bash", Text: "Bash: unknown-command", Command: "unknown-command"},
-		{Tool: "webfetch", Text: "WebFetch: https://example.com"},
+		// B460 S4：结构化 webfetch 改为放行（rule=webfetch），原 webfetch 条移入
+		// b460_scope_test.go TestB460WebFetchRoute；文本形如抓取的 other 仍不放行。
+		{Tool: "other", Text: "WebFetch: https://example.com"},
 		{Tool: "other", Text: "SomeTool: whatever"},
 	}
 	for _, r := range reqs {

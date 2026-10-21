@@ -223,7 +223,7 @@ handoff dispatch --target devbox --new-worktree plan.md
 | `handoff service install\|uninstall\|status` | agentd 交给 launchd / systemd 托管 | — |
 | `handoff service start\|stop\|restart` | 起停/重启已托管的 agentd（`stop` 会一直停到 `start`） | — |
 | `handoff agentd` | 前台启动 agentd（开发/调试用，日常走 service） | `--executor=opencode\|claude\|grok\|codex\|fake`（默认 opencode） |
-| `handoff dispatch [plan.md]` | 派发任务（项目由当前目录识别） | `--prompt "<指令>"`（与 plan 文件至少其一）；`--target <机器>`；`--executor`/`--model`/`--name`；`--branch\|--new-branch <b>`；`--base <t>`；`--worktree <路径>\|--new-worktree`；`--allow-dirty`；`--no-sync-check`；`--no-terminal`；`--template <名>`（账本里的熟练工定义：接收者 + 形态）；`--wait [--timeout]`（阻塞到终态，输出最终文本与 `artifacts: <路径>` 行；退出码 0 完成 / 3 未完成 / 4 机器亲和不满足 / 124 超时）；`--here\|--machine <机器>`（机器亲和：不满足即拒绝，不换机） |
+| `handoff dispatch [plan.md]` | 派发任务（项目由当前目录识别） | `--prompt "<指令>"`（与 plan 文件至少其一）；`--target <机器>`；`--executor`/`--model`/`--name`；`--branch\|--new-branch <b>`；`--base <t>`；`--worktree <路径>\|--new-worktree`；`--allow-dirty`；`--no-sync-check`；`--no-terminal`；`--template <名>`（账本里的熟练工定义：接收者 + 形态）；`--wait [--timeout]`（阻塞到终态，输出最终文本与 `artifacts: <路径>` 行；退出码 0 完成 / 3 未完成 / 4 机器亲和不满足 / 5 待答工单（stdout 打印工单全文、答复与续等命令）/ 124 超时）；`--here\|--machine <机器>`（机器亲和：不满足即拒绝，不换机） |
 | `handoff wait <task>` | 阻塞等下一个需要你的事件 | `--follow`(持续订阅到任务终结)；`--notify`；`--timeout <时长>`；`--no-sync`；`--final [--machine <机器>]`（只输出最终文本与产物行，退出码同 `dispatch --wait`） |
 | `handoff reply <task>` | 回答工单 | `--ticket <id>` + `--approve` / `--deny [--reason]` / `--answer "文本"` 三选一 |
 | `handoff diff <task>` | git diff + 提交列表（默认用任务自己的基线提交，没有才退回仓库默认分支） | `--base <基准>` |

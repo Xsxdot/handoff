@@ -415,26 +415,21 @@ func (c *Client) consult(ctx context.Context, ev executor.AdapterEvent) (executo
 		c.logger().Error("审批者批准：编码工单失败", "task", c.taskID, "ticket", ticketID, "cause", err)
 		return c.escalate(ctx, ev, "审批者工单编码失败")
 	}
-	if _, err := c.hooks.Store.CreateTicket(&proto.Ticket{
+	// B460 Q3 甲：建单即已答（一次事务），批准工单从不以 answer IS NULL 形态出现——
+	// 等待命令以待答列表为「要人答」的判据，两步写的中间态会误叫醒主会话。
+	if _, err := c.hooks.Store.CreateAnsweredTicket(&proto.Ticket{
 		ID:          ticketID,
 		TaskID:      c.taskID,
 		Kind:        "gate",
 		Request:     reqJSON,
 		CreatedAt:   time.Now().UTC(),
 		Fingerprint: fp,
-	}); err != nil {
-		c.logger().Error("审批者批准：创建工单失败", "task", c.taskID, "ticket", ticketID, "cause", err)
+	}, "allow"); err != nil {
+		c.logger().Error("审批者批准：建已答工单失败", "task", c.taskID, "ticket", ticketID, "cause", err)
 		if c.hooks.CountConsultFailure != nil {
 			c.hooks.CountConsultFailure(c.taskID)
 		}
 		return c.escalate(ctx, ev, "审批者工单创建失败")
-	}
-	if err := c.hooks.Store.AnswerTicket(ticketID, "allow"); err != nil {
-		c.logger().Error("审批者批准：应答工单失败", "task", c.taskID, "ticket", ticketID, "cause", err)
-		if c.hooks.CountConsultFailure != nil {
-			c.hooks.CountConsultFailure(c.taskID)
-		}
-		return c.escalate(ctx, ev, "审批者工单应答失败")
 	}
 	if evt, err := c.hooks.Store.AppendEvent(c.taskID, proto.EventTypeTicketAnswered, ticketAnsweredPayload{
 		TicketID: ticketID,

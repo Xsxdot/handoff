@@ -268,8 +268,9 @@ type RemoteOutcome struct {
 // RemoteDecider 请一台他机的 agentd 代跑一个环。nil = 他机环一律失败。
 //
 // 实现负责连接选路与失败归类（§4.6 五分类）；timeout 是发起方施加的裁决时限。
+// tc 是任务上下文（B460 S8）：实现须经 wire 原样带给对端，零值即不带（老对端兼容）。
 type RemoteDecider interface {
-	DecideRemote(ctx context.Context, ring ApproverRing, permission, taskSummary string, timeout time.Duration) RemoteOutcome
+	DecideRemote(ctx context.Context, ring ApproverRing, permission, taskSummary string, tc ApproverTaskContext, timeout time.Duration) RemoteOutcome
 }
 
 // ReadChainWithTimeout 带独立短时限（ApproverChainReadTimeout）执行一次链读取。
@@ -325,13 +326,14 @@ type RingOutcome struct {
 //   - executorName: 执行器名（决定 grok 档位与 env 解析键）
 //   - model: 模型名；空 = 执行器默认
 //   - permission/taskSummary: 权限原文与任务背景
+//   - tc: 任务上下文（B460）；零值 = 提示词同基线（老发起方的跨机请求落这里）
 //   - timeout: 单环裁决时限；≤0 = 不额外封顶（仅受 ctx 约束）
 //   - env: env 文件解析器（nil = 不注入）
 //   - log: 日志入口（nil → slog.Default）
 //
 // 返回：fail-closed——任何无法干净裁决的输入都返回 Decision=error + ErrorKind。
 func RunLocalRing(ctx context.Context, shot executor.OneShot, executorName, model, permission, taskSummary string,
-	timeout time.Duration, env *envfile.Resolver, log *slog.Logger) RingOutcome {
+	tc ApproverTaskContext, timeout time.Duration, env *envfile.Resolver, log *slog.Logger) RingOutcome {
 	start := time.Now()
 	if log == nil {
 		log = slog.Default()
@@ -350,7 +352,7 @@ func RunLocalRing(ctx context.Context, shot executor.OneShot, executorName, mode
 	if nonce == "" {
 		log.Warn("生成裁决 nonce 失败，本次裁决不做防伪校验", "executor", executorName)
 	}
-	prompt := fmt.Sprintf(approverPromptTemplate, taskSummary, permission, nonce, nonce)
+	prompt := approverPrompt(taskSummary, permission, nonce, tc)
 	var envList []string
 	if env != nil {
 		extra, err := env.For(executorName)
@@ -373,7 +375,8 @@ func RunLocalRing(ctx context.Context, shot executor.OneShot, executorName, mode
 		cctx, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
 	}
-	log.Info("单环裁决开始", "executor", executorName, "model", modelLabel)
+	log.Info("单环裁决开始", "executor", executorName, "model", modelLabel,
+		"task_mode", tc.Mode, "has_task_context", !tc.IsZero())
 	reply, err := shot.Invoke(cctx, req)
 	elapsed := time.Since(start).Milliseconds()
 	if err != nil {

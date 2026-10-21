@@ -17,7 +17,9 @@ package agentd
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -106,8 +108,13 @@ func (s *Server) forwardWS(w http.ResponseWriter, r *http.Request, machine strin
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 	errCh := make(chan error, 2)
-	go func() { errCh <- pipeWS(ctx, down, up) }() // 浏览器 → 远端
-	go func() { errCh <- pipeWS(ctx, up, down) }() // 远端 → 浏览器
+	// 只在 /ws/events 上逐帧观测（B460 段 0）：PTY 路径帧量大，不记
+	var observe func([]byte)
+	if r.URL.Path == "/ws/events" && s.log.Enabled(ctx, slog.LevelDebug) {
+		observe = func(data []byte) { s.logForwardedEvent(machine, data) }
+	}
+	go func() { errCh <- pipeWS(ctx, down, up, nil) }()     // 浏览器 → 远端
+	go func() { errCh <- pipeWS(ctx, up, down, observe) }() // 远端 → 浏览器
 
 	first := <-errCh
 	// 任一方向结束就收工，并把对端的关闭码原样传给另一端：1008「别重连」
@@ -140,7 +147,9 @@ const wsForwardReadLimit = 512 << 10
 //
 // 帧类型必须保持：数据走 binary、控制走 text 是 /ws/pty 的契约（spec §5.3），
 // 反代若把一切都当 text 转发，二进制里任何非 UTF-8 字节都会被判为协议错误。
-func pipeWS(ctx context.Context, src, dst *websocket.Conn) error {
+//
+// observe 非 nil 时在每帧写出成功后回调（只读帧，不改帧）；nil 即不观测。
+func pipeWS(ctx context.Context, src, dst *websocket.Conn, observe func([]byte)) error {
 	for {
 		typ, data, err := src.Read(ctx)
 		if err != nil {
@@ -149,7 +158,28 @@ func pipeWS(ctx context.Context, src, dst *websocket.Conn) error {
 		if err := dst.Write(ctx, typ, data); err != nil {
 			return err
 		}
+		if observe != nil {
+			observe(data)
+		}
 	}
+}
+
+// logForwardedEvent 是 /ws/events 反代的逐帧 Debug 观测点（B460 段 0 永久观测点）：
+// 记录事件帧穿过本机反代的时刻与落库时刻之差，与远端「WS 实时事件已写出」比对
+// 即可分辨晚在机间链路还是远端写出。解不开的帧只记长度——观测不得影响转发。
+func (s *Server) logForwardedEvent(machine string, data []byte) {
+	var ev struct {
+		Seq       int64     `json:"seq"`
+		TaskID    string    `json:"task_id"`
+		Type      string    `json:"type"`
+		CreatedAt time.Time `json:"created_at"`
+	}
+	if err := json.Unmarshal(data, &ev); err != nil {
+		s.log.Debug("WS 转发事件帧（无法解析）", "machine", machine, "bytes", len(data), "cause", err)
+		return
+	}
+	s.log.Debug("WS 转发事件帧", "machine", machine, "task", ev.TaskID, "seq", ev.Seq,
+		"type", ev.Type, "lag_ms", time.Since(ev.CreatedAt).Milliseconds())
 }
 
 // toWSScheme 把 http/https 换成 ws/wss。forwardURL 产出的恒是 http(s)://。

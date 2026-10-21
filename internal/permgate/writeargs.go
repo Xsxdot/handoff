@@ -1,7 +1,7 @@
 // writeargs.go —— 「落点在参数位」的写命令目的地提取。
 //
 // 职责：
-//   - 从命令原文里摘出 tee/cp/mv/ln/install/dd 会写到哪个路径，供 judgeBash 做范围判定
+//   - 从命令原文里摘出 tee/cp/mv/ln/install/dd/mkdir 会写到哪个路径，供 judgeBash 做范围判定
 //   - 展开 ~ 前缀（与 redirect.go 同一套语义）
 //
 // 边界：
@@ -34,6 +34,8 @@ const (
 	targetGofmt
 	// targetGit：只有 git add 的 pathspec 与 git diff 的 --output 值是写落点
 	targetGit
+	// targetMkdir：全部非标志参数都是要建的目录；-m/--mode 的值是权限位不是落点（B460）
+	targetMkdir
 )
 
 // writeCommands 是「落点在参数位」的写命令表。
@@ -50,6 +52,9 @@ var writeCommands = map[string]argTargetKind{
 	"dd":      targetOfPrefix,
 	"gofmt":   targetGofmt,
 	"git":     targetGit,
+	// mkdir（B460 S6）：建目录也是写文件系统。进表后它的落点与其他写命令一样
+	// 先过 judgeBash 的范围循环——`mkdir -p /etc/x` 由「交模型」收紧为越界升级。
+	"mkdir": targetMkdir,
 }
 
 // WriteArgTargets 从命令串里摘出全部「参数位写落点」。
@@ -87,6 +92,9 @@ func WriteArgTargets(cmd string) []string {
 // 参数：kind 为落点种类，args 为命令名之后的全部词元
 // 返回：落点切片；判不出（如 cp 只给了一个参数）时返回 nil
 func targetsOf(kind argTargetKind, args []string) []string {
+	if kind == targetMkdir {
+		return mkdirTargets(args)
+	}
 	if kind == targetOfPrefix {
 		var out []string
 		for _, a := range args {
@@ -250,4 +258,29 @@ func baseName(s string) string {
 		return s[i+1:]
 	}
 	return s
+}
+
+// mkdirTargets 摘 mkdir 的目录参数：-m MODE / -mMODE / --mode=MODE 的值是权限位，
+// 不是落点；其余标志（-p、-v、--parents…）不吃参数，跳过；`--` 之后一律是目录。
+//
+// 这里只为范围循环摘落点，未知标志也照跳——它最多让某个词元漏判成标志值；
+// 「可证明放行」由 scopedwrite.go 的 mkdir 闭集另行严格解析，未知标志在那里整条不放行。
+func mkdirTargets(args []string) []string {
+	var out []string
+	endOfFlags := false
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if !endOfFlags && a == "--" {
+			endOfFlags = true
+			continue
+		}
+		if !endOfFlags && strings.HasPrefix(a, "-") && a != "-" {
+			if a == "-m" || a == "--mode" {
+				i++ // 下一个词元是权限位
+			}
+			continue
+		}
+		out = append(out, a)
+	}
+	return out
 }

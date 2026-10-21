@@ -37,7 +37,7 @@ func TestB452WaitFinalFirstTurnBetweenTransitAndAppend(t *testing.T) {
 			_ = conn.Close(websocket.StatusNormalClosure, "")
 		},
 	})
-	out, err := b452Client(s.ts.URL).WaitFinal(t.Context(), "t1", "", nil)
+	out, err := b452Client(s.ts.URL).WaitFinal(t.Context(), "t1", "")
 	if err != nil || !out.Completed || out.FinalText != "首回合回文" {
 		t.Fatalf("应退避重取快照拿到首回合结果，得 outcome=%+v err=%v", out, err)
 	}
@@ -61,7 +61,7 @@ func TestB452WaitFinalContinuedTaskNeverReturnsPreviousTurn(t *testing.T) {
 				b452At(b452Completed(5, "本回合"), transit.Add(time.Millisecond)))
 		},
 	})
-	out, err := b452Client(s.ts.URL).WaitFinal(t.Context(), "t1", "", nil)
+	out, err := b452Client(s.ts.URL).WaitFinal(t.Context(), "t1", "")
 	if err != nil || out.FinalText != "本回合" || out.Event.Seq != 5 {
 		t.Fatalf("续接任务不得返回上一回合，得 outcome=%+v err=%v", out, err)
 	}
@@ -86,7 +86,7 @@ func TestB452WaitFinalIgnoresResultsAtOrBelowObservedProgressWatermark(t *testin
 		},
 		stream: func(_ int32, conn *websocket.Conn, _ *http.Request) { conn.CloseNow() },
 	})
-	out, err := b452Client(s.ts.URL).WaitFinal(t.Context(), "t1", "", nil)
+	out, err := b452Client(s.ts.URL).WaitFinal(t.Context(), "t1", "")
 	if err != nil || out.FinalText != "本回合" {
 		t.Fatalf("应跳过水位以内的上一回合结果，得 outcome=%+v err=%v", out, err)
 	}
@@ -100,7 +100,7 @@ func TestB452WaitFinalAcceptsStableResultAfterLaterTaskWrite(t *testing.T) {
 			return b452Snap(proto.TaskStateWaitingReview, t0.Add(time.Second), b452At(b452Completed(4, "回文"), t0))
 		},
 	})
-	out, err := b452Client(s.ts.URL).WaitFinal(t.Context(), "t1", "", nil)
+	out, err := b452Client(s.ts.URL).WaitFinal(t.Context(), "t1", "")
 	if err != nil || out.FinalText != "回文" {
 		t.Fatalf("稳定的结果应被采信，得 outcome=%+v err=%v", out, err)
 	}

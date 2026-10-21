@@ -42,7 +42,8 @@ func (m *Manager) bindApproval(taskID string, snap executor.PolicySnapshot) exec
 			if m.approver == nil {
 				return approval.ConsultDecision{Err: errors.New("审批者不可用")}
 			}
-			d := m.approver.Decide(ctx, permission, summary)
+			// B460 S7：per-task 闭包里 taskID 可得，上下文在此组装，approval.Hooks.Decide 签名不变
+			d := m.approver.Decide(ctx, permission, summary, m.approverTaskContext(taskID))
 			return approval.ConsultDecision{
 				Approve: d.Approve, Reason: d.Reason,
 				ElapsedMS: d.ElapsedMS, Err: d.Err,

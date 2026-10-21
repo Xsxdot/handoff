@@ -138,6 +138,12 @@ type PermRequest struct {
 	Tool    string   // 归一化工具名，取上面的 PermTool* 常量
 	Command string   // Tool=bash 时的完整命令串（不截断）
 	Paths   []string // Tool=write|edit 时的目标路径（可为相对路径）
+	// URL 是 Tool=webfetch 时的抓取地址（B460 S4）；搜索类请求没有 URL 时为空。
+	// 只进审计，不入复用指纹（fingerprint.go 不动）。
+	URL string
+	// Cwd 是载荷明示的命令工作目录（B460 Q8，codex 命令审批的 cwd）；其余执行器
+	// 载荷不带时为空。不入复用指纹。
+	Cwd string
 }
 
 // NormalizePermTool 把 executor 的原始工具名折算为归一化名。
