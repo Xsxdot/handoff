@@ -19,7 +19,12 @@ import "errors"
 // 124 沿用 timeout(1) 的惯例，也与 handoff run 里被杀命令的退出码一致。
 const (
 	ExitFailure = 1
-	ExitTimeout = 124
+	// ExitTaskFailed：等到的任务以非完成告终（turn_failed / failed / 未完成就归档），B452 F21。
+	ExitTaskFailed = 3
+	// ExitAffinityRefused：派发被机器亲和拒绝（agentd 422 affinity_unmet），B452 F21。
+	// 调用方据此退回本会话子 agent，不要换机重试。
+	ExitAffinityRefused = 4
+	ExitTimeout         = 124
 )
 
 // exitCodeError 是带专属退出码的错误包装。

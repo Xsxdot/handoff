@@ -79,8 +79,9 @@ var tplPutCmd = &cobra.Command{
 		if err := json.Unmarshal(raw, &def); err != nil {
 			return fmt.Errorf("解析定义: %w", err)
 		}
-		if def.Executor == "" || def.Prompt == "" || def.Discipline == "" {
-			return fmt.Errorf("executor/prompt/discipline 三者必填")
+		// B452 S1：规则表在 TemplateDef.Validate（熟练工定义的 receiver/mode 放宽 executor/discipline）
+		if err := def.Validate(); err != nil {
+			return fmt.Errorf("模板定义不合法: %w", err)
 		}
 		st, err := openLedger()
 		if err != nil {

@@ -1655,6 +1655,13 @@ func (c *Client) WaitEvent(ctx context.Context, taskID string, all bool) (*proto
 //   - permanentError / 其他: 拨号或读取失败，由调用方决定是否重连
 func (c *Client) streamOnce(ctx context.Context, taskID string, fromSeq int64,
 	readDeadline func() time.Time, onFrame func(proto.Event) error) error {
+	return c.streamOnceOn(ctx, taskID, "", fromSeq, readDeadline, onFrame)
+}
+
+// streamOnceOn 是 streamOnce 的按机变体（B452 F14）：machine 非空时事件流 URL 带 &machine=，
+// 由受理机把整条 WS 反代到该机；空串与 streamOnce 逐字节同形。
+func (c *Client) streamOnceOn(ctx context.Context, taskID, machine string, fromSeq int64,
+	readDeadline func() time.Time, onFrame func(proto.Event) error) error {
 	if err := c.checkInit(); err != nil {
 		return err
 	}
@@ -1667,6 +1674,9 @@ func (c *Client) streamOnce(ctx context.Context, taskID string, fromSeq int64,
 	host := strings.TrimPrefix(strings.TrimPrefix(c.baseURL, "http://"), "https://")
 	wsURL := wsScheme + "://" + host + "/ws/events?task=" + taskID +
 		"&from_seq=" + strconv.FormatInt(fromSeq, 10)
+	if machine != "" {
+		wsURL += "&machine=" + url.QueryEscape(machine)
+	}
 	// 附加头（agentd→agentd 的防环标记）由 wsDialOptions 一并带上：streamOnce
 	// 不走 do，若不补，MarkForwarded 的镜像连接从拨号起就丢了标记。
 	opts := c.wsDialOptions()
