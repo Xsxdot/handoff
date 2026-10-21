@@ -992,6 +992,8 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 		Account:      req.Account,
 		AccountKind:  req.AccountKind,
 		AccountProxy: req.AccountProxy,
+		// B453 F17：撞额度重跑出来的新任务指回原任务（随创建写入；rerun_by 由原任务回写）
+		RerunOf: req.RerunOf,
 		// PlanPath 不在 SetTaskField 白名单，只能在创建时一并写入
 		PlanPath:  planPath,
 		State:     proto.TaskStatePending,

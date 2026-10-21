@@ -95,6 +95,8 @@ type DispatchReq struct {
 	Account      string
 	AccountKind  string
 	AccountProxy string
+	// RerunOf 非 nil = 本任务是撞额度重跑出来的（B453 F14/F17），指回被重跑的原任务。
+	RerunOf *proto.TaskRef
 }
 
 // RecoverReport 是显式恢复操作的结果快照，原样作为 HTTP 响应体回给 CLI。

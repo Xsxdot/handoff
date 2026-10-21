@@ -37,6 +37,8 @@ type AccountsClient interface {
 	Put(a accounts.Account, expect int) (int, error)
 	Delete(name string, expect int) error
 	RecordProbe(name string, o accounts.ProbeOutcome) error
+	// MarkQuota 给账号打撞额度标记（B453 S6/S7：任务回合撞额度，见 quota_rerun.go）。
+	MarkQuota(name string, m accounts.QuotaMark) error
 }
 
 // 编译期断言：账号域实现满足 gateway 使用方接口。

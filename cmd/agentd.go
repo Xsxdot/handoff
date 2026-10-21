@@ -246,6 +246,8 @@ var agentdCmd = &cobra.Command{
 		mgr.SetWorkspace(workspace.NewCapability())
 		mgr.SetLiveConfig(srv.Conf()) // B233.13 P1：活配置注入移出 SetManager，改组装点显式接线
 		srv.SetManager(mgr)
+		// B453 S6/S7：回合撞额度的回调（标账号、只读任务换人重跑）实现在控制门面，组装点唯一接线。
+		mgr.SetQuotaHandler(srv)
 		// 任务级进程点名（B93 §3.2）：watchdog 的 scanTaskProcs 按任务数进程，
 		// 生产计数实现恒为 Manager.TaskProcCount（与 sweep 的 mgr.SweepTaskProcs 同款接线）
 		orchestration.SetTaskProcCounter(mgr.TaskProcCount)

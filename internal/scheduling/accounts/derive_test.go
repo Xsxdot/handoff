@@ -129,3 +129,28 @@ func TestAssessReadsDefinitionAndReading(t *testing.T) {
 		t.Fatalf("Assess = %+v，want og-linux/out/恢复 %v", got, reset)
 	}
 }
+
+func TestQuotaHitWindows(t *testing.T) {
+	now := time.Now()
+	r1, r2 := now.Add(time.Hour), now.Add(3*time.Hour)
+	a := accounts.Account{LowPercent: 80}
+	rec := accounts.ReadingRecord{Reading: &accounts.Reading{Windows: []accounts.Window{
+		{Key: "session", UsedPercent: 100, ResetsAt: &r1},
+		{Key: "weekly", UsedPercent: 85, ResetsAt: &r2},
+		{Key: "monthly", UsedPercent: 10},
+	}}}
+	hit, at := accounts.QuotaHitWindows(a, rec, now)
+	if len(hit) != 2 || at == nil || !at.Equal(r2) {
+		t.Fatalf("越线窗口两个、恢复取最晚：%+v %v", hit, at)
+	}
+	if accounts.WindowLabel(hit[0]) != "5h" || accounts.WindowLabel(accounts.Window{Key: "weekly", Group: "Gemini"}) != "Gemini 周" {
+		t.Fatalf("窗口短名不符")
+	}
+	if hit, at := accounts.QuotaHitWindows(a, accounts.ReadingRecord{}, now); hit != nil || at != nil {
+		t.Fatalf("无读数应皆空")
+	}
+	low := accounts.ReadingRecord{Reading: &accounts.Reading{Windows: []accounts.Window{{Key: "session", UsedPercent: 30, ResetsAt: &r1}}}}
+	if hit, at := accounts.QuotaHitWindows(a, low, now); hit != nil || at != nil {
+		t.Fatalf("读数未越线应皆空（读数滞后）")
+	}
+}

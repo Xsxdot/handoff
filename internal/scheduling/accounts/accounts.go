@@ -464,3 +464,46 @@ func (st State) Label() string {
 		return string(st)
 	}
 }
+
+// QuotaHitWindows 是任务撞额度时「撞到的窗口」的最佳读法（S7 告知工单用）：最近成功读数里
+// 生效且已用 ≥ 低额度线的窗口，及其中最晚的重置时刻（任一越线窗口缺重置时刻 → nil）。
+// 无读数或读数未越线（读数滞后于撞额度）→ 两者皆空，调用方如实写「未知」。
+// 不看撞额度标记（告知取的是标记之前的读数）。
+func QuotaHitWindows(a Account, rec ReadingRecord, now time.Time) ([]Window, *time.Time) {
+	if rec.Reading == nil {
+		return nil, nil
+	}
+	low := lowLine(a)
+	var hit []Window
+	var latest *time.Time
+	unknown := false
+	for _, w := range liveWindows(rec.Reading.Windows, now) {
+		if w.UsedPercent < low {
+			continue
+		}
+		hit = append(hit, w)
+		switch {
+		case w.ResetsAt == nil:
+			unknown = true
+		case latest == nil || w.ResetsAt.After(*latest):
+			t := *w.ResetsAt
+			latest = &t
+		}
+	}
+	if unknown {
+		latest = nil
+	}
+	return hit, latest
+}
+
+// WindowLabel 是窗口的人读短名（session→5h、weekly→周、monthly→月；带分组时前缀组名）。
+func WindowLabel(w Window) string {
+	label := map[string]string{"session": "5h", "weekly": "周", "monthly": "月"}[w.Key]
+	if label == "" {
+		label = w.Key
+	}
+	if w.Group != "" {
+		label = w.Group + " " + label
+	}
+	return label
+}

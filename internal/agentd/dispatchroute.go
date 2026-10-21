@@ -99,10 +99,15 @@ func (s *Server) routeOrdinaryDispatch(req dispatchRequest) (dispatchLanding, er
 			Model: scheduling.EffectiveModel(c.Model, req.Model),
 		}}, nil
 	case scheduling.ReceiverSquad:
+		// B453 F14：重跑链排除谓词与亲和谓词分开组合——亲和改写文案只认亲和本身
+		exclude := rerunExclusion(req.ExcludeAccounts)
 		b, err := s.scheduling.SelectWhere(scheduling.IgnitionRequest{
 			Squad: resolved.Name, Model: req.Model, Actor: "dispatch",
-		}, accept)
+		}, andAccept(accept, exclude.accept))
 		if err != nil {
+			if exclude.active() && errors.Is(err, scheduling.ErrNoHealthy) {
+				return dispatchLanding{resolved: resolved}, s.rerunNoMemberError(err, resolved.Name, exclude)
+			}
 			if accept != nil && errors.Is(err, scheduling.ErrNoHealthy) {
 				return dispatchLanding{resolved: resolved}, fmt.Errorf("%w：要求在 %s 上执行，但小队 %s 在该机没有在线成员（成员：%s；受理机 %s）",
 					errAffinityUnmet, want, resolved.Name, s.squadMemberMachines(resolved.Name), s.selfLabel())

@@ -498,6 +498,11 @@ type dispatchRequest struct {
 	// Machine / Here 是机器亲和（B452 F4/F5，互斥）：只在受理机解析，转发时删去。
 	Machine string `json:"machine,omitempty"`
 	Here    bool   `json:"here,omitempty"`
+	// RerunOf / ExcludeAccounts 是 B453 F14：撞额度重跑派发指回原任务，并带上重跑链上已用的
+	// 账号（无账号成员以载体名计）——选人谓词据此排除，每个账号在一次链里只用一次。转发时原样
+	// 保留（frozenForwardBody 不删未知键），落点机随新任务留存，供链上下一跳累加。
+	RerunOf         *proto.TaskRef `json:"rerun_of,omitempty"`
+	ExcludeAccounts []string       `json:"exclude_accounts,omitempty"`
 }
 
 // errReceiverNotCarrierMachine 是 B233.27：请求打到的 agentd 不是载体登记机。
@@ -648,10 +653,15 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 		Account:      acct.Name,
 		AccountKind:  acct.Kind,
 		AccountProxy: acct.Proxy,
+		RerunOf:      req.RerunOf,
 	})
 	if err != nil {
 		s.writeDispatchError(w, req.ProjectID, err)
 		return
+	}
+	if req.Mode == proto.TaskModeReadonly {
+		// B453 S6：只读任务留存原始派发输入，撞额度时用同一份输入换人重跑（Q9）
+		s.saveRerunInput(task.ID, raw, req, binding)
 	}
 	task.ArtifactsDir = orchestration.TaskArtifactsDir(s.conf().DataDir, task.ID) // F11：读出时盖章，不落库
 	released = true                                                               // 成功后由 T4 的任务终态钩子释放占用
