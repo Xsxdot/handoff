@@ -12,11 +12,13 @@
 
 ### 新增
 
+- **熟练工派发：按名调用、只读形态、等结果回文、产物通道（B452）。** 派发模板新增 `receiver`（载体或小队）与 `mode`（`branch`|`readonly`）两个字段，`target` 可写 `here`。`handoff dispatch --template <名> --prompt "…"`（或 plan 文件）按名派发，提示词是模板正文加「## 本次任务」。只读形态在执行机以基线提交建 detached 托管工作树、不建分支，完成即自动归档并回收。`--wait` 阻塞到终态，stdout 输出最终文本，产物非空时另起一行 `artifacts: <本机路径>`；退出码 0 完成、3 未完成、4 机器亲和不满足、124 超时。`handoff wait <task> --final` 同义，`handoff artifacts <task>` 事后拉取产物。产物目录在 `<datadir>/tasks/<id>/artifacts/`（环境变量 `HANDOFF_ARTIFACTS_DIR`），按 `artifacts.retention`（缺省 168h）清理，跨机经 agentd 下载，不走 git。`--here` / `--machine <m>` 做机器亲和，不满足即 422 拒绝、不换机。
 - **把本机文件拖进远程终端会传到对端 `~/.handoff/drop/`（B272）。** 桌面壳或浏览器里，拖到登记远程机的终端（或浏览器直连远端 agentd 的终端）时，文件按原字节写入那台机器的收件箱，同名加 `-2` 后缀、单文件 32 MiB；成功后命令行插入对端绝对路径。本机桌面终端仍只插入访达真实路径，不拷贝。
 - **OpenCode 协调者可挂 `wait --follow`（B373）。** `handoff skill install` 把仓内 monitor 插件写到 `~/.config/opencode/plugins/`（不改 `opencode.json`）。Command Code / Codex 仍走不带 `--follow` 的一次性 wait，每收到一个事件（含工单）就退出。
 
 ### 变更
 
+- **裸派发选中他机载体时改为转发到载体机（B452）。** 以前普通 `dispatch` 的接收者在另一台机器时返回 400「接收机不是载体登记机」；现在受理机按冻结身份把请求转发过去，任务在载体机创建，名额只在载体机占；载体机不可达返回 502 并点名机器，不换人。小队裸派发改为先选人再准入，两步之间被抢满得 409。新增配置键 `artifacts.retention`：**老版本 agentd 遇该键拒绝启动，回退旧二进制前先删掉它。**
 - **会话身份按「人名」落定，端名只做落款（B358.9）。** 控制台发言、已读、收件箱与列表面一律以配置里的 `console_user`（`user:<名>`）判定，机器位 `web:<host>` 退役；端戳取本次登录会话登记的设备名（`handoff console --device`，缺省本机名），只进签名，不参与成员/写权/@ 判定。未配 `console_user` 时写面与读面一律拒收（403 + 文案含 `console_user`，零落账），不再回落机器位。已读水位按人合并：同一人在另一台设备标记已读，各端未读一起归零。控制台新增身份读缝 `GET /api/identity`（`member`/`device`/`configured`），落款显示「人名 · 端名」、端戳缺失只出人名，新建会话表单不再手输群主。
 - **会话可由外部自理的主 agent 发起（B358.9）。** `session create --owner agent:<名>` 建群、`session send --agent <名>` 出示身份发言、`session wait <名>` 订阅自己的 @；`agent:<名>` 走统一记法校验，身份不绑定具体执行器。卡席位（`cli:`）语义与 B366 自助加入路径不变。
 - **`task_mirrored` 只叫醒当前派发（B349）。** `card wait` 与小队自动化都核事件所属卡上最新 `EvDispatched` 的 Attempt/Target，以及账本 `source_task`/`source_target`。旧 attempt、错机器、无当前快照的镜像留账本，不打 stdout、不拉协调者。本机两边 target 都空仍算匹配。
