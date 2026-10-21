@@ -30,6 +30,7 @@ func (gitCapability) Prepare(ctx context.Context, req PrepareReq) (Prepared, err
 	ws, err := PrepareWorkspace(ctx, WorkspaceReq{
 		Repo: req.Repo, TaskID: req.TaskID, Branch: req.Branch, NewBranch: req.NewBranch,
 		Base: req.Base, Worktree: req.Worktree, NewWorktree: req.NewWorktree, WorktreesDir: req.WorktreesDir,
+		Detached: req.Detached,
 	})
 	if err != nil {
 		return Prepared{}, err

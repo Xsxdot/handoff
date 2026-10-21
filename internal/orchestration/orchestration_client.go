@@ -11,6 +11,7 @@ package orchestration
 
 import (
 	"context"
+	"time"
 
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/store"
@@ -61,6 +62,9 @@ type OrchestrationClient interface {
 	CountEvents(taskID string, afterSeq, throughSeq int64) (int, error)
 	ListMirrorTasks() ([]store.MirrorTask, error)
 	MirrorTaskTarget(taskID string) (string, bool, error)
+	// UpsertMirrorTask 由受理机在跨机转发成功后即时登记镜像行（B452 Q3-c），
+	// 让不带机器名的 show/attach/reply/done 立刻能经 byTask 路由。
+	UpsertMirrorTask(target string, task proto.Task, fetchedAt time.Time) error
 	MirrorEventsFrom(taskID string, fromSeq int64, limit int) ([]proto.Event, error)
 	AnswerTicket(ctx context.Context, taskID, ticketID, answer string) (applied bool, err error)
 	ResumeIfIdle(ctx context.Context, taskID string)

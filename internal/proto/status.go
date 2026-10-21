@@ -229,6 +229,15 @@ type StatusResp struct {
 	// 三件齐了才许上报 true。
 	DisciplinesSupported *bool `json:"disciplines_supported,omitempty"`
 
+	// SkilledDispatchSupported 报告本机 agentd 是否认识 B452 熟练工派发的四件事：派发请求的
+	// mode / 机器亲和（machine、here）、/ws/events 与 GET /api/tasks/{id} 的 ?machine= 按机转发、
+	// GET /api/tasks/{id}/artifacts 产物接口（F12）。
+	//
+	// 三态与 DisciplinesSupported 同向：缺席(nil) = 对端太老 → 按不支持处置（CLI 拒发、受理机
+	// 拒绝转发只读请求）。放行的代价是静默降级：老 agentd 忽略 mode 会在主仓原地切分支、忽略
+	// 亲和会静默换机。能力位与四件实现同生同死。
+	SkilledDispatchSupported *bool `json:"skilled_dispatch_supported,omitempty"`
+
 	// RevealSupported 报告本机 agentd 是否支持「在访达中显示」（B108）。
 	//
 	// 三态与 PtySupported 逐字相同：

@@ -978,3 +978,18 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 - `judgeCommand` 会扫到 Python heredoc 正文：B451 起人工清单检查排在硬升级之后，正文含 `handoff dispatch`、黑名单字样时整条硬升级人工（改前同样人工，非回退）；在 handoff 仓改字符串时较易触发，可考虑让 heredoc 正文对黑名单/自指令判据不可见。来源：B451 plan 拍板。
 - mac-mini 的 opencode 为 v2.0.29，`opencode serve` 的 `POST /session` 返回 405，handoff 的 opencode 适配器起不了会话（linux-01 的 1.19.3 正常）；需适配 2.x 或钉版本。来源：B451 真机。
 - `handoff reply <task> --deny` 在 `--config`+`--agentd` 指向的隔离实例上报「ticket_id 与 answer 不能为空」，CLI 未取到待答工单；直调 reply API 正常。来源：B451 真机。
+
+## B452 残余（2026-10-21，熟练工派发 spec Out of Scope「本期不做、后续要做」）
+
+- 对本机**未提交**改动做只读调查（就地只读形态）：B452 的只读形态在接收机以基线提交建 detached 工作树，读不到调用方未提交内容。来源：`docs/superpowers/specs/b452.md`。
+- ~~只读任务的文件产物通道（报告文件、截图、快照）；`FinalTextLimit` 16 KiB 字符截断长报告。归 B454。~~ 已并入 B452 spec r1.2 S8（2026-10-21 用户同意）。来源同上。
+- 载体不可达/满负荷/无额度时顺小队换人；B452 只报错点名机器。归 B453。来源同上。
+- Web 控制台增删改熟练工定义（本期只 CLI `template put --file`）。来源同上。
+- `NodeOverride.Target` 在小队节点被忽略（`internal/agentd/scheddispatch.go:131-135` 返回空 target），与 `internal/ledger/types.go:215-216` 注释矛盾。来源：2026-10-21 现状摸底。
+- 载体能力标签（如 `ios-simulator`、`chromium`）与熟练工 `requires`，按「哪台机有该能力」调度；B452 只做 `here` 与机器名的硬亲和。来源：`docs/superpowers/specs/b452.md` r1.1。
+- 熟练工跨机转发时载体机未登记项目：CLI 的自动补登记只补「本机 + --target」，补不到载体机；B452 只原文回传「执行机 <M>：」前缀错误并提示在该机登记。来源：`docs/superpowers/plans/b452-plan.md` Q13。
+- `wait --final` / `dispatch --wait` 的本回合判据仍有残余窗口：库里没有回合起点记录，`Continue` 不落事件；首个快照已是 waiting_review 且结果写库被拖慢超过一次退避时，可能采信上一回合结果。根治：续接时写回合起点事件。来源：B452 修复轮交回物。
+- `internal/executor/opencode` 包在全量并行下偶发红：`TestProbeReplayClassification/S3`（「回放未产出任何终结事件」）、`TestCoordinatorLaunchHonorsCancel`（30s 假 CLI 未被取消打断，耗时 30.21s）；单跑与整包复跑全绿，基线 a9150118 同条件两次全绿、HEAD 四次全量一次绿。本包生产代码不依赖 B452 改动包；2026-09-19 已有同类记录。待查 hostapi 取消在负载下的进程组杀法与回放时序。来源：B452 finish 全量对照（台账 finish 节）。
+- `dispatch --wait` / `wait --final` 输出的最终文本含执行者的协议尾注行（`{"branch":…}` / `{"summary":…}`），主会话读到一行协议噪声；可在 CLI 输出前剥去末行尾注。来源：B452 真机 R2/R3。
+- 只读派发时 CLI stderr 打「分支 ，起点 …」（分支名为空）；只读形态应改打「只读，起点 …」。来源：B452 真机 R2。
+- **发布说明**：B452 新增配置键 `artifacts.retention`；老版本 agentd 遇该键拒绝启动，回退旧二进制前须先删该键。来源：B452 真机 R8。

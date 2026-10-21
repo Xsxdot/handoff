@@ -246,6 +246,10 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 		slog.Default().Warn("取模板失败", "card", c.ID, "template", req.Template, "cause", err)
 		return zero, fmt.Errorf("取模板: %w", err)
 	}
+	// B452 Q10：熟练工定义只能经 handoff dispatch --template 调用。
+	if err := rejectSkilledForCard(tpl, c.ID); err != nil {
+		return zero, err
+	}
 	// B439 S6：模板声明的 target 是旧别名（local/本机/hostname）且本机已配自名时
 	// 前置拒发，点名模板与要改成的名字。只判模板缺省 target——请求覆盖与冻结身份
 	// 各由自己的入口处置（CLI / agentd step / B398 透传），不在这里误杀。
@@ -346,11 +350,7 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 	if req.OmitAcceptance {
 		acceptance = "（本节点不注入整卡验收判据——那是实现级的最终判据；本节点的产出物与 pass 依据以纪律块为准）"
 	}
-	body := strings.NewReplacer(
-		"{{TITLE}}", c.Title,
-		"{{CARD}}", c.ID,
-		"{{ACCEPT}}", acceptance,
-	).Replace(tpl.Def.Prompt)
+	body := RenderTemplatePlaceholders(tpl.Def.Prompt, c.ID, c.Title, acceptance)
 
 	// 审阅轮跑在卡的工作分支上：审阅是只读的，开自己的分支既没意义，又会
 	// 让同一张卡的第二轮撞上第一轮的同名分支（判据② 的 3 轮封顶因此走不到
@@ -604,6 +604,9 @@ func PreflightDiscipline(st *ledger.Store, templateName, overrideName, reqTarget
 	tpl, err := st.GetTemplate(templateName, 0)
 	if err != nil {
 		return "", "", fmt.Errorf("取模板: %w", err)
+	}
+	if err := rejectSkilledForCard(tpl, ""); err != nil {
+		return "", "", err
 	}
 	name, target = disciplineAndTarget(tpl.Def, overrideName, reqTarget)
 	return name, target, nil

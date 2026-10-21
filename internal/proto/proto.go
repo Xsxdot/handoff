@@ -319,7 +319,25 @@ type Task struct {
 	// 线注解，不入库：tasks 表不加这一列——历史任务或已注销项目的任务应当
 	// 诚实显示「未归属」，而不是一列陈旧数据说谎。
 	ProjectID string `json:"project_id"`
+	// Mode 是任务形态（B452 F10）：空串=分支形态（旧任务与普通派发），
+	// TaskModeReadonly=只读形态（detached 托管树、完成即自动归档）。落库。
+	Mode string `json:"mode,omitempty"`
+	// ArtifactsDir 是执行机上本任务的产物目录绝对路径 <DataDir>/tasks/<id>/artifacts
+	// （B452 F11）。线注解，不入库：由执行机在任务读出时盖章，路径布局即契约。
+	ArtifactsDir string `json:"artifacts_dir,omitempty"`
 }
+
+// 任务形态取值（B452 F1）。wire 上缺席或空串等于 TaskModeBranch。
+const (
+	TaskModeBranch   = "branch"
+	TaskModeReadonly = "readonly"
+)
+
+// ArtifactsEnvVar 是执行器进程环境里产物目录的变量名（B452 F17）。
+const ArtifactsEnvVar = "HANDOFF_ARTIFACTS_DIR"
+
+// ArtifactsDirName 是任务目录下产物子目录的名字：<DataDir>/tasks/<id>/<ArtifactsDirName>。
+const ArtifactsDirName = "artifacts"
 
 // MaxDoneNoteBytes 是归档说明的字节上限。
 //

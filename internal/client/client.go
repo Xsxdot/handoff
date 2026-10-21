@@ -798,6 +798,12 @@ type DispatchOpts struct {
 	// BaseCommit 是协调者本地 HEAD 的提交号，随请求上送让 agentd 校验任务仓库
 	// 不落后于本地（空=不校验）。
 	BaseCommit string
+	// Mode 是任务形态（B452 F1）：空=分支形态（键缺席），"readonly"=只读形态。
+	Mode string
+	// Machine / Here 是机器亲和（B452 F4/F5），互斥；只在非零值时进 wire。
+	// Here=调用方所在机（由受理机解析成自名）；Machine=指定机器名。
+	Machine string
+	Here    bool
 }
 
 // Dispatch 派发一个新任务到 agentd 执行。
@@ -835,7 +841,19 @@ func (c *Client) Dispatch(ctx context.Context, opts DispatchOpts) (*proto.Task, 
 	if opts.FrozenTarget != "" {
 		body["frozen_target"] = opts.FrozenTarget
 	}
-	c.log().Info("Dispatch 进入", "url", c.baseURL, "relay", c.relayBacked,
+	// B452 F4：三键只在非零值时出现——缺席与零值对老 agentd 同义，但对新 agentd 的
+	// 「here 与 machine 同给」判据而言，零值不能被当成「给了」。
+	if opts.Mode != "" {
+		body["mode"] = opts.Mode
+	}
+	if opts.Machine != "" {
+		body["machine"] = opts.Machine
+	}
+	if opts.Here {
+		body["here"] = true
+	}
+	c.log().Info("Dispatch 进入", "url", c.baseURL, "relay", c.relayBacked, "mode", opts.Mode,
+		"machine", opts.Machine, "here", opts.Here,
 		"executor", opts.Executor, "target", opts.Target, "carrier", opts.Carrier, "squad", opts.Squad,
 		"home_dir_set", opts.HomeDir != nil, "prompt_runes", len([]rune(opts.Prompt)))
 	resp, err := c.do(ctx, http.MethodPost, "/api/tasks", body)
@@ -1637,6 +1655,13 @@ func (c *Client) WaitEvent(ctx context.Context, taskID string, all bool) (*proto
 //   - permanentError / 其他: 拨号或读取失败，由调用方决定是否重连
 func (c *Client) streamOnce(ctx context.Context, taskID string, fromSeq int64,
 	readDeadline func() time.Time, onFrame func(proto.Event) error) error {
+	return c.streamOnceOn(ctx, taskID, "", fromSeq, readDeadline, onFrame)
+}
+
+// streamOnceOn 是 streamOnce 的按机变体（B452 F14）：machine 非空时事件流 URL 带 &machine=，
+// 由受理机把整条 WS 反代到该机；空串与 streamOnce 逐字节同形。
+func (c *Client) streamOnceOn(ctx context.Context, taskID, machine string, fromSeq int64,
+	readDeadline func() time.Time, onFrame func(proto.Event) error) error {
 	if err := c.checkInit(); err != nil {
 		return err
 	}
@@ -1649,6 +1674,9 @@ func (c *Client) streamOnce(ctx context.Context, taskID string, fromSeq int64,
 	host := strings.TrimPrefix(strings.TrimPrefix(c.baseURL, "http://"), "https://")
 	wsURL := wsScheme + "://" + host + "/ws/events?task=" + taskID +
 		"&from_seq=" + strconv.FormatInt(fromSeq, 10)
+	if machine != "" {
+		wsURL += "&machine=" + url.QueryEscape(machine)
+	}
 	// 附加头（agentd→agentd 的防环标记）由 wsDialOptions 一并带上：streamOnce
 	// 不走 do，若不补，MarkForwarded 的镜像连接从拨号起就丢了标记。
 	opts := c.wsDialOptions()

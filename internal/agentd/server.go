@@ -522,7 +522,27 @@ func (s *Server) SetManager(m orchestration.OrchestrationClient) {
 		return
 	}
 	s.mgr = m
+	// B452：编排内部终态（只读自动归档）的名额归还回调在挂接时接线——Server 是唯一知道
+	// 编制域名额的一方。用可选接口而非扩大 OrchestrationClient：只有真实编排实现需要它。
+	if tn, ok := m.(interface {
+		SetTerminalNotifier(orchestration.TerminalNotifier)
+	}); ok {
+		tn.SetTerminalNotifier(s)
+	} else {
+		// 不静默：没有回调，编排内部认领的终态（只读任务自动归档、启动补归档）不会归还载体/小队
+		// 名额，名额会一直被占到人手工 done/stop。挂接只在启动时发生一次，这行 Error 也只一次。
+		s.log.Error("编排实现不支持终态回调接线：只读任务自动归档后不会归还载体/小队名额",
+			"manager_type", fmt.Sprintf("%T", m), "error_kind", "terminal_notifier_unwired")
+	}
 	s.log.Info("manager 已挂接，凭据为编排 client 接口")
+}
+
+// TaskTerminal 实现 orchestration.TerminalNotifier：编排在 HTTP 以外的路径（B452 只读任务
+// 自动归档、启动补归档）认领终态后，由这里归还载体/小队名额，快照规则与 handleDone 相同。
+func (s *Server) TaskTerminal(task *proto.Task) {
+	s.log.Info("编排内部终态，归还名额", "task", task.ID, "state", task.State,
+		"carrier", task.Carrier, "squad", task.Squad, "machine", task.Target)
+	s.releaseTaskCarrierOccupancy(task)
 }
 
 // SetProviders 注入能力 Registry。
@@ -940,7 +960,10 @@ func (s *Server) Handler() http.Handler {
 	// s.mgr.Reclaim 的 store.ErrNotFound → 404，什么也回收不了；包上 byTask 才
 	// 会把请求转发到真正持有那个 worktree 的机器。「资源只在本机」恰恰是
 	// **要转发**的论据，不是不转发的论据。
-	api.HandleFunc("GET /api/tasks/{id}", s.byTask(s.handleGetTask))
+	// B452 F15/F16：任务详情与产物下载先认显式 ?machine=（跟随刚转发、镜像还没有的他机任务），
+	// 再按任务归属路由。
+	api.HandleFunc("GET /api/tasks/{id}", s.machineFirst(s.byTask(s.handleGetTask)))
+	api.HandleFunc("GET /api/tasks/{id}/artifacts", s.machineFirst(s.byTask(s.handleTaskArtifacts)))
 	api.HandleFunc("POST /api/tasks/{id}/reply", s.byTask(s.handleReply))
 	api.HandleFunc("POST /api/tasks/{id}/continue", s.byTask(s.handleContinue))
 	api.HandleFunc("POST /api/tasks/{id}/done", s.byTask(s.handleDone))

@@ -17,6 +17,7 @@ package orchestration
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/store"
@@ -59,6 +60,11 @@ func (m *Manager) ListMirrorTasks() ([]store.MirrorTask, error) { return m.st.Li
 // MirrorTaskTarget 是 store.MirrorTaskTarget 的直通镜像（透明路由索引）。
 func (m *Manager) MirrorTaskTarget(taskID string) (string, bool, error) {
 	return m.st.MirrorTaskTarget(taskID)
+}
+
+// UpsertMirrorTask 是 store.UpsertMirrorTask 的直通镜像（B452 转发后即时登记路由索引）。
+func (m *Manager) UpsertMirrorTask(target string, task proto.Task, fetchedAt time.Time) error {
+	return m.st.UpsertMirrorTask(target, task, fetchedAt)
 }
 
 // MirrorEventsFrom 是 store.MirrorEventsFrom 的直通镜像（镜像任务历史重放）。

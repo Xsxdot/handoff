@@ -30,6 +30,11 @@ type TemplateDef struct {
 	// 提示用户 template put 重写；确认线上无残留后再删。
 	DisciplinePath string            `json:"discipline_path,omitempty"`
 	ModelByTarget  map[string]string `json:"model_by_target,omitempty"`
+	// Receiver 是熟练工定义的缺省接收者（载体或小队名，B452 S1）；空 = 普通模板。
+	// 非空时 Executor 可空：执行器由载体决定，填了就当一致性断言。
+	Receiver string `json:"receiver,omitempty"`
+	// Mode 是熟练工定义的执行形态：""/branch = 分支形态，readonly = 只读形态（B452 S4）。
+	Mode string `json:"mode,omitempty"`
 }
 
 // legacyDisciplinePaths 是废弃的 discipline_path 取值 → 角色名的映射表。

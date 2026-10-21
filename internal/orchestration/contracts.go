@@ -85,6 +85,10 @@ type DispatchReq struct {
 	// BaseCommit 是协调者本地 HEAD 的提交号（40 位十六进制），用于校验任务仓库
 	// 不落后于本地；空=不校验（本地派发或调用方 cwd 不是 git 仓库）。
 	BaseCommit string
+	// Mode 是任务形态（B452）：空串或 proto.TaskModeBranch=分支形态（现状）；
+	// proto.TaskModeReadonly=只读形态——强制 detached 托管树、不建分支、与
+	// Branch/NewBranch/Worktree 互斥、completed 后自动归档。其他值拒派（400）。
+	Mode string
 }
 
 // RecoverReport 是显式恢复操作的结果快照，原样作为 HTTP 响应体回给 CLI。

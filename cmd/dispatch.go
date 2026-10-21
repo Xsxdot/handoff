@@ -33,9 +33,11 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Xsxdot/handoff/internal/client"
 	"github.com/Xsxdot/handoff/internal/discipline"
+	"github.com/Xsxdot/handoff/internal/ledger"
 	"github.com/Xsxdot/handoff/internal/projectid"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/spf13/cobra"
@@ -59,6 +61,12 @@ var (
 	// dispatchDisciplineFile 是 P1 裁决 (a) 的临时正文入口：读文件作 RawText 走
 	// 缝 1，只随这一次派发下发，不落账本（版本记 0）。flag 不属契约冻结物。
 	dispatchDisciplineFile string
+	// B452：熟练工派发（--template）、等结果（--wait/--timeout）与机器亲和（--here/--machine）。
+	dispatchTemplate    string
+	dispatchWait        bool
+	dispatchWaitTimeout time.Duration
+	dispatchHere        bool
+	dispatchMachine     string
 )
 
 // projectNotRegisteredMarker 是 agentd 侧 ErrProjectNotRegistered 的哨兵文案。
@@ -77,7 +85,13 @@ const projectNotRegisteredMarker = "项目未登记"
 // 返回：
 //   - true 表示可以走自动补登记后重发的路径
 func isProjectNotRegistered(err error) bool {
-	return err != nil && strings.Contains(err.Error(), projectNotRegisteredMarker)
+	if err == nil || !strings.Contains(err.Error(), projectNotRegisteredMarker) {
+		return false
+	}
+	// B452 Q13：受理机转发后回传的执行机错误（「执行机 <M>：…」）——缺登记的是那台执行机，
+	// 本机补登记补错地方，不走自动补登记
+	_, remote := remoteMachineOf(err)
+	return !remote
 }
 
 // dispatchWithAutoRegister 执行「派发 → 未登记则补登记 → 重发一次」的编排。
@@ -230,20 +244,47 @@ var dispatchCmd = &cobra.Command{
 	Short: "派发一个计划任务到 agentd 执行",
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// B452：熟练工定义与等待/亲和相关的校验全部在读 plan 文件与任何网络请求之前。
+		var tpl *ledger.Template
+		var tplStore *ledger.Store
+		if dispatchTemplate != "" {
+			t, st, err := loadDispatchTemplate(dispatchTemplate)
+			if err != nil {
+				return err
+			}
+			defer st.Close()
+			tpl, tplStore = t, st
+		}
+		if err := checkSkilledDispatchFlags(cmd, len(args), tpl); err != nil {
+			return err
+		}
 		// B62：派发的项目由 cwd 识别，路径不再出现在命令上。只依赖本机信息，
 		// 多跑一次网络毫无意义——识别不了的，这里就直接说清楚怎么补。
+		var planContent []byte
 		var planB64, planName string
 		if len(args) == 1 {
 			content, err := os.ReadFile(args[0])
 			if err != nil {
 				return fmt.Errorf("读取计划文件 %s: %w", args[0], err)
 			}
+			planContent = content
 			planB64 = base64.StdEncoding.EncodeToString(content)
 			planName = filepath.Base(args[0])
 		}
 		// plan 文件与 --prompt 都缺：本地先报错，省一次网络往返（服务端也会拒）
 		if planB64 == "" && dispatchPrompt == "" {
 			return fmt.Errorf("必须提供 plan 文件或 --prompt（至少其一）")
+		}
+		// B452：熟练工字段合成（定义 + 命令行覆盖）。--template 带 plan 文件时，plan 文件内容即
+		// 「## 本次任务」，--prompt 照裸派发语义作附加指令由 agentd 接在其后。
+		fields := buildSkilledFields(tpl, planContent, len(args) == 1)
+		if fields.planB64 != "" {
+			planB64 = fields.planB64
+		}
+		if tpl != nil {
+			// 审计回显：wire 不带模板名（Q1 甲），用的是哪个定义哪一版只在这里留痕
+			fmt.Fprintf(cmd.ErrOrStderr(), "熟练工 %s v%d（receiver=%s mode=%s）\n",
+				tpl.Name, tpl.Version, fields.receiver, modeLabel(fields.mode))
 		}
 		// B62：项目识别。这一条在 CLI 侧判是因为它只依赖本机信息，多跑一次网络毫无意义。
 		projectID := ""
@@ -263,7 +304,22 @@ var dispatchCmd = &cobra.Command{
 		// 只对远程 target 采集基线：本机派发时 cwd 与目标项目未必是同一个仓库，
 		// 拿 cwd 的 HEAD 去校验别的仓库会造成假拒绝
 		baseCommit := ""
-		if targetName != "" && !dispatchNoSyncCheck {
+		if tpl != nil && !dispatchNoSyncCheck && dispatchProject == "" {
+			// B452：--template 总采本地 HEAD——受理机可能把任务转发到他机，基线必须随请求走；
+			// --project 表示 cwd 不是目标项目，与 --no-sync-check 一样关掉采集。
+			baseCommit = localHeadCommit()
+			switch {
+			case baseCommit == "":
+				fmt.Fprintln(cmd.ErrOrStderr(), "提示: 当前目录不是 git 仓库，已跳过基线校验")
+			case fields.mode == ledger.TemplateModeReadonly:
+				// 只读形态只看已提交的东西，脏树不拒发，但当场说清楚
+				readonlyDirtyNotice(cmd.ErrOrStderr(), baseCommit)
+			default:
+				if err := checkLocalWorktree(cmd.ErrOrStderr(), dispatchAllowDirty); err != nil {
+					return err
+				}
+			}
+		} else if tpl == nil && targetName != "" && !dispatchNoSyncCheck {
 			baseCommit = localHeadCommit()
 			if baseCommit == "" {
 				fmt.Fprintln(cmd.ErrOrStderr(),
@@ -277,18 +333,33 @@ var dispatchCmd = &cobra.Command{
 		slog.Info("CLI 裸派发准备发送", "receiver", dispatchReceiver, "executor_overlay", dispatchExecutor)
 		opts := client.DispatchOpts{
 			ProjectID: projectID, ProjectName: dispatchProject,
-			PlanB64: planB64, PlanName: planName, Target: "", Receiver: dispatchReceiver,
-			Prompt: dispatchPrompt, Name: dispatchName,
-			Executor: dispatchExecutor, Model: dispatchModel,
+			PlanB64: planB64, PlanName: planName, Target: "", Receiver: fields.receiver,
+			Prompt: fields.prompt, Name: fields.name,
+			Executor: fields.executor, Model: dispatchModel,
+			Mode: fields.mode, Machine: fields.machine, Here: fields.here,
 			Branch: dispatchBranch, NewBranch: dispatchNewBranch, Base: dispatchBase,
 			Worktree: dispatchWorktree, NewWorktree: dispatchNewWorktree,
 			BaseCommit: baseCommit,
 		}
 		// B229 缝 1：裸派发也注入平台层正文（实现决定 1），每一次派发都过拒发闸
 		// （§3.1）。解析必须在发出任何任务请求之前完成——被拒时目标机上零残留。
-		resolved, err := resolveBareDiscipline(cmd.Context(), cli, dispatchDisciplineFile)
+		// B452：探活结果缓存一次，能力位核对复用它（Q11），不多打一轮网络。
+		probe := &statusOnceClient{dispatchClient: cli}
+		var resolved discipline.ResolvedDiscipline
+		if tpl != nil && dispatchDisciplineFile == "" {
+			// 定义点名的纪律块经账本取（与卡派发同一缝 1 入口）；只读定义可不点名，只注入平台层
+			resolved, err = resolveCardDispatchDiscipline(cmd.Context(), probe, tplStore, tpl.Def.Discipline, targetName)
+			opts.Discipline = resolved.Name
+		} else {
+			resolved, err = resolveBareDiscipline(cmd.Context(), probe, dispatchDisciplineFile)
+		}
 		if err != nil {
 			return err
+		}
+		if needsSkilledCapability(fields, dispatchWait) {
+			if err := checkSkilledCapability(cmd.Context(), probe); err != nil {
+				return err
+			}
 		}
 		opts.DisciplineText = resolved.Text
 		opts.DisciplineVersion = resolved.Version
@@ -313,7 +384,8 @@ var dispatchCmd = &cobra.Command{
 			},
 		)
 		if err != nil {
-			return err
+			// B452：422 亲和拒绝 → 退出码 4；执行机侧未登记 → 点名去哪台机器登记
+			return wrapDispatchError(err)
 		}
 		// 基线摘要走 stderr：stdout 是「单行任务 JSON」的既有契约，上层脚本
 		// 按行解析，多打一行就会把它们全部打断。为什么必须打：B35 的现场里
@@ -337,9 +409,19 @@ var dispatchCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("序列化任务: %w", err)
 		}
-		fmt.Fprintln(cmd.OutOrStdout(), string(b))
+		// F22：不带 --wait 时 stdout 仍是单行任务 JSON；带 --wait 时 stdout 只留回文（F19），
+		// 任务 JSON 改打 stderr——调用方要 id 从 stderr 取
+		if dispatchWait {
+			fmt.Fprintln(cmd.ErrOrStderr(), string(b))
+		} else {
+			fmt.Fprintln(cmd.OutOrStdout(), string(b))
+		}
 		// 弹终端块的入口：--no-terminal 在此使能判定，默认不弹（auto: true 才弹）
 		dispatchAfterTerminal(cmd, task.ID)
+		if dispatchWait {
+			// 按任务落点机器跟随（F14）：转发后的任务在受理机上只有镜像行，事件流必须按机取
+			return runFinalWait(cmd, cli, task.ID, task.Target, dispatchWaitTimeout)
+		}
 		return nil
 	},
 }
@@ -367,7 +449,18 @@ func init() {
 	dispatchCmd.Flags().StringVar(&dispatchDisciplineFile, "discipline-file", "",
 		"临时捏一份纪律块正文直接下发：读文件作本次派发的角色层正文（与平台层组装），不落账本、版本记 0")
 	dispatchCmd.MarkFlagsMutuallyExclusive("branch", "new-branch")
+	dispatchCmd.Flags().StringVar(&dispatchTemplate, "template", "",
+		"按名派发熟练工定义（handoff template list 查看）：提示词 = 模板正文 + 「## 本次任务」（--prompt 或 plan 文件；同给时 --prompt 作附加指令），接收者/形态/亲和取自定义，命令行显式值覆盖")
+	dispatchCmd.Flags().BoolVar(&dispatchWait, "wait", false,
+		"阻塞到任务终态：stdout 只输出最终文本（产物非空时另起一行 artifacts: <本机路径>），任务 JSON 改打 stderr；退出码 0 完成 / 3 未完成 / 4 亲和拒绝 / 124 超时")
+	dispatchCmd.Flags().DurationVar(&dispatchWaitTimeout, "timeout", 30*time.Minute,
+		"--wait 的等待时限（只与 --wait 同用）；到点退出 124，任务照跑，用 handoff wait <id> --final 接着等")
+	dispatchCmd.Flags().BoolVar(&dispatchHere, "here", false,
+		"机器亲和：任务必须落在调用方所在机器（本机 agentd），做不到即拒（退出码 4），不换机")
+	dispatchCmd.Flags().StringVar(&dispatchMachine, "machine", "",
+		"机器亲和：任务必须落在指定机器，做不到即拒（退出码 4），不换机")
 	dispatchCmd.MarkFlagsMutuallyExclusive("worktree", "new-worktree")
+	dispatchCmd.MarkFlagsMutuallyExclusive("here", "machine")
 	rootCmd.AddCommand(dispatchCmd)
 }
 

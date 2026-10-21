@@ -69,6 +69,11 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	// 机器上（缺陷三的镜像事故）。
 	disciplinesOK := true
 	resp.DisciplinesSupported = &disciplinesOK
+	// B452 F12 能力位与四件同生同死：①派发 mode（handleDispatch→Manager.Dispatch，readonly.go）
+	// ②机器亲和 machine/here（dispatchroute.go）③/ws/events 与 GET /api/tasks/{id} 的 ?machine=
+	// 按机转发（handleEvents 头部、machineFirst）④产物接口（artifacts_api.go）。
+	skilledOK := true
+	resp.SkilledDispatchSupported = &skilledOK
 	revealOK := revealSupportedOS
 	resp.RevealSupported = &revealOK
 	resp.ScratchRoot = s.scratchRoot()
@@ -295,7 +300,8 @@ func (s *Server) handleGetTask(w http.ResponseWriter, r *http.Request) {
 		events = []proto.Event{}
 	}
 	watchers := s.hub.Watchers(taskID)
-	task.ProjectID = s.projectIndex().ProjectIDOf(task.RepoPath) // 读时 join，不落库
+	task.ProjectID = s.projectIndex().ProjectIDOf(task.RepoPath)                  // 读时 join，不落库
+	task.ArtifactsDir = orchestration.TaskArtifactsDir(s.conf().DataDir, task.ID) // B452 F11：读出时盖章
 	s.log.Info("任务详情完成", "task", taskID, "state", task.State,
 		"pending", len(pending), "watchers", watchers)
 	writeJSON(w, http.StatusOK, taskDetail{
@@ -487,6 +493,11 @@ type dispatchRequest struct {
 	NewWorktree     bool   `json:"new_worktree"`
 	// BaseCommit 是协调者本地 HEAD 的提交号，用于校验任务仓库不落后于本地（空=不校验）。
 	BaseCommit string `json:"base_commit"`
+	// Mode 是任务形态（B452 F1）：缺席/空/branch=分支形态，readonly=只读形态。
+	Mode string `json:"mode,omitempty"`
+	// Machine / Here 是机器亲和（B452 F4/F5，互斥）：只在受理机解析，转发时删去。
+	Machine string `json:"machine,omitempty"`
+	Here    bool   `json:"here,omitempty"`
 }
 
 // errReceiverNotCarrierMachine 是 B233.27：请求打到的 agentd 不是载体登记机。
@@ -507,15 +518,30 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req dispatchRequest
-	if err := json.NewDecoder(io.LimitReader(r.Body, 4<<20)).Decode(&req); err != nil {
-		s.log.Warn("dispatch 请求体解析失败", "err", err)
+	// 先留原始字节：落点在他机时要在原始体上改键转发（B452），重编码结构体会抹掉未知字段
+	raw, rerr := io.ReadAll(io.LimitReader(r.Body, 4<<20))
+	if rerr == nil {
+		rerr = json.Unmarshal(raw, &req)
+	}
+	if rerr != nil {
+		s.log.Warn("dispatch 请求体解析失败", "err", rerr)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "请求体必须是 JSON {project_id, plan_b64, ...}"})
 		return
 	}
 	s.log.Info("dispatch 请求身份", "project", req.ProjectID, "receiver", req.Receiver,
 		"carrier", req.Carrier, "squad", req.Squad, "target", req.Target,
-		"frozen_target", req.FrozenTarget,
+		"frozen_target", req.FrozenTarget, "mode", req.Mode, "machine", req.Machine, "here", req.Here,
+		"forwarded", isForwarded(r),
 		"executor", req.Executor, "model", req.Model, "home_dir_set", req.HomeDir != nil)
+	// B452 F2/F5：形态取值与亲和互斥是纯请求问题，在任何准入/出站之前挡掉
+	if err := orchestration.CheckMode(req.Mode); err != nil {
+		s.writeDispatchError(w, req.ProjectID, err)
+		return
+	}
+	if err := checkAffinityFields(req); err != nil {
+		s.writeDispatchError(w, req.ProjectID, err)
+		return
+	}
 	var binding scheduling.Binding
 	var resolved scheduling.ResolvedReceiver
 	var err error
@@ -548,12 +574,26 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 	} else if req.Squad != "" {
 		err = fmt.Errorf("%w: 冻结小队请求缺少 carrier", scheduling.ErrInvalid)
 	} else {
-		overlay := scheduling.PhysicalOverlay{Machine: req.Target, CLI: req.Executor, HomeDir: req.HomeDir}
-		binding, resolved, err = s.prepareReceiverBinding(req.Receiver, overlay, req.Model)
-		s.log.Info("dispatch 普通身份准入", "project", req.ProjectID, "receiver", req.Receiver,
+		// B452：先定落点。他机落点带冻结身份转发（受理机零写入）；本机落点已完成准入。
+		var landing dispatchLanding
+		landing, err = s.routeOrdinaryDispatch(req)
+		binding, resolved = landing.binding, landing.resolved
+		s.log.Info("dispatch 普通身份落点", "project", req.ProjectID, "receiver", req.Receiver,
 			"resolved_name", resolved.Name, "resolved_kind", string(resolved.Kind),
 			"carrier", binding.Carrier, "squad", binding.Squad, "target", binding.Target,
-			"executor", binding.Executor, "model", binding.Model, "error_kind", "ordinary_admit")
+			"executor", binding.Executor, "model", binding.Model, "remote", landing.remote,
+			"error_kind", "ordinary_admit")
+		if err == nil && landing.remote {
+			if isForwarded(r) {
+				// 防环：已转发过的请求判出他机落点只能是两机登记不一致，绝不再出站
+				err = fmt.Errorf("%w: 已转发的请求判出他机落点 %s，拒绝二次转发", errReceiverNotCarrierMachine, binding.Target)
+				s.log.Warn("dispatch 被拒：转发请求落点仍在他机", "machine", binding.Target, "cause", err)
+				s.writeDispatchError(w, req.ProjectID, err)
+				return
+			}
+			s.forwardDispatch(w, r, req, raw, landing)
+			return
+		}
 	}
 	if err != nil {
 		s.log.Warn("dispatch 身份准入失败", "project", req.ProjectID, "receiver", req.Receiver,
@@ -602,12 +642,14 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 		ResolveDefaultBase: req.ResolveDefaultBase,
 		LocalBaseBranch:    req.LocalBaseBranch,
 		Worktree:           req.Worktree, NewWorktree: req.NewWorktree, BaseCommit: req.BaseCommit,
+		Mode: req.Mode,
 	})
 	if err != nil {
 		s.writeDispatchError(w, req.ProjectID, err)
 		return
 	}
-	released = true // 成功后由 T4 的任务终态钩子释放占用
+	task.ArtifactsDir = orchestration.TaskArtifactsDir(s.conf().DataDir, task.ID) // F11：读出时盖章，不落库
+	released = true                                                               // 成功后由 T4 的任务终态钩子释放占用
 	s.log.Info("dispatch 完成", "task", task.ID, "state", task.State, "carrier", task.Carrier,
 		"squad", binding.Squad, "target", binding.Target, "executor", binding.Executor)
 	writeJSON(w, http.StatusOK, task)
@@ -638,6 +680,10 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 //   - 其余（任务目录/落库等 agentd 侧故障）→ 500
 func (s *Server) writeDispatchError(w http.ResponseWriter, projectRef string, err error) {
 	switch {
+	case errors.Is(err, errAffinityUnmet):
+		// F6：422 在本端点只表示亲和拒绝这一种；kind 供 CLI 判退出码 4
+		s.log.Warn("dispatch 被拒：机器亲和不满足", "project", projectRef, "self", s.selfLabel(), "cause", err)
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": err.Error(), "kind": affinityKind})
 	case errors.Is(err, orchestration.ErrWorkspaceUnavailable):
 		s.log.Error("dispatch 失败：工作区能力未注入", "project", projectRef, "cause", err)
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
@@ -1479,6 +1525,13 @@ func (s *Server) writeManagerError(w http.ResponseWriter, taskID, op string, err
 //     "task archived" 收尾。客户端据这个关闭码区分「归档」与「断线」——断线要
 //     重连，归档要退出，两者搞混就是无限重连一个已经结束的任务
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
+	// B452 F14：?machine= 指他机就整条 WS 反代过去（照 /ws/pty 先例）；带转发头时忽略。
+	// 为什么不靠镜像：镜像 30s 一轮且只订阅非终态任务，转发后的短任务可能永远拿不到 completed。
+	if machine := r.URL.Query().Get("machine"); machine != "" && !isForwarded(r) && !s.IsSelfTarget(machine) {
+		s.log.Info("事件流按机转发", "task", r.URL.Query().Get("task"), "machine", machine)
+		s.forwardWS(w, r, machine)
+		return
+	}
 	taskID := r.URL.Query().Get("task")
 	if taskID == "" {
 		s.log.Warn("WS 连接缺少 task 参数", "remote_addr", r.RemoteAddr)

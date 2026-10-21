@@ -82,6 +82,13 @@ var waitUntilDone bool
 // 脚本侧据此判断是继续等还是告警。
 var waitTimeout time.Duration
 
+// waitFinal 开启 B452 终态回文：等任务最后一回合的终态，stdout 只输出最终文本（与 dispatch --wait 同一套
+// 输出与退出码，F19–F21）。与 --follow、--until-done 互斥：三者的 stdout 契约两两相反。
+var waitFinal bool
+
+// waitMachine 是 --final 的按机跟随（F14/F15）：任务落在他机时经受理机转发取快照与事件流。
+var waitMachine string
+
 // waitCmd 阻塞等待指定任务的下一个可动作事件。
 //
 // 使用方式：handoff wait <task> —— 事件到达打印 {"seq":..,"type":..,"payload":..} 退出 0；
@@ -103,6 +110,12 @@ var waitCmd = &cobra.Command{
 		if followFlag && waitUntilDone {
 			return fmt.Errorf("--follow 与 --until-done 不能同时使用：前者交付审核事件，后者只等归档")
 		}
+		if waitFinal && (followFlag || waitUntilDone) {
+			return fmt.Errorf("--final 不能与 --follow / --until-done 同用：--final 只输出最后一回合的最终文本，另两者输出事件 JSON")
+		}
+		if waitMachine != "" && !waitFinal {
+			return fmt.Errorf("--machine 目前只与 --final 同用")
+		}
 		if len(args) != 1 {
 			return fmt.Errorf("需要 task id 参数")
 		}
@@ -120,6 +133,10 @@ var waitCmd = &cobra.Command{
 		defer cleanup()
 		// 统一日志格式：wait 是长驻命令，stderr 日志是「为什么没唤醒」的唯一线索
 		slog.SetDefault(logx.Setup("cli", ""))
+		if waitFinal {
+			// B452：终态回文；timeout<=0 不设时限（与 wait 其余形态同义），到点 124、任务照跑
+			return runFinalWait(cmd, cli, taskID, waitMachine, waitTimeout)
+		}
 		if waitUntilDone {
 			return runUntilDone(cmd, taskID, addr, cli)
 		}
@@ -465,6 +482,10 @@ func init() {
 		"持续订阅：每条事件单行输出，任务终结（failed/归档）才退出")
 	waitCmd.Flags().BoolVar(&waitUntilDone, "until-done", false,
 		"静默等待 handoff done；成功只输出 archived，failed 立即失败")
+	waitCmd.Flags().BoolVar(&waitFinal, "final", false,
+		"等任务最后一回合的终态：stdout 只输出最终文本（产物非空时另起一行 artifacts: <本机路径>）；退出码 0 完成 / 3 未完成 / 124 超时（任务照跑）")
+	waitCmd.Flags().StringVar(&waitMachine, "machine", "",
+		"任务所在机器（只与 --final 同用）：经本机 agentd 按机转发跟随")
 	waitCmd.Flags().DurationVar(&waitTimeout, "timeout", 0,
 		"超时（如 3h）；默认不设上限。一次性模式=等不到事件的总时长上限，"+
 			"--follow 模式=空闲上限（期间一帧都没收到，含 progress），"+
