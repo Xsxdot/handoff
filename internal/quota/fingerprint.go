@@ -20,3 +20,28 @@ func Fingerprint(identity string) string {
 	sum := sha256.Sum256([]byte(identity))
 	return "sha256:" + hex.EncodeToString(sum[:])[:12]
 }
+
+// Identifier 是能离线（不出网、不刷新）从凭据文件取身份值的适配。检测链用它在载体 HOME
+// 里算指纹，与账号读数指纹比对（spec S4）。agy 的身份只在 `/usage` 输出里，不实现它。
+type Identifier interface {
+	Identity(home, entry string) (string, error)
+}
+
+// CredentialFingerprint 按 kind 在 home 下读凭据身份并返回短指纹（plan Q13 同一取材）。
+// 未注册 kind 返回 unsupported_kind；适配没有离线身份来源返回空串（不比对）；凭据缺失/
+// 形状不对返回 *Failure（文案只带路径与条目名，不含凭据值）。
+func (r *Registry) CredentialFingerprint(kind, home, entry string) (string, error) {
+	a, ok := r.adapters[kind]
+	if !ok {
+		return "", fail(CategoryUnsupportedKind, "类型 %q 的凭据指纹尚未支持", kind)
+	}
+	id, ok := a.(Identifier)
+	if !ok {
+		return "", nil
+	}
+	identity, err := id.Identity(home, entry)
+	if err != nil {
+		return "", err
+	}
+	return Fingerprint(identity), nil
+}

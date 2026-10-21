@@ -16,6 +16,9 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/Xsxdot/handoff/internal/proxycfg"
+	"github.com/Xsxdot/handoff/internal/quota"
 )
 
 // DefaultDetectTimeout 是 WakeRequest.Timeout 为 0 时的缺省上界。
@@ -64,7 +67,7 @@ type WakeOutcome string
 const (
 	WakeReady       WakeOutcome = "ready"
 	WakeNeedLogin   WakeOutcome = "need_login"
-	WakeQuota       WakeOutcome = "quota"
+	WakeQuota       WakeOutcome = "quota" // 检测回合撞额度（真额度耗尽）；B453 起语义是「可达 + 撞额度」（Q19）
 	WakeUnreachable WakeOutcome = "unreachable"
 )
 
@@ -76,12 +79,19 @@ type WakeRequest struct {
 	Credential string
 	Model      string
 	Timeout    time.Duration
+	// AccountKind / AccountEntry 是载体所选账号的 kind 与凭据条目（wire fingerprint_kind /
+	// fingerprint_entry）：据此在载体 HOME 里算凭据指纹、缩小撞额度签名集合；空 = 未选账号。
+	AccountKind  string
+	AccountEntry string
+	// Proxy 是载体所选账号的代理（组装侧在所在机查得，不过机间 wire）；空 = 沿用今天的环境。
+	Proxy string
 }
 
 // WakeReply 是唤起结局。Detail 给人看，原样交给 ApplyDetect 的 last_error。
 type WakeReply struct {
-	Outcome WakeOutcome
-	Detail  string
+	Outcome     WakeOutcome
+	Detail      string
+	Fingerprint string // 载体 HOME 凭据短指纹；空 = 未算或算不出（不比对）
 }
 
 // ProbeHome 只读探测目标机路径，先在目标 Host 进程展开 ~。它不创建、删除或
@@ -141,9 +151,27 @@ func (h *Host) WakeHome(ctx context.Context, req WakeRequest) (WakeReply, error)
 			"elapsed", time.Since(started).String(), "cause", err)
 		return WakeReply{}, err
 	}
+	reply.Fingerprint = h.credentialFingerprint(req, state.path)
 	log().Info("检测载体 HOME 完成", "cli", req.CLI, "path", state.path,
-		"outcome", reply.Outcome, "elapsed", time.Since(started).String())
+		"outcome", reply.Outcome, "fingerprint_set", reply.Fingerprint != "",
+		"elapsed", time.Since(started).String())
 	return reply, nil
+}
+
+// credentialFingerprint 在载体 HOME（已展开）里按所选账号 kind/条目算凭据短指纹（spec S4、
+// plan F15）。未选账号、未注入取材函数、或凭据读不出 → 空串（投影不比对，不影响检测结局）。
+// 错误只记类别级说明：取材函数的错误文案按约定不含凭据值。
+func (h *Host) credentialFingerprint(req WakeRequest, home string) string {
+	if strings.TrimSpace(req.AccountKind) == "" || h.fingerprint == nil {
+		return ""
+	}
+	fp, err := h.fingerprint(req.AccountKind, home, req.AccountEntry)
+	if err != nil {
+		log().Warn("载体 HOME 凭据指纹算不出，本次不比对", "cli", req.CLI, "path", home,
+			"account_kind", req.AccountKind, "cause", err)
+		return ""
+	}
+	return fp
 }
 
 // homeProbeState 同时保留「目标目录本身是否为空」与对外三态。两者不能合并：
@@ -351,12 +379,17 @@ func (h *Host) runWake(ctx context.Context, req WakeRequest, targetHome string) 
 	}
 	log().Info("开始检测回合", "cli", cli, "target", targetHome, "timeout", timeout.String())
 	// Workdir 与 HOME 同指隔离目录：检测没有项目仓库，相对路径不得落到 agentd cwd。
+	// 账号代理覆盖检测回合的代理键（spec S4：检测回合与任务回合同走账号代理）。
+	env := proxycfg.WithProxyEnv(wakeProxyEnv(cli), req.Proxy)
+	if strings.TrimSpace(req.Proxy) != "" {
+		log().Info("检测回合使用账号代理", "cli", cli, "proxy", proxycfg.Mask(req.Proxy))
+	}
 	reply, err := detectTurn(h, ctx, TurnRequest{
 		CLI: req.CLI, HomeDir: targetHome, Workdir: targetHome, Model: req.Model,
-		Prompt: DetectPrompt, Timeout: timeout, Env: wakeProxyEnv(cli),
+		Prompt: DetectPrompt, Timeout: timeout, Env: env,
 	})
 	if err != nil {
-		mapped := classifyTurnError(err)
+		mapped := classifyTurnError(cli, req.AccountKind, err)
 		// 不把 RunTurn 的 stderr 尾部打进 slog：里面可能有凭据。结局进 outcome。
 		log().Warn("检测回合失败", "cli", cli, "target", targetHome, "outcome", mapped.Outcome)
 		return mapped, nil
@@ -425,17 +458,23 @@ func wakeProxyEnv(cli string) []string {
 	return out
 }
 
-// classifyTurnError 把 RunTurn 错误收成四态结局，不返回 error。未知文本保守
-// 归 unreachable；不把任何未知失败当 ready。
-func classifyTurnError(err error) WakeReply {
+// classifyTurnError 把 RunTurn 错误收成检测结局，不返回 error。撞额度/限速的判据委托
+// quota.ClassifyTurnFailure（唯一判据，plan Q10）：额度耗尽 → quota（协调侧据此标账号或写
+// 最近错误，Q19）；限速 → 视为可达（ready + 说明），不再当额度；登录类分支不动；未知文本
+// 保守归 unreachable，不把任何未知失败当 ready。
+func classifyTurnError(cli, accountKind string, err error) WakeReply {
 	detail := err.Error()
 	if len(detail) > 1024 {
 		detail = detail[:1024]
 	}
+	switch quota.ClassifyTurnFailure(cli, accountKind, detail).Class {
+	case quota.TurnQuota:
+		return WakeReply{Outcome: WakeQuota, Detail: detail}
+	case quota.TurnRateLimited:
+		return WakeReply{Outcome: WakeReady, Detail: "检测回合被限速（不算额度耗尽，载体可达）：" + detail}
+	}
 	lower := strings.ToLower(detail)
 	switch {
-	case strings.Contains(lower, "quota"), strings.Contains(lower, "rate limit"), strings.Contains(lower, "too many requests"):
-		return WakeReply{Outcome: WakeQuota, Detail: detail}
 	case strings.Contains(lower, "login"), strings.Contains(lower, "auth"), strings.Contains(lower, "unauthorized"), strings.Contains(lower, "not authenticated"):
 		return WakeReply{Outcome: WakeNeedLogin, Detail: detail}
 	default:

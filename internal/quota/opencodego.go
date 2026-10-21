@@ -64,6 +64,14 @@ func (a *OpencodeGo) Probe(ctx context.Context, req Request) (Snapshot, error) {
 	return snap, nil
 }
 
+// Identity 实现 Identifier：条目的 API key 本身（只经 Fingerprint 出包，不外露）。
+func (a *OpencodeGo) Identity(home, entry string) (string, error) {
+	if entry == "" {
+		entry = opencodeGoDefaultEntry
+	}
+	return a.readKey(home, entry)
+}
+
 // readKey 只读打开 auth.json 取条目的 API key。错误文案只带路径与条目名。
 func (a *OpencodeGo) readKey(home, entry string) (string, error) {
 	entries, path, err := readCredJSON(home, a.CredRelPath, "在该机执行 opencode auth login 登记 opencode-go API key")

@@ -68,28 +68,40 @@ func (a *Codex) Probe(ctx context.Context, req Request) (Snapshot, error) {
 	return snap, nil
 }
 
-// readTokens 取 access_token 与 account_id；返回的 secrets 是要从正文/错误里抹掉的全部值。
-func (a *Codex) readTokens(home, entry string) (token, accountID string, secrets []string, err error) {
+// codexTokens 是 auth.json › tokens 条目里本适配用到的字段。
+type codexTokens struct {
+	AccessToken  string `json:"access_token"`
+	AccountID    string `json:"account_id"`
+	IDToken      string `json:"id_token"`
+	RefreshToken string `json:"refresh_token"`
+}
+
+// loadTokens 只读解析条目，不判过期（指纹取材与探测共用）。
+func (a *Codex) loadTokens(home, entry string) (codexTokens, error) {
 	top, path, err := readCredJSON(home, a.CredRelPath, "在该机执行 codex login")
 	if err != nil {
-		return "", "", nil, err
+		return codexTokens{}, err
 	}
 	raw, ok := top[entry]
 	if !ok || string(raw) == "null" {
 		if key, has := top["OPENAI_API_KEY"]; has && string(key) != "null" && string(key) != `""` {
-			return "", "", nil, fail(CategoryCredentialInvalid,
+			return codexTokens{}, fail(CategoryCredentialInvalid,
 				"凭据文件 %s 只有 OPENAI_API_KEY（按量 API key 登录），没有 ChatGPT 订阅额度可查", path)
 		}
-		return "", "", nil, fail(CategoryCredentialMissing, "凭据文件 %s 里没有条目 %q（在该机执行 codex login）", path, entry)
+		return codexTokens{}, fail(CategoryCredentialMissing, "凭据文件 %s 里没有条目 %q（在该机执行 codex login）", path, entry)
 	}
-	var t struct {
-		AccessToken  string `json:"access_token"`
-		AccountID    string `json:"account_id"`
-		IDToken      string `json:"id_token"`
-		RefreshToken string `json:"refresh_token"`
-	}
+	var t codexTokens
 	if err := json.Unmarshal(raw, &t); err != nil || strings.TrimSpace(t.AccessToken) == "" {
-		return "", "", nil, fail(CategoryCredentialInvalid, "凭据条目 %q 缺少 access_token", entry)
+		return codexTokens{}, fail(CategoryCredentialInvalid, "凭据条目 %q 缺少 access_token", entry)
+	}
+	return t, nil
+}
+
+// readTokens 取 access_token 与 account_id；返回的 secrets 是要从正文/错误里抹掉的全部值。
+func (a *Codex) readTokens(home, entry string) (token, accountID string, secrets []string, err error) {
+	t, err := a.loadTokens(home, entry)
+	if err != nil {
+		return "", "", nil, err
 	}
 	secrets = []string{t.AccessToken, t.IDToken, t.RefreshToken}
 	if exp, ok := jwtExpiry(t.AccessToken); ok && !exp.After(time.Now()) {
@@ -97,6 +109,18 @@ func (a *Codex) readTokens(home, entry string) (token, accountID string, secrets
 			exp.Format(time.RFC3339), codexLoginHint)
 	}
 	return t.AccessToken, t.AccountID, secrets, nil
+}
+
+// Identity 实现 Identifier：tokens.account_id（token 过期也照取——指纹问的是「哪个账号」）。
+func (a *Codex) Identity(home, entry string) (string, error) {
+	if entry == "" {
+		entry = codexDefaultEntry
+	}
+	t, err := a.loadTokens(home, entry)
+	if err != nil {
+		return "", err
+	}
+	return t.AccountID, nil
 }
 
 // jwtExpiry 读 JWT payload 的 exp（不验签——只用来判断是否值得发请求）。

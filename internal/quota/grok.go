@@ -128,6 +128,39 @@ func (a *Grok) pickEntry(home, issuer string) (grokEntry, error) {
 	}
 }
 
+// Identity 实现 Identifier：首选 issuer 条目的 user_id（缺则 email）。不判过期——指纹问的是
+// 「哪个账号」；多条时与 pickEntry 同序取 expires_at 最晚者。
+func (a *Grok) Identity(home, issuer string) (string, error) {
+	if issuer == "" {
+		issuer = grokDefaultIssuer
+	}
+	top, path, err := readCredJSON(home, a.CredRelPath, "在该机执行 grok login")
+	if err != nil {
+		return "", err
+	}
+	var best *grokEntry
+	for k, raw := range top {
+		if k != issuer && !strings.HasPrefix(k, issuer+"::") {
+			continue
+		}
+		var e grokEntry
+		if json.Unmarshal(raw, &e) != nil {
+			continue
+		}
+		if best == nil || laterExpiry(e, *best) {
+			c := e
+			best = &c
+		}
+	}
+	if best == nil {
+		return "", fail(CategoryCredentialMissing, "凭据文件 %s 里没有 issuer %q 的条目（在该机执行 grok login）", path, issuer)
+	}
+	if best.UserID != "" {
+		return best.UserID, nil
+	}
+	return best.Email, nil
+}
+
 func laterExpiry(a, b grokEntry) bool {
 	switch {
 	case a.ExpiresAt.t == nil:
