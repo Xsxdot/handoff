@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Xsxdot/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/permgate"
 	"github.com/Xsxdot/handoff/internal/proto"
 )
 
@@ -181,5 +182,24 @@ func TestB460SharedChainCarriesTaskContext(t *testing.T) {
 	}
 	if got := rd.lastTaskContext(); got != tc {
 		t.Fatalf("他机环应收到同一上下文，得 %+v", got)
+	}
+}
+
+// TestB460PolicyCredentialListSingleSource 锁 S10：只读政策段的凭据清单与规则层（permgate）同源——
+// 规则层改判 Consult 的每一类位置，审批者的政策里都点名要升级，两边不会漂移。
+func TestB460PolicyCredentialListSingleSource(t *testing.T) {
+	got := approverPrompt(b460Summary, b460Perm, "N0NCE", ApproverTaskContext{Mode: proto.TaskModeReadonly, Workdir: "/wt"})
+	for _, loc := range permgate.CredentialLocations() {
+		if !strings.Contains(got, loc.Path) {
+			t.Errorf("只读政策段缺凭据位置 %q", loc.Path)
+		}
+		if loc.Note != "" && !strings.Contains(got, loc.Note) {
+			t.Errorf("只读政策段缺凭据位置说明 %q", loc.Note)
+		}
+	}
+	for _, s := range []string{permgate.SecretEnvCommandsText, ".env.*", "GROK_HOME"} {
+		if !strings.Contains(got, s) {
+			t.Errorf("只读政策段缺 %q", s)
+		}
 	}
 }

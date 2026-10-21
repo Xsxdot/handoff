@@ -91,6 +91,10 @@ type Scope struct {
 // 的 rule 取此值。
 const RuleWebFetch = "webfetch"
 
+// RuleCredentialGuard 是凭据守卫改判的规则名（B460 S10）：本会 AutoAllow 的请求触及凭据位置
+// 或密钥类环境变量时改判 Consult，Verdict.Rule 取此值供审计区分。
+const RuleCredentialGuard = "credential-guard"
+
 // RuleSafeCommand marks a positive command-whitelist match. It is distinct
 // from the empty rule used by in-scope file writes so audit callers can record
 // only static command decisions.
@@ -177,16 +181,47 @@ func (g *Gate) Judge(req Request, scope Scope) Verdict {
 		return Verdict{Action: Escalate,
 			Reason: "权限描述含截断标记，危险片段可能落在截断之外"}
 	}
+	var v Verdict
 	switch req.Tool {
 	case executor.PermToolWrite, executor.PermToolEdit:
-		return g.judgeFileWrite(req, scope)
+		v = g.judgeFileWrite(req, scope)
 	case executor.PermToolBash:
-		return g.judgeBash(req, scope)
+		v = g.judgeBash(req, scope)
 	case executor.PermToolWebFetch:
-		return g.judgeWebFetch(req)
+		return g.judgeWebFetch(req) // S10：网页抓取路由不过凭据守卫
 	default:
-		return g.judgeCommand(req.Text)
+		v = g.judgeCommand(req.Text)
 	}
+	return g.credentialGuard(req, scope, v)
+}
+
+// credentialGuard 是全部 AutoAllow 出口的唯一收口（B460 S10）：本会自动放行的请求触及凭据
+// 位置或密钥类环境变量时改判 Consult，交审批链（审批政策把凭据读取升级给人）。只降
+// AutoAllow，Consult / Escalate 原样返回；从不硬拒。
+//
+// bash 请求判的是 heredoc 闭集剥离正文后的命令：闭集正文是写进文件的数据（`cat > f <<'EOF'`），
+// 提到凭据路径不等于读取它。
+func (g *Gate) credentialGuard(req Request, scope Scope, v Verdict) Verdict {
+	if v.Action != AutoAllow {
+		return v
+	}
+	cmd := ""
+	if req.Tool == executor.PermToolBash {
+		cmd = req.Command
+		if hd := closedHeredoc(cmd); hd != nil {
+			cmd = hd.stripped
+		}
+	} else if req.Tool != executor.PermToolWrite && req.Tool != executor.PermToolEdit {
+		cmd = req.Text
+	}
+	hit, ok := credentialExposure(cmd, req.Paths, req.Cwd, scope)
+	if !ok {
+		return v
+	}
+	g.log.Info("触及凭据位置，自动放行改交审批链", "tool", req.Tool, "command", req.Command,
+		"hit", hit, "was_rule", v.Rule)
+	return Verdict{Action: Consult, Rule: RuleCredentialGuard,
+		Reason: "触及凭据或密钥，不自动放行（原判 " + v.Reason + "）: " + hit}
 }
 
 // judgeWebFetch 判定网页抓取请求（B460 S4）：描述命中黑名单 → 升级；其余放行。
