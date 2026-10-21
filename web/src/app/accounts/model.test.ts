@@ -2,9 +2,9 @@
 // 边界：只测纯函数——排序、窗口分档、底栏两模式取哪个窗口、同机判据、倒计时；
 // 渲染与色彩类落点由组件测试锁。
 import { describe, expect, it } from 'vitest'
-import type { AccountView, AccountWindowView } from '../../api/accounts'
+import type { AccountInput, AccountView, AccountWindowView } from '../../api/accounts'
 import {
-  barWindows, byProblem, countdown, failBrief, hotWindow, KIND_ORDER, recoverAt, sameMachine, statusPhrase, tightest,
+  barWindows, byProblem, countdown, credentialMoved, failBrief, hotWindow, KIND_ORDER, recoverAt, sameMachine, statusPhrase, tightest,
   toneClass, weeklyWindow, windowLabel, winTone,
 } from './model'
 
@@ -110,6 +110,30 @@ describe('账号展示规则', () => {
     // 标记无额度而窗口未越线 → 未知
     expect(recoverAt(acct('mark', 'out', [win('weekly', 10, 120 * H)]))).toBeNull()
     expect(recoverAt(acct('bad', 'out', undefined, { recover_at: 'not-a-time' }))).toBeNull()
+  })
+
+  describe('保存后是否自动探测 credentialMoved（审查 m2 / 第 2 轮 N2）', () => {
+    // 编辑前：codex 账号，代理回显为打码值
+    const editing = acct('cx', 'ok', undefined, { kind: 'codex', machine: 'linux-01', home_dir: '~/h/cx', entry: 'tokens',
+      proxy: 'socks5://u:***@127.0.0.1:7897' })
+    // 原样回提交（对话框把回显值原样放进请求体）
+    const same: AccountInput = { kind: 'codex', machine: 'linux-01', home_dir: '~/h/cx', entry: 'tokens',
+      proxy: 'socks5://u:***@127.0.0.1:7897', interval_minutes: 15, warn_percent: 60, low_percent: 80 }
+    it('新建一律探测', () => expect(credentialMoved(null, same)).toBe(true))
+    it('原样回提交（代理仍是打码回显值）不探测', () => expect(credentialMoved(editing, same)).toBe(false))
+    it.each<[string, boolean, Partial<AccountInput>]>([
+      ['kind', true, { kind: 'grok' }],
+      ['所在机器', true, { machine: 'mac-mini' }],
+      ['HOME', true, { home_dir: '~/h/cx2' }],
+      ['条目', true, { entry: 'tokens2' }],
+      ['代理换成新值', true, { proxy: 'socks5://u:new@127.0.0.1:7897' }],
+      ['代理清空（改回沿用该机代理）', true, { proxy: undefined }],
+      ['探测间隔', false, { interval_minutes: 30 }],
+      ['预警线', false, { warn_percent: 50 }],
+      ['低额度线', false, { low_percent: 90 }],
+    ])('只改%s → 探测 %s', (_label, want, patch) => {
+      expect(credentialMoved(editing, { ...same, ...patch })).toBe(want)
+    })
   })
 
   it('窗口名：agy 带模型组；四种 kind 固定顺序', () => {

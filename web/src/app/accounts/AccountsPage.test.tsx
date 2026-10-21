@@ -110,7 +110,7 @@ describe('账号页', () => {
     expect(await within(dlg).findByRole('alert')).toHaveTextContent('预警线 70 必须小于低额度线 60')
   })
 
-  it('保存后自动探测一次：新建与改了凭据位置（HOME/代理/条目/kind/机器）的编辑；探测失败只显示在卡片上（审查 m2）', async () => {
+  it('保存后自动探测一次：新建触发、只改间隔不触发、改 HOME 触发；探测失败只显示在卡片上（审查 m2；触发项全表见 model.test 的 credentialMoved）', async () => {
     const user = userEvent.setup()
     const saved: AccountView = { ...sampleAccounts()[4], name: 'cx-new', machine: 'linux-01', version: 1 }
     vi.mocked(putAccount).mockResolvedValue(saved)

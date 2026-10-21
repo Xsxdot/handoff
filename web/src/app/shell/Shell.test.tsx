@@ -3585,8 +3585,9 @@ describe('B453 账号与额度入口（S8/S9）', () => {
     vi.mocked(getAccounts).mockResolvedValue({ accounts: sampleAccounts() })
     const user = userEvent.setup()
     renderShell('/')
+    // 底栏先以空快照渲染，样本经首轮轮询回来后才有段：等段出现，不同步查（审查第 2 轮 N1）
     const bar = await screen.findByTestId('usage-statusbar')
-    expect(within(bar).getByTestId('sb-seg-og-team')).toBeInTheDocument()
+    expect(await within(bar).findByTestId('sb-seg-og-team')).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: '账号与额度' }))
     expect(screen.getByTestId('test-location').dataset.ref).toBe('/accounts')
     expect(await screen.findByRole('heading', { name: '账号与额度', level: 1 })).toBeInTheDocument()
@@ -3608,6 +3609,8 @@ describe('B453 账号与额度入口（S8/S9）', () => {
     Object.defineProperty(window, 'innerWidth', { value: 375, configurable: true, writable: true })
     renderShell('/')
     await waitFor(() => expect(getAccounts).toHaveBeenCalled())
+    // 等首轮拉取落进快照再断言缺席：否则底栏即便会渲染，也可能只是数据未到（审查第 2 轮 N1 同形检查）
+    await act(async () => { await vi.mocked(getAccounts).mock.results[0].value })
     expect(screen.queryByTestId('usage-statusbar')).toBeNull()
   })
 })

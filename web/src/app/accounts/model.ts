@@ -1,7 +1,7 @@
 // model.ts —— 账号额度的展示规则（B453 spec S8–S10，形态基准 prototypes/b453-accounts/shared/accounts.js）。
 //
 // 职责：纯函数——kind 词表、问题优先排序、窗口分档与色彩类、底栏两模式取哪个窗口、
-// 状态短语与失败短因、倒计时与时间文案、载体「同机账号」判据。账号页、底栏、弹层、移动设置节、
+// 状态短语与失败短因、倒计时与时间文案、载体「同机账号」判据、保存后是否探测。账号页、底栏、弹层、移动设置节、
 // 载体对话框共用这一份，保证同一个账号在各处读出同一句话。
 //
 // 边界：
@@ -11,7 +11,7 @@
 //
 // 色彩纪律（S8，2026-10-22 用户定）：整体灰阶；彩色类只给越线的数字/状态短语本身——
 // ≥ 预警线与低额度琥珀（q-warn），无额度红（q-out），探测失败/未探测弱前景（q-mute），正常不加类。
-import type { AccountView, AccountWindowView } from '../../api/accounts'
+import type { AccountInput, AccountView, AccountWindowView } from '../../api/accounts'
 import type { UsageMode } from '../settings/webPrefs'
 
 export type Tone = 'ok' | 'warn' | 'low' | 'out'
@@ -285,6 +285,17 @@ export function extraUsageText(a: AccountView): string {
 /** entryText 凭据位置（HOME › 条目；agy 为 CLI 自己的登录态）。 */
 export function entryText(a: AccountView): string {
   return a.entry ? `${a.home_dir} › auth.json › ${a.entry}` : `${a.home_dir}（agy CLI 自己的登录态）`
+}
+
+/**
+ * credentialMoved 账号对话框保存后是否要立即探测一次（审查第 1 轮 m2）：新建，或编辑改了凭据位置——
+ * kind、所在机器、HOME、条目、代理。代理比对的是回显打码值：原样提交（保留原值）不算改。
+ * 只改间隔/阈值不探测，等所在机按节拍来。
+ */
+export function credentialMoved(editing: AccountView | null, body: AccountInput): boolean {
+  if (!editing) return true
+  return body.kind !== editing.kind || body.machine !== editing.machine || body.home_dir !== editing.home_dir ||
+    (body.entry ?? '') !== (editing.entry ?? '') || (body.proxy ?? '') !== (editing.proxy ?? '')
 }
 
 const LOCAL_ALIASES = new Set(['', '本机', 'local'])

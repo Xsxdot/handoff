@@ -16,8 +16,8 @@ import { ApiError, fetchMachines } from '../../api/client'
 import { deleteAccount, putAccount, type AccountDeleteRefusal, type AccountInput, type AccountView } from '../../api/accounts'
 import { errorMessage } from '../lib/format'
 import {
-  ago, byProblem, clock, DEFAULT_INTERVAL, DEFAULT_LOW, DEFAULT_WARN, entryText, extraUsageText, INTERVALS, KIND_ORDER,
-  kindMeta, KINDS, nextProbeText,
+  ago, byProblem, clock, credentialMoved, DEFAULT_INTERVAL, DEFAULT_LOW, DEFAULT_WARN, entryText, extraUsageText, INTERVALS,
+  KIND_ORDER, kindMeta, KINDS, nextProbeText,
 } from './model'
 import { KindIcon, StatusText, WinsCompact } from './QuotaBits'
 import { useAccounts, useNow } from './store'
@@ -60,17 +60,6 @@ function inputOf(d: Draft): AccountInput {
   body.warn_percent = Number(d.warn)
   body.low_percent = Number(d.low)
   return body
-}
-
-/**
- * credentialMoved 保存后是否要立即探测一次（审查第 1 轮 m2）：新建，或编辑改了凭据位置——
- * kind、所在机器、HOME、条目、代理。代理比对的是回显打码值：原样提交（保留原值）不算改。
- * 只改间隔/阈值不探测，等所在机按节拍来。
- */
-function credentialMoved(editing: AccountView | null, body: AccountInput): boolean {
-  if (!editing) return true
-  return body.kind !== editing.kind || body.machine !== editing.machine || body.home_dir !== editing.home_dir ||
-    (body.entry ?? '') !== (editing.entry ?? '') || (body.proxy ?? '') !== (editing.proxy ?? '')
 }
 
 /** AccountDialog 登记/编辑同一表单；kind 换了就回填该 kind 的缺省条目。保存成功回调 onSaved（是否该立即探测）。 */

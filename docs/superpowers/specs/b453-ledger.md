@@ -371,3 +371,20 @@
 - m2 红：`vitest src/app/accounts/AccountsPage.test.tsx` 新用例 FAIL `expected "vi.fn()" to be called with arguments: [ 'cx-new' ]`（同文件「立即探测」用例连带红：未被消费的 mockRejectedValueOnce 漏到下一条，实现后自然消失）。绿：同命令 8 passed。
 - 收尾：web 全量 `npx vitest run` → `Test Files 150 passed / Tests 2000 passed`；`npm run typecheck` 过；eslint 触及文件 0 error、5 warning（同前，既有）；`go build ./... && go vet ./...` 过；`go test ./internal/proto/ ./internal/scheduling/... ./internal/orchestration/ ./cmd/ -count=1` 全 ok；`go test ./internal/agentd/ -count=1` ok（91s）。gofmt 改过的 Go 文件无差异。
 - m5（只记账）：本轮与修复轮 1 各跑一次 web 全量，均全绿（1998、2000），未复现审查所见的偶发 1 失败。
+
+## implement 修复轮 3（审查第 2 轮）
+
+### 偏离与自主决定
+
+1. N2：`credentialMoved` 从 `AccountsPage.tsx` 移到 `model.ts` 导出（纯函数，与其它展示/判据规则同处），在 `model.test.ts` 表驱动测。在 plan 决策权限内（plan 授权执行者在既定组件内调整内部结构；未改任何接缝或对外形状）。
+2. N2：表里除协调者列的五个触发项与间隔/阈值外，另加「代理清空（改回沿用该机代理）→ 触发」与「新建一律触发」「原样回提交不触发」三行。在 plan 决策权限内（只加测试用例，不改行为）。
+3. N1「同形检查」：`Shell.test.tsx` 第三条 B453 用例「紧凑档不渲染底栏」虽不同步查元素，但在 `getAccounts` 刚被调、样本还没落进快照时就断言底栏缺席——数据未到时缺席是空过。加一步 `act` 等首轮拉取的 promise 落定后再断言。在 plan 决策权限内（只改测试）。
+4. `AccountsPage.test.tsx` m2 用例标题改为如实描述所测三种情形，并指向 model.test 的全表。无行为改动。
+
+### 过程与证据
+
+- N1 红：`npx vitest run src/app/shell/Shell.test.tsx`（改前单跑）→ `× 桌面：所有页面底部挂额度底栏…`，`Unable to find an element by: [data-testid="sb-seg-og-team"]`，`Tests 1 failed | 154 passed (155)`。改为 `await within(bar).findByTestId('sb-seg-og-team')`；第二条用例本就是 `await screen.findByTestId('sb-seg-codex-plus')`，不改。绿：单跑连跑 3 次均 `Tests 155 passed (155)`。
+- N1 同形检查有牙：临时去掉 `Shell.tsx` 底栏挂载条件里的 `!compact &&`，`-t '紧凑档不渲染底栏'` → `1 failed`；还原后 `git diff --stat src/app/shell/Shell.tsx` 为空。
+- N2 红（新缝先编译红）：`model.test.ts` 引用未导出的 `credentialMoved` → 新用例全 ×。移函数后绿：`Tests 22 passed (22)`。有牙：从 `credentialMoved` 去掉 `body.machine !== editing.machine` → `× 只改所在机器 → 探测 true`，`AssertionError: expected false to be true`，`1 failed | 21 passed`；还原（`body.machine` 计数回到 1）。
+- 收尾：`npx vitest run src/app/shell/Shell.test.tsx src/app/accounts/` → `Test Files 6 passed / Tests 196 passed`；`npm run typecheck` 退出 0；eslint 触及文件无输出；web 全量 `npx vitest run` 两次：`Test Files 150 passed (150) / Tests 2011 passed (2011)`，两次相同。
+- 第 1 轮 m5 的根因即 N1（全量偶发、单跑确定红），本轮修掉。
