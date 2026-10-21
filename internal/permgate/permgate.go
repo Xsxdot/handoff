@@ -466,6 +466,12 @@ func matchSilentFields(fields []string, command string) (id string, ok bool) {
 	if hasCommandSubstitution(command) {
 		return "", false
 	}
+	// B460 修复轮 2 F1：命令词必须朴素，且与本函数看到的首词元一致。cd 判定用同一个
+	// commandWord 归一——只读匹配认得的命令词，cd 跟踪一定也认得，两者不会分歧
+	// （修前 `'cd' /etc` 在这里是静默 cd、在 cd 跟踪里不是 cd）。
+	if w, plain, ok := commandWord(command); !ok || !plain || w != fields[0] {
+		return "", false
+	}
 	if len(fields) >= 2 && fields[0] == "go" {
 		switch fields[1] {
 		case "build":
@@ -671,10 +677,11 @@ func compoundSilent(command string) (id string, segments int, ok bool) {
 	return "compound", len(segs), true
 }
 
-// isCDSegment 判断一段的首词元是否为 cd。
+// isCDSegment 判断一段的命令词是否为 cd（共用命令词归一，B460 修复轮 2 F1：
+// 引号/转义形态的 cd 同样算 cd）。
 func isCDSegment(seg string) bool {
-	fields, ok := silentFields(seg)
-	return ok && len(fields) > 0 && fields[0] == "cd"
+	isCD, _ := isCDWord(seg)
+	return isCD
 }
 
 // segmentHasRelativeWriteTarget 判断一段是否存在相对路径的参数位写落点。

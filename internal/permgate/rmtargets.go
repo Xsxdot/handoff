@@ -111,6 +111,10 @@ func rmInScopeVerdict(cmd string, scope Scope) (Verdict, bool) {
 	if !ok {
 		return Verdict{}, false
 	}
+	if !commandWordsPlain(segs) {
+		// B460 修复轮 2 F1：命令词带引号/转义的段（`'cd' ..`、`"rm"`）不在闭集。
+		return Verdict{}, false
+	}
 	if !cdChainTrusted(segs, ops) {
 		// B460 修复：cd 后有 `;` / `||` 时 cd 失败、rm 仍在未知 cwd 执行，
 		// 相对删除目标不可证明——不放宽，维持现状。
@@ -240,7 +244,11 @@ func proveDirInTmp(tok, cdBase, tmpDir, root string) (string, bool) {
 		}
 		joined = filepath.Join(cdBase, tok)
 	}
-	p := resolveExistingPrefix(filepath.Clean(joined))
+	// B460 修复轮 2 F6：悬空软链按其目标判（resolveTargetPath）。
+	p, err := resolveTargetPath(filepath.Clean(joined))
+	if err != nil {
+		return "", false
+	}
 	rel, err := filepath.Rel(root, p)
 	if err != nil {
 		// 跨卷等无法求相对路径的情形：视作不在基准内。

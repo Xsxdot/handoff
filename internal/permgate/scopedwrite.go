@@ -55,6 +55,11 @@ func scopedWriteID(cmd, cwd string, scope Scope) (string, bool) {
 	if !cdChainTrusted(segs, ops) {
 		return "", false
 	}
+	// B460 修复轮 2 F1 纵深防御：任一段命令词非朴素（引号、转义、展开字符），实际执行的
+	// 命令不可静态证明——整条不放行。
+	if !commandWordsPlain(segs) {
+		return "", false
+	}
 	rebind := scopeVarRebindSuspect(cmd)
 	base := cwd
 	firstID := ""

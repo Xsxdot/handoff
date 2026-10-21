@@ -98,10 +98,11 @@ func cdResolvedTargets(cmd string, scope Scope, cwd string) (targets []string, u
 			broken = true
 			continue
 		}
-		if len(toks) > 0 && toks[0] == "cd" {
+		if isCD, plain := isCDWord(seg); isCD {
 			tgt, ok := cdTarget(toks)
-			if !ok {
-				// 裸 cd（回家目录）、带旗标、`cd -`/`cd --`/`cd +1`、多词元：落点不可证明
+			if !plain || !ok {
+				// 命令词带引号/转义的 cd（`'cd' /etc`，B460 修复轮 2 F1）、裸 cd（回家目录）、
+				// 带旗标、`cd -`/`cd --`/`cd +1`、多词元：落点不可证明
 				broken = true
 				continue
 			}
@@ -135,9 +136,9 @@ func cdWalkBase(cmd string, scope Scope) (base string, broken bool) {
 			broken = true
 			continue
 		}
-		if len(toks) > 0 && toks[0] == "cd" {
+		if isCD, plain := isCDWord(seg); isCD {
 			tgt, ok := cdTarget(toks)
-			if !ok {
+			if !plain || !ok {
 				broken = true
 				continue
 			}
@@ -297,7 +298,10 @@ func provePathInBases(joined string, scope Scope) (string, bool) {
 	if err != nil {
 		return "", false
 	}
-	p = resolveExistingPrefix(filepath.Clean(p))
+	p, err = resolveTargetPath(filepath.Clean(p))
+	if err != nil {
+		return "", false // 软链环：不可证明（B460 修复轮 2 F6）
+	}
 	for _, b := range []string{scope.Workdir, scope.TaskDir, scope.TaskTmpDir} {
 		if b == "" {
 			continue
@@ -337,7 +341,16 @@ func provePathInBases(joined string, scope Scope) (string, bool) {
 func cdChainTrusted(segs, ops []string) bool {
 	first := -1
 	for i, seg := range segs {
-		if toks, ok := rmTokens(seg); ok && len(toks) > 0 && toks[0] == "cd" {
+		if isCD, plain := isCDWord(seg); isCD {
+			// B460 修复轮 2 F1：cd 按共用命令词归一认（`'cd'`、`c''d`、`c\d` 都是 cd），
+			// 命令词非朴素的 cd 不可信。
+			if !plain {
+				return false
+			}
+			toks, ok := rmTokens(seg)
+			if !ok {
+				return false
+			}
 			if _, ok := cdTarget(toks); !ok {
 				// B460 修复轮 1 B1：选项形 / 特殊目标 / 无参 cd 的去向是 $OLDPWD、$HOME 或
 				// 目录栈，静态不可知——整条 cd 链不可信，三处出口一律回落。

@@ -109,6 +109,10 @@ func closedHeredoc(cmd string) *closedHeredocInfo {
 	if !ok {
 		return nil
 	}
+	// B460 修复轮 2 F1：各段命令词必须朴素（`"cat"`、`'cd'` 不在闭集）。
+	if !commandWordsPlain(segs) {
+		return nil
+	}
 	for i, seg := range segs {
 		if i == catIdx {
 			continue

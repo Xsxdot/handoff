@@ -15,6 +15,7 @@ package permgate
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 )
@@ -45,7 +46,10 @@ func InScope(path string, scope Scope) (in bool, base string, err error) {
 	if err != nil {
 		return false, "", fmt.Errorf("绝对化目标路径 %q: %w", path, err)
 	}
-	p = resolveExistingPrefix(p)
+	p, err = resolveTargetPath(p)
+	if err != nil {
+		return false, "", fmt.Errorf("解析目标路径 %q: %w", path, err)
+	}
 
 	for _, b := range []string{scope.Workdir, scope.TaskDir, scope.TaskTmpDir} {
 		if b == "" {
@@ -66,6 +70,54 @@ func InScope(path string, scope Scope) (in bool, base string, err error) {
 		}
 	}
 	return false, "", nil
+}
+
+// maxSymlinkHops 是解析悬空软链的跳数上限（与常见内核的 40 同量级）；超过即判软链环。
+const maxSymlinkHops = 40
+
+// resolveTargetPath 是写落点的真实路径解析（B460 修复轮 2 F6）：在 resolveExistingPrefix
+// 之上补「悬空软链」——路径某一级是指向不存在目标的软链时，EvalSymlinks 解不动它，
+// 旧实现把它当「不存在的普通名字」接回去，`ln -s /etc/new $TMPDIR/x` 之后写 $TMPDIR/x
+// 被判在范围内，实际写穿到 /etc/new。这里对解不动的那一级 Lstat，是软链就读出目标
+// （相对目标按软链所在目录解释）、接上剩余部分重新解析，直到全部解开。
+//
+// 返回 err：软链环或跳数超限——落点不可证明，调用方按 fail-closed 处置。
+// 写落点（InScope、provePathInBases、proveDirInTmp）都走这里；基准目录本身仍用
+// resolveExistingPrefix（基准由 agentd 创建，不是 agent 可控的悬空软链）。
+func resolveTargetPath(p string) (string, error) {
+	for hop := 0; hop <= maxSymlinkHops; hop++ {
+		rest := ""
+		cur := p
+		next := ""
+		for {
+			if r, err := filepath.EvalSymlinks(cur); err == nil {
+				if rest == "" {
+					return r, nil
+				}
+				return filepath.Join(r, rest), nil
+			}
+			if fi, err := os.Lstat(cur); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+				// 解不动但本级是软链：悬空软链（或环），跟随它的目标
+				to, rerr := os.Readlink(cur)
+				if rerr != nil {
+					return "", fmt.Errorf("读软链 %q: %w", cur, rerr)
+				}
+				if !filepath.IsAbs(to) {
+					to = filepath.Join(filepath.Dir(cur), to)
+				}
+				next = filepath.Join(to, rest)
+				break
+			}
+			parent := filepath.Dir(cur)
+			if parent == cur {
+				return p, nil
+			}
+			rest = filepath.Join(filepath.Base(cur), rest)
+			cur = parent
+		}
+		p = filepath.Clean(next)
+	}
+	return "", fmt.Errorf("软链跳数超过 %d（疑似软链环）", maxSymlinkHops)
 }
 
 // resolveExistingPrefix 对路径中「已存在的最长前缀」求 EvalSymlinks，
