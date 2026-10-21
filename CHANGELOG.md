@@ -14,7 +14,6 @@
 
 - **`handoff upgrade --from <目录>`：用本机构建换版（B462）。** 来源换成 `scripts/build-deploy.sh --pack <目录> <os/arch>...` 的产物（每平台一个 `handoff_<tag>_<os>_<arch>.{tar.gz|zip}` + `checksums.txt`，形态与 release 资产逐字一致；tag 为 HEAD 前 12 位，打包拒绝脏树）。巡检「最新」行显示 `<tag>（本机构建 <目录>）`；`--now` 远端一律推送，sha 校验、自检、`.prev`、重启、等新版上线与 release 来源同一路径；目录缺某平台的包时该机单独失败并点名资产。与 `--rollback` 互斥。
 - **换版后账本可读校验（B462）。** `upgrade --now`（任何来源，远端与本机）在新版上线后探 `GET /api/disciplines`：换版前账本可读、换版后回 503 判失败「新版已上线但账本未挂载」，探针连错 3 次判「账本是否挂载未能确认」；换版前不可读或未知不检查。本机换版前账本可读时，触发重启后会等新版上线（120s）再探。控制台「执行机升级」路径行为不变。
-
 - **`dispatch --wait` / `wait --final` 遇待答工单以退出码 5 交回（B460）。** 任务停在审批链判不了、要人答的权限请求或提问上时立即退出（进入时已有待答工单也一样，不连事件流），stdout 每张工单一块：`ticket:` / `kind:` / 可选 `reason:`、`--- 全文 ---` 定界的工单全文（取工单记录，不截断）、可直接执行的 `reply:` 答复命令，最后一行 `resume: handoff wait <id> --final[ --machine <M>]`。判据是任务快照的待答工单列表，事件只作唤醒；优先级：回合已结束（0/3）> 待答工单（5）> 超时（124）。
 - **网页抓取统一放行并审计（B460）。** 权限门新增 `webfetch` 路由：截断或描述命中黑名单仍升级，其余直接放行，写一条 `permission_auto_allow`（`rule=webfetch`，新键 `url`）。opencode 与 claude（WebFetch / WebSearch）的抓取请求改为产出结构化载荷，agy 补 URL；codex 无抓取审批类型。**风险（用户接受）**：抓取可经 URL 外带数据，由审批链拦凭据读取兜底（读凭据不再自动放行，见「变更」），不设域名白名单。
 - **任务范围内建目录与写入自动放行（B460）。** `mkdir`、`echo` / `printf` 写重定向在每个落点都能静态证明落在工作树、任务目录（含产物目录）、任务临时目录内时放行（审计 id `mkdir` / `echo-write` / `printf-write`）：认绝对路径、`&&` 链里已证明的 `cd` 之后的相对路径、`$TMPDIR` 与 `$HANDOFF_ARTIFACTS_DIR` 前缀、codex 审批报文的 `cwd`；`$HOME`、`~`、通配、无基准的相对路径不放行。`mkdir` 越出任务范围由「交审批者」收紧为直接升级人工。
@@ -50,7 +49,6 @@
 ### 修复
 
 - **agentd 启动时自登记撞上瞬时错误（如 `too many clients`）即放弃挂载账本，需人工再重启一次（B462）。** 自登记与本地 targets 导入现与账本打开同一判据（`IsTransientOpenError`）退避重试（保留已打开的账本句柄，只重试失败的那一步），期间 `handoff status` 回 503「账本未挂载：自登记失败，第 N 次重试（原因）」；撞名等非瞬时错误仍 fail-closed 不挂载。
-
 - **依赖 `cd` 的静态放行在 `cd` 失败时会写/删到未知目录（B460）。** heredoc 闭集写入与范围内 `rm` 把 `cd X; …`、`cd X || …`、换行接续的 `cd` 当作必然生效：`cd` 失败时命令在执行器当前目录（claude 的 Bash 跨调用保留）里执行，如 `cd $TMPDIR/missing; cat > .bashrc <<'EOF'` 会被自动放行。现在三个依赖 `cd` 基准的放行出口共用同一判据：首个 `cd` 之后的连接符必须全是 `&&`、`cd` 前不得接 `||`，否则不放行（交审批者）。
 - **`cd -`、`cd --`、裸 `cd` 等被当成普通目录，`printf -v` 改绑 `$TMPDIR` 未被识别（B460）。** 依赖 `cd` 基准的放行出口（heredoc 闭集写入、范围内 `rm`、范围内写入）把 `cd -` / `cd --` / `cd -P` / `cd -L` / zsh `cd -1` `cd +1` 当成名为 `-`、`--` 的相对目录，`cd $TMPDIR && cd - && rm -rf foo` 会在上一个目录里被自动放行；现在这些形态、裸 `cd` 与 `cd ~…` 让整条 `cd` 链不可信，不放行。`$TMPDIR` / `$HANDOFF_ARTIFACTS_DIR` 前缀的可信判定改为「变量名除 `$NAME` / `${NAME}` 展开外任何出现即不信」，覆盖 `printf -vTMPDIR`、`read`、`for … in`、`mapfile`、`declare -n`、`${NAME:=…}` 等改绑写法；`printf -v` 不再算只读命令。网页抓取放行只给不带命令与路径的纯抓取载荷。
 - **命令词带引号或转义的 `cd`（`'cd' /etc`、`c''d /etc`）骗过范围判定；写落点是悬空软链时写穿到范围外（B460）。** 「这一段是不是 `cd`」与只读白名单此前各用一套分词，`cd $TMPDIR && 'cd' /etc && echo x > passwd` 被当成在 `$TMPDIR` 里写而自动放行；现在两者共用同一命令词归一，命令词带引号、转义、`$` 等的段永不算只读，依赖 `cd` 基准的放行出口遇到这类命令词整条不放行。写落点（含写文件工具）某一级是悬空软链时按软链目标判范围，软链环不可证明；此前 `ln -s /etc/new $TMPDIR/x` 之后写 `$TMPDIR/x` 会被放行（继承缺陷）。

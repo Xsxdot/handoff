@@ -56,3 +56,7 @@
 - R5 通过：测试库 `update devices set instance_id='b462-collide-…' where name='b462-linux'` 后 `--from pack` 换版 → 「b462-linux 失败 新版已上线但账本未挂载 / 看该机 agentd 日志…；prev: …」，exit 1；CLI 日志「账本可读探针：对端账本未挂载（503）」；对端日志「设备自登记撞名被拒」→「机器自登记失败，账本子系统不挂载」（撞名不重试，fail-closed 保持）。恢复 instance_id 并重启后 disciplines 200。
 - R7 未验：需改测试角色 CONNECTION LIMIT（管理员凭据，且波及 B453 隔离实例），按 plan 标未验，以 S4 单测（注入瞬时失败序列）为准，不判等价。
 - R8 通过：删测试库 devices 行 b462-linux/b462-mac（DELETE 2）；`systemctl stop handoff-b462-iso` → inactive（--collect 回收）；`launchctl bootout` → 0、job 已无；删 /root/b462-iso。在役 `handoff upgrade --check`：三台 e53b10ce83b9「需要升级」vs v0.5.0，与开始前一致。
+
+## review（2026-10-22，独立审查 subagent，ab03d907..cd172f7b）
+- 结论 PASS，无 Critical/Important。复跑：build/vet OK；触及 5 包 ok；全量 `go test ./... -count=1 -p 4` 65 ok / 0 FAIL / 7 无测试。变异 4 处全红并还原回绿：(a) --from 不强推 → TestUpgradeFromPushes…/MissingPlatform…；(b) 前可读后 503 判成功 → TestJudgeLedgerAfterGrid、RemoteOne…、CLI 远端与本机各一；(c) 自登记错误拍平为非瞬时 → TestSetupLedgerRetriesTransientSelfRegister、…GivesUpOnShutdown…；(d) sha 不校验 → TestLocalDirInstallerRejectsBadOrMissingChecksum。
+- Minor：M1 Q9 超时原文经共享 RemoteOne 也进控制台「执行机升级」失败原因（Q9 授权内，控制台测试绿，记账）；M2 NewLocalDirInstaller 复制 NewInstaller 函数体（主会话已改为调用 NewInstaller，release/cmd 相关测试 ok）；M3 CHANGELOG 列表空行（主会话已删）；M4 真机用 B453 测试库、R8 删设备行而非删库（如实记录，库随 B453 finish 删除）。

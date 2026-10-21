@@ -20,7 +20,6 @@ import (
 	"os"
 	"sort"
 	"strings"
-	"time"
 )
 
 // LoadLocalDir 读一个本机构建打包目录，得出 Release。
@@ -90,11 +89,8 @@ func LoadLocalDir(dir string) (Release, error) {
 // 返回：HTTP 传输层换成 http.NewFileTransport(dir) 的 Installer——Release 里的
 // file:///<文件名> 由它解析到 dir 下；其余行为（重试、上限、校验、自检）与 NewInstaller 一致。
 func NewLocalDirInstaller(log *slog.Logger, dir string) *Installer {
-	return &Installer{
-		HTTP:         &http.Client{Timeout: 10 * time.Minute, Transport: http.NewFileTransport(http.Dir(dir))},
-		Log:          log,
-		DownloadBase: DownloadBase,
-	}
+	// 经 NewInstaller 构造，只换传输层：Installer 的其余缺省（超时、下载基址等）只在一处声明
+	return NewInstaller(log, http.NewFileTransport(http.Dir(dir)))
 }
 
 // localAssetURL 把目录内文件名写成 file 传输层可解析的 URL。
