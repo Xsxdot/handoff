@@ -53,3 +53,19 @@
 - 自审（plan skill「自审」节）：S1–S12 均有交付行与验收；待验证假设 U1–U8 有动作与阻塞范围；决策权限 §6；待拍板在稿首；行为闭环 12 行五格齐；段间依赖分硬依赖/施工排序（§4）；真机清单 §5.3 汇总；冻结节有结论（F1–F19 + F-B460-1/2）。
 - 提交：`git commit docs/superpowers/plans/b453-plan.md docs/superpowers/specs/b453-ledger.md -m "docs(B453): plan 出稿（待拍板）…"` → `[cards/B453-charter-1 ceb8a28d] … 2 files changed, 413 insertions(+)`；本行随后 amend 一次收进同批提交（hash 会变，不回写）。
 - plan 拍板（2026-10-22 主会话，891ede8f 稿）：Q1–Q19 除 Q2 备选（opencode.db OAuth 凭据位置，凭据类留用户）外全部采纳；SC1–SC7 认可、spec 不升版。详见 plan「拍板」节。
+
+## implement 段 1（2026-10-22，本会话 implement subagent，主检出 `cards/B453-charter-1`）
+
+- 基线：`7b1a26a8`（plan 拍板）。读入 implement skill 全文、plan 拍板节 + §0–§10、spec r1.1、facts-code、facts-orca opencode 节、本台账。
+- 读码（落点核实）：registry 端口 `internal/schedclient/schedclient.go`（Put/Get/List/Delete，ErrCASConflict/ErrNotFound 由组装点翻译）；agentd 适配 `server.go:1447 SchedulingRegistry`；组装点 `cmd/agentd.go setupLedger`（shared 才 SelfRegister；返回的 cleanup 先停镜像后关库）；转发 `forward.go forwardJSON`（带 `X-Handoff-Forwarded`）、`server.go:598 remoteTarget`、`:610 IsSelfMachine`；检测转发样板 `schedapi.go handleCarrierDetect`；代理 `proxycfg.Transport`；凭据相对路径 `toolchain.CredRelPathFor("opencode")`=`.local/share/opencode/auth.json`；agentd 双机测试夹具 `hostprobe_test.go newRemoteSchedEnv`（远端 stub）——本段的转发测试改用两台真 Server 共用一个 ledger.Store 模拟共享账本。
+- T1 quota opencode-go 解析与适配（`internal/quota/{quota,opencodego}.go`）：
+  - 红（编译）：`env -u CLAUDE_CODE_SESSION_ID go test ./internal/quota/ -run OpencodeGo` → `undefined: Window / Category / WindowSession …`。
+  - 红（断言，空壳落地后）：同命令 → `TestOpencodeGoParseUsageTable` 各子例「窗口数 = 0，want 3」「want failure parse … err=<nil>」「want blocked no_subscription, got <nil>」；`ProbeReadsEntryAndSendsBearer`「请求形状 path=""」；`CredentialFailuresAndNoLeak`「want credential_missing … err=<nil>」；`NetworkFailure…`「断网应判 network，得 <nil>」。`RegistryRejectsUnknownKind` 只见编制红（Registry 与类型同批写成，非空壳，如实记）。
+  - 绿：同命令 5 个测试 PASS。
+  - 判断：403 与正文含 EntitlementError 判为「成功读数 + Blocked=no_subscription」而非探测失败（plan 拍板 Q4：接口明示不可用归无额度）；429 判 rate_limited（Q10 限速不算额度）；percent 按 0–100、resetsAt 兼容秒/毫秒/数字串/RFC3339——全部是 orca 转述，**未经真机**（U1），R1 真样本回来再校正。凭据只 `os.ReadFile`；响应体先把 key 替换成 *** 再进解析/失败文本；json 解析凭据文件失败不回显 err（可能带出文件片段）。HTTP 超时 20s（§6 授权 10–30s）。失败类别在 §9 草案外增 `credential_invalid`、`rate_limited`、`upstream`、`unsupported_kind`（§9 写「至少」）。
+- T2 账号域两行写（`internal/scheduling/accounts/{types,accounts}.go`）：
+  - 红（编译）：`go test ./internal/scheduling/accounts/ -run 'Merge|Concurrent'` → `no non-test Go files`。
+  - 红（断言）：空壳后同命令 → 「新建账号: v=0 err=<nil>」「开始早于标记的探测抹掉了标记」「无定义行不得写读数（孤儿行），得 <nil>」「定义行应为人最后一次写: version=0」。
+  - 首绿后 `-race -count=30` 撞一次 `TestConcurrentHumanProbeMarkerKeepAllFields`：「读数行连续 8 次冲突」——两写者紧循环同相，一方连续落败（饿死）。修复 1 次：保留预算 8（Q1），重试间加 0~attempt ms 随机退让。复跑 `-race -count=300` → ok（5.3s）。人侧冲突 0 次（Q1 承重属性）。
+  - 判断：Derive 段 1 只出 none/fail/out/ok（低额度档段 3）；已过重置时刻的窗口按 0% 计（Q4 补条）；读数行坏行按空行重建（可重建缓存，不卡死写回），定义行坏行报错；RecordProbe/MarkQuota 先查定义行，无定义不写孤儿读数行；阈值与间隔校验提前到段 1（间隔驱动探测器节拍，0 会热循环；阈值是一行次序判断），查重与 HOME 形态仍在段 2。
+  - 编译：`go build ./... && go vet ./internal/quota/ ./internal/scheduling/...` 通过。
