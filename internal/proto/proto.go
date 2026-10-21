@@ -331,6 +331,18 @@ type Task struct {
 	Account      string `json:"-"`
 	AccountKind  string `json:"-"`
 	AccountProxy string `json:"-"`
+	// RerunOf / RerunBy 是只读任务撞额度换人重跑的双向链接（B453 F17）：RerunOf 指回被重跑的
+	// 原任务（随新任务建任务落库），RerunBy 指向接替的新任务（原任务迁 failed 之前回写）。
+	// 缺席 = 不在重跑链上。客户端 `--wait`/`wait --final` 见 failed + rerun_by 即跟到新任务。
+	RerunOf *TaskRef `json:"rerun_of,omitempty"`
+	RerunBy *TaskRef `json:"rerun_by,omitempty"`
+}
+
+// TaskRef 指向一条可能在他机的任务（B453 F17/F14）：Task 为任务 ID，Machine 为任务所在
+// 机器的自名（空 = 未配自名的单机部署，按本机解释）。
+type TaskRef struct {
+	Task    string `json:"task"`
+	Machine string `json:"machine"`
 }
 
 // 任务形态取值（B452 F1）。wire 上缺席或空串等于 TaskModeBranch。
