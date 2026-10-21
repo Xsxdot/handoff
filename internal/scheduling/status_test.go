@@ -82,9 +82,9 @@ func TestApplyDetectUsesPriorityAndPreviousReachability(t *testing.T) {
 	}{
 		{"pending unreachable", scheduling.StatusPending, scheduling.DetectEvidence{}, "offline", scheduling.StatusPending, "offline"},
 		{"online unreachable", scheduling.StatusOnline, scheduling.DetectEvidence{}, "offline", scheduling.StatusUnreachable, "offline"},
-		{"quota unreachable", scheduling.StatusQuota, scheduling.DetectEvidence{}, "offline", scheduling.StatusUnreachable, "offline"},
 		{"unreachable remains", scheduling.StatusUnreachable, scheduling.DetectEvidence{}, "offline", scheduling.StatusUnreachable, "offline"},
-		{"quota beats login", scheduling.StatusPending, scheduling.DetectEvidence{Reachable: true, Quota: true, NeedLogin: true}, "quota", scheduling.StatusQuota, "quota"},
+		// B453：限额中退役——撞额度的载体按已上线；未绑定账号时额度原因进 last_error。
+		{"quota is online and beats login", scheduling.StatusPending, scheduling.DetectEvidence{Reachable: true, Quota: true, NeedLogin: true}, "quota", scheduling.StatusOnline, "quota"},
 		{"login", scheduling.StatusPending, scheduling.DetectEvidence{Reachable: true, NeedLogin: true}, "login", scheduling.StatusPending, "login"},
 		{"online clears detail", scheduling.StatusPending, scheduling.DetectEvidence{Reachable: true}, "stale", scheduling.StatusOnline, ""},
 	}
@@ -99,11 +99,6 @@ func TestApplyDetectUsesPriorityAndPreviousReachability(t *testing.T) {
 			if tc.previous != scheduling.StatusPending {
 				if _, err := svc.ApplyDetect("c1", scheduling.DetectEvidence{Reachable: true}, ""); err != nil {
 					t.Fatalf("建立前置 online: %v", err)
-				}
-				if tc.previous == scheduling.StatusQuota {
-					if _, err := svc.ApplyDetect("c1", scheduling.DetectEvidence{Reachable: true, Quota: true}, ""); err != nil {
-						t.Fatalf("建立前置 quota: %v", err)
-					}
 				}
 				if tc.previous == scheduling.StatusUnreachable {
 					if _, err := svc.ApplyDetect("c1", scheduling.DetectEvidence{}, ""); err != nil {
@@ -124,14 +119,11 @@ func TestApplyDetectUsesPriorityAndPreviousReachability(t *testing.T) {
 
 func TestAdmissionRequiresOnlineCarrierAndSeparatesNoHealthyFromNoSlot(t *testing.T) {
 	svc, _ := newRowsFixture(t)
-	for _, name := range []string{"pending", "quota", "unreachable", "online"} {
+	for _, name := range []string{"pending", "unreachable", "online"} {
 		if err := svc.PutCarrier(scheduling.Carrier{Name: name, Machine: name + "-machine", CLI: "opencode",
 			Credential: scheduling.CredentialStandalone, MaxConcurrency: 1}, 0); err != nil {
 			t.Fatalf("登记 %s: %v", name, err)
 		}
-	}
-	if _, err := svc.ApplyDetect("quota", scheduling.DetectEvidence{Reachable: true, Quota: true}, "quota"); err != nil {
-		t.Fatalf("设置 quota: %v", err)
 	}
 	if _, err := svc.ApplyDetect("unreachable", scheduling.DetectEvidence{Reachable: true}, ""); err != nil {
 		t.Fatalf("设置 unreachable 前置: %v", err)
@@ -143,7 +135,7 @@ func TestAdmissionRequiresOnlineCarrierAndSeparatesNoHealthyFromNoSlot(t *testin
 		t.Fatalf("设置 online: %v", err)
 	}
 	if err := svc.PutSquad(scheduling.Squad{Name: "exec", Role: scheduling.RoleExecutor,
-		Members: []scheduling.SquadMember{{Carrier: "pending"}, {Carrier: "quota"}, {Carrier: "unreachable"}, {Carrier: "online"}}}, 0); err != nil {
+		Members: []scheduling.SquadMember{{Carrier: "pending"}, {Carrier: "unreachable"}, {Carrier: "online"}}}, 0); err != nil {
 		t.Fatalf("登记执行者小队: %v", err)
 	}
 	got, err := svc.Admit(scheduling.IgnitionRequest{Card: "B293", Squad: "exec", Actor: "test"})
@@ -155,7 +147,7 @@ func TestAdmissionRequiresOnlineCarrierAndSeparatesNoHealthyFromNoSlot(t *testin
 	}
 
 	if err := svc.PutSquad(scheduling.Squad{Name: "none", Role: scheduling.RoleExecutor,
-		Members: []scheduling.SquadMember{{Carrier: "pending"}, {Carrier: "quota"}, {Carrier: "unreachable"}}}, 0); err != nil {
+		Members: []scheduling.SquadMember{{Carrier: "pending"}, {Carrier: "unreachable"}}}, 0); err != nil {
 		t.Fatalf("登记全非 online 小队: %v", err)
 	}
 	if _, err := svc.Admit(scheduling.IgnitionRequest{Card: "B295", Squad: "none", Actor: "test"}); !errors.Is(err, scheduling.ErrNoHealthy) {
@@ -181,7 +173,6 @@ func TestCarrierStatusLabels(t *testing.T) {
 	}{
 		{scheduling.StatusPending, "未上线"},
 		{scheduling.StatusOnline, "已上线"},
-		{scheduling.StatusQuota, "限额中"},
 		{scheduling.StatusUnreachable, "不可达"},
 	}
 	for _, c := range cases {

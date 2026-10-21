@@ -131,7 +131,7 @@ type State string
 
 const (
 	StateOK   State = "ok"   // 正常
-	StateLow  State = "low"  // 低额度（段 3 接入推导）
+	StateLow  State = "low"  // 低额度
 	StateOut  State = "out"  // 无额度
 	StateFail State = "fail" // 探测失败
 	StateNone State = "none" // 未探测

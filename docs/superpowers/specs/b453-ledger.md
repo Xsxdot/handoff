@@ -143,3 +143,15 @@
   - 红：`go test ./cmd/ -run TestAccount` →「表格缺 "月 13%"」。
   - 绿：quota、accounts、proxycfg、cmd `-run TestAccount` 全 ok。
   - 判断：grok 数值经 `num` 统一解 `{"val":N}`；周窗口重置 = `config.currentPeriod.end`，回退 `billingPeriodEnd`；月窗口重置 = `billingPeriodEnd`；`monthlyLimit=0` 不出月窗口；无 `subscriptionTier` 不报套餐。credits 成功后**不**追调 `/billing`（照 orca：credits 优先、失败回退）——真机这个账号 monthlyLimit=0，追调也拿不到月窗口，还多一次外呼。codex `rate_limit_reset_credits` 忽略（不是可用额度，是「重置次数券」，进 extra_usage 会误导）。代理打码口径收到 `proxycfg.Mask`（新函数；proxycfg 不在 plan §3 可改清单内，属偏离，见交回）：账号 API 回显、探测失败文案、quota/探测器日志共用；`accounts.MaskProxy` 改为委托它。CLI 百分比 `math.Round` 取整，读数原值不动；组名原样。
+- T8 提交：`git commit … -- <路径>` → `d2215240 fix(B453): R2 修补——真样本替换合成样本、grok val 包装与重置时刻、代理打码同形、CLI 百分比取整`；工作树只剩 b434-ledger.md 与 .playwright-mcp/（红线外，不碰）。
+- T9 五档推导（Q4/V6）：
+  - 红（编译）：新增 `accounts/derive_test.go` → `too many arguments in call to accounts.Derive`、`undefined: accounts.RecoverAt`、`st.Blocks undefined`、`svc.Assess undefined`。
+  - 红（断言，桩：Derive 换签名不改逻辑、RecoverAt 恒 nil、Blocks 恒 false、Assess 恒空）：`Derive = "ok"，want "low"`、`RecoverAt = <nil>，want 2026-10-22 13:16:40`、`低额度线调到 40、已用 50 → "ok"，want low`、`"fail": Label="fail"，want "探测失败"`、`不存在的账号应 ErrNotFound，得 <nil>`。
+  - 绿：`go test ./internal/scheduling/accounts/` ok。
+  - 判断：`Derive(a Account, rec, now)` 取账号低额度线（缺阈值按 80 兜底）；`RecoverAt` 取**阻挡窗口里最晚**的重置时刻——spec S5 原文「最早相关窗口的重置时刻」，两个窗口同时越线时最早那个重置后仍被另一个挡，报最早会让人按预计时刻派发照样被拒；标记/明示不可用/阻挡窗口缺重置时刻 → 恢复未知。此条与 spec 字面不同，列入交回「偏离」待裁。`Assess` 不查载体引用（准入热路径，避免 referrers 回扫全部载体）。
+- T10 编制域：限额中退役 + 载体账号引用 + 统一准入（Q12/Q19、V7、V10）：
+  - 红（编译）：新增 `internal/scheduling/b453_admission_test.go` → `svc.SetAccounts undefined`、`unknown field Account in struct literal of type scheduling.Carrier`、`unknown field Fingerprint … DetectEvidence`。
+  - 红（断言，桩：加字段、SetAccounts 只存、CheckUsable 恒 nil、admission.go 空壳）：`存量 status=quota 读出 "quota"，want online`、`绑定账号：载体 = "quota"/…/""，want online/空/指纹写回`、`选他机账号应 ErrInvalid 且点名账号，得 <nil>`、`低额度拒/无额度拒：应 ErrNoHealthy，得 <nil>`、`第 1 次选择 = {…Carrier:A…}，want 落 B`、`冻结准入应因账号无额度拒，得 <nil>`、`AdmitSeatCarrier 应因账号低额度拒，得 <nil>`、`CheckUsable 应点名账号无额度且恢复未知，得 <nil>`、`scheduling.go 里有直接比较 Status != StatusOnline 的准入代码`。
+  - 改写既有断言（plan §6 预许第 1 类，StatusQuota 随退役删改）：`status_test.go` 删「quota unreachable」用例与 quota 前置分支；「quota beats login」改为「quota is online and beats login」（want online + last_error=quota）；准入四载体用例去掉 quota 载体；Label 表删 限额中 行。编译红：`undefined: scheduling.StatusQuota` ×4。
+  - 绿：`go test ./internal/scheduling/...` 三包 ok；`go build ./... && go vet ./internal/scheduling/...` 过。
+  - 判断：读时归一落在 `CarrierStatus.UnmarshalJSON`（一切解码路径同一处，不做写迁移）；`ApplyDetect` 三态表 = 不可达 > 需登录（且非撞额度）> 上线，撞额度先标账号（标记失败 = 检测失败、载体不写）再写载体，账号已删/未选/未装配 → 原因进 last_error；`cred_fingerprint` 每次检测覆盖写，登记请求设的值丢弃，HOME 或账号变化时清空。统一判据 `admission.go usability`：账号引用不存在按未选放行 + Warn（§7 门禁族）；账号读取故障按准入失败上浮。全员被跳过文案 `小队 X 没有可用载体——A：账号 acc-a 低额度，预计 3h0m 后恢复；B：账号 acc-b 无额度，恢复时刻未知`；载体状态挡的写「c1：载体不可达」。新增导出 `SetAccounts`、`CheckUsable`（后者给 gateway 他机点名派发预检）。

@@ -219,7 +219,7 @@ func (s *Service) List() ([]View, error) {
 }
 
 func newView(a Account, version int, rec ReadingRecord, now time.Time) View {
-	return View{Account: a, Version: version, State: Derive(rec, now), Stale: IsStale(rec, now), Record: rec}
+	return View{Account: a, Version: version, State: Derive(a, rec, now), Stale: IsStale(rec, now), Record: rec}
 }
 
 // RecordProbe 把一次探测结果合并进读数行（所在机探测器调用）。
@@ -329,14 +329,17 @@ func (s *Service) readRecord(name string) (ReadingRecord, int, error) {
 	return rec, raw.Version, nil
 }
 
-// Derive 按读数行推导账号状态（plan Q4 优先级；段 1 不含低额度档）：
-//  1. 有撞额度标记 → 无额度；
+// Derive 按读数行推导账号五档状态（spec S3，plan Q4 优先级）：
+//  1. 有撞额度标记 → 无额度（持续到开始晚于标记的成功探测，探测失败不清）；
 //  2. 最近一次尝试失败（成功即清 LastError，故非空即「晚于最近成功」）→ 探测失败；
 //  3. 从无成功读数 → 未探测；
-//  4. 读数明示不可用，或任一未过重置时刻的窗口已用 ≥ 100 → 无额度；否则正常。
+//  4. 读数明示不可用，或任一生效窗口已用 ≥ 100 → 无额度；任一生效窗口 ≥ 账号低额度线 →
+//     低额度；否则正常。预警线只改颜色，不参与推导。
 //
-// 已过重置时刻的窗口按 0% 计：重置已发生，只是读数还没刷新（Q4 补条）。
-func Derive(rec ReadingRecord, now time.Time) State {
+// 「生效窗口」= 未过重置时刻的窗口；已过重置时刻的按 0% 计——重置已发生，只是读数还没
+// 刷新（Q4 补条），否则账号会在重置后最多再被挡一个探测间隔。
+// 准入、API、CLI 共用这一份推导（spec「单一推导函数」）。
+func Derive(a Account, rec ReadingRecord, now time.Time) State {
 	switch {
 	case rec.QuotaMark != nil:
 		return StateOut
@@ -347,18 +350,117 @@ func Derive(rec ReadingRecord, now time.Time) State {
 	case rec.Reading.Blocked != nil:
 		return StateOut
 	}
-	for _, w := range rec.Reading.Windows {
+	low := lowLine(a)
+	state := StateOK
+	for _, w := range liveWindows(rec.Reading.Windows, now) {
+		switch {
+		case w.UsedPercent >= 100:
+			return StateOut
+		case w.UsedPercent >= low:
+			state = StateLow
+		}
+	}
+	return state
+}
+
+// RecoverAt 返回账号预计离开低额度/无额度的时刻（spec S5 点名文案用）：阻挡窗口（生效且
+// 已用 ≥ 低额度线）全部重置的时刻，即其中最晚的重置时刻。不阻挡、因撞额度标记或接口明示
+// 不可用而无额度、或任一阻挡窗口没给重置时刻 → nil（恢复时刻未知）。
+//
+// 取最晚而不是最早：两个窗口同时越线时，最早那个重置后账号仍被另一个挡着，报最早的时刻
+// 会让人在「预计恢复」之后派发照样被拒。
+func RecoverAt(a Account, rec ReadingRecord, now time.Time) *time.Time {
+	if !Derive(a, rec, now).Blocks() || rec.QuotaMark != nil || rec.Reading.Blocked != nil {
+		return nil
+	}
+	low := lowLine(a)
+	var latest *time.Time
+	for _, w := range liveWindows(rec.Reading.Windows, now) {
+		if w.UsedPercent < low {
+			continue
+		}
+		if w.ResetsAt == nil {
+			return nil
+		}
+		if latest == nil || w.ResetsAt.After(*latest) {
+			t := *w.ResetsAt
+			latest = &t
+		}
+	}
+	return latest
+}
+
+// liveWindows 去掉已过重置时刻的窗口（按 0% 计等价于不参与越线判断）。
+func liveWindows(ws []Window, now time.Time) []Window {
+	out := make([]Window, 0, len(ws))
+	for _, w := range ws {
 		if w.ResetsAt != nil && !w.ResetsAt.After(now) {
 			continue
 		}
-		if w.UsedPercent >= 100 {
-			return StateOut
-		}
+		out = append(out, w)
 	}
-	return StateOK
+	return out
+}
+
+// lowLine 是账号的低额度线；存量或手写 body 缺阈值（0）时按缺省 80%，不让 0 把一切判成低额度。
+func lowLine(a Account) float64 {
+	if a.LowPercent <= 0 {
+		return DefaultLowPercent
+	}
+	return float64(a.LowPercent)
+}
+
+// Assessment 是准入用的账号读面：定义 + 推导状态 + 预计恢复。不查载体引用（准入热路径）。
+type Assessment struct {
+	Account   Account
+	State     State
+	RecoverAt *time.Time
+}
+
+// Assess 读一个账号的定义与读数行并推导状态与预计恢复（编制域统一准入判据调用）。
+// 定义行不存在返回包 ErrNotFound 的错误；读数行缺席或坏行按「未探测」推导。
+func (s *Service) Assess(name string, now time.Time) (Assessment, error) {
+	def, err := s.repo.Get(KindAccount, name)
+	if err != nil {
+		if errors.Is(err, schedclient.ErrNotFound) {
+			return Assessment{}, fmt.Errorf("账号 %s: %w", name, ErrNotFound)
+		}
+		return Assessment{}, fmt.Errorf("读账号 %s 定义失败: %w", name, err)
+	}
+	var a Account
+	if err := json.Unmarshal(def.Body, &a); err != nil {
+		return Assessment{}, fmt.Errorf("account/%s 解码失败: %w", name, err)
+	}
+	rec, _, err := s.readRecord(name)
+	if err != nil {
+		return Assessment{}, err
+	}
+	return Assessment{Account: a, State: Derive(a, rec, now), RecoverAt: RecoverAt(a, rec, now)}, nil
 }
 
 // IsStale 报告最近成功读数是否已过期（> 30 分钟）。只是展示标记，不参与状态与准入。
 func IsStale(rec ReadingRecord, now time.Time) bool {
 	return rec.Reading != nil && now.Sub(rec.Reading.ProbedAt) > StaleAfter
+}
+
+// Blocks 报告该状态是否让引用它的载体在派发准入中视同不可用（spec S5：低额度、无额度挡；
+// 未探测、探测失败照常可用）。
+func (st State) Blocks() bool { return st == StateLow || st == StateOut }
+
+// Label 返回状态的用户可见中文名（spec「实现决定」词表）。未知键原样返回。
+func (st State) Label() string {
+	switch st {
+	case StateOK:
+		return "正常"
+	case StateLow:
+		return "低额度"
+	case StateOut:
+		return "无额度"
+	case StateFail:
+		return "探测失败"
+	case StateNone:
+		return "未探测"
+	default:
+		return string(st)
+	}
 }
