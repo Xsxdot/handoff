@@ -6,6 +6,8 @@ import (
 	"errors"
 	"log/slog"
 	"path/filepath"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -348,48 +350,139 @@ func TestJudgePermissionNilGateEscalates(t *testing.T) {
 	}
 }
 
-// TestManualChecklistEscalatesToGateTicketWithoutConsult 锁死 B383 S4 的三出口
-// 断言之「无复用」腿：人工清单形态（git checkout --）在无可复用同任务 allow 时
-// 必须建 gate 工单，不经 Consult 审批模型直批（审批者已启用也不得被咨询）。
-func TestManualChecklistEscalatesToGateTicketWithoutConsult(t *testing.T) {
-	ap, aerr := NewApprover(config.ApproverConfig{Executor: config.ExecutorList{"opencode"}, Timeout: time.Second}, nil, slog.Default())
-	if aerr != nil {
-		t.Fatal(aerr)
+// manualChecklistHeredoc 是 B451 spec S1 原形：heredoc 内联 Python 只改工作树
+// 内文件（生产 E21 读数里 20 张人工工单的同一形态）。
+const manualChecklistHeredoc = "python3 - <<'PY'\nopen('a.txt','w').write('x')\nPY"
+
+// manualChecklistFixture 是人工清单 wire 测试的公共装配：真实 gate + Manager
+// 权限接缝 + 记录回传的 chanAdapter + 计数的审批者桩。
+type manualChecklistFixture struct {
+	m      *Manager
+	st     *store.Store
+	ad     *chanAdapter
+	taskID string
+	calls  *atomic.Int32 // 审批者 OneShot 被调用次数
+}
+
+// newManualChecklistFixture 装配夹具。decision 为审批者桩的裁决（approve /
+// escalate），空串表示不装审批者（链不可用）。桩按 prompt 回显 nonce——不回显
+// 会被 Decide 判 Err，走失败分支而不是 approve/escalate，测试会假绿。
+func newManualChecklistFixture(t *testing.T, taskID, decision string) *manualChecklistFixture {
+	t.Helper()
+	calls := &atomic.Int32{}
+	var ap *Approver
+	if decision != "" {
+		var aerr error
+		ap, aerr = NewApprover(config.ApproverConfig{Executor: config.ExecutorList{"opencode"}, Timeout: time.Second}, nil, slog.Default())
+		if aerr != nil {
+			t.Fatal(aerr)
+		}
+		out := `{"decision":"` + decision + `","reason":"桩裁决"}`
+		ap.BindOneShot(&stubShot{fn: func(_ context.Context, req executor.OneShotReq) (executor.OneShotReply, error) {
+			calls.Add(1)
+			return executor.OneShotReply{Text: injectNonceForTest(out, extractNonceForTest(req.Prompt)),
+				Status: executor.OneShotOK}, nil
+		}})
 	}
-	consulted := make(chan struct{}, 1)
-	ap.BindOneShot(&stubShot{fn: func(context.Context, executor.OneShotReq) (executor.OneShotReply, error) {
-		consulted <- struct{}{}
-		return executor.OneShotReply{Status: executor.OneShotOK}, nil
-	}})
 	ad := &chanAdapter{evCh: make(chan executor.AdapterEvent, 1)}
 	m, st, _ := newTestManagerWithApprover(t, map[string]executor.Adapter{"fake": ad}, "fake", ap)
-	taskID := "manual-gate-task"
 	now := time.Now().UTC()
-	work := t.TempDir()
-	mustCreateTask(t, st, &proto.Task{ID: taskID, RepoPath: work, Executor: "fake",
+	mustCreateTask(t, st, &proto.Task{ID: taskID, RepoPath: t.TempDir(), Executor: "fake",
 		State: proto.TaskStateRunning, CreatedAt: now, UpdatedAt: now})
-	command := "git checkout -- main.go"
-	ev := executor.AdapterEvent{
-		Type: "permission", PermissionID: "manual-1", Text: "Bash: " + command,
+	return &manualChecklistFixture{m: m, st: st, ad: ad, taskID: taskID, calls: calls}
+}
+
+// manualChecklistEvent 构造一条 bash 权限事件。
+func manualChecklistEvent(permID, command string) executor.AdapterEvent {
+	return executor.AdapterEvent{
+		Type: "permission", PermissionID: permID, Text: "Bash: " + command,
 		Perm: &executor.PermRequest{Tool: executor.PermToolBash, Command: command},
 	}
-	m.handlePermission(context.Background(), taskID, ev)
-	// 审批模型不得被咨询：give the (wrong) consult goroutine a chance to fire.
-	select {
-	case <-consulted:
-		t.Fatal("人工清单形态不得经 Consult 审批模型直批")
-	case <-time.After(150 * time.Millisecond):
+}
+
+// approverDecisions 解出任务的全部 approver_decision 事件载荷（seq 升序）。
+func approverDecisions(t *testing.T, st *store.Store, taskID string) []ApproverDecisionPayload {
+	t.Helper()
+	var out []ApproverDecisionPayload
+	for _, e := range mustEvents(t, st, taskID) {
+		if e.Type != proto.EventTypeApproverDecision {
+			continue
+		}
+		var p ApproverDecisionPayload
+		if err := json.Unmarshal(e.Payload, &p); err != nil {
+			t.Fatalf("解析 approver_decision: %v", err)
+		}
+		out = append(out, p)
 	}
-	if got := ad.recordedPerms(); len(got) != 0 {
-		t.Fatalf("no-reuse 腿不得自动回传 executor，实得 %v", got)
+	return out
+}
+
+// assertNoPendingTicket 断言工单不存在或已答 allow——审批者批准与复用放行都会
+// 建一张已答工单留审计，所以「不建待答工单」不能写成「GetTicket 报错」。
+func assertNoPendingTicket(t *testing.T, st *store.Store, ticketID string) {
+	t.Helper()
+	tk, err := st.GetTicket(ticketID)
+	if err != nil {
+		return
 	}
-	if _, err := st.GetTicket(taskID + ":manual-1"); err != nil {
-		t.Fatalf("人工清单形态必须建 gate 工单: %v", err)
+	if tk.Answer == nil || *tk.Answer != "allow" {
+		t.Fatalf("工单 %s 存在且未答 allow（answer=%v），不得留待答工单", ticketID, tk.Answer)
 	}
-	if got := countEvents(mustEvents(t, st, taskID), proto.EventTypePermissionAutoAllow); got != 0 {
-		t.Fatalf("人工门不得落 auto-allow 审计，实得 %d", got)
+}
+
+// TestManualChecklistConsultsApproverAndApproves 锁 B451 S1（Manager 路径）：
+// 人工清单形态（heredoc 内联 Python）交审批链，审批者批准即放行——回传 once、
+// 落 approver_decision approve、不发 permission_request、任务不进 waiting_answer。
+func TestManualChecklistConsultsApproverAndApproves(t *testing.T) {
+	f := newManualChecklistFixture(t, "manual-gate-task", "approve")
+	f.m.handlePermission(context.Background(), f.taskID, manualChecklistEvent("manual-1", manualChecklistHeredoc))
+	waitApproverIdle(t, f.m)
+
+	if f.calls.Load() == 0 {
+		t.Fatal("人工清单形态必须经审批链裁决，审批者未被调用")
 	}
-	task, err := st.GetTask(taskID)
+	if got := f.ad.recordedPerms(); len(got) != 1 || got[0] != "manual-1:once" {
+		t.Fatalf("审批者批准后应回传 once，实得 %v", got)
+	}
+	ds := approverDecisions(t, f.st, f.taskID)
+	if len(ds) != 1 || ds[0].Decision != "approve" {
+		t.Fatalf("approver_decision = %+v，期望 1 条 approve", ds)
+	}
+	if got := countEvents(mustEvents(t, f.st, f.taskID), proto.EventTypePermissionRequest); got != 0 {
+		t.Fatalf("审批者批准不得发 permission_request，实得 %d", got)
+	}
+	task, err := f.st.GetTask(f.taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.State != proto.TaskStateRunning {
+		t.Fatalf("task state = %s, want running（不得停在 waiting_answer）", task.State)
+	}
+	assertNoPendingTicket(t, f.st, f.taskID+":manual-1")
+}
+
+// TestManualChecklistApproverEscalateCreatesTicket 锁 B451 S3(a)：审批者判
+// escalate 时与普通 Consult 一样建待答工单、发 permission_request、进 waiting_answer。
+func TestManualChecklistApproverEscalateCreatesTicket(t *testing.T) {
+	f := newManualChecklistFixture(t, "manual-esc-task", "escalate")
+	f.m.handlePermission(context.Background(), f.taskID, manualChecklistEvent("manual-1", manualChecklistHeredoc))
+	waitApproverIdle(t, f.m)
+
+	ds := approverDecisions(t, f.st, f.taskID)
+	if len(ds) != 1 || ds[0].Decision != "escalate" {
+		t.Fatalf("approver_decision = %+v，期望 1 条 escalate（error 说明桩没回显 nonce）", ds)
+	}
+	tk := mustGetTicket(t, f.st, f.taskID+":manual-1")
+	if tk.Answer != nil {
+		t.Fatalf("审批者升级后工单应待答，实得 answer=%q", *tk.Answer)
+	}
+	if got := countEvents(mustEvents(t, f.st, f.taskID), proto.EventTypePermissionRequest); got != 1 {
+		t.Fatalf("permission_request 事件数 = %d, want 1", got)
+	}
+	if got := f.ad.recordedPerms(); len(got) != 0 {
+		t.Fatalf("审批者升级不得回传 executor，实得 %v", got)
+	}
+	task, err := f.st.GetTask(f.taskID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -398,63 +491,92 @@ func TestManualChecklistEscalatesToGateTicketWithoutConsult(t *testing.T) {
 	}
 }
 
-// TestManualChecklistReusesSameTaskHumanAllow 三出口断言之「有复用」腿：同任务
-// 已有人工 allow 时沿既有 reuseDecision 复用放行——不经 Consult、不建第二张待办。
+// TestManualChecklistApproverUnavailableCreatesTicket 锁 B451 S3(b)：审批链不可用
+// （未装配审批者）时建待答工单，不静默放行，也没有 approver_decision。
+func TestManualChecklistApproverUnavailableCreatesTicket(t *testing.T) {
+	f := newManualChecklistFixture(t, "manual-noap-task", "")
+	f.m.handlePermission(context.Background(), f.taskID, manualChecklistEvent("manual-1", manualChecklistHeredoc))
+
+	tk := mustGetTicket(t, f.st, f.taskID+":manual-1")
+	if tk.Answer != nil {
+		t.Fatalf("链不可用时工单应待答，实得 answer=%q", *tk.Answer)
+	}
+	if ds := approverDecisions(t, f.st, f.taskID); len(ds) != 0 {
+		t.Fatalf("链不可用不得有 approver_decision，实得 %+v", ds)
+	}
+	if got := countEvents(mustEvents(t, f.st, f.taskID), proto.EventTypePermissionRequest); got != 1 {
+		t.Fatalf("permission_request 事件数 = %d, want 1", got)
+	}
+	if got := f.ad.recordedPerms(); len(got) != 0 {
+		t.Fatalf("链不可用不得回传 executor，实得 %v", got)
+	}
+}
+
+// TestManualChecklistApproverDisabledNamesItInTicket 锁 B451 S3(c)：本任务已停用
+// 审批链时不咨询审批者，建工单且请求体理由点名停用。
+func TestManualChecklistApproverDisabledNamesItInTicket(t *testing.T) {
+	f := newManualChecklistFixture(t, "manual-off-task", "approve")
+	f.m.apMu.Lock()
+	f.m.apDisabled[f.taskID] = true
+	f.m.apMu.Unlock()
+	f.m.handlePermission(context.Background(), f.taskID, manualChecklistEvent("manual-1", manualChecklistHeredoc))
+
+	if n := f.calls.Load(); n != 0 {
+		t.Fatalf("已停用时不得咨询审批者，实得调用 %d 次", n)
+	}
+	tk := mustGetTicket(t, f.st, f.taskID+":manual-1")
+	var req ticketRequest
+	if err := json.Unmarshal(tk.Request, &req); err != nil {
+		t.Fatalf("解析工单请求体: %v", err)
+	}
+	if !strings.Contains(req.Reason, "审批链已停用") {
+		t.Fatalf("工单理由必须点名停用，得到 %q", req.Reason)
+	}
+}
+
+// TestManualChecklistReusesSameTaskHumanAllow 锁 B451 S3 复用腿（plan Q1 甲）：
+// Manager 路径先问审批者；审批者 escalate 后在升级出口命中同任务人工 allow
+// 复用放行——回传 once，不建第二张待答工单、不发 permission_request。
 func TestManualChecklistReusesSameTaskHumanAllow(t *testing.T) {
-	ap, aerr := NewApprover(config.ApproverConfig{Executor: config.ExecutorList{"opencode"}, Timeout: time.Second}, nil, slog.Default())
-	if aerr != nil {
-		t.Fatal(aerr)
-	}
-	consulted := make(chan struct{}, 1)
-	ap.BindOneShot(&stubShot{fn: func(context.Context, executor.OneShotReq) (executor.OneShotReply, error) {
-		consulted <- struct{}{}
-		return executor.OneShotReply{Status: executor.OneShotOK}, nil
-	}})
-	ad := &chanAdapter{evCh: make(chan executor.AdapterEvent, 1)}
-	m, st, _ := newTestManagerWithApprover(t, map[string]executor.Adapter{"fake": ad}, "fake", ap)
-	taskID := "manual-reuse-task"
-	now := time.Now().UTC()
-	work := t.TempDir()
-	mustCreateTask(t, st, &proto.Task{ID: taskID, RepoPath: work, Executor: "fake",
-		State: proto.TaskStateRunning, CreatedAt: now, UpdatedAt: now})
+	f := newManualChecklistFixture(t, "manual-reuse-task", "escalate")
 	command := "git checkout -- main.go"
-	ev := executor.AdapterEvent{
-		Type: "permission", PermissionID: "manual-2", Text: "Bash: " + command,
-		Perm: &executor.PermRequest{Tool: executor.PermToolBash, Command: command},
-	}
+	ev := manualChecklistEvent("manual-2", command)
+	now := time.Now().UTC()
 	// 同任务先落一张同指纹、已 allow、已送达的人工工单。
-	priorID := taskID + ":manual-prior"
-	if _, err := st.CreateTicket(&proto.Ticket{
-		ID: priorID, TaskID: taskID, Kind: "gate",
+	priorID := f.taskID + ":manual-prior"
+	if _, err := f.st.CreateTicket(&proto.Ticket{
+		ID: priorID, TaskID: f.taskID, Kind: "gate",
 		Request:     json.RawMessage(`{"kind":"gate","permission":"Bash: ` + command + `"}`),
 		Fingerprint: executor.PermFingerprint(ev), CreatedAt: now,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.AnswerTicket(priorID, "allow"); err != nil {
+	if err := f.st.AnswerTicket(priorID, "allow"); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.MarkTicketDelivered(priorID); err != nil {
+	if err := f.st.MarkTicketDelivered(priorID); err != nil {
 		t.Fatal(err)
 	}
-	m.handlePermission(context.Background(), taskID, ev)
-	select {
-	case <-consulted:
-		t.Fatal("复用放行不得经 Consult 审批模型")
-	case <-time.After(150 * time.Millisecond):
+	f.m.handlePermission(context.Background(), f.taskID, ev)
+	waitApproverIdle(t, f.m)
+
+	if n := f.calls.Load(); n != 1 {
+		t.Fatalf("Manager 路径应先问审批者一次（Q1 甲），实得 %d 次", n)
 	}
-	if got := ad.recordedPerms(); len(got) != 1 || got[0] != "manual-2:once" {
+	if got := f.ad.recordedPerms(); len(got) != 1 || got[0] != "manual-2:once" {
 		t.Fatalf("复用腿应回传 once，实得 %v", got)
 	}
-	if got := countEvents(mustEvents(t, st, taskID), proto.EventTypePermissionReuse); got != 1 {
+	evs := mustEvents(t, f.st, f.taskID)
+	if got := countEvents(evs, proto.EventTypePermissionReuse); got != 1 {
 		t.Fatalf("permission_reuse 事件数 = %d, want 1", got)
 	}
-	if got := countEvents(mustEvents(t, st, taskID), proto.EventTypePermissionAutoAllow); got != 0 {
+	if got := countEvents(evs, proto.EventTypePermissionAutoAllow); got != 0 {
 		t.Fatalf("复用腿不得落 auto-allow 审计，实得 %d", got)
 	}
-	if got := countEvents(mustEvents(t, st, taskID), proto.EventTypePermissionRequest); got != 0 {
+	if got := countEvents(evs, proto.EventTypePermissionRequest); got != 0 {
 		t.Fatalf("复用腿不得再发人工升级事件，实得 %d", got)
 	}
+	assertNoPendingTicket(t, f.st, f.taskID+":manual-2")
 }
 
 // TestGoModuleCachePathsEscalatesHard 三出口断言之「越界 Paths」腿：以越界

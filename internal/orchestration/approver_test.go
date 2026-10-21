@@ -1192,3 +1192,30 @@ func TestDecideChainModelRegression(t *testing.T) {
 		t.Fatalf("存量链级 model 应逐候选同值，得到 agy=%q codex=%q", agyShot.last.Model, codexShot.last.Model)
 	}
 }
+
+// TestDecidePromptInlineCodeLine 锁 B451 spec 实现决定 3：审批者 prompt 含审
+// 内联代码的一行（逐字），位于「生产环境」行之后、「handoff 自身 CLI」行之前，
+// 且新行没有打乱 Sprintf 的四个占位（无 %! 错位标志，nonce 仍可抠出）。
+func TestDecidePromptInlineCodeLine(t *testing.T) {
+	const line = "权限请求含内联代码或脚本（python -c / heredoc、psql -c、rg --pre）或 git checkout/restore -- 时，读完正文再裁决：只在任务仓库内读写文件、跑测试时批准；写库、联网、改仓库外路径、读密钥的，一律升级。"
+	stub := &stubShot{out: `{"decision":"approve"}`}
+	a := newTestApprover(t, `{"decision":"approve"}`, nil)
+	a.BindOneShot(stub)
+	a.Decide(context.Background(), "PERM-TEXT", "TASK-SUMMARY")
+	p := stub.lastPrompt
+	at := strings.Index(p, line)
+	if at < 0 {
+		t.Fatalf("prompt 缺内联代码一行: %s", p)
+	}
+	prod := strings.Index(p, "涉及生产环境")
+	self := strings.Index(p, "涉及调用 handoff 自身 CLI")
+	if prod < 0 || self < 0 || prod >= at || at >= self {
+		t.Fatalf("内联代码行位置错（生产环境=%d 本行=%d 自指令=%d）: %s", prod, at, self, p)
+	}
+	if strings.Contains(p, "%!") {
+		t.Fatalf("prompt 含 Sprintf 参数错位标志 %%!: %s", p)
+	}
+	if extractNonceForTest(p) == "" {
+		t.Fatalf("prompt 抠不出 nonce: %s", p)
+	}
+}
