@@ -2,11 +2,15 @@ package quota
 
 // classify_test.go —— 回合失败三类分类的初版表（B453 段 3，plan Q10/Q19/V11 前半）。
 //
-// 样本来源：本表全部是**合成样本**（依据 orca 字段说明、OpenAI/xAI 公开错误码与检测链既有
-// 字样），段 4 由 R6a 真样本替换/补充（plan U7）。承重断言是「限速不得判额度」与「不确定
-// 判其他」，签名细节以真样本为准。
+// 样本来源：额度类全部是**合成样本，未经真机**（依据 orca 字段说明、OpenAI/xAI 公开错误码与
+// 检测链既有字样）——R6a（2026-10-22）未能复现任何 kind 的真实额度错误（opencode 403 ENTITLEMENT
+// 所需 provider 已不存在；codex/grok/agy 无样本）。真样本只有一条反例：opencode API key 过期
+// （401 authentication_error，见 TestClassifyRealKeyExpiredIsNotQuota），它必须不判额度。
+// 承重断言是「限速不得判额度」「凭据无效不得判额度」「不确定判其他」。
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -96,3 +100,17 @@ func TestCredentialFingerprintOfflineMatchesProbe(t *testing.T) {
 func fakeJWTForFP() string { return fakeJWT(timeLongAgo, sentinelKey) }
 
 var timeLongAgo = time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+
+// R6a 真样本（hostapi/testdata/b453/opencode_key_expired.real.stdout.jsonl 原行）：凭据无效类，
+// 不是额度耗尽——判额度会触发换人重跑并把账号标无额度，掩盖「该换 key」这个真因。
+func TestClassifyRealKeyExpiredIsNotQuota(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "hostapi", "testdata", "b453", "opencode_key_expired.real.stdout.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, kind := range []string{"opencode-go", ""} {
+		if got := ClassifyTurnFailure("opencode", kind, string(raw)); got.Class != TurnOther {
+			t.Fatalf("kind=%q：API key 过期被判 %q（签名 %q），应为 other", kind, got.Class, got.Signature)
+		}
+	}
+}

@@ -7,6 +7,9 @@
 package opencode
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -88,5 +91,35 @@ func TestSessionErrorDoesNotLeakIntoNextTurn(t *testing.T) {
 	second := waitEventType(t, ch, "result")
 	if strings.Contains(second.Result.FailReason, "first turn failure") {
 		t.Fatalf("会话错误漏进下一回合：%q", second.Result.FailReason)
+	}
+}
+
+// R6a 真样本：`run --format json` 的 error 行里的错误对象与 serve 模式 session.error 的
+// properties.error 是同一个上游对象（MessageV2 错误联合）。把真样本对象装进 session.error 回放，
+// 锁定 FailReason 带出真实形状里的消息与状态码。
+func TestZeroTextTurnFailReasonCarriesRealErrorObject(t *testing.T) {
+	quietLog(t)
+	raw, err := os.ReadFile(filepath.Join("..", "..", "hostapi", "testdata", "b453", "opencode_key_expired.real.stdout.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var line struct {
+		Error json.RawMessage `json:"error"`
+	}
+	if err := json.Unmarshal(raw, &line); err != nil {
+		t.Fatal(err)
+	}
+	fs := newFakeServer(t)
+	fs.push(sseLine(map[string]any{
+		"type": "session.error", "sessionID": "sess-1",
+		"properties": map[string]any{"sessionID": "sess-1", "error": line.Error},
+	}))
+	fs.push(statusIdleEvent())
+	_, ch := startFakeRun(t, fs, "task-b453-real", t.TempDir(), t.TempDir())
+	got := waitEventType(t, ch, "result")
+	for _, want := range []string{"This API key has expired", "HTTP 401", "api_key_expired"} {
+		if !strings.Contains(got.Result.FailReason, want) {
+			t.Fatalf("FailReason 缺 %q：%q", want, got.Result.FailReason)
+		}
 	}
 }

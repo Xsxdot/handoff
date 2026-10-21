@@ -186,3 +186,66 @@
 - Q14（opencode 执行器 serve 路径）：新测 `internal/executor/opencode/b453_session_error_test.go`（session.error / assistant info.error + 零文本 idle；形状按上游推出，非真样本）。断言红（既有接缝，无编译红）：「FailReason 缺 "ENTITLEMENT_ERROR model not in plan"："回合结束但零文本产出（可能是供应商流中断）；executor 仍在线，可 continue 续接重试"」、「消息级错误应恰出现一次，实际 0」、「首回合应带错误」。
 - Q14 适配实现：`runState.turnErrors`（turnMu 保护、同文去重、`clearTurn` 清空）；`session.error` 与 assistant `message.updated` 的 `info.error` 经 `hostapi.OpencodeErrorText` 摘要登记；**只改普通零文本分支**的 FailReason（追加「；会话错误：…」），被拒/在飞兜底两条分支不动。`go test ./internal/executor/opencode/` ok（28.7s）、`./internal/hostapi/` ok。
 - F17 落库与 wire：新测 `internal/store/b453_rerun_test.go`、`internal/proto/b453_rerun_wire_test.go`。首红编译红（`orig.RerunBy undefined`）；加字段与桩 `SetTaskRerunBy` 后断言红「rerun_of 往返失败: of=<nil> by=<nil>」（proto wire 测在字段落地即绿——纯结构标签，无独立断言红，如实记）。实现：`proto.TaskRef{task,machine}`（machine 不 omitempty，形状照 F17 `{"task","machine"}`）、`Task.RerunOf/RerunBy`（omitempty 指针）；store 四列 `rerun_of_task/_machine`、`rerun_by_task/_machine`（DDL + ALTER + INSERT 只写 rerun_of + taskColumns + scanTaskRow，空任务 ID 读回 nil）；`Store.SetTaskRerunBy`（不存在 → ErrNotFound）。`go test ./internal/proto/ ./internal/store/` ok。
+
+## 真机 R3–R5、R6a（验收执行者）
+
+环境：三隔离实例换 `0a759338`（`version.revision` 三机均 `0a759338…`，modified=true 仅因工作树台账改动）后以 `HANDOFF_LOG_LEVEL=info` 重启（缺省 warn 级会吞掉全部验收用 Info 日志）。测试账本 handoff_b453；在役 7777 未碰。操作入口：t453-mac 7796 的 API/CLI；任务派发在 linux-01 上用隔离二进制作 CLI（`--config /root/b453-iso/config.yaml --agentd http://127.0.0.1:7795`），在 `/root/b453-iso/proj`（新建草稿仓，origin `https://example.invalid/b453/proj.git`，`project add` 仅本机）里 `--no-sync-check --new-worktree` 派发。
+- 踩坑记录：linux 侧 `ssh … 'P=$(pgrep -f "[b]453-iso/config.yaml"); kill $P; …; nohup ./handoff agentd --config /root/b453-iso/config.yaml …'` 仍自杀——括号模式只防 pgrep 那一段，**同一条 ssh 命令里后面的启动段字面含 `b453-iso/config.yaml`**，照样被匹配。停与起必须分成两次 ssh。
+
+**R3 低额度——通过（颜色部分无法验证）**
+- `PUT /api/accounts/cx-linux?expect=3 {warn_percent:5, low_percent:10}`（已用 5h 19% / 周 18%）→ 回 `version 4, state "low"`；`account list`：`cx-linux   codex        t453-linux  低额度   5h 19%  周 18%  1h55m后`。
+- 只调预警线：`{warn_percent:15, low_percent:80}` → `state "ok"`，`account list` 仍「正常」。warn 不影响状态：通过。warn 影响颜色：CLI 在 tty 下也无着色（`script -q /dev/null … | cat -v` 无 ANSI 序列），代码里 warn_percent 只有校验与存储、无消费方（颜色属段 5 前端）——本轮无法验证。
+- 复原 `60/80`（v6，state ok）。
+
+**R4a 载体绑账号 + 检测——通过**
+- `PUT /api/squads/carriers/t453-codex?expect=0 {machine:t453-linux, cli:codex, home_dir:/root, credential:standalone, account:cx-linux}` → v1；`POST …/detect` → `{"status":"online","version":2}`。
+- `GET /api/squads` 载体行：`…"status":"online","version":3,"account":"cx-linux"}`，**无 `account_mismatch` 键**；日志 mac：`检测载体开始 … account=cx-linux account_kind=codex`、`载体检测完成 … outcome=ready … fingerprint_set=true`；registry body `cred_fingerprint: "sha256:281e4cdbb6bc"`（= cx-linux 读数指纹）。
+- 事实：codex 不在 `supportedCLIs`（只有 opencode），检测只走「命令可执行」+ 离线指纹，linux 日志 `未实装 CLI 检测：命令可执行，跳过检测回合`——codex 载体的检测**不跑回合**，故「检测回合使用账号代理」只能在 opencode 载体上验（见 R4c）。
+
+**R4b 指纹不符——通过（用合成身份 HOME 造出不一致）**
+- 哨兵账号 `cx-sentinel`（codex，HOME `/root/.handoff/home/codex`）探测 → `fail credential_expired（2026-09-08T09:12:25Z 到期）`，无读数指纹。变体 1：t453-codex(HOME /root) 改绑 cx-sentinel → detect online，无 `account_mismatch`（账号侧无指纹，按 spec 不比对，符合预期）。变体 2：载体 HOME 改 `/root/.handoff/home/codex`、绑 cx-linux → body `cred_fingerprint` 仍 `sha256:281e4cdbb6bc`（两处 auth.json 是同一 account_id），无红字。
+- 变体 3（造不一致）：linux-01 新建 `/root/b453-iso/fakehome/.codex/auth.json`（合成 `{"tokens":{"access_token":"fake-not-a-token","account_id":"acct-b453-fake-sentinel"}}`，无真凭据），载体 HOME 指它、绑 cx-linux → `PUT` 200（可保存）、detect `online`（检测不拦）；`GET /api/squads`：`"account":"cx-linux","account_mismatch":true`；`squad list` 账号列：`cx-linux（凭据指纹不符）`。「派发不拦」未用真派发验（fake token 派 codex 必败），代码上准入 `usability` 不读 mismatch。
+- 复原：t453-codex HOME `/root`、绑 cx-linux、重检 online（v11）；`DELETE /api/accounts/cx-sentinel?expect=1` → 200。fakehome 留在 linux-01（无凭据，可复用）。
+
+**R4c 账号代理进任务与检测回合——通过（含 Q6/U6 行为事实）**
+- linux-01 `127.0.0.1:1080` = trojan-go，http 与 socks5h 都通（`curl -x` 两种均 200）。
+- 第一次填 `http://127.0.0.1:1080` 派 codex 任务（`--receiver t453-codex`，prompt `env | grep -i proxy | sort`）完成、六键 = 该值——但隔离 agentd 进程环境本身就是这六键 = `http://127.0.0.1:1080`，**分不出覆盖与继承**，作废。改填可区分的 `http://b453u:b453p@127.0.0.1:1080`（假口令，trojan 不校验，`curl -x` 实测可用）：PUT 回显 `http://b453u:***@127.0.0.1:1080`。
+- 检测回合：新登记 opencode 载体 `t453-oc`（HOME /root，model `deepseek/deepseek-flash`，绑 cx-linux——opencode 载体接受 codex kind 账号）→ detect online（4.3s，真跑回合）；linux 日志 `检测回合使用账号代理 account=cx-linux proxy=http://b453u:***@127.0.0.1:1080`（agentd 层）与 `mod=hostapi cli=opencode 检测回合使用账号代理`，随后 `检测回合成功 output_bytes=4`。
+- opencode 任务（`--receiver t453-oc`，exit 5 是 bash 权限工单，`reply --approve` 后 `wait --final` exit 0）：输出 `ALL_PROXY/HTTPS_PROXY/HTTP_PROXY/all_proxy/http_proxy/https_proxy = http://b453u:b453p@127.0.0.1:1080`，`NO_PROXY/no_proxy` = 进程原有列表（`localhost,127.0.0.1,::1,10.0.0.0/8,…`，未覆盖）；日志 `账号代理已覆盖 executor 环境 task=c486fe91… where=首回合 account=cx-linux account_kind=codex proxy=http://b453u:***@127.0.0.1:1080`。opencode serve 经 localhost 通信正常、任务完成。
+- 补 NO_PROXY 分支：以 `env -u NO_PROXY -u no_proxy` 重启 linux 隔离实例（`/proc/<pid>/environ` 中 no_proxy 0 条）再派同任务 → 六键同上，`no_proxy=localhost,127.0.0.1,::1`、`NO_PROXY=localhost,127.0.0.1,::1`，任务 `wait --final` exit 0——**U6 行为事实成立**：账号代理生效 + 补 localhost 后 opencode serve 可达。
+- 口令泄漏：linux 与 mac 两份 agentd.log `grep -c b453p` = 0。
+- 复原：`PUT … proxy:""` → 回显无 proxy 键（v9）；linux 实例按原环境（带 NO_PROXY）+ info 级重启。
+
+**R4d——通过**（并入 R4a/R4b：`squad list` 账号列与 `GET /api/squads` 载体行 `account` 键均在）。
+
+**R4e 存量 quota 读出上线——通过**
+- 载体 PUT 无 status 入参，改 psql：`update registry set body = body || '{"status":"quota","last_error":"r4e-marker 存量限额中"}' where kind='carrier' and id='t453-codex'` → DB `quota|r4e-marker 存量限额中`；`GET /api/squads`：`t453-codex online r4e-marker 存量限额中`（marker 读出证明读的是库里这条，不是缓存）；linux 端 7795 同为 online；`squad list` 无「限额中」。
+- 复原：再 detect → v12，body `status online`、last_error 清空。
+
+**R5 派发跳过与点名——通过（文案瑕疵 1 条）**
+- 小队 `t453-pair`（executor，成员 `t453-agy`〔agy，HOME /root，绑 agy-linux，detect online〕在前、`t453-oc`〔绑 cx-linux〕在后）。agy-linux 调 `5/10`（Gemini 周 14% > 10、5h 9% < 10）→ `state low`。
+- 连续 3 次 `dispatch --receiver t453-pair --prompt "Reply with the single word OK…"`：任务 b9e7ea22 / b995719d / 9e8bbdb4 的 `carrier` 全为 `t453-oc`；linux 日志 3 条 `准入因账号跳过载体 carrier=t453-agy account=agy-linux state=low recover_at=2026-10-24T13:01:04Z`（= 越线的 Gemini 周窗口重置，未越线的 5h 窗口不参与，符合 D1）。
+- cx-linux 也调 `5/10` → 小队派发 400：`scheduling: 小队内没有已上线且有空的载体: 小队 t453-pair 没有可用载体——t453-agy：账号 agy-linux 低额度，预计 2d19h 后恢复；t453-oc：账号 cx-linux 低额度，预计 5d13h 后恢复`（cx-linux 两窗口都越线，取最晚的周窗口 10-27，符合 D1）。
+- 点名 `--receiver t453-agy`（linux 本机落点）→ 400：`scheduling: 小队内没有已上线且有空的载体: t453-agy：账号 agy-linux 低额度，预计 2d19h 后恢复`；经 mac 网关点名（`--project proj`，他机落点）→ 同文，mac 日志 `准入因账号跳过载体 … dispatch 身份准入失败 … error_kind=admit`。
+- **瑕疵（文案）**：外层哨兵前缀「小队内没有已上线且有空的载体:」在点名载体时不对（没有小队），在小队时与内层「小队 t453-pair 没有可用载体——」重复。复现：上面两条命令。不影响判据。
+- 旁见（非本卡）：prompt「Reply with the single word OK」的回合结果被归成 `kind: question` 工单（exit 5），三个任务卡在 waiting_answer，已 `stop`。
+- 复原：cx-linux、agy-linux 均回 `60/80`（ok）。
+
+**R6a 真样本——部分取得；ENTITLEMENT 403 未复现**
+- `HOME=/root timeout 120 opencode run --format json -m opencode-go/deepseek-v4.1-flash -- ping` → **exit 0 成功**（回 "I'm here…"，cost 0.000999）；`/root` 的 auth.json 只有 deepseek 条目、`opencode auth list` 只 1 条，但 opencode-go 仍可用（来源未查明）。加试 `opencode-go/claude-haiku-5-5` 同样成功（"pong"，cost 0.0015）。不再烧额度。`/root/.config/opencode/opencode.jsonc` 默认 model 仍写 `cline-pass/cline-pass/deepseek-v4.1-flash`，但该 provider 已无定义，历史 403 来源不可再现。→ **ENTITLEMENT 无真样本**，段 4 该签名只能合成并注明。
+- `HOME=/root/.handoff/home/muse … ping` → exit 1，stderr 空，stdout 一行 `{"type":"error",…,"error":{"name":"APIError","data":{"message":"This API key has expired. …","statusCode":401,"isRetryable":false,"responseHeaders":{…},"responseBody":"{\"error\":{\"type\":\"authentication_error\",\"code\":\"api_key_expired\",…}}","metadata":{"url":"https://opencode.ai/inference/go/openai/v1/chat/completions"}}}}`。
+- 同 HOME 在检测链上：临时载体 `t453-muse`（opencode，HOME muse，绑 og-muse）detect → `pending`，`last_error: "hostapi: 回合失败（exit status 1）stderr 尾部: "`——**错误全在 stdout JSON，stderr 尾部为空**，`0a759338` 的检测回合看不到错因（即 Q14 hostapi 半边，段 4 已在修）。载体已删。
+- codex/grok/agy 额度错误样本：无低成本触发途径，未取。
+- 文件（`$S/samples/`，均已 grep `sk-…`/Bearer/长 token 0 命中，无需脱敏）：`opencode_key_expired.stdout.jsonl`（960B）/`.stderr`（0B）；`opencode_go_root_ok_not403.stdout.jsonl`（970B，step_start/text/step_finish 三行成功形状）/`.stderr`（0B）；`opencode_go_haiku_root_ok_not403.stdout.jsonl`（933B）/`.stderr`（0B）。命名没用 `opencode_entitlement_403.*`，因为内容不是 403。
+
+**收尾状态**：三实例运行于 `0a759338`、info 级；账号 4 个（agy-linux/cx-linux 60/80 无代理 ok，gk-mbp ok，og-muse 探测失败）；新增并保留载体 `t453-codex`（cx-linux，HOME /root）、`t453-oc`（opencode deepseek/deepseek-flash，cx-linux）、`t453-agy`（agy-linux）与小队 `t453-pair`（t453-agy,t453-oc），供 R6b 复用；linux 测试任务全部终态（3 completed + 3 failed/stopped），运行位清零。
+
+## implement 段 4（续，接在验收执行者 R3–R6a 节之后）
+
+- R6a 真样本入库：`$S/samples/opencode_{key_expired,go_root_ok_not403,go_haiku_root_ok_not403}.stdout.jsonl` → `internal/hostapi/testdata/b453/*.real.stdout.jsonl`；`grep -iE "sk-|key\"|token|bearer|authorization"` 只命中 step_finish 的 `"tokens"` 计数，无密钥。
+- 真样本回放测试 `TestRunTurnRealKeyExpiredSampleCarriesTextAndIsNotQuota`、`TestRunTurnRealOkSamplesSucceed`：在已提交的 Q14 实现上直接绿；为证其能红，把 `driver.go` 临时换回 `3ce59d4b^` 版本跑：「回合错误缺 "This API key has expired"：hostapi: 回合失败（exit status 1）stderr 尾部: 」——与 R4 真机读数（last_error 只有「stderr 尾部: 」）同一症状；换回后绿，`git diff driver.go` 为空。检测分类：key 过期 → `needlogin`（含 authentication_error），不是 quota。
+- 适配真对象回放 `TestZeroTextTurnFailReasonCarriesRealErrorObject`（真样本 error 对象装进 session.error）：在实现上直接绿（红已由合成用例在实现前证过，如实记）。
+- quota：签名表与测试头注明「全部合成、未经真机」（ENTITLEMENT 两条行尾注）；新反例 `TestClassifyRealKeyExpiredIsNotQuota`（kind opencode-go 与空各一）绿——表里本无命中它的签名，此测是防将来放宽签名时误判。
+- 文案缺陷（协调者 R5）：新测 `TestB453UnusableMessagesHaveNoSentinelPrefix` 红「点名载体文案应以「载体 A 不可用：账号 acc-a 低额度，预计 」开头，得 scheduling: 小队内没有已上线且有空的载体: A：账号 acc-a 低额度，预计 3h0m 后恢复」。修法：`admission.go` 新 `unusableError`（`Is(ErrNoHealthy)` 成立、`Error()` 不带哨兵前缀），`requireUsable` →「载体 X 不可用：<原因>」，`noUsableMember` →「小队 X 没有可用载体——A：…；B：…」/「小队 X 没有在线载体」；`Unusable.reason()` 拆出不带载体名的原因。随改段 3 自己的两条断言（`TestCheckUsableNamesStatusAndAccount`、agentd `TestRouteNamedRemoteCarrierUsesUnifiedCriterion` 的「c1：账号 cx 无额度」→「载体 c1 不可用：账号 cx 无额度」）。`humanDuration` 导出为 `HumanDuration`（notice 文案复用）。`go test ./internal/scheduling/...` ok。
+- 编排 S6/S7：新测 `internal/orchestration/b453_quota_test.go`（5 支）。写测后先补桩（类型 + 空 `SetQuotaHandler`）才首跑，未单独观察编译红；断言红：「等待超时: 任务状态 failed」×2（只读重跑/无人可换）、「应恰有一张 notice 待答工单，得 []」；限速与未注入回调两支在桩上即绿（行为与今天一致，是锁现状的反例）。
+- 编排实现：新文件 `quota.go`（`QuotaFailure/QuotaHit/RerunOutcome/QuotaHandler`、`SetQuotaHandler`、`classifyQuota`、`beginReadonlyQuota`、`rerunAfterQuota`、`openQuotaNotice`、`quotaNoticeText`）；`manager.go`：`quotaHandler atomic.Value`、`quotaInFlight sync.Map`（处置期间到达的结果丢弃）、`handleResult` 失败先分类（只读+额度+有回调 → 另起 goroutine 接管、不迁 waiting_review、不出 turn_failed；分支+额度 → 作废旧工单后、turn_failed 前开 notice）、`Stop` 抽出 `stopWithReason(ctx,id,reason,trigger)`（撞额度用 trigger=quota）、`RelayAnswer` 加 `notice` 分支只 `markDelivered`。`proto.go`：`TicketKindNotice`、`NoticeRequest`。`go test ./internal/orchestration/` ok（38.8s）；`./internal/agentd/` 首跑 1 红即上面那条随改断言，改后 ok。

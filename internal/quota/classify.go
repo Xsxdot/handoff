@@ -41,12 +41,16 @@ type turnSignature struct {
 // quotaSignatures 先于限速判：OpenAI 的 insufficient_quota 本身走 HTTP 429，先判限速会把
 // 真额度耗尽漏成限速。单独的「quota」字样不在表里——它太常见（进度提示、配额说明），不确定
 // 就不算（spec S6「分类不确定的不算撞额度」）。
+//
+// 来源标注（R6a，2026-10-22）：下表**全部合成、未经真机**——opencode 403 ENTITLEMENT 真机未能复现
+// （所需 provider 已不存在），codex/grok/agy 的额度错误也无真样本。真样本只有 opencode API key
+// 过期（401 authentication_error），属凭据无效类，表里没有任何签名命中它（反例测试锁定）。
 var quotaSignatures = []turnSignature{
 	{kinds: []string{KindCodex}, pattern: "insufficient_quota"},
 	{kinds: []string{KindCodex}, pattern: "usage_limit_reached"},
 	{kinds: []string{KindCodex}, pattern: "you've hit your usage limit"},
-	{kinds: []string{KindOpencodeGo}, pattern: "entitlementerror"},
-	{kinds: []string{KindOpencodeGo}, pattern: "entitlement_error"},
+	{kinds: []string{KindOpencodeGo}, pattern: "entitlementerror"},  // 合成，未经真机
+	{kinds: []string{KindOpencodeGo}, pattern: "entitlement_error"}, // 合成，未经真机
 	{kinds: []string{KindOpencodeGo}, pattern: "usage limit"},
 	{kinds: []string{KindGrok}, pattern: "out of credits"},
 	{kinds: []string{KindGrok}, pattern: "credits exhausted"},

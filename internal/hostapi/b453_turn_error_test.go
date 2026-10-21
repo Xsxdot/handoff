@@ -87,3 +87,54 @@ func TestOpencodeErrorText(t *testing.T) {
 		})
 	}
 }
+
+// installReplayCLI 装一个把 testdata 样本原样回放到 stdout、stderr 为空并以 exitCode 退出的假 opencode。
+func installReplayCLI(t *testing.T, sample, exitCode string) {
+	t.Helper()
+	abs, err := filepath.Abs(filepath.Join("testdata", "b453", sample))
+	if err != nil {
+		t.Fatal(err)
+	}
+	binDir := t.TempDir()
+	script := "#!/bin/sh\ncat '" + abs + "'\nexit " + exitCode + "\n"
+	if err := os.WriteFile(filepath.Join(binDir, "opencode"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+// R6a 真样本（2026-10-22 协调者采集，exit 1、stderr 空）：失败文本只在 stdout 的 error 事件行。
+// 今天的检测回合 last_error 只有「stderr 尾部: 」空串（R4 实测）；本测锁定原文进入回合错误，
+// 且检测分类为需登录类（凭据无效），**不是**额度耗尽。
+func TestRunTurnRealKeyExpiredSampleCarriesTextAndIsNotQuota(t *testing.T) {
+	installReplayCLI(t, "opencode_key_expired.real.stdout.jsonl", "1")
+	_, err := New().RunTurn(context.Background(), TurnRequest{CLI: "opencode", Workdir: t.TempDir(), Prompt: "p"})
+	if err == nil {
+		t.Fatal("exit 1 应报错")
+	}
+	for _, want := range []string{"This API key has expired", "HTTP 401", "api_key_expired"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("回合错误缺 %q：%v", want, err)
+		}
+	}
+	got := classifyTurnError("opencode", "opencode-go", err)
+	if got.Outcome != WakeNeedLogin {
+		t.Fatalf("API key 过期应判需登录（凭据无效），不是 %s：%s", got.Outcome, got.Detail)
+	}
+}
+
+// R6a 真样本反例：成功回合不误判（有文本、无 error 事件）。
+func TestRunTurnRealOkSamplesSucceed(t *testing.T) {
+	for _, sample := range []string{"opencode_go_root_ok_not403.real.stdout.jsonl", "opencode_go_haiku_root_ok_not403.real.stdout.jsonl"} {
+		t.Run(sample, func(t *testing.T) {
+			installReplayCLI(t, sample, "0")
+			reply, err := New().RunTurn(context.Background(), TurnRequest{CLI: "opencode", Workdir: t.TempDir(), Prompt: "p"})
+			if err != nil {
+				t.Fatalf("成功样本被判失败: %v", err)
+			}
+			if reply.SessionID == "" || strings.TrimSpace(reply.Output) == "" {
+				t.Fatalf("成功样本应有会话与文本: %+v", reply)
+			}
+		})
+	}
+}

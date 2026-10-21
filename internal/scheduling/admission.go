@@ -35,24 +35,35 @@ type Unusable struct {
 }
 
 // String 渲染点名文案，例如「mini：账号 og-mini 无额度，预计 2h41m 后恢复」「mini：载体不可达」。
-func (u Unusable) String() string {
+func (u Unusable) String() string { return u.Carrier + "：" + u.reason() }
+
+// reason 是不带载体名的原因：「账号 og-mini 无额度，预计 2h41m 后恢复」「载体不可达」。
+func (u Unusable) reason() string {
 	if u.Account == "" {
 		label := u.Status.Label()
 		if label == "" {
 			label = "状态未回填（按未上线）"
 		}
-		return fmt.Sprintf("%s：载体%s", u.Carrier, label)
+		return "载体" + label
 	}
 	recover := "恢复时刻未知"
 	if u.RecoverAt != nil {
-		recover = "预计 " + humanDuration(u.RecoverAt.Sub(u.now)) + " 后恢复"
+		recover = "预计 " + HumanDuration(u.RecoverAt.Sub(u.now)) + " 后恢复"
 	}
-	return fmt.Sprintf("%s：账号 %s %s，%s", u.Carrier, u.Account, u.State.Label(), recover)
+	return fmt.Sprintf("账号 %s %s，%s", u.Account, u.State.Label(), recover)
 }
 
-// humanDuration 把剩余时长写成「2h41m」「3d4h」「12m」。向上取整到分钟：说「0m 后恢复」
+// unusableError 是统一准入拒绝的错误：errors.Is(ErrNoHealthy) 成立（HTTP 映射与调用方分流不变），
+// 但文案只有点名原因本身——不带哨兵的「scheduling: 小队内没有已上线且有空的载体: 」前缀，那句话
+// 对点名载体是错的（不是小队），对小队则与「小队 X 没有可用载体」重复（R5 真机反馈）。
+type unusableError struct{ msg string }
+
+func (e *unusableError) Error() string        { return e.msg }
+func (e *unusableError) Is(target error) bool { return target == ErrNoHealthy }
+
+// HumanDuration 把剩余时长写成「2h41m」「3d4h」「12m」。向上取整到分钟：说「0m 后恢复」
 // 而实际还差几十秒，会让人立刻重派又被拒。
-func humanDuration(d time.Duration) string {
+func HumanDuration(d time.Duration) string {
 	minutes := int((d + time.Minute - 1) / time.Minute)
 	if minutes < 1 {
 		minutes = 1
@@ -107,7 +118,7 @@ func (s *Service) requireUsable(c Carrier) error {
 		return err
 	}
 	if u != nil {
-		return fmt.Errorf("%w: %s", ErrNoHealthy, u)
+		return &unusableError{msg: "载体 " + u.Carrier + " 不可用：" + u.reason()}
 	}
 	return nil
 }
@@ -119,9 +130,9 @@ func (s *Service) CheckUsable(c Carrier) error { return s.requireUsable(c) }
 // noUsableMember 是小队全员被跳过时的错误：逐个点名被跳过的成员（spec S5）。
 func noUsableMember(squad string, skipped []string) error {
 	if len(skipped) == 0 {
-		return fmt.Errorf("%w: 小队 %s 没有在线载体", ErrNoHealthy, squad)
+		return &unusableError{msg: "小队 " + squad + " 没有在线载体"}
 	}
-	return fmt.Errorf("%w: 小队 %s 没有可用载体——%s", ErrNoHealthy, squad, strings.Join(skipped, "；"))
+	return &unusableError{msg: "小队 " + squad + " 没有可用载体——" + strings.Join(skipped, "；")}
 }
 
 // CarriersUsingAccount 列出所选账号为 account 的载体名（排序）。组装点把它注入账号域的

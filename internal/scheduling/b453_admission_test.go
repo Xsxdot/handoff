@@ -340,11 +340,11 @@ func TestCheckUsableNamesStatusAndAccount(t *testing.T) {
 		t.Fatalf("可用载体 CheckUsable = %v", err)
 	}
 	setUsage(t, acc, "cx", 100, 0)
-	if err := svc.CheckUsable(c); !errors.Is(err, scheduling.ErrNoHealthy) || !strings.Contains(err.Error(), "c1：账号 cx 无额度，恢复时刻未知") {
+	if err := svc.CheckUsable(c); !errors.Is(err, scheduling.ErrNoHealthy) || !strings.Contains(err.Error(), "载体 c1 不可用：账号 cx 无额度，恢复时刻未知") {
 		t.Fatalf("CheckUsable 应点名账号无额度且恢复未知，得 %v", err)
 	}
 	c.Status = scheduling.StatusUnreachable
-	if err := svc.CheckUsable(c); !errors.Is(err, scheduling.ErrNoHealthy) || !strings.Contains(err.Error(), "c1：载体不可达") {
+	if err := svc.CheckUsable(c); !errors.Is(err, scheduling.ErrNoHealthy) || !strings.Contains(err.Error(), "载体 c1 不可用：载体不可达") {
 		t.Fatalf("CheckUsable 应点名载体状态，得 %v", err)
 	}
 }
@@ -368,5 +368,45 @@ func TestAdmitSingleCriterionStructural(t *testing.T) {
 		if loc := re.FindIndex(src); loc != nil {
 			t.Fatalf("%s 里有直接比较 Status != StatusOnline 的准入代码（应经统一判据 admission.go）", f)
 		}
+	}
+}
+
+// 段 4 协调者真机反馈（R5）：外层不得再带哨兵前缀「scheduling: 小队内没有已上线且有空的载体: 」——
+// 点名载体读作「载体 X 不可用：…」，小队读作「小队 X 没有可用载体——A：…；B：…」且只出现一次。
+// errors.Is(ErrNoHealthy) 不变（HTTP 映射照旧）。
+func TestB453UnusableMessagesHaveNoSentinelPrefix(t *testing.T) {
+	svc, acc, _ := newAccountFixture(t)
+	putAccount(t, acc, "acc-a", "m1")
+	putAccount(t, acc, "acc-b", "m2")
+	boundCarrier(t, svc, "A", "m1", "acc-a")
+	boundCarrier(t, svc, "B", "m2", "acc-b")
+	if err := svc.PutSquad(scheduling.Squad{Name: "exec", Role: scheduling.RoleExecutor,
+		Members: []scheduling.SquadMember{{Carrier: "A"}, {Carrier: "B"}}}, 0); err != nil {
+		t.Fatalf("登记小队: %v", err)
+	}
+	setUsage(t, acc, "acc-a", 90, 3*time.Hour)
+
+	_, err := svc.AdmitCarrier("A")
+	if !errors.Is(err, scheduling.ErrNoHealthy) || !strings.HasPrefix(err.Error(), "载体 A 不可用：账号 acc-a 低额度，预计 ") {
+		t.Fatalf("点名载体文案应以「载体 A 不可用：账号 acc-a 低额度，预计 」开头，得 %v", err)
+	}
+	c, _ := svc.Carrier("B")
+	c.Status = scheduling.StatusUnreachable
+	if err := svc.CheckUsable(c); !errors.Is(err, scheduling.ErrNoHealthy) || err.Error() != "载体 B 不可用：载体不可达" {
+		t.Fatalf("CheckUsable 文案应恰为「载体 B 不可用：载体不可达」，得 %v", err)
+	}
+
+	if err := acc.MarkQuota("acc-b", accounts.QuotaMark{At: time.Now(), Carrier: "B", Machine: "m2", Category: "quota_exhausted"}); err != nil {
+		t.Fatalf("标 acc-b 无额度: %v", err)
+	}
+	_, err = svc.SelectWhere(scheduling.IgnitionRequest{Squad: "exec", Actor: "test"}, nil)
+	if !errors.Is(err, scheduling.ErrNoHealthy) {
+		t.Fatalf("全员被跳过应 ErrNoHealthy，得 %v", err)
+	}
+	msg := err.Error()
+	if !strings.HasPrefix(msg, "小队 exec 没有可用载体——A：账号 acc-a 低额度，预计 ") ||
+		!strings.HasSuffix(msg, "；B：账号 acc-b 无额度，恢复时刻未知") ||
+		strings.Count(msg, "没有可用载体") != 1 || strings.Contains(msg, "scheduling:") {
+		t.Fatalf("小队文案形状不符：%s", msg)
 	}
 }

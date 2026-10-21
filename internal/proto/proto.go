@@ -413,7 +413,27 @@ type Event struct {
 	CreatedAt time.Time       `json:"created_at"`
 }
 
-// Ticket 表示一次需人工介入的请求，Kind 取 "gate"（许可门）或 "ask"（提问）。
+// TicketKindNotice 是系统告知工单（B453 Q7/F-B460-1）：人答「已知悉」即关单，答复不回传执行器。
+// 目前唯一来源是分支任务撞额度停下（S7）。
+const TicketKindNotice = "notice"
+
+// NoticeRequest 是 notice 工单的请求体（B453 F-B460-1）：CLI 退出 5 的块全文取 Notice；
+// 其余为结构化字段，供控制台与日志用。RecoverAt 缺席 = 预计恢复时刻未知。
+type NoticeRequest struct {
+	Kind      string     `json:"kind"`   // 恒为 notice（编排侧按请求体 kind 分流应答）
+	Reason    string     `json:"reason"` // 告知原因：quota_exhausted
+	Notice    string     `json:"notice"` // 人读全文
+	Carrier   string     `json:"carrier,omitempty"`
+	Machine   string     `json:"machine,omitempty"`
+	Account   string     `json:"account,omitempty"`
+	Windows   []string   `json:"windows,omitempty"`
+	RecoverAt *time.Time `json:"recover_at,omitempty"`
+	Branch    string     `json:"branch,omitempty"`
+	Worktree  string     `json:"worktree,omitempty"`
+}
+
+// Ticket 表示一次需人工介入的请求，Kind 取 "gate"（许可门）、"ask"（提问）或
+// "notice"（系统告知，B453）。
 //
 // JSON 线格式契约（attach 输出 pending_tickets 与 REST 响应共用此结构，
 // key 必须小写）：{"id":..,"task_id":..,"kind":..,"request":{..},"answer":..,..}。

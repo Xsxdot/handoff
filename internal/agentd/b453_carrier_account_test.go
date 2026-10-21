@@ -222,7 +222,7 @@ func TestRouteNamedRemoteCarrierUsesUnifiedCriterion(t *testing.T) {
 	putOnline("c1")
 	readingWithFingerprint(t, acc, "cx", "", 100)
 	_, err := env.srv.routeOrdinaryDispatch(dispatchRequest{Receiver: "c1"})
-	if !errors.Is(err, scheduling.ErrNoHealthy) || !strings.Contains(err.Error(), "c1：账号 cx 无额度") {
+	if !errors.Is(err, scheduling.ErrNoHealthy) || !strings.Contains(err.Error(), "载体 c1 不可用：账号 cx 无额度") {
 		t.Fatalf("点名他机载体而账号无额度应拒并点名，得 %v", err)
 	}
 }
