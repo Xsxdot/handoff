@@ -5,8 +5,10 @@
 // 的真实路径：条目按「键等于 issuer 或以 issuer:: 开头」选、多条取未过期且 expires_at
 // 最晚；全部过期判 credential_expired（5 分钟偏斜，不自刷）；?format=credits 失败回退
 // /billing；401 不回退；请求头形状；指纹取 user_id（缺则 email）。
-// 边界：成功样本 testdata/grok_billing_credits_200.synthetic.json 按 b453-facts-orca §1
-// Grok 节字段名合成，**未经真机**（U3，R2 替换）；auth.json 键形取自主会话只读键名事实。
+// 边界：成功样本 testdata/grok_billing_{credits_,}200.real.json 是 R2（2026-10-22，gk-mbp）
+// 真机取得的两个接口 200 正文：数值包在 {"val":N}、重置时刻在 config.currentPeriod.end /
+// billingPeriodEnd、无 subscriptionTier、本账号 monthlyLimit=0（= 无月窗口）。有月窗口、
+// 有额外额度的形态无真样本，用内联合成用例。auth.json 键形取自主会话只读键名事实。
 package quota
 
 import (
@@ -23,6 +25,8 @@ import (
 )
 
 func TestGrokParseBillingTable(t *testing.T) {
+	weekEnd := mustTime(t, "2026-10-23T06:58:52.699759Z")
+	monthEnd := mustTime(t, "2026-11-01T00:00:00Z")
 	cases := []struct {
 		name    string
 		status  int
@@ -32,12 +36,19 @@ func TestGrokParseBillingTable(t *testing.T) {
 		plan    string
 		extra   bool
 	}{
-		{name: "合成成功样本（含未知字段）", status: 200, body: string(readTestdata(t, "grok_billing_credits_200.synthetic.json")),
-			windows: []Window{{Key: WindowWeekly, UsedPercent: 42.5}, {Key: WindowMonthly, UsedPercent: 25}}, plan: "SuperGrok", extra: true},
-		{name: "数字字符串与只有周窗口", status: 200, body: `{"config":{"creditUsagePercent":"10"}}`,
+		{name: "R2 真样本 credits：val 包装、currentPeriod.end、无套餐、额外额度全 0", status: 200,
+			body:    string(readTestdata(t, "grok_billing_credits_200.real.json")),
+			windows: []Window{{Key: WindowWeekly, UsedPercent: 64, ResetsAt: &weekEnd}}},
+		{name: "R2 真样本 /billing：monthlyLimit=0 不出月窗口 → 无窗口", status: 200,
+			body: string(readTestdata(t, "grok_billing_200.real.json")), failure: CategoryParse},
+		{name: "合成：/billing 有月额度、回退 billingPeriodEnd", status: 200,
+			body:    `{"config":{"monthlyLimit":{"val":200},"used":{"val":50},"billingPeriodEnd":"2026-11-01T00:00:00+00:00"}}`,
+			windows: []Window{{Key: WindowMonthly, UsedPercent: 25, ResetsAt: &monthEnd}}},
+		{name: "合成：有套餐与额外额度（val 包装）", status: 200,
+			body:    `{"subscriptionTier":"SuperGrok","config":{"creditUsagePercent":42.5,"billingPeriodEnd":"2026-11-01T00:00:00+00:00","prepaidBalance":{"val":3.5},"onDemandUsed":{"val":1},"onDemandCap":{"val":10}}}`,
+			windows: []Window{{Key: WindowWeekly, UsedPercent: 42.5, ResetsAt: &monthEnd}}, plan: "SuperGrok", extra: true},
+		{name: "数字字符串", status: 200, body: `{"config":{"creditUsagePercent":"10"}}`,
 			windows: []Window{{Key: WindowWeekly, UsedPercent: 10}}},
-		{name: "只有月窗口在顶层", status: 200, body: `{"monthlyLimit":"100","used":"120"}`,
-			windows: []Window{{Key: WindowMonthly, UsedPercent: 100}}},
 		{name: "没有任何窗口字段", status: 200, body: `{"subscriptionTier":"free"}`, failure: CategoryParse},
 		{name: "401", status: 401, body: `{}`, failure: CategoryUnauthorized},
 		{name: "403", status: 403, body: `{}`, failure: CategoryUnauthorized},
@@ -97,7 +108,7 @@ func TestGrokProbeEntrySelectionFallbackAndExpiry(t *testing.T) {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
-		_, _ = w.Write(readTestdata(t, "grok_billing_credits_200.synthetic.json"))
+		_, _ = w.Write([]byte(`{"config":{"monthlyLimit":{"val":100},"used":{"val":30}}}`))
 	}))
 	defer srv.Close()
 	auth := `{"https://other.example::x":{"key":"wrong"},` +
@@ -115,7 +126,7 @@ func TestGrokProbeEntrySelectionFallbackAndExpiry(t *testing.T) {
 	if gotAuth != "Bearer "+sentinelKey || gotTokenAuth != "xai-grok-cli" || gotUser != "u-new" {
 		t.Fatalf("应选未过期且最晚的条目并带头: tokenAuth=%q user=%q bearerOK=%v", gotTokenAuth, gotUser, gotAuth == "Bearer "+sentinelKey)
 	}
-	if snap.Fingerprint != Fingerprint("u-new") || len(snap.Windows) != 2 {
+	if snap.Fingerprint != Fingerprint("u-new") || len(snap.Windows) != 1 || snap.Windows[0].Key != WindowMonthly {
 		t.Fatalf("指纹/窗口: %+v", snap)
 	}
 

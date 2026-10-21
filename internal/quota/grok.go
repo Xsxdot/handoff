@@ -4,9 +4,11 @@
 // `issuer::` 开头——真机键形为 `https://auth.x.ai::<uuid>`；多条时取未过期且 expires_at
 // 最晚者），以 Bearer + `X-XAI-Token-Auth: xai-grok-cli` 调
 // `GET <base>/v1/billing?format=credits`，失败（非鉴权类）回退 `/v1/billing`。
-// creditUsagePercent → 周、used/monthlyLimit → 月、subscriptionTier → 套餐、
-// prepaidBalance/onDemandUsed/onDemandCap → 额外额度。字段名来自 facts-orca §1 Grok 节，
-// 所在层级未知，故在顶层与 config/billing 子对象里宽容查找（**未经真机**，U3）。
+// creditUsagePercent → 周（重置 = config.currentPeriod.end，回退 billingPeriodEnd）、
+// used/monthlyLimit → 月（monthlyLimit=0 = 无月窗口；重置 = billingPeriodEnd）、
+// subscriptionTier → 套餐（缺席则不报）、prepaidBalance/onDemandUsed/onDemandCap → 额外额度。
+// R2 真样本证实数值包在 {"val":N}、字段在 config 下；仍在顶层与 config/billing 里宽容查找。
+// 与 orca 同：credits 成功即用，不再为月窗口追调 /billing（失败才回退）。
 //
 // 边界：只读凭据，不自刷新——过期（含 5 分钟偏斜）直接判 credential_expired，等 grok CLI 刷新。
 package quota
@@ -155,10 +157,18 @@ func ParseGrokBilling(status int, body []byte) (Snapshot, error) {
 		}
 		return nil, false
 	}
+	// 重置时刻：周窗口取 currentPeriod.end（R2 真样本），回退 billingPeriodEnd；月窗口取 billingPeriodEnd。
+	periodEnd := momentOf(find("billingPeriodEnd"))
+	weekReset := periodEnd
+	if cp, ok := find("currentPeriod"); ok {
+		if t := momentOf(asMap(cp)["end"], true); t != nil {
+			weekReset = t
+		}
+	}
 	var out Snapshot
 	if v, ok := find("creditUsagePercent"); ok {
 		if p, ok := num(v); ok {
-			out.Windows = append(out.Windows, Window{Key: WindowWeekly, UsedPercent: clampPercent(p)})
+			out.Windows = append(out.Windows, Window{Key: WindowWeekly, UsedPercent: clampPercent(p), ResetsAt: weekReset})
 		}
 	}
 	limitV, hasLimit := find("monthlyLimit")
@@ -166,12 +176,13 @@ func ParseGrokBilling(status int, body []byte) (Snapshot, error) {
 	if hasLimit && hasUsed {
 		limit, ok1 := num(limitV)
 		used, ok2 := num(usedV)
+		// monthlyLimit=0 表示没有月额度（R2 真样本），不出月窗口。
 		if ok1 && ok2 && limit > 0 {
-			out.Windows = append(out.Windows, Window{Key: WindowMonthly, UsedPercent: clampPercent(used / limit * 100)})
+			out.Windows = append(out.Windows, Window{Key: WindowMonthly, UsedPercent: clampPercent(used / limit * 100), ResetsAt: periodEnd})
 		}
 	}
 	if len(out.Windows) == 0 {
-		return Snapshot{}, fail(CategoryParse, "响应里没有 creditUsagePercent 或 used/monthlyLimit：%s", snippet(body))
+		return Snapshot{}, fail(CategoryParse, "响应里没有可用窗口（无 creditUsagePercent，且 monthlyLimit 缺席或为 0）：%s", snippet(body))
 	}
 	if v, ok := find("subscriptionTier"); ok {
 		if s, ok := v.(string); ok {
@@ -193,6 +204,22 @@ func ParseGrokBilling(status int, body []byte) (Snapshot, error) {
 		out.Extra = &extra
 	}
 	return out, nil
+}
+
+// momentOf 把宽容取到的字段值解析成时刻（RFC3339/时间戳）；取不到或解析失败为 nil。
+func momentOf(v any, ok bool) *time.Time {
+	if !ok || v == nil {
+		return nil
+	}
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return nil
+	}
+	t, err := parseMoment(raw)
+	if err != nil {
+		return nil
+	}
+	return t
 }
 
 func asMap(v any) map[string]any {

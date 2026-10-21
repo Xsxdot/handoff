@@ -132,3 +132,14 @@
 - 代理反例：cx-linux 填 `socks5://u:secretpw@127.0.0.1:1` → PUT 回显 `socks5://u:***@127.0.0.1:1`；探测 fail `proxy`，旧读数 [19,18] 保留；linux 日志 `secretpw` 0 命中。**瑕疵**：失败文案里代理被写成 `socks5://%2A%2A%2A@127.0.0.1:1`（打码后又被 URL 转义、用户名丢失），应与回显同形。清空代理（PUT `proxy:""`）→ 回显无 proxy 键，再探测正常。
 - DELETE og-mini（无引用）→ `{"name":"og-mini","version":1}`；`account list` 四行：agy 正常、codex 正常、grok 正常、og-muse 探测失败（新文案「API key 已过期（在 OpenCode Console 新建 API key…）」）。
 - 待段 3 并修：grok 真实字段（val 包装、重置时刻、monthlyLimit=0 不出月窗口、无套餐时不报）；代理打码文案统一；CLI/界面百分比显示取整（读数保留原值）；三份合成样本换真样本。
+
+## implement 段 3（2026-10-22，本会话 implement subagent，主检出 `cards/B453-charter-1`，基线 `a63c218a`）
+
+- 输入：协调者段 2 裁决（偏离 1–12 全认可）、台账「真机 R2」节、R2 修补五条、段 3 范围（plan §4 段 3）。
+- T8 R2 修补（同轮先红后绿）：
+  - 样本：协调者脱敏真样本 4 份（`codex_wham_usage_200.real.json`、`grok_billing_credits_200.real.json`、`grok_billing_200.real.json`、`agy_usage_200.real.json`）拷入 `internal/quota/testdata/`（拷前全文读过，无凭据值、id/邮箱已脱敏），`git rm` 三份 `*.synthetic.json`；opencode-go 成功体仍是测试内联合成（文件头已注明未经真机）。
+  - 红：`go test ./internal/quota/` → agy「窗口[0] UsedPercent 13.310402631759644 want 13.31040263175964」（测试侧常量折叠精度，改为运行期 `usedOf` 计算，非产品问题）；grok「窗口[0] 重置时刻 = <nil>」「parse: 响应里没有 creditUsagePercent 或 used/monthlyLimit：{"config":{"monthlyLimit":{"val":200}…」；codex 真样本用例首跑即绿（reset_at 秒、balance 字符串段 2 已兼容）。
+  - 红：新增 `TestProxyFailureMessageMaskedLikeAPI` →「经代理 socks5://%2A%2A%2A@127.0.0.1:1 出网失败」。
+  - 红：`go test ./cmd/ -run TestAccount` →「表格缺 "月 13%"」。
+  - 绿：quota、accounts、proxycfg、cmd `-run TestAccount` 全 ok。
+  - 判断：grok 数值经 `num` 统一解 `{"val":N}`；周窗口重置 = `config.currentPeriod.end`，回退 `billingPeriodEnd`；月窗口重置 = `billingPeriodEnd`；`monthlyLimit=0` 不出月窗口；无 `subscriptionTier` 不报套餐。credits 成功后**不**追调 `/billing`（照 orca：credits 优先、失败回退）——真机这个账号 monthlyLimit=0，追调也拿不到月窗口，还多一次外呼。codex `rate_limit_reset_credits` 忽略（不是可用额度，是「重置次数券」，进 extra_usage 会误导）。代理打码口径收到 `proxycfg.Mask`（新函数；proxycfg 不在 plan §3 可改清单内，属偏离，见交回）：账号 API 回显、探测失败文案、quota/探测器日志共用；`accounts.MaskProxy` 改为委托它。CLI 百分比 `math.Round` 取整，读数原值不动；组名原样。

@@ -1,9 +1,0 @@
-{"type":"command","command":{"name":"usage","data":{"account":{"email":"someone@example.com"},"groups":[
- {"name":"Gemini Models","buckets":[
-   {"id":"g5","name":"Gemini 5h","window":"5h","remaining_fraction":0.75,"reset_time":"2026-10-22T12:00:00Z","disabled":false},
-   {"id":"gw","name":"Gemini weekly","window":"weekly","remaining_fraction":0.4,"reset_time":1793000000,"disabled":false},
-   {"id":"gx","name":"Gemini experimental","window":"5h","remaining_fraction":0,"disabled":true}]},
- {"name":"Claude and GPT models","buckets":[
-   {"id":"c5","name":"Claude 5h","window":"5h","remaining_fraction":1,"reset_time":null},
-   {"id":"cw","name":"Claude weekly","window":"weekly","remaining_fraction":0.1,"extra":"ignored"}]}
-],"future":"ignored"}}}

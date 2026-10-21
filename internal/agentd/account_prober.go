@@ -298,7 +298,7 @@ func (p *AccountProber) probeOnce(ctx context.Context, a accounts.Account, prevS
 		proxy = p.cfg.Proxy()
 	}
 	p.log.Info("账号探测开始", "account", a.Name, "kind", a.Kind, "machine", a.Machine,
-		"trigger", trigger, "proxy", proxycfg.Redact(proxy), "account_proxy", a.Proxy != "")
+		"trigger", trigger, "proxy", proxycfg.Mask(proxy), "account_proxy", a.Proxy != "")
 	outcome := accounts.ProbeOutcome{StartedAt: started, Writer: p.cfg.Writer}
 	home, err := p.cfg.ExpandHome(a.HomeDir)
 	var snap quota.Snapshot

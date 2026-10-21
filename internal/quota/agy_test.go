@@ -7,8 +7,9 @@
 // 代理注入子进程环境；超时杀整组（假 CLI 起的孙进程超时后不残留）；未登录/其他非零退出
 // 的分类；信封宽容解析（未知字段、前置噪声行、disabled bucket 不计、每模型组 5h/周各成
 // 窗口带组名）；指纹取登录身份。
-// 边界：信封样本 testdata/agy_usage_200.synthetic.json 按 b453-facts-orca §1 Antigravity
-// 节字段名合成，**未经真机**（U4，R2 替换）。真实 agy 不在测试中运行。
+// 边界：信封样本 testdata/agy_usage_200.real.json 是 R2（2026-10-22，agy 1.4.4@linux-01）真机
+// /usage 输出：无登录身份字段（指纹留空）、remaining_fraction 有 float 与整数 1 两种。
+// disabled bucket、身份字段、未知窗口等形态无真样本，用内联合成用例。真实 agy 不在测试中运行。
 package quota
 
 import (
@@ -39,22 +40,34 @@ func fakeAgy(t *testing.T, version, body string) string {
 	return p
 }
 
+// usedOf 在运行期算 (1−remaining)×100：常量表达式会按任意精度折叠，与解析器的
+// float64 运算差最后一位。
+func usedOf(remaining float64) float64 { return clampPercent((1 - remaining) * 100) }
+
 func TestAgyParseUsageTolerant(t *testing.T) {
-	r5 := mustTime(t, "2026-10-22T12:00:00Z")
-	rw := time.Unix(1793000000, 0).UTC()
-	sample := readTestdata(t, "agy_usage_200.synthetic.json")
+	sample := readTestdata(t, "agy_usage_200.real.json")
 	snap, err := ParseAgyUsage(append([]byte("Loading...\nwarn: something\n"), sample...))
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
+	gw, g5 := mustTime(t, "2026-10-24T13:01:04Z"), mustTime(t, "2026-10-21T20:05:49Z")
+	cw, c5 := mustTime(t, "2026-10-28T16:48:16Z"), mustTime(t, "2026-10-21T21:48:16Z")
 	assertWindows(t, snap.Windows, []Window{
-		{Key: WindowSession, Group: "Gemini Models", UsedPercent: 25, ResetsAt: &r5},
-		{Key: WindowWeekly, Group: "Gemini Models", UsedPercent: 60, ResetsAt: &rw},
-		{Key: WindowSession, Group: "Claude and GPT models", UsedPercent: 0},
-		{Key: WindowWeekly, Group: "Claude and GPT models", UsedPercent: 90},
+		{Key: WindowWeekly, Group: "Gemini Models", UsedPercent: usedOf(0.8668959736824036), ResetsAt: &gw},
+		{Key: WindowSession, Group: "Gemini Models", UsedPercent: usedOf(0.9410383105278015), ResetsAt: &g5},
+		{Key: WindowWeekly, Group: "Claude and GPT models", UsedPercent: 0, ResetsAt: &cw},
+		{Key: WindowSession, Group: "Claude and GPT models", UsedPercent: 0, ResetsAt: &c5},
 	})
-	if id := agyIdentity(sample); id != "someone@example.com" {
-		t.Fatalf("登录身份 = %q", id)
+	if id := agyIdentity(sample); id != "" {
+		t.Fatalf("真样本无登录身份，应留空，得 %q", id)
+	}
+	synth := []byte(`{"command":{"data":{"account":{"email":"someone@example.com"},"groups":[{"name":"G","buckets":[` +
+		`{"window":"5h","remaining_fraction":0.5},{"window":"5h","remaining_fraction":0,"disabled":true},{"window":"daily","remaining_fraction":0}]}]}}}`)
+	if s2, err := ParseAgyUsage(synth); err != nil || len(s2.Windows) != 1 || s2.Windows[0].UsedPercent != 50 {
+		t.Fatalf("合成：disabled 与未知窗口应忽略: %+v %v", s2, err)
+	}
+	if id := agyIdentity(synth); id != "someone@example.com" {
+		t.Fatalf("合成：登录身份 = %q", id)
 	}
 	for name, body := range map[string]string{
 		"无 groups": `{"command":{"data":{}}}`,
@@ -73,7 +86,7 @@ func TestAgyParseUsageTolerant(t *testing.T) {
 }
 
 func TestAgyProbeRunsUsageWithHomeAndProxy(t *testing.T) {
-	samplePath, _ := filepath.Abs(filepath.Join("testdata", "agy_usage_200.synthetic.json"))
+	samplePath, _ := filepath.Abs(filepath.Join("testdata", "agy_usage_200.real.json"))
 	bin := fakeAgy(t, "agy version 1.4.4", "cat '"+samplePath+"'")
 	home := t.TempDir()
 	a := &Agy{Binary: bin}
@@ -89,7 +102,7 @@ func TestAgyProbeRunsUsageWithHomeAndProxy(t *testing.T) {
 	if !strings.Contains(string(env), "HTTPS_PROXY=socks5://127.0.0.1:7897 https_proxy=socks5://127.0.0.1:7897 ALL_PROXY=socks5://127.0.0.1:7897") {
 		t.Fatalf("代理未注入子进程环境: %q", env)
 	}
-	if len(snap.Windows) != 4 || snap.Fingerprint != Fingerprint("someone@example.com") {
+	if len(snap.Windows) != 4 || snap.Fingerprint != "" {
 		t.Fatalf("读数/指纹: %+v", snap)
 	}
 }

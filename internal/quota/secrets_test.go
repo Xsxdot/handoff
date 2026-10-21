@@ -120,3 +120,18 @@ func assertNoSentinel(t *testing.T, snap Snapshot, err error) {
 		t.Fatalf("读数泄露凭据: %s", raw)
 	}
 }
+
+// TestProxyFailureMessageMaskedLikeAPI 锁 R2 瑕疵修补：探测失败文案里的代理与 API 回显同形
+// （`socks5://u:***@host:port`），不被 URL 转义、不丢用户名、不含密码。
+func TestProxyFailureMessageMaskedLikeAPI(t *testing.T) {
+	home := writeOpencodeAuth(t, `{"opencode-go":{"type":"api","key":"`+sentinelKey+`"}}`)
+	_, err := (&OpencodeGo{BaseURL: "http://example.invalid", CredRelPath: testCredRelPath, Timeout: 3 * time.Second}).Probe(
+		context.Background(), Request{Kind: KindOpencodeGo, Home: home, Entry: "opencode-go", Proxy: "socks5://u:secretpw@127.0.0.1:1"})
+	var f *Failure
+	if !errors.As(err, &f) || f.Category != CategoryProxy {
+		t.Fatalf("坏代理应判 proxy: %v", err)
+	}
+	if !strings.Contains(f.Message, "socks5://u:***@127.0.0.1:1") || strings.Contains(f.Message, "secretpw") || strings.Contains(f.Message, "%2A") {
+		t.Fatalf("代理打码应与 API 回显同形: %s", f.Message)
+	}
+}

@@ -54,7 +54,7 @@ func getJSON(ctx context.Context, kind, url string, headers map[string]string, p
 		req.Header.Set(k, v)
 	}
 	started := time.Now()
-	log().Info("额度接口调用开始", "kind", kind, "url", url, "proxy", proxycfg.Redact(proxy), "timeout", timeout)
+	log().Info("额度接口调用开始", "kind", kind, "url", url, "proxy", proxycfg.Mask(proxy), "timeout", timeout)
 	resp, err := (&http.Client{Transport: transport, Timeout: timeout}).Do(req)
 	if err != nil {
 		f := classifyTransportErr(err, proxy)
@@ -126,14 +126,19 @@ func classifyTransportErr(err error, proxy string) *Failure {
 		return fail(CategoryTimeout, "额度接口超时：%v", err)
 	}
 	if strings.Contains(err.Error(), "proxyconnect") || strings.Contains(strings.ToLower(err.Error()), "socks") {
-		return fail(CategoryProxy, "经代理 %s 出网失败：%v", proxycfg.Redact(proxy), err)
+		return fail(CategoryProxy, "经代理 %s 出网失败：%v", proxycfg.Mask(proxy), err)
 	}
 	return fail(CategoryNetwork, "额度接口不可达：%v", err)
 }
 
-// num 宽容地取数值：JSON 数字或数字字符串。
+// num 宽容地取数值：JSON 数字、数字字符串，或 grok 式 {"val": N} 包装。
 func num(v any) (float64, bool) {
 	switch x := v.(type) {
+	case map[string]any:
+		if inner, ok := x["val"]; ok {
+			return num(inner)
+		}
+		return 0, false
 	case float64:
 		return x, true
 	case json.Number:

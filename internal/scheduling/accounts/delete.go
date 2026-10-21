@@ -9,10 +9,10 @@ package accounts
 import (
 	"errors"
 	"fmt"
-	"net/url"
 	"sort"
 	"strings"
 
+	"github.com/Xsxdot/handoff/internal/proxycfg"
 	"github.com/Xsxdot/handoff/internal/schedclient"
 )
 
@@ -86,28 +86,9 @@ func (s *Service) Delete(name string, expect int) error {
 	return nil
 }
 
-// MaskProxy 返回读面用的代理串：userinfo 带密码时密码段打码（`user:***@host`），
-// 无密码或无 userinfo 原样。解析不了的串整段隐藏（解析失败恰是最可能整串泄密的场合）。
-func MaskProxy(proxy string) string {
-	if proxy == "" {
-		return ""
-	}
-	u, err := url.Parse(proxy)
-	if err != nil || u.Host == "" {
-		return "<无法解析的 proxy 值，已隐藏>"
-	}
-	if u.User == nil {
-		return proxy
-	}
-	if _, has := u.User.Password(); !has {
-		return proxy
-	}
-	out := u.Scheme + "://" + u.User.Username() + ":***@" + u.Host + u.EscapedPath()
-	if u.RawQuery != "" {
-		out += "?" + u.RawQuery
-	}
-	return out
-}
+// MaskProxy 返回读面用的代理串：密码段打码（`user:***@host`）。口径唯一定义在
+// proxycfg.Mask，账号 API 回显、探测失败文案与日志共用。
+func MaskProxy(proxy string) string { return proxycfg.Mask(proxy) }
 
 // isMaskedEcho 报告 incoming 是否正是 stored 的打码形式（且 stored 确有被打码的密码）——
 // 控制台编辑回填的是读面里的打码值，此时保留原值，不把 *** 写进账本。

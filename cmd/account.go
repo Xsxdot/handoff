@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"strconv"
 	"strings"
 	"text/tabwriter"
@@ -141,12 +142,11 @@ func accountWindows(v proto.AccountView) string {
 		if win.Group != "" {
 			label = win.Group + " " + label
 		}
-		parts = append(parts, label+" "+strconv.FormatFloat(roundTenth(win.UsedPercent), 'f', -1, 64)+"%")
+		// 显示取整（读数本身保留原值）；组名原样，缩写归界面层。
+		parts = append(parts, label+" "+strconv.FormatFloat(math.Round(win.UsedPercent), 'f', 0, 64)+"%")
 	}
 	return strings.Join(parts, "  ")
 }
-
-func roundTenth(f float64) float64 { return float64(int64(f*10+0.5)) / 10 }
 
 // accountNextReset 取尚未到来的最早重置时刻，打成「2h41m后」。
 func accountNextReset(v proto.AccountView, now time.Time) string {

@@ -5,8 +5,8 @@
 // 401/403/429/5xx、字段缺失、>100 钳制），与 Probe 的真实路径（读 tokens 条目、
 // 请求头形状、JWT 过期判 credential_expired、仅 API key 登录判 credential_invalid、
 // 指纹取 account_id）。
-// 边界：成功样本 testdata/codex_usage_200.synthetic.json 按 b453-facts-providers §E
-// 的 gist 样例合成，**未经真机**（U3，R2 替换）。
+// 边界：成功样本 testdata/codex_wham_usage_200.real.json 是 R2（2026-10-22，cx-linux）真机
+// 取得并脱敏（id/邮箱）的 wham/usage 200 正文；credits 有余额的形态无真样本，用内联合成用例。
 package quota
 
 import (
@@ -32,8 +32,9 @@ func readTestdata(t *testing.T, name string) []byte {
 }
 
 func TestCodexParseUsageTable(t *testing.T) {
-	now := time.Unix(1778660000, 0).UTC()
-	r1, r2 := time.Unix(1778670307, 0).UTC(), time.Unix(1779157165, 0).UTC()
+	now := time.Unix(1792601291, 0).UTC()
+	r1, r2 := time.Unix(1792610251, 0).UTC(), time.Unix(1793084937, 0).UTC()
+	rc := time.Unix(1778670307, 0).UTC()
 	after := now.Add(100 * time.Second)
 	cases := []struct {
 		name    string
@@ -45,15 +46,18 @@ func TestCodexParseUsageTable(t *testing.T) {
 		plan    string
 		extra   bool
 	}{
-		{name: "合成成功样本", status: 200, body: string(readTestdata(t, "codex_usage_200.synthetic.json")),
-			windows: []Window{{Key: WindowSession, UsedPercent: 55, ResetsAt: &r1}, {Key: WindowWeekly, UsedPercent: 51, ResetsAt: &r2}},
-			plan:    "plus", extra: true},
+		{name: "R2 真样本（balance 字符串 0、无 credits）", status: 200, body: string(readTestdata(t, "codex_wham_usage_200.real.json")),
+			windows: []Window{{Key: WindowSession, UsedPercent: 19, ResetsAt: &r1}, {Key: WindowWeekly, UsedPercent: 18, ResetsAt: &r2}},
+			plan:    "plus"},
+		{name: "合成：有 credits 余额（字符串）", status: 200,
+			body:    `{"plan_type":"pro","rate_limit":{"allowed":true,"limit_reached":false,"primary_window":{"used_percent":5,"limit_window_seconds":18000,"reset_at":1778670307}},"credits":{"has_credits":true,"unlimited":false,"balance":"12.5"}}`,
+			windows: []Window{{Key: WindowSession, UsedPercent: 5, ResetsAt: &rc}}, plan: "pro", extra: true},
 		{name: "Team 只有周窗口且放在 primary，reset_after_seconds 兜底", status: 200,
 			body:    `{"plan_type":"team","rate_limit":{"allowed":true,"limit_reached":false,"primary_window":{"used_percent":130,"limit_window_seconds":604800,"reset_after_seconds":100},"secondary_window":null}}`,
 			windows: []Window{{Key: WindowWeekly, UsedPercent: 100, ResetsAt: &after}}, plan: "team"},
 		{name: "limit_reached 判不可用", status: 200,
 			body:    `{"plan_type":"plus","rate_limit":{"allowed":true,"limit_reached":true,"primary_window":{"used_percent":100,"limit_window_seconds":18000,"reset_at":1778670307}}}`,
-			windows: []Window{{Key: WindowSession, UsedPercent: 100, ResetsAt: &r1}}, blocked: CategoryLimitReached, plan: "plus"},
+			windows: []Window{{Key: WindowSession, UsedPercent: 100, ResetsAt: &rc}}, blocked: CategoryLimitReached, plan: "plus"},
 		{name: "allowed=false 判不可用", status: 200,
 			body:    `{"rate_limit":{"allowed":false,"primary_window":{"used_percent":20,"limit_window_seconds":18000}}}`,
 			windows: []Window{{Key: WindowSession, UsedPercent: 20}}, blocked: CategoryLimitReached},
@@ -123,7 +127,7 @@ func TestCodexProbeHeadersFingerprintAndCredentialStates(t *testing.T) {
 	var gotPath string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		got, gotPath = r.Header.Clone(), r.URL.Path
-		_, _ = w.Write(readTestdata(t, "codex_usage_200.synthetic.json"))
+		_, _ = w.Write(readTestdata(t, "codex_wham_usage_200.real.json"))
 	}))
 	defer srv.Close()
 	token := fakeJWT(time.Now().Add(time.Hour), sentinelKey)

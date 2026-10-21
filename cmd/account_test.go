@@ -29,6 +29,7 @@ func sampleAccounts(t *testing.T) proto.AccountsResp {
 			IntervalMinutes: 15, WarnPercent: 60, LowPercent: 80, Version: 2, State: "ok",
 			Reading: &proto.AccountReadingView{ProbedAt: probed, Windows: []proto.AccountWindowView{
 				{Key: "session", UsedPercent: 34, ResetsAt: &reset}, {Key: "weekly", UsedPercent: 58},
+				{Key: "monthly", UsedPercent: 13.310402631759644}, {Key: "weekly", Group: "Claude and GPT models", UsedPercent: 58.5},
 			}}, LastAttemptAt: &probed, Carriers: []string{}},
 		{Name: "og-mini", Kind: "opencode-go", Machine: "mac-mini", HomeDir: "~", Entry: "opencode-go",
 			Proxy: "socks5://127.0.0.1:7897", IntervalMinutes: 15, WarnPercent: 60, LowPercent: 80, Version: 1,
@@ -77,10 +78,13 @@ func TestAccountListTableColumns(t *testing.T) {
 		t.Fatalf("account list: %v\nstderr=%s", err, errOut)
 	}
 	for _, want := range []string{"名称", "类型", "机器", "状态", "窗口已用", "最近重置", "上次探测",
-		"og-linux", "正常", "5h 34%", "周 58%", "2h4", "og-mini", "探测失败", "凭据文件不存在"} {
+		"og-linux", "正常", "5h 34%", "周 58%", "月 13%", "Claude and GPT models 周 59%", "2h4", "og-mini", "探测失败", "凭据文件不存在"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("表格缺 %q:\n%s", want, out)
 		}
+	}
+	if strings.Contains(out, "13.3") || strings.Contains(out, "58.5") {
+		t.Fatalf("表格百分比应取整显示:\n%s", out)
 	}
 }
 
