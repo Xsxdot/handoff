@@ -12,12 +12,18 @@
 
 ### 新增
 
+- **`dispatch --wait` / `wait --final` 遇待答工单以退出码 5 交回（B460）。** 任务停在审批链判不了、要人答的权限请求或提问上时立即退出（进入时已有待答工单也一样，不连事件流），stdout 每张工单一块：`ticket:` / `kind:` / 可选 `reason:`、`--- 全文 ---` 定界的工单全文（取工单记录，不截断）、可直接执行的 `reply:` 答复命令，最后一行 `resume: handoff wait <id> --final[ --machine <M>]`。判据是任务快照的待答工单列表，事件只作唤醒；优先级：回合已结束（0/3）> 待答工单（5）> 超时（124）。
+- **网页抓取统一放行并审计（B460）。** 权限门新增 `webfetch` 路由：截断或描述命中黑名单仍升级，其余直接放行，写一条 `permission_auto_allow`（`rule=webfetch`，新键 `url`）。opencode 与 claude（WebFetch / WebSearch）的抓取请求改为产出结构化载荷，agy 补 URL；codex 无抓取审批类型。**风险（用户接受）**：抓取可经 URL 外带数据，由审批链拦凭据读取兜底，不设域名白名单。
+- **任务范围内建目录与写入自动放行（B460）。** `mkdir`、`echo` / `printf` 写重定向在每个落点都能静态证明落在工作树、任务目录（含产物目录）、任务临时目录内时放行（审计 id `mkdir` / `echo-write` / `printf-write`）：认绝对路径、`&&` 链里已证明的 `cd` 之后的相对路径、`$TMPDIR` 与 `$HANDOFF_ARTIFACTS_DIR` 前缀、codex 审批报文的 `cwd`；`$HOME`、`~`、通配、无基准的相对路径不放行。`mkdir` 越出任务范围由「交审批者」收紧为直接升级人工。
+- **审批者拿到任务上下文（B460）。** 审批提示词新增「任务上下文」段（形态、工作树、产物目录、任务临时目录）；只读任务再附裁决政策（为调查读代码、在任务目录内跑脚本处理数据、写报告应批准；读凭据、写范围外、推送、带凭据外发应升级，附凭据清单）。跨机审批请求 `POST /api/approver/decide` 新增可选 `task_context`，老版本审批机忽略它、照旧裁决；无上下文时提示词与此前逐字节一致。
 - **熟练工派发：按名调用、只读形态、等结果回文、产物通道（B452）。** 派发模板新增 `receiver`（载体或小队）与 `mode`（`branch`|`readonly`）两个字段，`target` 可写 `here`。`handoff dispatch --template <名> --prompt "…"`（或 plan 文件）按名派发，提示词是模板正文加「## 本次任务」。只读形态在执行机以基线提交建 detached 托管工作树、不建分支，完成即自动归档并回收。`--wait` 阻塞到终态，stdout 输出最终文本，产物非空时另起一行 `artifacts: <本机路径>`；退出码 0 完成、3 未完成、4 机器亲和不满足、124 超时。`handoff wait <task> --final` 同义，`handoff artifacts <task>` 事后拉取产物。产物目录在 `<datadir>/tasks/<id>/artifacts/`（环境变量 `HANDOFF_ARTIFACTS_DIR`），按 `artifacts.retention`（缺省 168h）清理，跨机经 agentd 下载，不走 git。`--here` / `--machine <m>` 做机器亲和，不满足即 422 拒绝、不换机。
 - **把本机文件拖进远程终端会传到对端 `~/.handoff/drop/`（B272）。** 桌面壳或浏览器里，拖到登记远程机的终端（或浏览器直连远端 agentd 的终端）时，文件按原字节写入那台机器的收件箱，同名加 `-2` 后缀、单文件 32 MiB；成功后命令行插入对端绝对路径。本机桌面终端仍只插入访达真实路径，不拷贝。
 - **OpenCode 协调者可挂 `wait --follow`（B373）。** `handoff skill install` 把仓内 monitor 插件写到 `~/.config/opencode/plugins/`（不改 `opencode.json`）。Command Code / Codex 仍走不带 `--follow` 的一次性 wait，每收到一个事件（含工单）就退出。
 
 ### 变更
 
+- **`--wait` / `wait --final` 的 stderr 不再打「在等人回答」提示（B460）。** 改为以退出码 5 交回，见「新增」。
+- **静态放行白名单新增 `mkdir`、`echo-write`、`printf-write` 三个 id（B460）。** 政策快照版本随之变化：升级瞬间仍在跑的任务，此前人工批准的「同任务复用」指纹会失配一次（再问一次人），之后恢复。
 - **裸派发选中他机载体时改为转发到载体机（B452）。** 以前普通 `dispatch` 的接收者在另一台机器时返回 400「接收机不是载体登记机」；现在受理机按冻结身份把请求转发过去，任务在载体机创建，名额只在载体机占；载体机不可达返回 502 并点名机器，不换人。小队裸派发改为先选人再准入，两步之间被抢满得 409。新增配置键 `artifacts.retention`：**老版本 agentd 遇该键拒绝启动，回退旧二进制前先删掉它。**
 - **会话身份按「人名」落定，端名只做落款（B358.9）。** 控制台发言、已读、收件箱与列表面一律以配置里的 `console_user`（`user:<名>`）判定，机器位 `web:<host>` 退役；端戳取本次登录会话登记的设备名（`handoff console --device`，缺省本机名），只进签名，不参与成员/写权/@ 判定。未配 `console_user` 时写面与读面一律拒收（403 + 文案含 `console_user`，零落账），不再回落机器位。已读水位按人合并：同一人在另一台设备标记已读，各端未读一起归零。控制台新增身份读缝 `GET /api/identity`（`member`/`device`/`configured`），落款显示「人名 · 端名」、端戳缺失只出人名，新建会话表单不再手输群主。
 - **会话可由外部自理的主 agent 发起（B358.9）。** `session create --owner agent:<名>` 建群、`session send --agent <名>` 出示身份发言、`session wait <名>` 订阅自己的 @；`agent:<名>` 走统一记法校验，身份不绑定具体执行器。卡席位（`cli:`）语义与 B366 自助加入路径不变。
@@ -36,6 +42,10 @@
 - **代码图（codegraph）消费侧整体移除（B436）。** 控制台不再有「代码图」入口与 `/codegraph` 页；agentd 删除 `GET /api/projects/{name}/codegraph[/source]` 与 charter viewer 挂载；权限门不再静默放行 `codegraph` 命令，执行者纪律块不再要求本机装 codegraph 二进制；仓内 `codegraph/` 数据目录、契约闸 `TestRepoContractGate`、扫描脚本与配方一并删除，`go.mod` 去掉 `github.com/Xsxdot/charter/graph`。用户 2026-10-18 裁决：「直接把代码图彻底删除，handoff 里面的功能也删除」。
 
 ### 修复
+
+- **依赖 `cd` 的静态放行在 `cd` 失败时会写/删到未知目录（B460）。** heredoc 闭集写入与范围内 `rm` 把 `cd X; …`、`cd X || …`、换行接续的 `cd` 当作必然生效：`cd` 失败时命令在执行器当前目录（claude 的 Bash 跨调用保留）里执行，如 `cd $TMPDIR/missing; cat > .bashrc <<'EOF'` 会被自动放行。现在三个依赖 `cd` 基准的放行出口共用同一判据：首个 `cd` 之后的连接符必须全是 `&&`、`cd` 前不得接 `||`，否则不放行（交审批者）。
+- **审批链批准的工单不再短暂出现在待答列表（B460）。** 批准路径原先先建未答工单再应答，两步之间等待命令可能误把它当成要人答的工单；现在一个事务内建单即已答。
+- **跨机 `--follow` 推送晚到几分钟：根因不在 handoff（B460）。** 排查证实是监视命令经 shell `grep`（Claude Code 会话里是 ugrep 包装，逐行滞留到下一行到达）所致；handoff 代码不改，skill 补「长连接流别接 shell grep」。事件链路三跳新增 Debug 级逐事件时延日志（`HANDOFF_LOG_LEVEL=debug`：「WS 实时事件已写出」「镜像事件入库并广播」「WS 转发事件帧」，带 `lag_ms`）。
 
 - **手机上点「在此打开终端」后页面冻在旧态（B413）。** 紧凑视口的下钻导航走 React Router 的 transition 渲染，而 usePoll 轮询续帧的 setData 是 sync 高优更新——存在慢轮询源（如一台离线机器把 `/api/pty/sessions?scope=all` 扇出拖到 ~3s）时，慢解析落在渲染让出窗口会反复打断 transition 提交，URL 前进了 UI 永不跟随（终端/任务现场路径确定性命中），只能整页刷新恢复。修复：usePoll 续帧的全部状态写入改包 `React.startTransition`（非紧急数据语义，与导航 transition 合并进同一次渲染提交），`refresh()` 等用户主动动作保持 sync；`PollState` 签名与轮询纪律零改动，桌面路径不回归。
 - **切走终端再回来 TUI 花屏、划不动（B367）。** 后台组叠在原位，不移出视口、不 opacity-0。隐藏组 `pointer-events-none` + `inert`，避免 z-0 的 WebGL 画布抢走滚轮；激活组不加这个类。滚轮跟指针走。组容器 `min-w-0`，进设置再回来不再被画布固有宽撑出一串 SIGWINCH。

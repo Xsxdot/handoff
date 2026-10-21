@@ -123,7 +123,24 @@ handoff wait <task> --notify --timeout 1h
 - 命令行显式值覆盖定义：`--receiver` 换接收者，`--here` / `--machine <M>` 换亲和（二者互斥；`--here` 不能与 `--target` 同用）。
 - 定义示例在仓内 `skills/handoff/skilled/code-investigate.json`，`handoff template put <名> --file <json>` 写入。卡派发（`card dispatch`）拒用熟练工定义。
 
-**`--wait` 在主会话里怎么跑。** `--wait` 缺省等 30 分钟，而 Bash 工具前台上限是 10 分钟。二选一：后台运行（`run_in_background`，完成时叫醒你），或前台 `--wait --timeout 9m`，退出 124 后接 `handoff wait <完整 task-id> --final --machine <M> --timeout 9m` 继续等（命令原文在 stderr 里）。超时只结束等待，任务照跑。
+**`--wait` 在主会话里怎么跑。** `--wait` 缺省等 30 分钟，而 Bash 工具前台上限是 10 分钟。**首选后台运行**（`run_in_background`，进程退出时叫醒你）；或前台 `--wait --timeout 9m`，退出 124 后接 `handoff wait <完整 task-id> --final --machine <M> --timeout 9m` 继续等（命令原文在 stderr 里）。超时只结束等待，任务照跑。两种形态下 **5 与 124 的处置不同**：124 是「还没完」，原样续等即可；5 是「卡在人身上」，先答工单再续等——不答就续等只会立刻再以 5 退出。
+
+**退出码 5 = 有工单待答。** 执行者撞到审批链判不了、要人答的权限请求或提问时，`--wait` / `wait --final` 立即以 5 退出（进入时已有待答工单也一样，不连事件流）。已被审批链自动批准的不算。stdout 是工单块，每张一块、块间空一行，最后一行是续等命令：
+
+    ticket: <工单ID>
+    kind: permission                  # 提问为 question
+    reason: <升级理由>                # 仅当工单带理由时出现
+    --- 全文 ---
+    <工单全文，不截断>
+    --- 全文完 ---
+    reply: handoff reply <任务ID> --ticket <工单ID> --approve
+    reply: handoff reply <任务ID> --ticket <工单ID> --deny --reason "<原因>"
+
+    resume: handoff wait <任务ID> --final --machine <M>
+
+照「审批：批什么，不批什么」裁决后执行对应的 `reply:` 行（提问只有一行 `--answer "<回答>"`），再执行 `resume:` 行续等；续等再遇工单再以 5 退出，直到 0 / 3。stderr 不再有「在等人回答」提示。
+
+**监视长连接流别接 shell 的 `grep`。** 用 Monitor 挂 `handoff wait <id> --follow` 这类长连接流时，不要经 shell 的 `grep` 过滤：Claude Code 会话里的 `grep` 是 ugrep 包装，每一行要等下一行到了才吐出来，安静的流上事件会晚几分钟（B460 段 0 实测，即上面「接了过滤器就静默掐断唤醒」的根因）。确需过滤用 `/usr/bin/grep --line-buffered`；只想去掉日志噪声就 `2>/dev/null`。
 
 **输出与退出码**（stdout 只有回文，任务 JSON 改打 stderr，id 从 stderr 取）：
 
@@ -132,6 +149,7 @@ handoff wait <task> --notify --timeout 1h
 | 0 | 完成 | `completed.final_text` 原文；产物非空时另起一行 `artifacts: <本机绝对路径>` |
 | 3 | 任务以非完成告终（turn_failed / failed / 未完成就归档） | 空；stderr 有任务 id 与原因 |
 | 4 | **机器亲和拒绝**（agentd 422 `affinity_unmet`，文案以「机器亲和不满足：」开头） | 空 |
+| 5 | **有工单待答**（任务照跑，停在工单上） | 工单块（见上）：全文、`reply:` 答复命令、`resume:` 续等命令 |
 | 124 | 等待超时，任务照跑 | 空；stderr 给接着等的命令 |
 | 1 | 其他（探活失败、agentd 过旧、产物取回失败等） | 视情况 |
 
@@ -327,7 +345,7 @@ handoff「代码在那台机器的哪个目录」——那是它自己的事。�
 
 ## 审批：批什么，不批什么
 
-`--approve` 批的是**这一条**操作，不是一类操作的长期授权。两个自动化例外要心里有数：同一任务内**等价**的权限请求会自动复用你先前的 allow——判等不是逐字比对，而是三域指纹（命令域 / 路径域 / 全文域，B91），同一条命令换个包装也会命中（`permission_reuse` 事件留痕，跨任务不复用）；还有一档**静态规则自动放行**，根本不会来问你，B249 起覆盖三类：**落在任务范围内的写入**（任务工作区、任务私有目录、任务临时目录三个根；共享的 `/tmp/<executor>` **不在**范围内，写它照旧升级）、**已知安全命令**（`go build|test|vet`、`gofmt`、`npm test|run`、`make`、`ls|cat|grep`、`git status|diff|log`，以及 charter 台账纪律的法定动作 `git add <范围内路径> && git commit --amend --no-edit`）、**handoff 自身的只读子命令**。白名单匹配命令主体形态而非子串，`echo "go test"` 不会被放行；未登记的 `handoff` 子命令一律 fail-closed。命令白名单的每次放行都**补一条事件**，所以「这一段静默放行了什么」能从事件流查到，不必开 Debug 日志。
+`--approve` 批的是**这一条**操作，不是一类操作的长期授权。两个自动化例外要心里有数：同一任务内**等价**的权限请求会自动复用你先前的 allow——判等不是逐字比对，而是三域指纹（命令域 / 路径域 / 全文域，B91），同一条命令换个包装也会命中（`permission_reuse` 事件留痕，跨任务不复用）；还有一档**静态规则自动放行**，根本不会来问你，B249 起覆盖三类：**落在任务范围内的写入**（任务工作区、任务私有目录、任务临时目录三个根；共享的 `/tmp/<executor>` **不在**范围内，写它照旧升级）、**已知安全命令**（`go build|test|vet`、`gofmt`、`npm test|run`、`make`、`ls|cat|grep`、`git status|diff|log`，以及 charter 台账纪律的法定动作 `git add <范围内路径> && git commit --amend --no-edit`）、**handoff 自身的只读子命令**。B460 再加两类：**网页抓取**（结构化的抓取请求一律放行并留 `permission_auto_allow` 审计，含 URL；黑名单仍生效），以及**任务范围内可证明的建目录与写入**（`mkdir`、`echo`/`printf` 写重定向，每个落点都要能静态证明落在上述三个根内——绝对路径、`&&` 链里已证明的 `cd` 之后的相对路径、`$TMPDIR` / `$HANDOFF_ARTIFACTS_DIR` 前缀；`$HOME`、`~`、通配一律不放行）。白名单匹配命令主体形态而非子串，`echo "go test"` 不会被放行；未登记的 `handoff` 子命令一律 fail-closed。命令白名单的每次放行都**补一条事件**，所以「这一段静默放行了什么」能从事件流查到，不必开 Debug 日志。
 
 **`--deny` 一定要带 `--reason`**。理由会随应答回到模型手里；不给理由，模型只知道「被拒了」，下一步大概率原地再试一次同样的操作，白烧一轮。理由是否送达的留痕分执行器：claude **与 agy** 的理由与裁决**同帧送达**，事件历史里**不会**有留痕事件——没有留痕不等于没送达，反而是送得更早；其余 executor（opencode / grok / codex）走带外注入，事件历史里有 `deny_guidance_relayed` / `deny_guidance_dropped`。
 
