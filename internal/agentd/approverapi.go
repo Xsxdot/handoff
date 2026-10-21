@@ -63,7 +63,8 @@ func (s *Server) handleApproverDecide(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, errors.New("executor 不能为空"))
 		return
 	}
-	s.log.Info("收到代他机裁决请求", "executor", req.Executor, "model", req.Model)
+	s.log.Info("收到代他机裁决请求", "executor", req.Executor, "model", req.Model,
+		"has_task_context", req.TaskContext != nil)
 
 	shot, ok := s.approverShot(req.Executor)
 	if !ok {
@@ -80,7 +81,7 @@ func (s *Server) handleApproverDecide(w http.ResponseWriter, r *http.Request) {
 	// 传播到此处的 r.Context()。若这里再硬编码一个封顶，就会掐断用户配置的链级时限
 	// （本次补充 (2)）。
 	out := orchestration.RunLocalRing(r.Context(), shot, req.Executor, req.Model,
-		req.Permission, req.TaskSummary, 0, s.approverEnv, s.log)
+		req.Permission, req.TaskSummary, taskContextFromWire(req.TaskContext), 0, s.approverEnv, s.log)
 	resp := proto.ApproverDecideResp{
 		Decision:  out.Decision,
 		Reason:    out.Reason,
@@ -151,7 +152,7 @@ func (r *remoteApproverDecider) deciderFor(machine string) (approverDecideCaller
 // internal）；应答无法解码 → 裁决无效。判「超时」只看 cctx.Err()，不看错误链——
 // net 拨号超时错误也会满足 errors.Is(err, context.DeadlineExceeded)（本次补充 (3)）。
 func (r *remoteApproverDecider) DecideRemote(ctx context.Context, ring orchestration.ApproverRing,
-	permission, taskSummary string, timeout time.Duration) orchestration.RemoteOutcome {
+	permission, taskSummary string, tc orchestration.ApproverTaskContext, timeout time.Duration) orchestration.RemoteOutcome {
 	start := time.Now()
 	c, err := r.deciderFor(ring.Machine)
 	if err != nil {
@@ -168,6 +169,7 @@ func (r *remoteApproverDecider) DecideRemote(ctx context.Context, ring orchestra
 	}
 	resp, err := c.ApproverDecide(cctx, proto.ApproverDecideReq{
 		Permission: permission, Executor: ring.Executor, TaskSummary: taskSummary, Model: ring.Model,
+		TaskContext: taskContextToWire(tc),
 	})
 	if err != nil {
 		kind := orchestration.ApproverFailUnreachable
@@ -201,4 +203,23 @@ func (r *remoteApproverDecider) DecideRemote(ctx context.Context, ring orchestra
 			ErrorKind: orchestration.ApproverFailInvalidOutput, Reason: "对端裁决取值非法",
 			ElapsedMS: resp.ElapsedMS}
 	}
+}
+
+// taskContextToWire 把编排侧任务上下文转成 wire 形状（B460 F7/F8）：零值 → nil，请求体
+// 不出现 task_context 键——老收件端与「无上下文」语义都靠这条缺席。
+func taskContextToWire(tc orchestration.ApproverTaskContext) *proto.ApproverTaskContext {
+	if tc.IsZero() {
+		return nil
+	}
+	return &proto.ApproverTaskContext{Mode: tc.Mode, Workdir: tc.Workdir,
+		ArtifactsDir: tc.ArtifactsDir, TaskTmpDir: tc.TaskTmpDir}
+}
+
+// taskContextFromWire 是收件端的反向转换：缺席（nil）→ 零值上下文，提示词同基线。
+func taskContextFromWire(w *proto.ApproverTaskContext) orchestration.ApproverTaskContext {
+	if w == nil {
+		return orchestration.ApproverTaskContext{}
+	}
+	return orchestration.ApproverTaskContext{Mode: w.Mode, Workdir: w.Workdir,
+		ArtifactsDir: w.ArtifactsDir, TaskTmpDir: w.TaskTmpDir}
 }

@@ -59,6 +59,27 @@ func IsDiscardTarget(p string) bool {
 //   - `~` 与 `~/` 前缀展开为当前用户 home（why 见 expandTilde）
 func RedirectTargets(cmd string) []string {
 	var out []string
+	for _, t := range redirectTargetsQuoted(cmd) {
+		out = append(out, t.path)
+	}
+	return out
+}
+
+// redirectTarget 是一个重定向落点及其书写原文。
+//
+// path 是 RedirectTargets 给出的落点（剥包裹引号、展开 ~）；raw 是落点词元的
+// 原文（含引号），adjoined 表示包裹引号闭合后紧跟着非分隔字符（`"$TMPDIR"/../x`
+// 这类拼接词元，path 只取到了引号内那一截）。B460 的可证明放行要按 shell 的
+// 拼接与引号语义重新解释落点，不能只看 path。
+type redirectTarget struct {
+	path     string
+	raw      string
+	adjoined bool
+}
+
+// redirectTargetsQuoted 是 RedirectTargets 的带书写形态版本（唯一扫描实现）。
+func redirectTargetsQuoted(cmd string) []redirectTarget {
+	var out []redirectTarget
 	rs := []rune(cmd)
 	var quote rune
 	for i := 0; i < len(rs); i++ {
@@ -97,7 +118,16 @@ func RedirectTargets(cmd string) []string {
 		// 扫描位置直接跳到落点之后：落点内部的字符不该再被当成操作符看
 		i = next - 1
 		if tgt != "" {
-			out = append(out, expandTilde(tgt))
+			adjoined := false
+			if next < len(rs) {
+				switch rs[next] {
+				case ' ', '\t', '\n', '|', ';', '&', '(', ')', '<', '>':
+				default:
+					adjoined = true
+				}
+			}
+			out = append(out, redirectTarget{path: expandTilde(tgt),
+				raw: string(rs[j:next]), adjoined: adjoined})
 		}
 	}
 	return out

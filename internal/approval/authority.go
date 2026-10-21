@@ -181,6 +181,8 @@ func (a *Authority) Judge(taskID string, ev executor.AdapterEvent) permgate.Verd
 		Workdir:    task.Workdir(),
 		TaskDir:    filepath.Join(a.hooks.DataDir, "tasks", taskID),
 		TaskTmpDir: executor.TaskTmpDir(a.hooks.DataDir, taskID),
+		// B460 Q7：$HANDOFF_ARTIFACTS_DIR 的展开值，与执行器拿到的环境变量同一布局函数
+		ArtifactsDir: executor.TaskArtifactsDir(a.hooks.DataDir, taskID),
 	}
 	v := a.hooks.Gate.Judge(permgate.Request{
 		Tool:      ev.Perm.Tool,
@@ -188,6 +190,8 @@ func (a *Authority) Judge(taskID string, ev executor.AdapterEvent) permgate.Verd
 		Command:   ev.Perm.Command,
 		Paths:     ev.Perm.Paths,
 		Truncated: strings.Contains(ev.Text, executor.TruncationMarker),
+		URL:       ev.Perm.URL,
+		Cwd:       ev.Perm.Cwd,
 	}, scope)
 	switch v.Action {
 	case permgate.AutoAllow:

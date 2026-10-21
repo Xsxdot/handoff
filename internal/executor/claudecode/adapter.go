@@ -999,6 +999,24 @@ func permTextAndRequest(toolName string, input json.RawMessage) (string, *execut
 				&executor.PermRequest{Tool: executor.NormalizePermTool(toolName),
 					Paths: []string{in.FilePath}}
 		}
+	case "WebFetch":
+		// B460 S4：入参 url 是 claude WebFetch 工具的公开形状；真机样本（U3）待核
+		var in struct {
+			URL string `json:"url"`
+		}
+		if json.Unmarshal(input, &in) == nil && in.URL != "" {
+			return "WebFetch: " + in.URL,
+				&executor.PermRequest{Tool: executor.PermToolWebFetch, URL: in.URL}
+		}
+	case "WebSearch":
+		// 搜索没有单一 URL：结构化为 webfetch、URL 留空，查询词在展示文本（审计 permission）里
+		var in struct {
+			Query string `json:"query"`
+		}
+		if json.Unmarshal(input, &in) == nil && in.Query != "" {
+			return "WebSearch: " + in.Query,
+				&executor.PermRequest{Tool: executor.PermToolWebFetch}
+		}
 	}
 	// 其余工具与解析失败：给出可读文本，但不伪造结构
 	return permFallbackText(toolName, input), nil

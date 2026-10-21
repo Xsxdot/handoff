@@ -262,6 +262,7 @@ func randNonce() string {
 //   - ctx: 上层上下文；本方法在其上叠加 a.timeout 作为裁决截止
 //   - permission: 权限请求原文（如 "Bash: rm -rf node_modules"）
 //   - taskSummary: 任务摘要（写入 prompt 给模型上下文）
+//   - tc: 任务上下文（B460 S7：形态与三处任务目录）；零值 = 无上下文，提示词同基线
 //
 // 返回：
 //   - ApproverDecision，见该类型注释（fail-closed：一切无法干净裁决的输入
@@ -269,11 +270,11 @@ func randNonce() string {
 //
 // B437：先尝试读共享审批链；读到（或读到过 last-good）则按链逐环裁决，否则
 // 走构造期本地配置链（S5 路径逐字不变）。
-func (a *Approver) Decide(ctx context.Context, permission, taskSummary string) ApproverDecision {
+func (a *Approver) Decide(ctx context.Context, permission, taskSummary string, tc ApproverTaskContext) ApproverDecision {
 	if chain, ok := a.effectiveChain(ctx); ok {
-		return a.decideSharedChain(ctx, chain, permission, taskSummary)
+		return a.decideSharedChain(ctx, chain, permission, taskSummary, tc)
 	}
-	return a.decideLocalChain(ctx, permission, taskSummary)
+	return a.decideLocalChain(ctx, permission, taskSummary, tc)
 }
 
 // Available 报告审批者此刻是否有可用的链（B437 §4.2 启用门判据）。
@@ -370,16 +371,17 @@ func (a *Approver) warnLimited(key, msg string, args ...any) {
 }
 
 // decideLocalChain 是既有本地配置链路径（B376/B405 语义，S5 一字不改）。
-func (a *Approver) decideLocalChain(ctx context.Context, permission, taskSummary string) ApproverDecision {
+func (a *Approver) decideLocalChain(ctx context.Context, permission, taskSummary string, tc ApproverTaskContext) ApproverDecision {
 	start := time.Now()
 	nonce := randNonce()
 	if nonce == "" {
 		a.log.Warn("生成裁决 nonce 失败，本次裁决不做防伪校验", "executor", a.executorName)
 	}
 	// 一个 nonce 服务整条请求：所有候选拿到同一个 prompt，防伪语义不变
-	prompt := fmt.Sprintf(approverPromptTemplate, taskSummary, permission, nonce, nonce)
+	prompt := approverPrompt(taskSummary, permission, nonce, tc)
 	a.log.Info("审批者开始裁决", "permission", turn.TruncateRunes(permission, 80),
-		"executors", strings.Join(a.names, ","), "model", a.model, "models", a.models, "nonce", nonce)
+		"executors", strings.Join(a.names, ","), "model", a.model, "models", a.models, "nonce", nonce,
+		"task_mode", tc.Mode, "has_task_context", !tc.IsZero())
 
 	var attempts []ApproverAttempt
 	var lastErr error
@@ -424,7 +426,7 @@ func (a *Approver) decideLocalChain(ctx context.Context, permission, taskSummary
 //
 // 每个环各记一条 attempt（带 machine）；某环给出干净裁决即停；全部环失败返回
 // 一个总 Err（请求级失败计 1，与本地链路径同款），由上层做连续失败计数。
-func (a *Approver) decideSharedChain(ctx context.Context, chain ApproverChain, permission, taskSummary string) ApproverDecision {
+func (a *Approver) decideSharedChain(ctx context.Context, chain ApproverChain, permission, taskSummary string, tc ApproverTaskContext) ApproverDecision {
 	start := time.Now()
 	timeout := EffectiveApproverChainTimeout(chain)
 	a.log.Info("审批者开始裁决（共享链）", "permission", turn.TruncateRunes(permission, 80),
@@ -433,7 +435,7 @@ func (a *Approver) decideSharedChain(ctx context.Context, chain ApproverChain, p
 	var attempts []ApproverAttempt
 	var lastErr error
 	for _, ring := range chain.Rings {
-		attempt := a.decideRing(ctx, ring, timeout, permission, taskSummary)
+		attempt := a.decideRing(ctx, ring, timeout, permission, taskSummary, tc)
 		attempts = append(attempts, attempt)
 		if attempt.Err == nil {
 			return ApproverDecision{
@@ -468,7 +470,7 @@ func (a *Approver) decideSharedChain(ctx context.Context, chain ApproverChain, p
 }
 
 // decideRing 执行共享链上的一个环：本机环就地跑 OneShot，他机环经远程裁决口。
-func (a *Approver) decideRing(ctx context.Context, ring ApproverRing, timeout time.Duration, permission, taskSummary string) ApproverAttempt {
+func (a *Approver) decideRing(ctx context.Context, ring ApproverRing, timeout time.Duration, permission, taskSummary string, tc ApproverTaskContext) ApproverAttempt {
 	candStart := time.Now()
 	if a.isSelfRing(ring.Machine) {
 		shot, err := a.resolveLocalShot(ring.Executor)
@@ -479,7 +481,7 @@ func (a *Approver) decideRing(ctx context.Context, ring ApproverRing, timeout ti
 				Reason: err.Error(), Err: err, ElapsedMS: time.Since(candStart).Milliseconds(),
 				Model: modelLabelOr(ring.Model)}
 		}
-		out := RunLocalRing(ctx, shot, ring.Executor, ring.Model, permission, taskSummary, timeout, a.env, a.log)
+		out := RunLocalRing(ctx, shot, ring.Executor, ring.Model, permission, taskSummary, tc, timeout, a.env, a.log)
 		return ringOutcomeAttempt(ring, out)
 	}
 	a.chainMu.Lock()
@@ -492,7 +494,7 @@ func (a *Approver) decideRing(ctx context.Context, ring ApproverRing, timeout ti
 			Reason: err.Error(), Err: err, ElapsedMS: time.Since(candStart).Milliseconds(),
 			Model: modelLabelOr(ring.Model)}
 	}
-	out := rd.DecideRemote(ctx, ring, permission, taskSummary, timeout)
+	out := rd.DecideRemote(ctx, ring, permission, taskSummary, tc, timeout)
 	return remoteOutcomeAttempt(ring, out)
 }
 

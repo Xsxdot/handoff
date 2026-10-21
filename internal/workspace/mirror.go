@@ -341,7 +341,8 @@ func (m *Mirror) onEvent(ctx context.Context, machine string, taskID string, ev 
 		m.log.Debug("镜像事件重复，跳过广播", "task", taskID, "seq", ev.Seq)
 		return nil
 	}
-	m.log.Debug("镜像事件入库并广播", "task", taskID, "machine", machine, "seq", ev.Seq, "type", ev.Type)
+	m.log.Debug("镜像事件入库并广播", "task", taskID, "machine", machine, "seq", ev.Seq, "type", ev.Type,
+		"lag_ms", time.Since(ev.CreatedAt).Milliseconds())
 	m.hub.Publish(ev)
 	m.ringBell(machine)
 	if ev.Type == proto.EventTypeCompleted || ev.Type == proto.EventTypeFailed {

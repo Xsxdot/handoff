@@ -1002,3 +1002,14 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 - opencode-go 额度的 cookie 路径（console session `console/api/go/status`），仅在 API key 路径不可用时再议。来源同上。
 - 配额感知的负载均衡（按剩余额度加权、额度预测）；B453 只做低额度/无额度跳过。来源同上。
 - 额度探测主动刷新过期 token；B453 只读凭据、等 CLI 自己刷新。来源同上。
+
+## B460 残余（2026-10-21，熟练工工单治理 spec Out of Scope「本期不做、后续要做」）
+
+- 权限门主落点环（`cdResolvedTargets`/`splitWriteSegments`）按引号外 `|`/`&` 切段，`>|` 与 `>&<file>` 的重定向落点被切碎丢失，今天靠 `hasNonDiscardWriteRedirect` 与管道切分兜成 consult；纵深加固让分段保留这两种落点。来源：B460 机内审查第 3 轮 N-1。
+- 熔断：单个熟练工任务的人工工单超阈值（如 3 张）自动停下并报告主会话。用户裁定先观察 B460 上线后的工单量再定。来源：`docs/superpowers/specs/b460.md`。
+- 熟练工任务挂卡：`handoff dispatch --template … --card <id>` 写 TaskLink，让任务事件经卡镜像进 `card wait --follow`；落点见 `docs/superpowers/specs/b460-facts-code.md` §7。用户裁定降为可选。来源同上。
+- `handoff wait <id> --follow` 对本机尚未镜像到的远端任务（派发后 30s 发现轮之前）收 404「任务不存在」即「follow 永久失败，不再重试」；应在任务属于已知远端机时等待镜像或重试。来源：B460 段 0 r0/r1（台账「段 0」节）。
+- 镜像订阅只由 30s 发现轮建立，远端新任务的首批事件经本机镜像最多晚 30s（实测 21.7s）；可在派发/转发成功时立即触发一次订阅。来源同上。
+- 只读工作树访问自身 git 元数据目录（主仓 `.git/worktrees/<任务id>/`，opencode 报 external_directory）不在 B460 任务范围内，按规则升级人工；可考虑把本工作树的 gitdir 只读纳入范围。来源：B460 真机 R4（台账「review 真机」节）。
+- grok 网页抓取请求结构化（ACP 载荷无样本，linux-01 grok 未登录）；B460 只做了 opencode/claude/agy。来源：B460 plan Q6、真机 R4。
+- 权限门的相对 `cd` 证明假设执行者 shell 未设 `CDPATH`；若设了，`cd sub` 可能落到范围外。可在拉起执行器时显式清空 `CDPATH`，或把相对 cd 一律视为不可信。来源：B460 审查第 2 轮。

@@ -32,7 +32,8 @@ type Action int
 
 const (
 	// AutoAllow 立即放行：不建工单、不发事件、不唤醒任何人。
-	// 只可能出自 write/edit 路由（目标路径全部落在任务范围内）。
+	// 出自 write/edit 路由（目标路径全部落在任务范围内）、bash 路由的静态放行
+	// 出口（白名单、rm/heredoc/范围内写入闭集），以及 webfetch 路由（B460）。
 	AutoAllow Action = iota
 	// Consult 交廉价模型审批者裁决（今天未命中黑名单时的默认路径）。
 	Consult
@@ -63,6 +64,12 @@ type Request struct {
 	Command   string   // Tool=bash 时的完整命令串
 	Paths     []string // Tool=write|edit 时的目标路径（可为相对路径）
 	Truncated bool     // 描述含 executor.TruncationMarker
+	// URL 是 Tool=webfetch 时的抓取地址（B460 S4）；只进审计与日志，不参与判定——
+	// 规则层不设域名白名单（spec 已否决）。WebSearch 一类没有 URL 时为空。
+	URL string
+	// Cwd 是执行器在权限载荷里明示的命令工作目录（B460 Q8，目前只有 codex 给）。
+	// 非空时作相对落点的起始基准（替代 Workdir）；空 = 载荷无此信息，维持现状。
+	Cwd string
 }
 
 // Scope 是本任务的合法作用范围。
@@ -74,7 +81,19 @@ type Scope struct {
 	Workdir    string
 	TaskDir    string
 	TaskTmpDir string
+	// ArtifactsDir 是任务产物目录（TaskDir 的子目录，B460 Q7）。它**不是**新的
+	// 范围基准（已被 TaskDir 覆盖），只是 $HANDOFF_ARTIFACTS_DIR 的展开值——与
+	// TaskTmpDir 之于 $TMPDIR 同待遇。空 = 该变量不可证明（老任务没有产物目录）。
+	ArtifactsDir string
 }
+
+// RuleWebFetch 是网页抓取放行的规则名（B460 S4，F10）：审计 permission_auto_allow
+// 的 rule 取此值。
+const RuleWebFetch = "webfetch"
+
+// RuleCredentialGuard 是凭据守卫改判的规则名（B460 S10）：本会 AutoAllow 的请求触及凭据位置
+// 或密钥类环境变量时改判 Consult，Verdict.Rule 取此值供审计区分。
+const RuleCredentialGuard = "credential-guard"
 
 // RuleSafeCommand marks a positive command-whitelist match. It is distinct
 // from the empty rule used by in-scope file writes so audit callers can record
@@ -162,14 +181,71 @@ func (g *Gate) Judge(req Request, scope Scope) Verdict {
 		return Verdict{Action: Escalate,
 			Reason: "权限描述含截断标记，危险片段可能落在截断之外"}
 	}
+	var v Verdict
 	switch req.Tool {
 	case executor.PermToolWrite, executor.PermToolEdit:
-		return g.judgeFileWrite(req, scope)
+		v = g.judgeFileWrite(req, scope)
 	case executor.PermToolBash:
-		return g.judgeBash(req, scope)
+		v = g.judgeBash(req, scope)
+	case executor.PermToolWebFetch:
+		return g.judgeWebFetch(req) // S10：网页抓取路由不过凭据守卫
 	default:
+		v = g.judgeCommand(req.Text)
+	}
+	return g.credentialGuard(req, scope, v)
+}
+
+// credentialGuard 是全部 AutoAllow 出口的唯一收口（B460 S10）：本会自动放行的请求触及凭据
+// 位置或密钥类环境变量时改判 Consult，交审批链（审批政策把凭据读取升级给人）。只降
+// AutoAllow，Consult / Escalate 原样返回；从不硬拒。
+//
+// bash 请求判的是 heredoc 闭集剥离正文后的命令：闭集正文是写进文件的数据（`cat > f <<'EOF'`），
+// 提到凭据路径不等于读取它。
+func (g *Gate) credentialGuard(req Request, scope Scope, v Verdict) Verdict {
+	if v.Action != AutoAllow {
+		return v
+	}
+	cmd := ""
+	if req.Tool == executor.PermToolBash {
+		cmd = req.Command
+		if hd := closedHeredoc(cmd); hd != nil {
+			cmd = hd.stripped
+		}
+	} else if req.Tool != executor.PermToolWrite && req.Tool != executor.PermToolEdit {
+		cmd = req.Text
+	}
+	hit, ok := credentialExposure(cmd, req.Paths, req.Cwd, scope)
+	if !ok {
+		return v
+	}
+	g.log.Info("触及凭据位置，自动放行改交审批链", "tool", req.Tool, "command", req.Command,
+		"hit", hit, "was_rule", v.Rule)
+	return Verdict{Action: Consult, Rule: RuleCredentialGuard,
+		Reason: "触及凭据或密钥，不自动放行（原判 " + v.Reason + "）: " + hit}
+}
+
+// judgeWebFetch 判定网页抓取请求（B460 S4）：描述命中黑名单 → 升级；其余放行。
+//
+// 为什么不设域名白名单、不交模型：用户裁定网页抓取直接放行（spec「网页抓取放行」），
+// 数据经 URL 外带的风险由审批链拦凭据读取兜底。黑名单仍生效——用户自定义黑名单是
+// 显式意图（可用来封某些域名）。截断已在 Judge 入口先行升级（Q5 顺序：截断 → 黑名单 → 放行）。
+// 只认 adapter 结构化出的 Tool=webfetch，不从文本猜（Tool=other 仍走 judgeCommand）。
+//
+// 形状守卫（B460 修复轮 1 N4）：放行只给「纯抓取」载荷——Command 与 Paths 都为空。
+// adapter 产出的抓取请求从不带这两项；带了说明载荷形状异常（或 adapter 把别的工具误标），
+// 不能凭 Tool 标签放行，回落与未知工具相同的命令判据（judgeCommand：黑名单/包装器/白名单，
+// 其余 Consult）。
+func (g *Gate) judgeWebFetch(req Request) Verdict {
+	if req.Command != "" || len(req.Paths) > 0 {
+		g.log.Info("网页抓取载荷带命令或路径，按普通请求判定",
+			"url", req.URL, "has_command", req.Command != "", "paths", len(req.Paths))
 		return g.judgeCommand(req.Text)
 	}
+	if hit, rule := g.match(req.Text); hit {
+		return Verdict{Action: Escalate, Reason: "网页抓取描述命中黑名单", Rule: rule}
+	}
+	g.log.Info("网页抓取放行", "url", req.URL)
+	return Verdict{Action: AutoAllow, Rule: RuleWebFetch, Reason: "网页抓取放行: " + req.URL}
 }
 
 // judgeFileWrite 判定写文件类请求：黑名单与路径归属都通过才自动放行。
@@ -237,7 +313,7 @@ func (g *Gate) judgeBash(req Request, scope Scope) Verdict {
 	// B383 S2b①：cd 相对写基准。相对落点的解释基准 = 按命令顺序已生效、可
 	// 静态证明的 cd 目录（起点 Workdir）；cd 目标越出三基准或不可证明时基准
 	// 破坏，其后相对落点无法解释 → 整条升级。无 cd 的命令行为零变化。
-	resolved, unres := cdResolvedTargets(judged, scope)
+	resolved, unres := cdResolvedTargets(judged, scope, req.Cwd)
 	if unres != "" {
 		g.log.Debug("cd 基准不可证明", "command", req.Command, "cause", unres)
 		return Verdict{Action: Escalate, Reason: unres}
@@ -323,6 +399,15 @@ func (g *Gate) judgeBash(req Request, scope Scope) Verdict {
 		return Verdict{Action: AutoAllow, Rule: RuleSafeCommand,
 			Reason: "复合只读命令静默: " + id}
 	}
+	// B460 S6：任务范围内可证明的建目录与写入（mkdir、echo/printf 写重定向）。
+	// 与白名单同位（judgeCommand 与人工清单之后，B3）；每个写落点都要在
+	// scopedwrite.go 里严格证明（B1），无基准的相对落点不进（B2）。
+	if id, ok := scopedWriteID(judged, req.Cwd, scope); ok {
+		g.log.Info("范围内写入可证明，放行", "command", req.Command, "id", id,
+			"cwd", req.Cwd)
+		return Verdict{Action: AutoAllow, Rule: RuleSafeCommand,
+			Reason: "范围内写入可证明: " + id}
+	}
 	g.log.Debug("安全命令白名单未命中", "command", req.Command)
 	return verdict
 }
@@ -337,6 +422,8 @@ func SafeCommandIDs() []string {
 		"git-status", "git-diff", "git-log", "git-grep", "git-show",
 		"git-blame", "git-cat-file", "git-rev-parse", "git-ls-files",
 		"git-branch", "git-merge-base", "git-ls-tree", "git-rev-list",
+		// B460 S6（F11）：任务范围内可证明的建目录与写入，见 scopedwrite.go
+		"mkdir", "echo-write", "printf-write",
 	}
 }
 
@@ -377,6 +464,12 @@ func matchSilentFields(fields []string, command string) (id string, ok bool) {
 	// 不拦纯变量展开（`$VAR`/`${VAR}`）：它不执行命令，且 `echo "$HOME"` 是
 	// 高频无副作用写法，拦它会重新制造噪音。`${VAR:-$(cmd)}` 里的 `$(` 仍被拦。
 	if hasCommandSubstitution(command) {
+		return "", false
+	}
+	// B460 修复轮 2 F1：命令词必须朴素，且与本函数看到的首词元一致。cd 判定用同一个
+	// commandWord 归一——只读匹配认得的命令词，cd 跟踪一定也认得，两者不会分歧
+	// （修前 `'cd' /etc` 在这里是静默 cd、在 cd 跟踪里不是 cd）。
+	if w, plain, ok := commandWord(command); !ok || !plain || w != fields[0] {
 		return "", false
 	}
 	if len(fields) >= 2 && fields[0] == "go" {
@@ -456,6 +549,11 @@ func matchSilentFields(fields []string, command string) (id string, ok bool) {
 		if hasNonDiscardWriteRedirect(command) {
 			return "", false
 		}
+		// B460 修复轮 1 B2：`printf -v NAME` 给变量赋值（可改写 TMPDIR 等白名单变量），
+		// 不是只读段。
+		if fields[0] == "printf" && hasPrintfAssign(fields[1:]) {
+			return "", false
+		}
 		return fields[0], true
 	}
 	if len(fields) >= 2 && fields[0] == "git" {
@@ -502,6 +600,19 @@ func matchSilentFields(fields []string, command string) (id string, ok bool) {
 		}
 	}
 	return "", false
+}
+
+// hasPrintfAssign 判断 printf 参数里是否有 `-v` 赋值旗标（`-v x`、连写 `-vx`）。
+//
+// 判前剥前导引号与反斜杠：`"-vx"`、`'-v'`、`\-vx`、`""-vx` 在 shell 里都还原成 `-v…`。
+// 任何位置出现都算（含格式串之后的数据参数）：over-reject，安全侧。
+func hasPrintfAssign(args []string) bool {
+	for _, a := range args {
+		if strings.HasPrefix(strings.TrimLeft(a, "\\\"'"), "-v") {
+			return true
+		}
+	}
+	return false
 }
 
 // hasNonDiscardWriteRedirect 判断命令是否含会真正写文件的输出重定向。
@@ -566,10 +677,11 @@ func compoundSilent(command string) (id string, segments int, ok bool) {
 	return "compound", len(segs), true
 }
 
-// isCDSegment 判断一段的首词元是否为 cd。
+// isCDSegment 判断一段的命令词是否为 cd（共用命令词归一，B460 修复轮 2 F1：
+// 引号/转义形态的 cd 同样算 cd）。
 func isCDSegment(seg string) bool {
-	fields, ok := silentFields(seg)
-	return ok && len(fields) > 0 && fields[0] == "cd"
+	isCD, _ := isCDWord(seg)
+	return isCD
 }
 
 // segmentHasRelativeWriteTarget 判断一段是否存在相对路径的参数位写落点。
@@ -598,7 +710,14 @@ func segmentHasRelativeWriteTarget(seg string) bool {
 // 注意：`|` 不在这里切——管道在 matchSilentSegment 内按 `每一级可静默`
 // 单独判定（语义不同：管道级的可静默条件是逐级只读）。
 func splitSilentSegments(cmd string) ([]string, bool) {
-	var out []string
+	segs, _, ok := splitSilentSegmentsOps(cmd)
+	return segs, ok
+}
+
+// splitSilentSegmentsOps 同 splitSilentSegments，另返回段间连接符（"&&"、"||"、";"，
+// len(ops) == len(segs)-1）。B460 范围内写入要据此判断 cd 的生效是否可证明。
+func splitSilentSegmentsOps(cmd string) ([]string, []string, bool) {
+	var out, ops []string
 	var token strings.Builder
 	var quote rune
 	flush := func() bool {
@@ -632,40 +751,43 @@ func splitSilentSegments(cmd string) ([]string, bool) {
 				continue
 			}
 			if i+1 >= len(rs) || rs[i+1] != '&' {
-				return nil, false
+				return nil, nil, false
 			}
 			if !flush() {
-				return nil, false
+				return nil, nil, false
 			}
+			ops = append(ops, "&&")
 			i++
 		case r == '|':
 			if i+1 < len(rs) && rs[i+1] == '|' {
 				if !flush() {
-					return nil, false
+					return nil, nil, false
 				}
+				ops = append(ops, "||")
 				i++
 				continue
 			}
 			token.WriteRune(r) // 单管道留给 splitPipeStages
 		case r == ';':
 			if !flush() {
-				return nil, false
+				return nil, nil, false
 			}
+			ops = append(ops, ";")
 		case r == '\n', r == '(', r == ')', r == '`':
-			return nil, false
+			return nil, nil, false
 		case r == '$' && i+1 < len(rs) && (rs[i+1] == '(' || rs[i+1] == '{'):
-			return nil, false
+			return nil, nil, false
 		default:
 			token.WriteRune(r)
 		}
 	}
 	if quote != 0 {
-		return nil, false
+		return nil, nil, false
 	}
 	if !flush() {
-		return nil, false
+		return nil, nil, false
 	}
-	return out, true
+	return out, ops, true
 }
 
 // splitPipeStages 把一段命令按引号外的 `|` 切成管道各级。

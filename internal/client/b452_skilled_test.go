@@ -50,6 +50,20 @@ type b452FinalServer struct {
 	stream    func(n int32, conn *websocket.Conn, r *http.Request)
 	ts        *httptest.Server
 	artifacts http.HandlerFunc
+	// active 是尚未退出的 WS 处理器数。被接管（hijack）的连接不随 r.Context() 取消，
+	// httptest.Server.Close 也不等它们——桩若靠 r.Context() 挂住，客户端挂断后处理器
+	// 永不退出，回归（客户端漏关连接）只表现为端口耗尽而不是测试变红（B460 修复轮 1 N2）。
+	active atomic.Int32
+}
+
+// b452HoldUntilHangup 挂住 WS 连接直到客户端挂断（读到错误：对端关闭帧或 TCP 断开）。
+// 刻意用 Background 而不是测试 context：测试结束时的取消会替客户端关连接，掩盖漏关。
+func b452HoldUntilHangup(conn *websocket.Conn) {
+	for {
+		if _, _, err := conn.Read(context.Background()); err != nil {
+			return
+		}
+	}
 }
 
 func newB452FinalServer(t *testing.T, s *b452FinalServer) *b452FinalServer {
@@ -74,6 +88,8 @@ func newB452FinalServer(t *testing.T, s *b452FinalServer) *b452FinalServer {
 			if err != nil {
 				return
 			}
+			s.active.Add(1)
+			defer s.active.Add(-1)
 			defer conn.CloseNow()
 			if s.stream != nil {
 				s.stream(n, conn, r)
@@ -82,7 +98,18 @@ func newB452FinalServer(t *testing.T, s *b452FinalServer) *b452FinalServer {
 			http.NotFound(w, r)
 		}
 	}))
-	t.Cleanup(func() { s.ts.CloseClientConnections(); s.ts.Close() })
+	t.Cleanup(func() {
+		// 被测调用已返回：客户端应已关掉全部 WS 连接，处理器随之退出。2s 内没退完即漏关。
+		deadline := time.Now().Add(2 * time.Second)
+		for s.active.Load() > 0 && time.Now().Before(deadline) {
+			time.Sleep(10 * time.Millisecond)
+		}
+		if n := s.active.Load(); n > 0 {
+			t.Errorf("客户端返回后仍有 %d 个 WS 处理器未退出（客户端漏关连接，或桩未随挂断退出）", n)
+		}
+		s.ts.CloseClientConnections()
+		s.ts.Close()
+	})
 	return s
 }
 
@@ -103,10 +130,10 @@ func TestB452WaitFinalCompletedInStreamByMachine(t *testing.T) {
 			writeWSEvent(t, conn, r.Context(), b452Ev(2, proto.EventTypeProgress))
 			writeWSEvent(t, conn, r.Context(), b452Completed(3, "## 结论\n答案"))
 			writeWSEvent(t, conn, r.Context(), b452Ev(4, proto.EventTypeArchived))
-			<-r.Context().Done()
+			b452HoldUntilHangup(conn)
 		},
 	})
-	out, err := b452Client(s.ts.URL).WaitFinal(t.Context(), "t1", "linux-01", nil)
+	out, err := b452Client(s.ts.URL).WaitFinal(t.Context(), "t1", "linux-01")
 	if err != nil {
 		t.Fatalf("WaitFinal: %v", err)
 	}
@@ -141,10 +168,10 @@ func TestB452WaitFinalReconnectsAfterDrop(t *testing.T) {
 				return
 			}
 			writeWSEvent(t, conn, r.Context(), b452Completed(3, "重连后的回文"))
-			<-r.Context().Done()
+			b452HoldUntilHangup(conn)
 		},
 	})
-	out, err := b452Client(s.ts.URL).WaitFinal(t.Context(), "t1", "", nil)
+	out, err := b452Client(s.ts.URL).WaitFinal(t.Context(), "t1", "")
 	if err != nil || !out.Completed || out.FinalText != "重连后的回文" {
 		t.Fatalf("outcome=%+v err=%v", out, err)
 	}
@@ -163,7 +190,7 @@ func TestB452WaitFinalLastTurnAfterContinue(t *testing.T) {
 		},
 		stream: func(int32, *websocket.Conn, *http.Request) { t.Error("回合已结束不应建流") },
 	})
-	out, err := b452Client(s.ts.URL).WaitFinal(t.Context(), "t1", "", nil)
+	out, err := b452Client(s.ts.URL).WaitFinal(t.Context(), "t1", "")
 	if err != nil || !out.Completed || out.FinalText != "末回合" || out.Event.Seq != 7 {
 		t.Fatalf("应取最后一回合，得 outcome=%+v err=%v", out, err)
 	}
@@ -198,7 +225,7 @@ func TestB452WaitFinalNonCompletion(t *testing.T) {
 					_ = conn.Close(websocket.StatusNormalClosure, "task archived")
 				},
 			})
-			out, err := b452Client(s.ts.URL).WaitFinal(t.Context(), "t1", "", nil)
+			out, err := b452Client(s.ts.URL).WaitFinal(t.Context(), "t1", "")
 			if err != nil {
 				t.Fatalf("WaitFinal: %v", err)
 			}
@@ -220,10 +247,10 @@ func TestB452WaitFinalReplaysWhenResultBeyondWindow(t *testing.T) {
 			writeWSEvent(t, conn, r.Context(), b452Completed(10, "窗外的回文"))
 			writeWSEvent(t, conn, r.Context(), b452Ev(51, proto.EventTypeProgress))
 			writeWSEvent(t, conn, r.Context(), b452Ev(52, proto.EventTypeTicketAnswered))
-			<-r.Context().Done()
+			b452HoldUntilHangup(conn)
 		},
 	})
-	out, err := b452Client(s.ts.URL).WaitFinal(t.Context(), "t1", "", nil)
+	out, err := b452Client(s.ts.URL).WaitFinal(t.Context(), "t1", "")
 	if err != nil || !out.Completed || out.FinalText != "窗外的回文" {
 		t.Fatalf("outcome=%+v err=%v", out, err)
 	}
@@ -232,24 +259,33 @@ func TestB452WaitFinalReplaysWhenResultBeyondWindow(t *testing.T) {
 	}
 }
 
-// TestB452WaitFinalDeadline：总时限到 → ctx 错误（调用方转 124），期间提问事件交给 onAttention。
+// TestB452WaitFinalDeadline：总时限到 → ctx 错误（调用方转 124）。
+//
+// B460 改写（plan §6 允许类 1）：提问事件不再交给 onAttention 回调——事件只作唤醒、立即重取
+// 快照；快照始终无待答工单（如提问已被答复）时继续等，直到时限。
 func TestB452WaitFinalDeadline(t *testing.T) {
 	s := newB452FinalServer(t, &b452FinalServer{
-		attach: func(int32) *AttachInfo { return snapshot("t1", proto.TaskStateRunning) },
-		stream: func(_ int32, conn *websocket.Conn, r *http.Request) {
-			writeWSEvent(t, conn, r.Context(), b452Ev(1, proto.EventTypeQuestion))
-			<-r.Context().Done()
+		attach: func(n int32) *AttachInfo {
+			if n == 1 {
+				return snapshot("t1", proto.TaskStateRunning)
+			}
+			return snapshot("t1", proto.TaskStateRunning, b452Ev(1, proto.EventTypeQuestion))
+		},
+		stream: func(n int32, conn *websocket.Conn, r *http.Request) {
+			if n == 1 {
+				writeWSEvent(t, conn, r.Context(), b452Ev(1, proto.EventTypeQuestion))
+			}
+			b452HoldUntilHangup(conn)
 		},
 	})
 	ctx, cancel := context.WithTimeout(t.Context(), 300*time.Millisecond)
 	defer cancel()
-	var seen []proto.EventType
-	_, err := b452Client(s.ts.URL).WaitFinal(ctx, "t1", "", func(ev proto.Event) { seen = append(seen, ev.Type) })
+	_, err := b452Client(s.ts.URL).WaitFinal(ctx, "t1", "")
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("应 DeadlineExceeded，得 %v", err)
 	}
-	if len(seen) != 1 || seen[0] != proto.EventTypeQuestion {
-		t.Fatalf("提问事件应交给 onAttention，得 %v", seen)
+	if n := s.attachN.Load(); n < 2 {
+		t.Fatalf("提问事件应唤醒一次重取快照，快照只取了 %d 次", n)
 	}
 }
 
@@ -257,7 +293,7 @@ func TestB452WaitFinalDeadline(t *testing.T) {
 func TestB452AttachOnNotFoundIsPermanent(t *testing.T) {
 	ts := httptest.NewServer(http.NotFoundHandler())
 	t.Cleanup(ts.Close)
-	_, err := b452Client(ts.URL).WaitFinal(t.Context(), "t1", "m", nil)
+	_, err := b452Client(ts.URL).WaitFinal(t.Context(), "t1", "m")
 	if code, ok := StatusCode(err); !ok || code != http.StatusNotFound {
 		t.Fatalf("应 404 立即失败，得 %v", err)
 	}

@@ -253,7 +253,7 @@ func TestS2VerticalSliceRemoteRingDecide(t *testing.T) {
 		Rings: []orchestration.ApproverRing{{Machine: "linux-01", Executor: "codex"}},
 	}})
 
-	d := ap.Decide(context.Background(), "Bash: rm -rf build", "清理构建产物")
+	d := ap.Decide(context.Background(), "Bash: rm -rf build", "清理构建产物", orchestration.ApproverTaskContext{})
 	if !d.Approve || d.Err != nil {
 		t.Fatalf("首环他机应 approve: %+v", d)
 	}
@@ -376,7 +376,7 @@ func runRingFailover(t *testing.T, badMachine string, chainTO time.Duration, rd 
 			{Machine: "self", Executor: "codex"},
 		},
 	}})
-	d := ap.Decide(context.Background(), "Bash: ls", "摘要")
+	d := ap.Decide(context.Background(), "Bash: ls", "摘要", orchestration.ApproverTaskContext{})
 	if len(d.Attempts) < 2 {
 		t.Fatalf("应至少有两条 attempt（坏环 + 好环）: %+v", d.Attempts)
 	}
@@ -475,7 +475,7 @@ func TestDecideRemoteFailureClassification(t *testing.T) {
 			rd := tc.decider(t)
 			// (a) 分类
 			out := rd.DecideRemote(context.Background(),
-				orchestration.ApproverRing{Machine: tc.machine, Executor: "codex"}, "Bash: ls", "摘要", tc.chainTO)
+				orchestration.ApproverRing{Machine: tc.machine, Executor: "codex"}, "Bash: ls", "摘要", orchestration.ApproverTaskContext{}, tc.chainTO)
 			if out.ErrorKind != tc.wantKind {
 				t.Fatalf("应分类 %s，得到 %s（reason=%q）", tc.wantKind, out.ErrorKind, out.Reason)
 			}

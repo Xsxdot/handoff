@@ -24,7 +24,10 @@ const (
 	// ExitAffinityRefused：派发被机器亲和拒绝（agentd 422 affinity_unmet），B452 F21。
 	// 调用方据此退回本会话子 agent，不要换机重试。
 	ExitAffinityRefused = 4
-	ExitTimeout         = 124
+	// ExitPendingTicket：等待期间（或进入时）任务停在需人答的工单上，B460 F1。
+	// stdout 是 F2 工单块（全文、答复命令、续等命令）；答复后 handoff wait <id> --final 续等。
+	ExitPendingTicket = 5
+	ExitTimeout       = 124
 )
 
 // exitCodeError 是带专属退出码的错误包装。

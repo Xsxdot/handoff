@@ -2227,6 +2227,8 @@ type permissionAutoAllowPayload struct {
 	Paths        []string `json:"paths,omitempty"`
 	Rule         string   `json:"rule"`
 	Reason       string   `json:"reason"`
+	// URL 是网页抓取放行的地址（B460 F10，rule=webfetch 时有值）
+	URL string `json:"url,omitempty"`
 }
 
 // auditAutoAllowOnly 只写自动放行审计并累计计数，不碰原生连接。
@@ -2241,7 +2243,9 @@ func (m *Manager) auditAutoAllowOnly(taskID string, ev executor.AdapterEvent, ve
 	m.log.Info("权限请求自动放行", "task", taskID, "perm", ev.PermissionID,
 		"action", verdict.Action.String(), "rule", verdict.Rule, "reason", verdict.Reason)
 	if verdict.Rule == permgate.RuleSafeCommand || verdict.Rule == permgate.RuleRmInScope ||
-		verdict.Rule == permgate.RuleHeredocInScope {
+		verdict.Rule == permgate.RuleHeredocInScope || verdict.Rule == permgate.RuleWebFetch {
+		// webfetch（B460 S4）同享：网页抓取放行必须留审计（含 URL），且重放幂等
+		// （HasAutoAllow）靠这条事件——漏进名单会让每次重放重复中介。
 		// rm-in-scope（B383 S2a）与 heredoc-in-scope（B383 S2b）与白名单同享
 		// 结构化审计：两者都是「改动前会升级/交模型裁决的形态被 scope 闭集
 		// 放行」——落库事件必须能回放「谁放行的、凭哪条规则」。
@@ -2257,6 +2261,7 @@ func (m *Manager) auditAutoAllowOnly(taskID string, ev executor.AdapterEvent, ve
 				Paths:        append([]string(nil), ev.Perm.Paths...),
 				Rule:         verdict.Rule,
 				Reason:       verdict.Reason,
+				URL:          ev.Perm.URL,
 			}
 			appendEvent := m.appendEvent
 			if appendEvent == nil && m.st != nil {
@@ -2270,7 +2275,7 @@ func (m *Manager) auditAutoAllowOnly(taskID string, ev executor.AdapterEvent, ve
 					"perm", ev.PermissionID, "rule", verdict.Rule, "cause", err)
 			} else {
 				m.log.Info("白名单自动放行审计已落库", "task", taskID,
-					"perm", ev.PermissionID, "rule", verdict.Rule)
+					"perm", ev.PermissionID, "rule", verdict.Rule, "url", ev.Perm.URL)
 			}
 		}
 	}
@@ -2389,10 +2394,15 @@ func (m *Manager) consultApprover(ctx context.Context, taskID string, ev executo
 	// 任务摘要取 PlanSummary；GetTask 失败用空串——摘要是上下文不是裁决前提，
 	// 不因读失败把整个裁决拖下水
 	summary := ""
+	var tc ApproverTaskContext
 	if task, err := m.st.GetTask(taskID); err == nil {
 		summary = task.PlanSummary
+		tc = m.approverTaskContextFrom(task) // B460 S7：同一次读取组装审批上下文
+	} else {
+		m.log.Warn("审批上下文组装失败：读任务失败，按无上下文裁决", "task", taskID,
+			"ticket", ticketID, "cause", err)
 	}
-	d := m.approver.Decide(ctx, ev.Text, summary)
+	d := m.approver.Decide(ctx, ev.Text, summary, tc)
 
 	decision := "error"
 	switch {
@@ -2596,22 +2606,20 @@ func (m *Manager) approvePermission(taskID, ticketID, permID, permission, fp, re
 	m.log.Info("权限自动批准", "task", taskID, "ticket", ticketID,
 		"perm", permID, "source", source, "reason", turn.TruncateRunes(reason, 80))
 	req, _ := json.Marshal(ticketRequest{Kind: "gate", Permission: permission})
-	if _, err := m.st.CreateTicket(&proto.Ticket{
-		ID: ticketID, TaskID: taskID, Kind: "gate",
-		Request: req, CreatedAt: time.Now().UTC(),
-		Fingerprint: fp,
-	}); err != nil {
-		// 工单建不起来批准就无法落审计，按裁决失败处理（fail-closed）
-		m.log.Error("审批者批准：创建工单失败", "task", taskID, "ticket", ticketID, "source", source, "cause", err)
-		m.countApproverFail(taskID)
-		return
-	}
+	// 建单即已答（B460 Q3 甲，一次事务）：批准工单从不以 answer IS NULL 形态出现在
+	// 待答列表里，等待命令不会被一张已批准的单误叫醒。
+	//
 	// 工单 answer 落**精确 "allow"**（P0-2）：gate 翻译规则是 answer 严格等于
 	// "allow" 才放行，塞理由进 answer 会让审批者的批准在 resume 重投
 	// （RelayAnswer）时被翻转成 reject；理由已完整落在 approver_decision 事件的
 	// Reason 字段，answer 只需表达「批准」这一动作。
-	if err := m.st.AnswerTicket(ticketID, "allow"); err != nil {
-		m.log.Error("审批者批准：应答失败", "task", taskID, "ticket", ticketID, "source", source, "cause", err)
+	if _, err := m.st.CreateAnsweredTicket(&proto.Ticket{
+		ID: ticketID, TaskID: taskID, Kind: "gate",
+		Request: req, CreatedAt: time.Now().UTC(),
+		Fingerprint: fp,
+	}, "allow"); err != nil {
+		// 工单建不起来批准就无法落审计，按裁决失败处理（fail-closed）
+		m.log.Error("审批者批准：建已答工单失败", "task", taskID, "ticket", ticketID, "source", source, "cause", err)
 		m.countApproverFail(taskID)
 		return
 	}
