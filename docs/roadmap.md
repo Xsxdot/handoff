@@ -993,3 +993,8 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 - `dispatch --wait` / `wait --final` 输出的最终文本含执行者的协议尾注行（`{"branch":…}` / `{"summary":…}`），主会话读到一行协议噪声；可在 CLI 输出前剥去末行尾注。来源：B452 真机 R2/R3。
 - 只读派发时 CLI stderr 打「分支 ，起点 …」（分支名为空）；只读形态应改打「只读，起点 …」。来源：B452 真机 R2。
 - **发布说明**：B452 新增配置键 `artifacts.retention`；老版本 agentd 遇该键拒绝启动，回退旧二进制前须先删该键。来源：B452 真机 R8。
+
+## B460 残余（2026-10-21，熟练工工单治理 spec Out of Scope「本期不做、后续要做」）
+
+- 熔断：单个熟练工任务的人工工单超阈值（如 3 张）自动停下并报告主会话。用户裁定先观察 B460 上线后的工单量再定。来源：`docs/superpowers/specs/b460.md`。
+- 熟练工任务挂卡：`handoff dispatch --template … --card <id>` 写 TaskLink，让任务事件经卡镜像进 `card wait --follow`；落点见 `docs/superpowers/specs/b460-facts-code.md` §7。用户裁定降为可选。来源同上。
