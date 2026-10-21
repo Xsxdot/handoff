@@ -1004,3 +1004,8 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 - 只读工作树访问自身 git 元数据目录（主仓 `.git/worktrees/<任务id>/`，opencode 报 external_directory）不在 B460 任务范围内，按规则升级人工；可考虑把本工作树的 gitdir 只读纳入范围。来源：B460 真机 R4（台账「review 真机」节）。
 - grok 网页抓取请求结构化（ACP 载荷无样本，linux-01 grok 未登录）；B460 只做了 opencode/claude/agy。来源：B460 plan Q6、真机 R4。
 - 权限门的相对 `cd` 证明假设执行者 shell 未设 `CDPATH`；若设了，`cd sub` 可能落到范围外。可在拉起执行器时显式清空 `CDPATH`，或把相对 cd 一律视为不可信。来源：B460 审查第 2 轮。
+
+## B461 残余（2026-10-22，finish-check 熟练工首跑）
+
+- README（中英）命令表缺 11 个顶层子命令：`completion`、`decision`、`discipline`、`frames`、`machines`、`preview`、`room`、`session`、`squad`、`template`、`workflow`；`approver`/`console`/`sessions` 只在 README.md 正文出现、未进命令表。来源：B461 S4 finish-check 对 B453 的实跑结论。
+- 审批链对「运行新编二进制的 `--help`」一律未形成允许、转人工工单（S4 一跑 13 张）；模板已改为一次导出，但审批链对只读帮助命令的判定值得复核。来源：同上。
