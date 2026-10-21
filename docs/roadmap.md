@@ -987,3 +987,4 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 - Web 控制台增删改熟练工定义（本期只 CLI `template put --file`）。来源同上。
 - `NodeOverride.Target` 在小队节点被忽略（`internal/agentd/scheddispatch.go:131-135` 返回空 target），与 `internal/ledger/types.go:215-216` 注释矛盾。来源：2026-10-21 现状摸底。
 - 载体能力标签（如 `ios-simulator`、`chromium`）与熟练工 `requires`，按「哪台机有该能力」调度；B452 只做 `here` 与机器名的硬亲和。来源：`docs/superpowers/specs/b452.md` r1.1。
+- 熟练工跨机转发时载体机未登记项目：CLI 的自动补登记只补「本机 + --target」，补不到载体机；B452 只原文回传「执行机 <M>：」前缀错误并提示在该机登记。来源：`docs/superpowers/plans/b452-plan.md` Q13。
