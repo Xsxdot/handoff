@@ -43,3 +43,16 @@
   - 旧用法 `scripts/build-deploy.sh`（无参）→ 产物仍为 `dist/handoff-darwin-arm64`，输出段落与改前一致（前端构建/注入自检/嵌入自检抽成函数共用），version 首行 a5e0ff38a05f；dist/ 与各临时目录已删。
 - 段 6 S5：README 中英命令表加 `--from <dir>`、升级节加「换到本机构建」小节与 S3/S4 说明；skills/handoff/SKILL.md 延伸阅读加一条一命令换版；CHANGELOG [Unreleased] 新增 ×2、变更 ×2、修复 ×1。对照 `handoff upgrade --help`（Long 与 flag 文案一致）。`go test ./internal/skill/ ./cmd/ -run 'Skill|Readme|README|Changelog'` ok；`(cd mobile && go test . -run Checklinkname)` ok（脚本未引入 checklinkname）。全局记忆的手工换版步骤不在仓内，留主会话 finish 改。
 - 收尾：`go build ./... && go vet ./...` 过（vet=0）；`gofmt -l <本卡改过的 .go>` 为空；`env -u CLAUDE_CODE_SESSION_ID go test ./cmd/ ./internal/upgrade/... ./internal/release/... ./internal/client/... ./internal/agentd/... -count=1` → cmd ok 77.7s、upgrade ok、release ok、client ok、agentd ok 92.6s。真机 R1–R8 未执行（归主会话）。
+
+## 真机 R1–R8（2026-10-22，主会话执行；隔离实例，测试账本 handoff_b453，未动在役 agentd）
+- 产物：`scripts/build-deploy.sh --pack <scratch>/b462rm/pack darwin/arm64 linux/amd64`（HEAD 07854b4f）→ rc=0，`handoff_07854b4fa824_{darwin_arm64,linux_amd64}.tar.gz` + checksums.txt（两行两空格格式）；另打 `pack-mac`（仅 darwin/arm64）。末行打印 `handoff upgrade --from <目录>`。
+- 起点：两实例均以在役二进制 e53b10ce83b9 启动。linux-01：`systemd-run --unit=handoff-b462-iso -p Restart=always -p KillMode=process --collect --setenv=HOME=/root --setenv=HANDOFF_LOG_LEVEL=info /root/b462-iso/bin/handoff agentd --config /root/b462-iso/config.yaml`（:7798，b462-linux）；本机：临时 plist `dev.gosuper.handoff.b462-iso`（KeepAlive，:7799，b462-mac）+ `launchctl bootstrap gui/$UID`。
+- R1 通过：两端 `GET /api/status` → `update {'managed': True, 'pull': True}`，platform darwin/arm64 / linux/amd64；`/api/disciplines` 200。
+- 巡检：`最新     07854b4fa824（本机构建 <pack>）`；本机「二进制 07854b4fa824 · agentd e53b10ce83b9 需要升级」；b462-linux「需要升级」。（首次 targets addr 误写 http:// 前缀致够不着，改正后正常——配置笔误，非产品问题。）
+- R2 通过：`--target b462-linux upgrade --now --from pack` → `b462-linux 成功 e53b10ce83b9 → 07854b4fa824`，exit 0；CLI 日志 `force_push=true use_pull=false`、`推送换版请求 … mode=push`；对端日志「换版：开始校验与解包 → 新二进制自检通过 version=07854b4fa824 → 换版完成 prev=/root/b462-iso/bin/handoff.prev → 优雅关停 → 启动闸放行」；`handoff.prev` version=e53b10ce83b9；systemd NRestarts=1。
+- R3 通过：mv 新 CLI 到实例二进制（中间态 bin 新 / agentd 旧）后 `upgrade --now --from pack` → 「本机 成功 已换到 07854b4fa824，已触发 agentd 重启」，exit 0；日志「等待本机 agentd 以新版上线以确认账本 … 新版本已上线 attempts=2 … 换版后账本仍可读」；launchd runs=2 last exit 0，status version 07854b4fa824。
+- R4 通过：R2/R3 换版前探针 readable=true，换版后「账本仍可读 attempts=1」，无误报。
+- R6 通过（先手工把 linux 实例换回 .prev 并重启）：`--from pack-mac` → 「b462-linux 失败 发布 07854b4fa824 没有 linux/amd64 的资产（handoff_07854b4fa824_linux_amd64.tar.gz）」，exit 1，二进制未动。
+- R5 通过：测试库 `update devices set instance_id='b462-collide-…' where name='b462-linux'` 后 `--from pack` 换版 → 「b462-linux 失败 新版已上线但账本未挂载 / 看该机 agentd 日志…；prev: …」，exit 1；CLI 日志「账本可读探针：对端账本未挂载（503）」；对端日志「设备自登记撞名被拒」→「机器自登记失败，账本子系统不挂载」（撞名不重试，fail-closed 保持）。恢复 instance_id 并重启后 disciplines 200。
+- R7 未验：需改测试角色 CONNECTION LIMIT（管理员凭据，且波及 B453 隔离实例），按 plan 标未验，以 S4 单测（注入瞬时失败序列）为准，不判等价。
+- R8 通过：删测试库 devices 行 b462-linux/b462-mac（DELETE 2）；`systemctl stop handoff-b462-iso` → inactive（--collect 回收）；`launchctl bootout` → 0、job 已无；删 /root/b462-iso。在役 `handoff upgrade --check`：三台 e53b10ce83b9「需要升级」vs v0.5.0，与开始前一致。
