@@ -15,7 +15,9 @@ import (
 )
 
 // b452NoNotifierMgr 只有 OrchestrationClient 的方法集，没有 SetTerminalNotifier。
-type b452NoNotifierMgr struct{ orchestration.OrchestrationClient }
+type b452NoNotifierMgr struct {
+	orchestration.OrchestrationClient
+}
 
 func b452Store(t *testing.T) *store.Store {
 	t.Helper()
