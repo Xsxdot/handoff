@@ -990,3 +990,6 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 - 熟练工跨机转发时载体机未登记项目：CLI 的自动补登记只补「本机 + --target」，补不到载体机；B452 只原文回传「执行机 <M>：」前缀错误并提示在该机登记。来源：`docs/superpowers/plans/b452-plan.md` Q13。
 - `wait --final` / `dispatch --wait` 的本回合判据仍有残余窗口：库里没有回合起点记录，`Continue` 不落事件；首个快照已是 waiting_review 且结果写库被拖慢超过一次退避时，可能采信上一回合结果。根治：续接时写回合起点事件。来源：B452 修复轮交回物。
 - `internal/executor/opencode` 的 `TestProbeReplayClassification/S3` 在全量负载下偶发红（「回放未产出任何终结事件，实际事件 [usage progress usage]」），单跑与整包复跑全绿；时序依赖待查。来源：B452 修复轮全量。
+- `dispatch --wait` / `wait --final` 输出的最终文本含执行者的协议尾注行（`{"branch":…}` / `{"summary":…}`），主会话读到一行协议噪声；可在 CLI 输出前剥去末行尾注。来源：B452 真机 R2/R3。
+- 只读派发时 CLI stderr 打「分支 ，起点 …」（分支名为空）；只读形态应改打「只读，起点 …」。来源：B452 真机 R2。
+- **发布说明**：B452 新增配置键 `artifacts.retention`；老版本 agentd 遇该键拒绝启动，回退旧二进制前须先删该键。来源：B452 真机 R8。
