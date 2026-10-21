@@ -112,3 +112,12 @@
 - R8：(a) mac 实例换基线 a9150118 构建（`skilled_dispatch_supported` 缺席）→ 新 CLI `dispatch --template … --machine t452-linux` exit=1、stdout 0，「目标 agentd 版本过旧，不支持熟练工派发…」，linux 任务数不变、基线实例日志无派发请求；(b) mac 新版、linux 基线版 → 502「执行机 t452-linux 的 agentd 版本过旧，不支持只读形态，请升级」，linux 任务数与分支数不变。旁见：基线版拒绝含 `artifacts:` 键的新配置启动（「配置包含未知字段…field artifacts」），回退旧二进制前须删该键。另：首次 R8b 因协调者停错进程（pid 文件记了外层包装）误跑一个提示词为「R8b」的只读任务，经 stop 收掉：state failed、名额 0、工作树按实现决定 4 保留；未带 `--wait` 时 stdout 为单行任务 JSON（F22）。
 - 收尾：停两隔离实例；删 `/root/b452-iso`；mac datadir 留 scratchpad；测试库 `handoff_b452` 保留（credentials.md 注「验完可删」）。
 - 真机发现的残余（落 roadmap）：①`--wait` 输出的最终文本含执行者的协议尾注行；②只读派发 stderr 打「分支 ，起点 …」空分支名；③老版本 agentd 遇 `artifacts:` 配置键拒启，回退前须删键（写进发布说明）。
+
+## finish（2026-10-21，主会话）
+
+- 第 0 步：review 通过（独立 subagent，两轴 pass）、修复轮已复核、真机 R1–R8 全过、`card accept` 已验（seq 见卡）。
+- 第 1 步新鲜全量（分支 67bc5900）：主检出 `gofmt -l $(git ls-files '*.go')` 空、BUILD_OK、VET_OK；`go test ./...` 63 ok + 2 FAIL（`TestProductionHTTPClientCallersAreGatewayOnly` 列的全是 `.claude/worktrees/*`；`internal/executor/opencode` `TestProbeReplayClassification`）。干净克隆（无嵌套工作树）@67bc5900：第一次 64 ok + `TestCoordinatorLaunchHonorsCancel (30.21s)` 红；对照基线 a9150118 两次均 `65 ok`；HEAD `-skip B452` 两次均 `65 ok`；HEAD 完整全量再跑一次 `65 ok`。
+- 归因：opencode 包生产代码不依赖本卡改动的任何包，测试依赖只有 `internal/proto`（本卡只加字段）；本卡 50 支新测试合计约 10.1 test-seconds，跑后无残留子进程（`ps` 只见在役 agentd 与用户的 opencode serve）；`TestCoordinatorLaunchHonorsCancel` 红时耗时 30.21s，即假 CLI 未被取消打断，走 hostapi 进程管理（本卡未改）；同文件 `TestCoordinatorCancelTurnUsesSessionID` 注释记 2026-09-19 已有「全量并行负载下红、单跑绿」。判：opencode 包既有负载敏感，非本卡回归；落 roadmap。最近一次 HEAD 完整全量 65 ok，满足新鲜全量门槛。
+- 第 5 步文档对齐（事实性，自动做）：README.md / README.zh-CN.md 命令表补 `dispatch --template/--wait/--timeout/--here/--machine`、`wait --final/--machine`、新行 `handoff artifacts`；CHANGELOG [Unreleased] 新增一条、变更一条（含回退前删 `artifacts:` 键）。参数逐个对照 `--help` 核过。67bc5900。
+- 第 6 步残余：本卡 OOS、Q13、修复轮残余窗口、真机三条均已在 roadmap；opencode 包负载敏感本节补一条。
+- 生产载体只读核对：mimo（linux-01，opencode，`opencode-go/muse-spark-1.3-contributor`）online；真机测试载体 opencode-go 模型失败系其 HOME 从 root 主 HOME 复制、只有 deepseek 凭据，与生产 mimo 无关。
