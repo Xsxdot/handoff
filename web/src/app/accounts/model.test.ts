@@ -4,7 +4,7 @@
 import { describe, expect, it } from 'vitest'
 import type { AccountView, AccountWindowView } from '../../api/accounts'
 import {
-  barWindows, byProblem, countdown, failBrief, hotWindow, KIND_ORDER, sameMachine, statusPhrase, tightest,
+  barWindows, byProblem, countdown, failBrief, hotWindow, KIND_ORDER, recoverAt, sameMachine, statusPhrase, tightest,
   toneClass, weeklyWindow, windowLabel, winTone,
 } from './model'
 
@@ -99,6 +99,17 @@ describe('账号展示规则', () => {
     expect(weeklyWindow(tie)?.group).toBe('B')
     // 详细底栏仍取最短两个窗口（agy 即两个 5h），不受影响
     expect(barWindows(agy, 'detail').map(windowLabel)).toEqual(['Gemini 5h', 'Claude/GPT 5h'])
+  })
+
+  it('预计恢复读服务端 recover_at（越线窗口最晚重置），界面不另算；缺席即未知（审查 I2）', () => {
+    // 5h 85% 2h 后重置 + 周 90% 5d 后重置：两个都越线，服务端给 5d
+    const low = acct('low', 'low', [win('session', 85, 2 * H), win('weekly', 90, 120 * H)], { recover_at: iso(120 * H) })
+    expect(recoverAt(low)).toBe(NOW + 120 * H)
+    // 服务端没给（恢复未知）就是未知：不拿越线窗口的重置时刻顶替
+    expect(recoverAt(acct('low2', 'low', [win('session', 85, 2 * H), win('weekly', 90)]))).toBeNull()
+    // 标记无额度而窗口未越线 → 未知
+    expect(recoverAt(acct('mark', 'out', [win('weekly', 10, 120 * H)]))).toBeNull()
+    expect(recoverAt(acct('bad', 'out', undefined, { recover_at: 'not-a-time' }))).toBeNull()
   })
 
   it('窗口名：agy 带模型组；四种 kind 固定顺序', () => {

@@ -110,6 +110,43 @@ describe('账号页', () => {
     expect(await within(dlg).findByRole('alert')).toHaveTextContent('预警线 70 必须小于低额度线 60')
   })
 
+  it('保存后自动探测一次：新建与改了凭据位置（HOME/代理/条目/kind/机器）的编辑；探测失败只显示在卡片上（审查 m2）', async () => {
+    const user = userEvent.setup()
+    const saved: AccountView = { ...sampleAccounts()[4], name: 'cx-new', machine: 'linux-01', version: 1 }
+    vi.mocked(putAccount).mockResolvedValue(saved)
+    vi.mocked(probeAccount).mockRejectedValueOnce(new ApiError(502, '转发到 linux-01 失败: 连接被拒绝'))
+    render(<AccountsPage />)
+    await user.click(within(screen.getByTestId('kgroup-codex')).getByRole('button', { name: '＋ 登记账号' }))
+    const dlg = screen.getByRole('dialog', { name: '登记账号 · Codex' })
+    await user.type(within(dlg).getByLabelText('账号名'), 'cx-new')
+    await user.type(within(dlg).getByLabelText('所在机器'), 'linux-01')
+    await user.click(within(dlg).getByRole('button', { name: '保存' }))
+    // 保存不被探测拦住：对话框照关，探测失败写在卡片上
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    await waitFor(() => expect(probeAccount).toHaveBeenCalledWith('cx-new'))
+    expect(await within(card('cx-new')).findByText(/探测请求失败：.*连接被拒绝/)).toBeInTheDocument()
+
+    // 编辑只改探测间隔：不触发探测
+    vi.mocked(probeAccount).mockClear()
+    vi.mocked(putAccount).mockResolvedValue({ ...sampleAccounts()[3], interval_minutes: 30, version: 3 })
+    await user.click(within(card('codex-plus')).getByRole('button', { name: '编辑' }))
+    await user.selectOptions(within(screen.getByRole('dialog')).getByLabelText('探测间隔'), '30')
+    await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: '保存' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(probeAccount).not.toHaveBeenCalled()
+
+    // 编辑改了 HOME：触发探测，成功就地刷新
+    vi.mocked(putAccount).mockResolvedValue({ ...sampleAccounts()[3], home_dir: '~/.handoff/home/cx2', version: 4 })
+    vi.mocked(probeAccount).mockResolvedValue({ ...sampleAccounts()[3], home_dir: '~/.handoff/home/cx2', version: 4 })
+    await user.click(within(card('codex-plus')).getByRole('button', { name: '编辑' }))
+    const home = within(screen.getByRole('dialog')).getByLabelText('凭据 HOME')
+    await user.clear(home)
+    await user.type(home, '~/.handoff/home/cx2')
+    await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: '保存' }))
+    await waitFor(() => expect(probeAccount).toHaveBeenCalledWith('codex-plus'))
+    expect(await within(card('codex-plus')).findByText('探测完成，已写回账本。')).toBeInTheDocument()
+  })
+
   it('删除：被载体引用时拦住并列出载体，不发请求；无引用确认后删除', async () => {
     const user = userEvent.setup()
     vi.mocked(deleteAccount).mockResolvedValue({ name: 'og-mini', version: 2 })

@@ -961,6 +961,13 @@ describe('账号 wire（B453 F1–F9）', () => {
     expect(Object.prototype.hasOwnProperty.call(low.reading!.windows[1], 'resets_at')).toBe(false)
     expect(byName.get('og-team')!.state).toBe('out')
     expect(byName.get('og-team')!.stale).toBe(true)
+    // 审查第 1 轮 I2 增补：recover_at 可选，服务端推导（越线窗口最晚重置）；不阻挡/未知时键缺席
+    const team = byName.get('og-team')!
+    expect(team.recover_at).toBe(team.reading!.windows[0].resets_at)
+    expect(low.recover_at).toBe(low.reading!.windows[0].resets_at)
+    for (const name of ['og-main', 'grok-mbp', 'codex-spare', 'agy-main']) {
+      expect(Object.prototype.hasOwnProperty.call(byName.get(name)!, 'recover_at')).toBe(false)
+    }
   })
   it('AccountInput 不含 state/reading/version，数值键可缺席', () => {
     const input: AccountInput = accountInputFixture

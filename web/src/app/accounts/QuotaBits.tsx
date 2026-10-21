@@ -49,12 +49,16 @@ export function StatusText({ a }: { a: AccountView }) {
 }
 
 /**
- * Summary 一句话读数（精简口径）：问题账号「状态短语 倒计时」（低额度/无额度报触发窗口的重置）；
+ * Summary 一句话读数（精简口径）：问题账号「状态短语 倒计时」（无额度报预计恢复、低额度报触发窗口的重置）；
  * 探测失败/未探测只有短语；正常报每周窗口——lead「已用% 倒计时」（载体行），tail「倒计时 已用%」
  * （弹层精简行，照 orca）。
  */
 export function Summary({ a, now, order }: { a: AccountView; now: number; order: 'lead' | 'tail' }) {
-  if (a.state === 'out' || a.state === 'low') {
+  if (a.state === 'out') {
+    const r = recoverAt(a)
+    return <><StatusText a={a} />{r !== null && <> <Reset ts={r} now={now} /></>}</>
+  }
+  if (a.state === 'low') {
     const w = barWindows(a, 'compact')[0]
     return <><StatusText a={a} />{w && <> <Reset ts={resetAt(w)} now={now} /></>}</>
   }

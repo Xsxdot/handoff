@@ -219,7 +219,8 @@ func (s *Service) List() ([]View, error) {
 }
 
 func newView(a Account, version int, rec ReadingRecord, now time.Time) View {
-	return View{Account: a, Version: version, State: Derive(a, rec, now), Stale: IsStale(rec, now), Record: rec}
+	return View{Account: a, Version: version, State: Derive(a, rec, now), Stale: IsStale(rec, now),
+		RecoverAt: RecoverAt(a, rec, now), Record: rec}
 }
 
 // RecordProbe 把一次探测结果合并进读数行（所在机探测器调用）。

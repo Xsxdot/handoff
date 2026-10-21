@@ -27,3 +27,19 @@ func TestTaskRerunLinksWireShape(t *testing.T) {
 		t.Fatalf("rerun_of 解码失败: %+v", back.RerunOf)
 	}
 }
+
+// 审查第 1 轮 I3a：Account / AccountKind / AccountProxy 是本机任务库的派发快照，线注解
+// json:"-"——代理串可能带 userinfo 密码，绝不能随任务快照出机（F17 只增 rerun_of/rerun_by）。
+func TestTaskAccountSnapshotNeverOnWire(t *testing.T) {
+	const pass = "b453-proxy-pass"
+	b, err := json.Marshal(Task{ID: "t1", Account: "cx", AccountKind: "codex",
+		AccountProxy: "socks5://u:" + pass + "@127.0.0.1:1080"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, leak := range []string{pass, "socks5://", "127.0.0.1:1080", "account_proxy", "AccountProxy", `"cx"`, "codex"} {
+		if strings.Contains(string(b), leak) {
+			t.Fatalf("任务快照 wire 不得含账号快照（%q）: %s", leak, b)
+		}
+	}
+}

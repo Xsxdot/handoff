@@ -119,11 +119,15 @@ export function hotWindow(a: AccountView): AccountWindowView | undefined {
   return windows(a).find((w) => { const t = winTone(a, w); return t === 'low' || t === 'out' })
 }
 
-/** recoverAt 与当前状态相关的恢复时刻：越线窗口里最早的重置；无越线窗口取全部窗口最早。 */
+/**
+ * recoverAt 预计离开低额度/无额度的时刻（毫秒）：只读服务端推导的 recover_at（accounts.RecoverAt，
+ * 越线窗口全部重置即最晚那个）。缺席 = 不阻挡或未知（撞额度标记、接口明示不可用、越线窗口缺重置
+ * 时刻），返回 null——界面不拿窗口重置时刻自算顶替，免得与准入规则两份漂移（审查第 1 轮 I2）。
+ */
 export function recoverAt(a: AccountView): number | null {
-  const ws = windows(a)
-  const hot = ws.filter((w) => { const t = winTone(a, w); return t === 'low' || t === 'out' })
-  return minReset(hot.length ? hot : ws)
+  if (!a.recover_at) return null
+  const t = Date.parse(a.recover_at)
+  return Number.isNaN(t) ? null : t
 }
 
 /** earliestReset 全部窗口里最早的重置时刻（弹层详细首行「x 后重置」）。 */

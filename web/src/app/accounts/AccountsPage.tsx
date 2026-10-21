@@ -62,12 +62,24 @@ function inputOf(d: Draft): AccountInput {
   return body
 }
 
-/** AccountDialog 登记/编辑同一表单；kind 换了就回填该 kind 的缺省条目。 */
-function AccountDialog({ editing, kind, machines, onClose }: {
+/**
+ * credentialMoved 保存后是否要立即探测一次（审查第 1 轮 m2）：新建，或编辑改了凭据位置——
+ * kind、所在机器、HOME、条目、代理。代理比对的是回显打码值：原样提交（保留原值）不算改。
+ * 只改间隔/阈值不探测，等所在机按节拍来。
+ */
+function credentialMoved(editing: AccountView | null, body: AccountInput): boolean {
+  if (!editing) return true
+  return body.kind !== editing.kind || body.machine !== editing.machine || body.home_dir !== editing.home_dir ||
+    (body.entry ?? '') !== (editing.entry ?? '') || (body.proxy ?? '') !== (editing.proxy ?? '')
+}
+
+/** AccountDialog 登记/编辑同一表单；kind 换了就回填该 kind 的缺省条目。保存成功回调 onSaved（是否该立即探测）。 */
+function AccountDialog({ editing, kind, machines, onClose, onSaved }: {
   editing: AccountView | null
   kind: string
   machines: string[]
   onClose: () => void
+  onSaved: (name: string, probe: boolean) => void
 }) {
   const { apply } = useAccounts()
   const [d, setD] = useState<Draft>(() => draftOf(editing, kind))
@@ -94,6 +106,7 @@ function AccountDialog({ editing, kind, machines, onClose }: {
       console.info('accounts.save.success', { name, version: view.version, state: view.state })
       apply(view)
       onClose()
+      onSaved(view.name, credentialMoved(editing, body))
     } catch (cause) {
       console.error('accounts.save.failure', { name, expect, cause })
       setError(errorMessage(cause))
@@ -195,8 +208,10 @@ function DeleteDialog({ a, onClose }: { a: AccountView; onClose: () => void }) {
 }
 
 /** AccountCard 一张紧凑卡片：名 + 套餐小标 + 状态短语；弱色凭据位置行；窗口横排；点开展开详情。 */
-function AccountCard({ a, open, flash, now, onToggle, onEdit, onDelete }: {
+function AccountCard({ a, open, flash, now, autoProbe, onToggle, onEdit, onDelete }: {
   a: AccountView; open: boolean; flash: boolean; now: number
+  /** 保存后自动探测的请求序号（每次保存 +1）；变了就探测一次，结果与失败写在本卡片的提示行。 */
+  autoProbe: number
   onToggle: () => void; onEdit: () => void; onDelete: () => void
 }) {
   const { probe } = useAccounts()
@@ -218,6 +233,11 @@ function AccountCard({ a, open, flash, now, onToggle, onEdit, onDelete }: {
       setProbing(false)
     }
   }
+  const probeRef = useRef(runProbe)
+  probeRef.current = runProbe
+  useEffect(() => {
+    if (autoProbe > 0) void probeRef.current()
+  }, [autoProbe])
   const lastAttempt = a.last_attempt_at ? `${ago(a.last_attempt_at, now)}（${clock(Date.parse(a.last_attempt_at))}）` : '从未'
   const extra = extraUsageText(a)
   const hasWins = (a.reading?.windows.length ?? 0) > 0
@@ -268,6 +288,13 @@ export function AccountsPage({ highlight = '' }: { highlight?: string }) {
   const [dialog, setDialog] = useState<{ kind: string; editing: AccountView | null } | null>(null)
   const [deleting, setDeleting] = useState<AccountView | null>(null)
   const [machines, setMachines] = useState<string[]>([])
+  // 保存后自动探测（m2）：name → 请求序号；卡片看到序号变化就探测一次。不阻塞保存。
+  const [autoProbe, setAutoProbe] = useState<Record<string, number>>({})
+  const onSaved = (name: string, probe: boolean) => {
+    if (!probe) return
+    console.info('accounts.save.probe', { name })
+    setAutoProbe((cur) => ({ ...cur, [name]: (cur[name] ?? 0) + 1 }))
+  }
 
   useEffect(() => {
     if (highlight) setOpened((cur) => new Set(cur).add(highlight))
@@ -310,7 +337,7 @@ export function AccountsPage({ highlight = '' }: { highlight?: string }) {
                 <button type="button" className="rounded-md border px-2.5 py-1 text-xs" onClick={() => setDialog({ kind, editing: null })}>＋ 登记账号</button>
               </div>
               {group.map((a) => (
-                <AccountCard key={a.name} a={a} now={now} open={opened.has(a.name)} flash={a.name === highlight}
+                <AccountCard key={a.name} a={a} now={now} open={opened.has(a.name)} flash={a.name === highlight} autoProbe={autoProbe[a.name] ?? 0}
                   onToggle={() => toggle(a.name)} onEdit={() => setDialog({ kind: a.kind, editing: a })} onDelete={() => setDeleting(a)} />
               ))}
               {accounts !== null && group.length === 0 && <div className="a-empty">还没有 {meta.name} 账号，点右上「登记账号」。</div>}
@@ -318,7 +345,7 @@ export function AccountsPage({ highlight = '' }: { highlight?: string }) {
           )
         })}
       </div>
-      {dialog && <AccountDialog key={dialog.editing?.name ?? `new-${dialog.kind}`} editing={dialog.editing} kind={dialog.kind} machines={machineOptions} onClose={() => setDialog(null)} />}
+      {dialog && <AccountDialog key={dialog.editing?.name ?? `new-${dialog.kind}`} editing={dialog.editing} kind={dialog.kind} machines={machineOptions} onClose={() => setDialog(null)} onSaved={onSaved} />}
       {deleting && <DeleteDialog a={deleting} onClose={() => setDeleting(null)} />}
     </div>
   )

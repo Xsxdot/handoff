@@ -256,3 +256,65 @@ func TestConcurrentHumanProbeMarkerKeepAllFields(t *testing.T) {
 		t.Fatalf("最后一个标记丢失: %+v", r.QuotaMark)
 	}
 }
+
+// conflictingRegistry 在内存 registry 外注入确定性 CAS 冲突：读数行的前 n 次 Put 之前先跑
+// interleave（另一个写者抢先成功写一次），被包的 Put 因此按真实 CAS 判据落败。
+type conflictingRegistry struct {
+	*memRegistry
+	n          int
+	interleave func(round int)
+	puts       int
+}
+
+func (c *conflictingRegistry) Put(kind, id string, expect int, body []byte, writer string) (int, error) {
+	if kind == accounts.KindReading && c.puts < c.n {
+		c.puts++
+		c.interleave(c.puts)
+	}
+	return c.memRegistry.Put(kind, id, expect, body, writer)
+}
+
+// TestMergeReadingCASConflictRetriesKeepBothSides 是审查第 1 轮 m1：读数/标记并发写的确定性
+// 用例。探测写回前 3 次都被标记者抢先（真实版本冲突），第 4 次成功：读数与最后一次标记都在；
+// 冲突超出预算（8 次）返回 ErrRetryExhausted，不被静默吞掉（变异 M3a 在这里确定性转红）。
+func TestMergeReadingCASConflictRetriesKeepBothSides(t *testing.T) {
+	mem := newMem()
+	marker := accounts.New(mem)
+	reg := &conflictingRegistry{memRegistry: mem, n: 3}
+	reg.interleave = func(round int) {
+		if err := marker.MarkQuota("og-linux", accounts.QuotaMark{At: at(100 + round), Task: fmt.Sprintf("m%d", round)}); err != nil {
+			t.Fatalf("标记者写入: %v", err)
+		}
+	}
+	prober := accounts.New(reg)
+	if _, err := prober.Put(newAccount(), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := prober.RecordProbe("og-linux", successAt(10, 20, 42)); err != nil {
+		t.Fatalf("前 3 次冲突后应重读重试成功，得 %v", err)
+	}
+	v, err := prober.Get("og-linux")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := v.Record
+	if r.Reading == nil || r.Reading.Windows[0].UsedPercent != 42 {
+		t.Fatalf("冲突重试后读数应写入，得 %+v", r.Reading)
+	}
+	if r.QuotaMark == nil || r.QuotaMark.Task != "m3" {
+		t.Fatalf("标记者最后一次标记应保留（探测开始早于标记，不清），得 %+v", r.QuotaMark)
+	}
+	if reg.puts != 3 {
+		t.Fatalf("应恰好注入 3 次冲突，得 %d", reg.puts)
+	}
+
+	// 冲突超出预算：返回 ErrRetryExhausted，读数不落、错误不被吞
+	reg.n, reg.puts = 1<<30, 0
+	err = prober.RecordProbe("og-linux", successAt(200, 210, 7))
+	if !errors.Is(err, accounts.ErrRetryExhausted) {
+		t.Fatalf("连续冲突超出预算应返回 ErrRetryExhausted，得 %v", err)
+	}
+	if v, _ := prober.Get("og-linux"); v.Record.Reading.Windows[0].UsedPercent != 42 {
+		t.Fatalf("预算耗尽的写不应落库，得 %+v", v.Record.Reading)
+	}
+}

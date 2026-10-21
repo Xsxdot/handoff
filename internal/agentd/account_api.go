@@ -264,7 +264,7 @@ func accountView(v accounts.View) proto.AccountView {
 		Name: a.Name, Kind: a.Kind, Machine: a.Machine, HomeDir: a.HomeDir, Entry: a.Entry,
 		Proxy: accounts.MaskProxy(a.Proxy), IntervalMinutes: a.IntervalMinutes, WarnPercent: a.WarnPercent,
 		LowPercent: a.LowPercent, Version: v.Version, State: string(v.State), Stale: v.Stale,
-		LastAttemptAt: utcPtr(rec.LastAttemptAt), Carriers: append([]string{}, v.Carriers...),
+		LastAttemptAt: utcPtr(rec.LastAttemptAt), RecoverAt: utcPtr(v.RecoverAt), Carriers: append([]string{}, v.Carriers...),
 	}
 	if r := rec.Reading; r != nil {
 		rv := &proto.AccountReadingView{Windows: make([]proto.AccountWindowView, 0, len(r.Windows)),

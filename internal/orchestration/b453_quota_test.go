@@ -135,6 +135,69 @@ func TestB453QuotaReadonlyRerunLinksThenFails(t *testing.T) {
 	eventually(t, 3*time.Second, "终态回调一次", func() bool { return e.note.count() == 1 })
 }
 
+// b453StopProbe 在 fake 外拦 Stop：stopWithReason 迁 failed 之前必先 Stop 执行器，这一刻读
+// 任务行的 rerun_by——Q9「先写链接、再落终态」的确定性观察点（订阅 hub 收 failed 事件再读库
+// 会与「链接晚写」赛跑，变异下可能偶然绿）。
+type b453StopProbe struct {
+	*b452StartRecorder
+	st interface {
+		GetTask(string) (*proto.Task, error)
+	}
+	mu      sync.Mutex
+	atStop  []*proto.TaskRef
+	stateAt []proto.TaskState
+}
+
+func (a *b453StopProbe) Stop(taskID string) error {
+	if cur, err := a.st.GetTask(taskID); err == nil {
+		a.mu.Lock()
+		a.atStop = append(a.atStop, cur.RerunBy)
+		a.stateAt = append(a.stateAt, cur.State)
+		a.mu.Unlock()
+	}
+	return a.b452StartRecorder.Stop(taskID)
+}
+
+// 审查第 1 轮 I3b：只读撞额度换人重跑时，原任务迁 failed 的那一刻 rerun_by 已在库里
+// （Q9：客户端见 failed 而无链接即以 3 结束）。观察点两处：Stop 执行器的当下（迁 failed 之前），
+// 与终态回调拿到的快照。变异 M6b（把写链接挪到 stopWithReason 之后）在 Stop 观察点确定性转红。
+func TestB453QuotaReadonlyRerunLinkVisibleBeforeFailed(t *testing.T) {
+	fk := fake.New([]fake.Step{{Finish: executor.Result{OK: false, FailReason: b453QuotaText}}})
+	rec := &b452StartRecorder{Adapter: fk}
+	probe := &b453StopProbe{b452StartRecorder: rec}
+	m, st, _ := newTestManagerWithAds(t, map[string]executor.Adapter{"fake": probe}, "fake")
+	probe.st = st
+	note := &b452Notifier{}
+	m.SetTerminalNotifier(note)
+	repo := initTestRepo(t)
+	e := &b452Env{m: m, st: st, fk: fk, rec: rec, note: note, repo: repo, pid: registerTestProject(t, m, repo)}
+	want := proto.TaskRef{Task: "t-new", Machine: "linux-01"}
+	m.SetQuotaHandler(&fakeQuotaHandler{st: st, outcome: RerunOutcome{Ref: want, Carrier: "cb"}})
+	task := b453Dispatch(t, e, proto.TaskModeReadonly)
+	waitTaskState(t, st, task.ID, proto.TaskStateFailed)
+	eventually(t, 3*time.Second, "终态回调一次", func() bool { return note.count() == 1 })
+
+	probe.mu.Lock()
+	atStop, stateAt := append([]*proto.TaskRef(nil), probe.atStop...), append([]proto.TaskState(nil), probe.stateAt...)
+	probe.mu.Unlock()
+	if len(atStop) == 0 {
+		t.Fatal("撞额度落 failed 应经 stopWithReason 停执行器，Stop 未被调用")
+	}
+	last := len(atStop) - 1
+	if stateAt[last].IsTerminal() {
+		t.Fatalf("Stop 观察点应在迁 failed 之前，得状态 %s", stateAt[last])
+	}
+	if atStop[last] == nil || *atStop[last] != want {
+		t.Fatalf("迁 failed 之前 rerun_by 应已写入（Q9 先写链接再落终态），得 %+v", atStop[last])
+	}
+	note.mu.Lock()
+	snap := note.tasks[0]
+	note.mu.Unlock()
+	if snap.State != proto.TaskStateFailed || snap.RerunBy == nil || *snap.RerunBy != want {
+		t.Fatalf("终态回调快照应为 failed 且带 rerun_by，得 %s / %+v", snap.State, snap.RerunBy)
+	}
+}
+
 // S6.5：没有可换的成员 → 原任务以额度耗尽失败，原因带回调的 S5 文案；无链接。
 func TestB453QuotaReadonlyNoCandidateFailsWithReason(t *testing.T) {
 	e := newB452Env(t, []fake.Step{{Finish: executor.Result{OK: false, FailReason: b453QuotaText}}})

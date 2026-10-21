@@ -234,7 +234,11 @@ type AccountView struct {
 	Reading         *AccountReadingView `json:"reading,omitempty"`
 	LastAttemptAt   *time.Time          `json:"last_attempt_at,omitempty"`
 	LastError       *AccountProblemView `json:"last_error,omitempty"`
-	Carriers        []string            `json:"carriers"`
+	// RecoverAt 是预计离开低额度/无额度的时刻（审查第 1 轮 I2 增补，可选）：服务端按
+	// accounts.RecoverAt 推导——越线窗口全部重置即最晚那个；不阻挡、撞额度标记/接口明示
+	// 不可用、或任一越线窗口缺重置时刻 → 缺席（恢复时刻未知）。界面直接读它，不另算。
+	RecoverAt *time.Time `json:"recover_at,omitempty"`
+	Carriers  []string   `json:"carriers"`
 }
 
 // AccountReadingView 是最近一次成功读数（F8）。windows 无窗口时为 []。

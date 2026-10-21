@@ -49,7 +49,7 @@ export interface AccountProblemView {
   message: string
 }
 
-/** F5：账号读面。可缺席键：entry（agy）、proxy、reading、last_attempt_at、last_error。 */
+/** F5：账号读面。可缺席键：entry（agy）、proxy、reading、last_attempt_at、last_error、recover_at。 */
 export interface AccountView {
   name: string
   kind: AccountKind | string
@@ -66,6 +66,8 @@ export interface AccountView {
   reading?: AccountReadingView
   last_attempt_at?: string
   last_error?: AccountProblemView
+  /** 预计离开低额度/无额度的时刻（审查第 1 轮 I2 增补）：服务端推导，越线窗口全部重置即最晚那个；不阻挡或未知时缺席。 */
+  recover_at?: string
   carriers: string[]
 }
 

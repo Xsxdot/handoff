@@ -1011,7 +1011,7 @@ func accountsRespSample(now time.Time) AccountsResp {
 			{Key: "session", UsedPercent: 100, ResetsAt: at(3*time.Hour + 12*time.Minute)},
 			{Key: "weekly", UsedPercent: 71, ResetsAt: at(33 * time.Hour)},
 		}, ProbedAt: now.Add(-40 * time.Minute)},
-		LastAttemptAt: at(-40 * time.Minute), Carriers: []string{"dp"},
+		LastAttemptAt: at(-40 * time.Minute), RecoverAt: at(3*time.Hour + 12*time.Minute), Carriers: []string{"dp"},
 	}, {
 		Name: "codex-plus", Kind: "codex", Machine: "macbook-pro", HomeDir: "~/.handoff/home/mbp-codex", Entry: "tokens",
 		Proxy: "socks5://u:***@127.0.0.1:7897", IntervalMinutes: 15, WarnPercent: 60, LowPercent: 80, Version: 2, State: "low",
@@ -1020,7 +1020,7 @@ func accountsRespSample(now time.Time) AccountsResp {
 			{Key: "weekly", UsedPercent: 41},
 		}, PlanType: "Plus", ExtraUsage: &AccountExtraUsageView{Unit: "credits", Balance: f(4.2)},
 			Fingerprint: "sha256:e7a033d5c0aa", ProbedAt: now.Add(-time.Minute)},
-		LastAttemptAt: at(-time.Minute), Carriers: []string{"mbp-codex", "mbp-oc-codex"},
+		LastAttemptAt: at(-time.Minute), RecoverAt: at(time.Hour + 48*time.Minute), Carriers: []string{"mbp-codex", "mbp-oc-codex"},
 	}, {
 		Name: "codex-spare", Kind: "codex", Machine: "linux-01", HomeDir: "/root/.handoff/home/codex-spare", Entry: "tokens",
 		IntervalMinutes: 30, WarnPercent: 50, LowPercent: 90, Version: 1, State: "none", Carriers: []string{},

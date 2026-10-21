@@ -143,7 +143,9 @@ type View struct {
 	Version int
 	State   State
 	Stale   bool
-	Record  ReadingRecord
+	// RecoverAt 是与 State 同一时刻推导的预计恢复（RecoverAt 函数；nil = 不阻挡或未知）。
+	RecoverAt *time.Time
+	Record    ReadingRecord
 	// Carriers 是引用该账号的载体名（排序；组装点未注入引用查询时为空）。
 	Carriers []string
 }
