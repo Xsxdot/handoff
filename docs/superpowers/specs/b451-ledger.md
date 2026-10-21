@@ -58,3 +58,8 @@
   - plan 未验项：(a) opencode 未对正文拼出的路径填 Paths，请求走到了审批者；(b) 本地链模型对仓库外写入判 escalate；(c) 每条 bash 都发了权限请求；(d) CLI 用 `--config` + `--agentd` 指向隔离实例。
 - 旁见：`handoff reply <task> --deny` 在该隔离实例上报 `ticket_id 与 answer 不能为空`（CLI 没取到待答工单），改用 `POST /api/tasks/<id>/reply` 直答成功。
 - 收尾：任务 done 归档；按 pid 停隔离 agentd；删 `/root/b451-iso` 与 mac-mini 草稿 datadir/仓库；两台都无 `b451-probe.txt`。
+
+## finish（2026-10-21）
+
+- 用户批准原话：「认可真机环境改为 linux-01；批准 B451 合入 main 并推送，三台换版（旧二进制留备份）」。
+- 文档对齐：`docs/superpowers/specs/b383.md` 头部加 S4 撤销指针。
