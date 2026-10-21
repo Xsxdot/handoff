@@ -29,3 +29,8 @@
 - 形态第五轮（2026-10-22 用户：「底栏不用显示低额度和无额度，有数值和进度条就行」）：底栏问题账号也只显示细条与数值、靠颜色区分；探测失败/未探测仍用短语；spec S9 同步。
 - 第五轮原型交回：subagent 自主一处——精简底栏的低额度/无额度账号显示触发窗口而非每周（codex-plus 因会话 82% 低额度、每周仅 41%，只显示每周会丢警示）；主会话认可并写入 spec S9。
 - **spec r1 批准**（2026-10-22 用户原话「批准，就这么做吧」），回写头部状态行。之后按 2026-10-22 授权自主推进 plan → implement → review → finish（含合并、推送、换版）。
+
+## plan（2026-10-22，plan subagent 出稿）
+
+- 基线：分支 `cards/B453-charter-1` @ `a4e206d8`（已含 main/B460）。读入 plan / architecture-law / defect-families 三份 skill 正文、spec r1、facts-code/orca/providers、本台账 spec 节、`b460-plan.md` 格式。
+- spec r1.1（2026-10-22 用户「再加一个 agy，orca 上也有，咱们也有。这个你自己定就行了，我要快点儿出去了」）：加 agy kind，照 orca `agy -p /usage --output-format json` + 版本门 ≥1.1.11（旧版 /usage 白花额度），每模型组 5h/周各成窗口；原型加 Antigravity 组；plan 出稿者已告知。
