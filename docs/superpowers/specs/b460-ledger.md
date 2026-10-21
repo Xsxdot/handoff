@@ -207,3 +207,13 @@
 - 真机回归（分支构建 de487646，linux sha256 57351db2…，mac 63cfc73a…；共享链 agy→codex）：R5 重跑（任务 25b0ffb8）七条范围内操作全部 `permission_auto_allow`（mkdir / printf-write 规则名可见），另一条 `git -C <工作树> rev-parse …` 经审批链 approve，零工单，exit 0；R6b 重跑两段 python heredoc 均 `approver_decision approve`，零工单，exit 0；F1 探针 `cd "$TMPDIR" && 'cd' /tmp/b460f1 && echo x > p` 规则层直接升级（「cd 落点不可静态证明，其后相对写落点 "p" 无法解释」）→ deny，linux `/tmp/b460f1` 为空。
 - 机内审查第 3 轮（独立 subagent，de487646，只读）：**PASS**。round-1/2 全部 finding 过 Gate.Judge 复跑均已修；167 条语料对抗挖掘无任何越界写或凭据读/密钥 dump 得到 AutoAllow；对 base fad1aadf 的 AutoAllow 增量恰为 S6 范围内写、S4 webfetch，减量为 S10 凭据读；全量 `env -u CLAUDE_CODE_SESSION_ID go test ./... -count=1 -p 2` 65 包 ok（默认并行一次 opencode `TestProbeReplayClassification/S4` 红、单包复跑 ok，记忆在案抖动）；gofmt/vet 净；变异 M1–M5 均红→绿。两条 nit：N-1 `>|`/`>&` 落点在主落点环被切碎、靠次级守卫兜成 consult（落 roadmap）；N-2 更正：`/Users/Shared` 只有目录本身与祖先 Consult，其下非凭据文件的只读 `cat` 照 base 放行（修复轮 2「家目录祖先」口径只管目录，不管其下普通文件）。
 - 裁决（主会话）：review 通过，进 finish。
+
+## finish（2026-10-22，主会话；用户授权原话见卡 note seq 29481：合并、推送、三台换版、生产冒烟全部授权）
+
+- 第 1 步新鲜全量（B460 分支 6b8e423c，非嵌套工作树）：`gofmt -l` 空、`go vet ./...` 净、`env -u CLAUDE_CODE_SESSION_ID go test ./... -count=1 -p 2` 无 FAIL。
+- 第 2 步合并：`git merge --no-ff cards/B460-charter-1` → e53b10ce；合并树 = 分支树（`cc6b74e3…` 两侧相同，第 3 步全量结论直接适用）。`git push origin main` fad1aadf..e53b10ce，分支同推。
+- 换版：`scripts/build-deploy.sh` darwin/arm64 + linux/amd64，版本 e53b10ce83b9（darwin sha256 75dfc89d…，linux cc2fd981…）。旧二进制留 `~/.local/bin/handoff.bak-pre-b460`。顺序 macbook-pro → mac-mini → linux-01；linux-01 因在跑用户 ERP 项目 E23 实现任务（dp 载体）推迟到该任务进 waiting_review 后（01:18 KST）再换，未打断。mac-mini 重启后约 20s 内 `machines` 看 linux-01 一度「不可达」，直连 curl 正常、随后自愈，属本机重启后机间通道重建抖动。三台 `handoff machines` 均 e53b10ce83b9，三台 `GET /api/cards` 200。
+- 生产冒烟（mac-mini，`dispatch --template code-investigate --receiver mini --here --wait`，任务 96c48fd4）：W2 式只读调研（webfetch opencode 文档 + 产物目录 mkdir/写文件 + shell 统计）exit 0，**人工工单 0**；规则层放行 7（safe-command 5、webfetch 2），审批链批准 2（复合 shell），产物 report.md、notes/summary.md、notes/stats.txt 齐。对照：W2 当时 16 张人工工单。首派用了 macOS 不存在的 `timeout` 包装得 127，改用 `--timeout 15m` 重派。
+- 清理：隔离实例（linux `/root/b460-iso`、mac scratchpad `t460/` 含 `t460/src` 工作树）进程已停、目录已删；测试库 `handoff_b452` 已 DROP（0 连接），`credentials.md` 已分配表标「已 DROP」。`/root/b444-iso`、`/root/b452-iso` 为更早卡遗留，未在本次授权范围内，留存。
+- 文档对齐：全局 `~/.claude/CLAUDE.md` 熟练工一节补「退出码 5 = 待答工单，stdout 附全文与 reply:/resume: 行」；仓内 SKILL/README/CHANGELOG 已在实现期写入。
+- 残余：本卡 OOS、审查 N-1 均已在 roadmap「B460 残余」。原型回流：本卡无形态改动。
