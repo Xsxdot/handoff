@@ -1045,6 +1045,8 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 		m.log.Info("载体 HOME 已覆盖 executor 环境", "task", taskID,
 			"home_override", true, "home_dir", task.HomeDir)
 	}
+	// B452 F17：所有任务的执行器环境都带产物目录（Q7 乙），放在 HOME 覆盖之后，二者互不覆盖。
+	startEnv = withArtifactsDir(startEnv, artifactsDir)
 	var approval executor.ApprovalClient
 	if isOpenCodeExecutor(execName, m.conf().Executor.Default) || execName == executor.HarnessClaude {
 		snap, serr := m.resolveSnapshot(task)

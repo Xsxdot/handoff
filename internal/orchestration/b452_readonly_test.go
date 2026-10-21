@@ -361,6 +361,18 @@ func TestB452ArtifactsDirAndPromptSection(t *testing.T) {
 			t.Fatalf("mode=%q 产物目录应存在且 0700: %v %v", mode, fi, err)
 		}
 		req := e.rec.last()
+		envHits := 0
+		for _, kv := range req.Env {
+			if strings.HasPrefix(kv, proto.ArtifactsEnvVar+"=") {
+				envHits++
+				if kv != proto.ArtifactsEnvVar+"="+dir {
+					t.Fatalf("mode=%q 产物变量值 = %q want %s", mode, kv, dir)
+				}
+			}
+		}
+		if envHits != 1 {
+			t.Fatalf("mode=%q StartReq.Env 应恰一行 %s，得 %v", mode, proto.ArtifactsEnvVar, req.Env)
+		}
 		hasSection := strings.Contains(req.PlanContent, "## 产物目录")
 		if mode == proto.TaskModeReadonly {
 			if !hasSection || !strings.Contains(req.PlanContent, dir) || !strings.Contains(req.PlanContent, proto.ArtifactsEnvVar) ||

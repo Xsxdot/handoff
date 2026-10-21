@@ -1438,10 +1438,13 @@ func TestDispatchPassesEnvToAdapter(t *testing.T) {
 	m.SetWorkspace(workspace.NewCapability())
 	pid := registerTestProject(t, m, repo)
 
-	if _, derr := m.Dispatch(context.Background(), DispatchReq{ProjectID: pid, Prompt: "任意指令"}); derr != nil {
+	task, derr := m.Dispatch(context.Background(), DispatchReq{ProjectID: pid, Prompt: "任意指令"})
+	if derr != nil {
 		t.Fatalf("Dispatch: %v", derr)
 	}
-	if len(rec.gotEnv) != 1 || rec.gotEnv[0] != "HTTPS_PROXY=http://p:1" {
+	// B452 F17（协调者授权改写 2026-10-21）：env 文件原样透传 + 唯一一行产物目录变量。
+	wantArtifacts := proto.ArtifactsEnvVar + "=" + filepath.Join(dataDir, "tasks", task.ID, "artifacts")
+	if len(rec.gotEnv) != 2 || rec.gotEnv[0] != "HTTPS_PROXY=http://p:1" || rec.gotEnv[1] != wantArtifacts {
 		t.Fatalf("adapter 收到的 Env 不对: %v", rec.gotEnv)
 	}
 }
@@ -1470,7 +1473,9 @@ func TestDispatchPersistsCarrierHome(t *testing.T) {
 	if stored.HomeDir != home {
 		t.Fatalf("落库任务 HomeDir = %q, want %q", stored.HomeDir, home)
 	}
-	if len(ad.gotEnv) != 1 || ad.gotEnv[0] != "HOME="+home {
+	// B452 F17（协调者授权改写 2026-10-21）：精确载体 HOME + 唯一一行产物目录变量。
+	wantArtifacts := proto.ArtifactsEnvVar + "=" + filepath.Join(m.cfg.DataDir, "tasks", task.ID, "artifacts")
+	if len(ad.gotEnv) != 2 || ad.gotEnv[0] != "HOME="+home || ad.gotEnv[1] != wantArtifacts {
 		t.Fatalf("StartReq.Env 缺少精确载体 HOME: %v", ad.gotEnv)
 	}
 }
