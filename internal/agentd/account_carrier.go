@@ -11,8 +11,10 @@
 package agentd
 
 import (
+	"path/filepath"
 	"strings"
 
+	"github.com/Xsxdot/handoff/internal/hostapi"
 	"github.com/Xsxdot/handoff/internal/proxycfg"
 	"github.com/Xsxdot/handoff/internal/scheduling"
 )
@@ -108,4 +110,53 @@ func (s *Server) dispatchAccount(carrierName string) carrierAccount {
 			"account_kind", acct.Kind, "proxy_set", acct.Proxy != "")
 	}
 	return acct
+}
+
+// coordinatorAccountProxy 是协调者回合（keystone 经 coordinatorRunner 拉起/续接）的账号代理查询
+// （B453 S4「该载体的任务回合」含协调者回合）。runner 只拿得到 SessionSpec（CLI + 规范化 HOME），
+// 故按物理身份找本机载体：CLI 同名、HOME 展开后相同。同一身份有多个载体且所选账号不一致时不套用
+// （无从判定），只 Warn；账号不在本机同样不套用（hostWakeProxy 同一判据）。
+func (s *Server) coordinatorAccountProxy(cli, homeDir string) string {
+	if s.scheduling == nil || s.accounts == nil || strings.TrimSpace(homeDir) == "" {
+		return ""
+	}
+	rows, err := s.scheduling.CarrierRows()
+	if err != nil {
+		s.log.Warn("协调者回合查载体账号失败，沿用本机环境", "cli", cli, "home_dir", homeDir, "cause", err)
+		return ""
+	}
+	want := filepath.Clean(homeDir)
+	account, matched := "", []string{}
+	for _, row := range rows {
+		c := row.Carrier
+		if filepath.Base(c.CLI) != filepath.Base(cli) || !s.IsSelfMachine(c.Machine) {
+			continue
+		}
+		home := c.HomeDir
+		if strings.TrimSpace(home) == "" {
+			home = "~"
+		}
+		expanded, err := hostapi.ExpandHomePath(home)
+		if err != nil || filepath.Clean(expanded) != want {
+			continue
+		}
+		matched = append(matched, c.Name)
+		if a := strings.TrimSpace(c.Account); a != "" {
+			if account != "" && account != a {
+				s.log.Warn("协调者回合的载体身份对应多个不同账号，不套用账号代理", "cli", cli,
+					"home_dir", homeDir, "carriers", matched)
+				return ""
+			}
+			account = a
+		}
+	}
+	if account == "" {
+		return ""
+	}
+	proxy := s.hostWakeProxy(account)
+	if proxy != "" {
+		s.log.Info("协调者回合使用账号代理", "cli", cli, "carriers", matched, "account", account,
+			"proxy", proxycfg.Mask(proxy))
+	}
+	return proxy
 }
