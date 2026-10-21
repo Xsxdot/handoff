@@ -528,6 +528,11 @@ func (s *Server) SetManager(m orchestration.OrchestrationClient) {
 		SetTerminalNotifier(orchestration.TerminalNotifier)
 	}); ok {
 		tn.SetTerminalNotifier(s)
+	} else {
+		// 不静默：没有回调，编排内部认领的终态（只读任务自动归档、启动补归档）不会归还载体/小队
+		// 名额，名额会一直被占到人手工 done/stop。挂接只在启动时发生一次，这行 Error 也只一次。
+		s.log.Error("编排实现不支持终态回调接线：只读任务自动归档后不会归还载体/小队名额",
+			"manager_type", fmt.Sprintf("%T", m), "error_kind", "terminal_notifier_unwired")
 	}
 	s.log.Info("manager 已挂接，凭据为编排 client 接口")
 }
