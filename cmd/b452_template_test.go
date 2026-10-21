@@ -65,3 +65,22 @@ func TestB452TemplatePutSkilledRules(t *testing.T) {
 		}
 	})
 }
+
+// TestB452SkilledExampleDefinitionPuts：仓内示例定义（S6）可直接 template put，且是只读熟练工定义。
+func TestB452SkilledExampleDefinitionPuts(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join("..", "skills", "handoff", "skilled", "code-investigate.json")
+	out, _, err := runLedgerCLI(t, dir, "template", "put", "code-investigate", "--file", p)
+	if err != nil || !strings.Contains(out, `"version":1`) {
+		t.Fatalf("示例定义应可直接 put: %v %q", err, out)
+	}
+	out, _, err = runLedgerCLI(t, dir, "template", "show", "code-investigate")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"receiver":"mimo"`, `"mode":"readonly"`, "HANDOFF_ARTIFACTS_DIR"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("示例定义 show 缺 %s: %s", want, out)
+		}
+	}
+}

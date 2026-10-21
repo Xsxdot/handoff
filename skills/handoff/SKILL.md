@@ -112,6 +112,38 @@ handoff wait <task> --notify --timeout 1h
   改派非缺省执行器时留空、由其自身默认接管。模型名**按机器不同**，跨机/跨执行器
   复用模型名，第一个事件就是 400。
 
+## 熟练工：按名派发、等结果回文
+
+熟练工是账本里一条带 `receiver` / `mode` 的派发模板：接收者、形态、机器亲和都写在定义里，主会话只给「这次查什么」，拿回一段最终文本。**适合**：只读的代码调查、跨仓取证、长摘录整理——结论能用一段文字交回、不需要你逐轮审批的活。**不适合**：要改代码的实现活（走卡派发）、要你中途频繁拍板的活。
+
+    handoff template list                                   # 有哪些熟练工
+    handoff dispatch --template code-investigate --prompt "查 Foo 的调用方与失败路径" --wait
+
+- 提示词 = 模板正文 + `## 本次任务` + `--prompt` 原文；占位符 `{{CARD}}{{TITLE}}{{ACCEPT}}` 无卡时为空串。stderr 回显 `熟练工 <名> v<版本>`，那是审计留痕。
+- 命令行显式值覆盖定义：`--receiver` 换接收者，`--here` / `--machine <M>` 换亲和（二者互斥；`--here` 不能与 `--target` 同用）。
+- 定义示例在仓内 `skills/handoff/skilled/code-investigate.json`，`handoff template put <名> --file <json>` 写入。卡派发（`card dispatch`）拒用熟练工定义。
+
+**`--wait` 在主会话里怎么跑。** `--wait` 缺省等 30 分钟，而 Bash 工具前台上限是 10 分钟。二选一：后台运行（`run_in_background`，完成时叫醒你），或前台 `--wait --timeout 9m`，退出 124 后接 `handoff wait <完整 task-id> --final --machine <M> --timeout 9m` 继续等（命令原文在 stderr 里）。超时只结束等待，任务照跑。
+
+**输出与退出码**（stdout 只有回文，任务 JSON 改打 stderr，id 从 stderr 取）：
+
+| 退出码 | 含义 | stdout |
+|---|---|---|
+| 0 | 完成 | `completed.final_text` 原文；产物非空时另起一行 `artifacts: <本机绝对路径>` |
+| 3 | 任务以非完成告终（turn_failed / failed / 未完成就归档） | 空；stderr 有任务 id 与原因 |
+| 4 | **机器亲和拒绝**（agentd 422 `affinity_unmet`，文案以「机器亲和不满足：」开头） | 空 |
+| 124 | 等待超时，任务照跑 | 空；stderr 给接着等的命令 |
+| 1 | 其他（探活失败、agentd 过旧、产物取回失败等） | 视情况 |
+
+**退出码 4 = 退回本会话子 agent 做，不要换机重试。** 亲和是定义写死的承诺（例如「只能在调用方这台机器上读这份代码」），换一台机器重派等于绕过它。
+
+**只读形态（`mode: readonly`）的边界：**
+- 只看**已提交**的代码：执行机按你本地 HEAD 检出一棵 detached 工作树；本地未提交改动不可见（stderr 会提示）。
+- 跨机前先 **push**：执行机仓库里没有那个提交，派发会以基线缺失被拒。
+- 不提交、不建分支：完成即自动归档、工作树删除，不在 waiting_review 停留、不需要你 `done`；回合失败（退出码 3）时任务停在 waiting_review，可 `continue` 或 `done`。
+
+**产物。** 执行器把报告、长清单写进产物目录（环境变量 `HANDOFF_ARTIFACTS_DIR`，在执行机任务数据目录下、不在工作树、不进 git，写它不触发权限升级）。`--wait` 完成时自动取回：同机给原路径，跨机下载解到本机临时目录。事后补取用 `handoff artifacts <完整 task-id> [--machine <M>]`：成功 stdout 恰一行本机路径，无产物时 stdout 空、退出 0。产物保留期缺省 168h（配置 `artifacts.retention`）。
+
 ## 在 agent 会话里挂 wait
 
 上面的主循环假设操作者能前台阻塞一小时。agent 的 Bash 工具做不到（前台超时上限通常只有几分钟到十分钟），于是最常见的走样就是自己发明 `show` + `sleep` 轮询循环，或把几百轮 wait 包进一条 shell 大循环。**两种都不要。** 正确形态按你所在 harness 的能力二选一：
