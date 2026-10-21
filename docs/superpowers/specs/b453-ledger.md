@@ -316,3 +316,18 @@
   - 红（编译）：`unknown field ErrorDetail in struct literal of type executor.Result`（orchestration）、`got.Result.ErrorDetail undefined`（opencode）→ 加字段空接缝后红（断言）：只读「failed 原因 不应拼通用零文本句 "零文本产出"：{"fail_reason":"额度耗尽（账号 acct-a 已标无额度）：回合结束但零文本产出（可能是供应商流中断）；executor 仍在线，可 continue 续接重试；会话错误：stream error: insufficient_quota…」、分支 turn_failed 同形、opencode「ErrorDetail 应是会话错误原文：""」；反例「非额度零文本保留通用句」在空接缝上即绿 → 实现后 `go test ./internal/orchestration/ -run B453` ok、opencode `-run 'ErrorDetail|ZeroText|SessionError'` ok。
   - 触及包：orchestration ok（39s）、executor/... 全 ok（opencode 28s）、quota、proto ok、agentd ok（90.8s）；`go build ./... && go vet ./...` 过；gofmt 无输出。
   - 偏离：`internal/executor/executor.go` 不在 plan §3 可改清单（只列 `executor/opencode/*` 仅 Q14）；加一个只读可选字段，其余四个执行器不填即今天行为。
+
+## implement 段 6（2026-10-22，本会话 implement subagent，主检出 `cards/B453-charter-1`，基线 `2df747f8`）
+
+- 段 5 裁决：偏离 1–9 认可（含 `Result.ErrorDetail`）；R8 浏览器对照原型在跑。
+- 范围：S11 打磨、S12 文档（`skills/handoff/SKILL.md`、`README.md`、`README.zh-CN.md`、`CHANGELOG.md` [Unreleased]、`docs/roadmap.md`）；全量编译 + 触及包测试，全量测试留 review。
+- `--help` 核对（本分支二进制 `go build -o $SCRATCH/handoff .`）：`account list [--json]`（「一行一个账号对象（与 GET /api/accounts 元素同形）」）、`account probe <名称>`（「探测失败退出码 1」）、`reply --answer`（「告知工单答「已知悉」即关单」）；表格列 `名称/类型/机器/状态/窗口已用/最近重置/上次探测/说明`（`cmd/account.go:116`）。
+- 文案取证（写文档用原文）：准入拒绝「载体 X 不可用：账号 a 低额度，预计 … 后恢复」/「小队 X 没有可用载体——A：…；B：…」（`scheduling/admission.go`）；链尽「小队 X 没有可换的成员——重跑链已排除：…」；跟链提示「提示: 任务 <t1@m> 撞额度已换人重跑，结论取自新任务 <t2@m>」（`cmd/skilled.go:250`）；notice 全文模板 `orchestration/quota.go quotaNoticeText`；探测端点 opencode-go `opencode.ai/zen/go/v1/usage`、codex `chatgpt.com/backend-api/wham/usage`、grok `cli-chat-proxy.grok.com/v1/billing?format=credits`（失败回退 `/v1/billing`）、agy CLI `/usage`（版本门 ≥ 1.1.11）。
+- roadmap 旁见核对：`squad list` 删载体后残留 count 0 运行位——运行位行来自 `RunningCounts()` 全量键（B390 `a65baefc` 观察面），删载体不清计数是 B448 R11 已记的既有缝；本卡对 `schedapi.go` 的改动（`d5a10771`）只加账号投影，未碰该段 → 非本卡引入，只记。
+- S11 打磨核对：`cmd/account.go` 的窗口标签与 `humanDuration` 和编制域 `accounts.WindowLabel` / `scheduling.HumanDuration` 重复；不合并——CLI 命令文件只消费 wire（`cmd/` 里只有组装点 `agentd.go` import 编制域），为一张标签表穿透分层不值；且两个时长函数取整不同（CLI 四舍五入，准入文案向上取整），合并会改 CLI 输出。记 roadmap。S11 无其它待打磨项（段 2/3 已做取整与打码）。
+- 文档：
+  - `skills/handoff/SKILL.md`：新节「账号与额度：派发看账号，不看载体自报」（`account list|probe`、五档、派发跳过与被拒文案、限额中退役、账号代理优先级、指纹红字）；熟练工节补 notice 块形状与处置（答「已知悉」后续等得 3、别 continue 原会话、旧 CLI 误打成 permission）与只读撞额度换人重跑跟链（stderr 提示原文、无人可换退出 3 文案、只在经小队且有留存输入时发生）；退出码表 3/5 行补注；排障表加两行（准入被拒、重跑链无人可换）。
+  - `README.md` / `README.zh-CN.md`：命令表加 `account list`、`account probe`，`reply` 行注 notice 答法；新节 Accounts and Quota / 账号与额度（登记项与缺省值、探测方式与 agy 版本门、五档、载体选账号与指纹、派发跳过、撞额度两种处置、账号代理、限额中退役）；升级节加「全队升级后再绑账号」。agy 探测命令按 `internal/quota/agy.go:84` 写 `agy -p /usage`。
+  - `CHANGELOG.md` [Unreleased]：新增「升级须知」小节（同批升级后再绑账号；F-B460-1 notice 块；F-B460-2 按实现写窄范围——只对 notice）；新增 7 条、变更 4 条（准入跳过与文案、限额中退役与 F16、429 不算额度、opencode 失败原因带原文与零退出只有错误判失败的行为变化）。
+  - `docs/roadmap.md`：关闭 323（CLI 限额探测健康位）、590（自动限额查询）、600（限额探测与账户池）、975（opencode 失败原因为空）；改写 362 中「限额检测」为已完成、「自动接手」仍开；改写 986 为「无额度部分已由 B453 完成，不可达/满负荷仍开」；「B453 残余」补 10 条（Q9 崩溃窗口、转发留存丢亲和、点名/升级前任务不重跑、notice 无推送、本机全队名、签名表合成、opencode-go 欠交、窗口标签重复、三条旁见）。
+- 收尾检查：`go build ./... && go vet ./...` 过；`go test ./internal/skill/` ok（内嵌 SKILL.md）、`go test ./cmd/ -run 'Skill|Account'` ok；文档无其它测试消费（release workflow 按版本标题抽 CHANGELOG，[Unreleased] 新增「升级须知」小节不影响）。本段无代码改动，无红绿周期。

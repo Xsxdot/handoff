@@ -10,7 +10,22 @@
 
 ## [Unreleased]
 
+### 升级须知
+
+- **账号与额度（B453）：机队同批升级之后，再在载体上绑定账号。** 旧版 agentd 改写载体（登记/编辑/检测）会丢掉载体的 `account` 键；旧版 CLI 把新的 `notice` 工单打成 `kind: permission` 并给出 `--approve/--deny`。三台都到本版本前不要选账号，选了也要等全队升级后再检查一遍载体。
+- **工单 kind 新增 `notice`（B453，改 B460 F2）。** `--wait` / `wait --final` 的退出码 5 工单块多一种：`kind: notice`，全文取请求体 `notice`，**不打 `reason:` 行**，答复行只有一条 `reply: handoff reply <任务ID> --ticket <工单ID> --answer "已知悉"`；`permission` / `question` 块不变。解析工单块的脚本要认这个新 kind。
+- **待答工单与回合结论的次序（B453，改 B460 F4，窄改）。** 任务处于 `waiting_review` 且有待答的 **`notice`** 工单时，「有待答工单（5）」先于「回合已结束（3）」；`permission` / `question` 工单与 `completed` / `failed` 下的次序都不变（仍是回合已结束 0/3 优先）。
+
 ### 新增
+
+- **账号与额度（B453）。** 订阅账号成为账本实体：控制台侧栏 dock「◔」进账号页，按类型（OpenCode Go / Codex / Grok / Antigravity）分组登记、编辑、删除（还有载体引用时拒删并列出载体）、立即探测；登记项为账号名、类型、所在机器、凭据 HOME、凭据条目（按类型预填，agy 用 CLI 自己的登录态不填）、可选代理、探测间隔（5–60 分钟，缺省 15）、预警线（缺省 60%，只变色）、低额度线（缺省 80%）。账号 API：`GET /api/accounts`、`PUT|DELETE /api/accounts/{name}?expect=<版本>`、`POST /api/accounts/{name}/probe`（转发到所在机）。需挂共享账本（`ledger.dsn`）。
+- **所在机定时探测额度（B453）。** 账号所在机的 agentd 按间隔探测并把读数写进共享账本：opencode-go 读 `opencode.ai/zen/go/v1/usage`，codex 读 `chatgpt.com/backend-api/wham/usage`，grok 读 `cli-chat-proxy.grok.com/v1/billing?format=credits`（失败回退 `/v1/billing`），agy 执行 `agy -p /usage`（agy < 1.1.11 跳过，旧版会白花额度）。只读凭据、不刷新 token；密钥不离机，账本只存凭据位置与短指纹。失败按 30s×2ⁿ 退避（不超过间隔）。状态五档：正常 / 低额度 / 无额度 / 探测失败 / 未探测。
+- **`handoff account list [--json]`、`handoff account probe <名称>`（B453）。** 表格列 名称/类型/机器/状态/窗口已用/最近重置/上次探测/说明；`--json` 一行一个账号对象，与 `GET /api/accounts` 元素同形；`probe` 立即探测并打印新读数，探测失败退出 1。登记与编辑走控制台。
+- **控制台全局额度底栏与「使用量」弹层（B453）。** 所有桌面页面底部一行弱色读数，问题账号排前、放不下收进「+N」；点开按类型分组，「详细 / 精简」两种模式（记住选择），hover / 聚焦 / 点击某行在右侧面板看全部窗口、额外额度、失败原因、使用此账号的载体、立即探测。移动端不显示底栏，设置页新增「账号与额度」一节（只读 + 立即探测）。整体灰阶，彩色只给越线的数字与状态短语。
+- **载体选账号与指纹比对（B453）。** 载体登记/编辑对话框新增「账号」下拉（只列同机账号、可不选）；`GET /api/squads` / `squad list` 载体行带 `account`，凭据指纹与账号读数不一致时带 `account_mismatch` 并标红（可以保存、不拦派发）。
+- **账号代理（B453）。** 账号填了代理时，引用它的载体的任务回合、检测回合与协调者回合都走它，覆盖执行器 env 文件与机器进程环境里的代理键（账号代理 > env 文件 > 机器环境）；`NO_PROXY` 不覆盖，缺失时补 localhost。未填代理时与此前一致。
+- **只读任务撞额度自动换人重跑，`--wait` 跟链（B453）。** 经小队派发的只读任务回合失败被判为额度耗尽时：账号标无额度（持续到下一次成功探测），agentd 用原输入在同一小队换一个成员重跑（每个账号只试一次），原任务以「额度耗尽…已改由 X 重跑，新任务 <id>@<机器>」失败，任务快照新增 `rerun_of` / `rerun_by`。`--wait` / `wait --final` 自动跟到新任务，stderr 打「提示: 任务 … 撞额度已换人重跑，结论取自新任务 …」，退出码、最终文本、`artifacts:` 与续等命令都取自新任务；无人可换退出 3「小队 X 没有可换的成员——重跑链已排除：…」。机间派发请求新增可选键 `rerun_of`、`exclude_accounts`。
+- **分支任务撞额度停下并开告知工单（B453）。** 不自动换人：账号标无额度，任务停在 waiting_review、工作树保留，开一张 `notice` 工单（载体、账号、撞到的窗口、预计恢复、分支、工作树、失败原文），`turn_failed` 原因以「额度耗尽（账号 X 已标无额度，见告知工单 …）」开头；`--wait` 以 5 交回 notice 块，答「已知悉」只关单、不回传执行器。控制台工单面板对 notice 只给一个「已知悉」按钮，收件箱显示「告知工单待确认」。
 
 - **`dispatch --wait` / `wait --final` 遇待答工单以退出码 5 交回（B460）。** 任务停在审批链判不了、要人答的权限请求或提问上时立即退出（进入时已有待答工单也一样，不连事件流），stdout 每张工单一块：`ticket:` / `kind:` / 可选 `reason:`、`--- 全文 ---` 定界的工单全文（取工单记录，不截断）、可直接执行的 `reply:` 答复命令，最后一行 `resume: handoff wait <id> --final[ --machine <M>]`。判据是任务快照的待答工单列表，事件只作唤醒；优先级：回合已结束（0/3）> 待答工单（5）> 超时（124）。
 - **网页抓取统一放行并审计（B460）。** 权限门新增 `webfetch` 路由：截断或描述命中黑名单仍升级，其余直接放行，写一条 `permission_auto_allow`（`rule=webfetch`，新键 `url`）。opencode 与 claude（WebFetch / WebSearch）的抓取请求改为产出结构化载荷，agy 补 URL；codex 无抓取审批类型。**风险（用户接受）**：抓取可经 URL 外带数据，由审批链拦凭据读取兜底（读凭据不再自动放行，见「变更」），不设域名白名单。
@@ -22,6 +37,10 @@
 
 ### 变更
 
+- **派发跳过低额度 / 无额度的账号（B453）。** 小队选人、点名载体、冻结载体（卡派发）、协调者席位等全部准入点统一判据「载体已上线 且 所选账号不在低额度/无额度」；探测失败与未探测视为额度未知、照常派发。被拒文案逐个点名，如「载体 t453-agy 不可用：账号 agy-linux 低额度，预计 2d19h 后恢复」，小队全员被跳过时「小队 X 没有可用载体——A：…；B：…」（不再带「scheduling: 小队内没有已上线且有空的载体:」前缀）。HTTP 映射不变。
+- **载体状态「限额中」退役（B453）。** 载体只剩 未上线 / 已上线 / 不可达；账本里存量的 `status: quota` 读作已上线。检测回合撞额度时载体按已上线记，绑定了账号的把账号标无额度，没绑的把原因写进载体最近错误。机间检测结局 `HomeWakeResp.outcome` 仍允许 `quota`（语义改为「可达 + 撞额度」）。
+- **429 限速不再当作额度耗尽（B453）。** 检测链与任务回合的失败分类拆成 额度耗尽 / 限速 / 其他 三类（按执行器与账号类型判，同一处判据）；限速视为载体可达，不触发换人重跑或标账号。单独出现「quota」字样不再算额度耗尽。
+- **opencode 回合的失败原因带出供应商错误原文（B453）。** 以前 opencode 把错误（如 401 key 过期、403 ENTITLEMENT_ERROR）写在 stdout JSON / 会话错误事件里，失败原因只剩「stderr 尾部:」或「零文本产出」；现在附 `<错误名>（HTTP n）: <消息>；响应体: …`。**行为变化**：opencode 退出码 0 但只有错误事件、没有正文时判为回合失败（此前判成功空输出），检测链与协调者回合同样适用。
 - **`--wait` / `wait --final` 的 stderr 不再打「在等人回答」提示（B460）。** 改为以退出码 5 交回，见「新增」。
 - **读凭据、打印密钥类环境变量不再自动放行，改交审批链（B460）。** 此前 `cat ~/.ssh/id_rsa`、`cat ~/.codex/auth.json` 这类只读命令走安全命令白名单直接放行、不经任何审批。现在任何本会自动放行的请求（安全命令、复合只读、范围内写入、heredoc 与范围内 `rm` 出口、写文件工具）只要触及凭据位置——`~/.ssh/`、`~/.aws/`、`~/.config/gh/`、`~/.config/gcloud/`、`~/.netrc`、`~/.git-credentials`、`~/.npmrc`、`~/.pypirc`、`~/.cargo/credentials(.toml)`、`~/.gnupg/`、`~/.docker/config.json`、`~/.kube/`、shell 历史文件、codex/opencode/grok/claude/agy 的登录文件、`~/.handoff/config.yaml` 与 `~/.handoff/env/`、`~/.claude/infra/`、任何 `.env` / `.env.*` 文件、`/proc/*/environ`，含 `$HOME`、绝对路径、通配、花括号、大小写变体、`..`、软链（含 `$TMPDIR` 下与 `cd` 之后的相对软链）与家目录及其祖先（`grep -r x ~`、`grep -r x /`、`ls /Users`）等写法——或执行 `env`、`printenv`、无参 `set`、`export -p`、`declare -p/-x`、展开名字含 KEY/TOKEN/SECRET/PASSWORD/PASSWD/CREDENTIAL/AUTH/DATABASE_URL（或以 `_` 分段含 PAT、DSN）的变量，就改判交审批链（`rule=credential-guard`），审批政策要求升级给人。只读审批政策里的凭据清单与该判据同源。网页抓取路由不变。
 - **静态放行白名单新增 `mkdir`、`echo-write`、`printf-write` 三个 id（B460）。** 政策快照版本随之变化：升级瞬间仍在跑的任务，此前人工批准的「同任务复用」指纹会失配一次（再问一次人），之后恢复。
