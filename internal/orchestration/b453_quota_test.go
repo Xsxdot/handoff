@@ -264,3 +264,77 @@ func TestB453ContinueVoidsPendingNotice(t *testing.T) {
 		t.Fatalf("续接后告知工单应作废，仍有 %+v", p)
 	}
 }
+
+// 真机 R6b/R7 瑕疵 1：执行器失败原因 = 通用处置句（零文本产出…可 continue 续接重试）+ 会话错误。
+// 判额度耗尽后，failed / turn_failed 原因与 notice 只写错误原文（Result.ErrorDetail），不再拼
+// 那句——只读原任务已终止、分支任务 notice 写明不续接原会话，「可 continue」是错的指引。
+const b453ZeroTextGeneric = "回合结束但零文本产出（可能是供应商流中断）；executor 仍在线，可 continue 续接重试"
+
+func b453ZeroTextQuotaResult() executor.Result {
+	return executor.Result{OK: false, FailReason: b453ZeroTextGeneric + "；会话错误：" + b453QuotaText, ErrorDetail: b453QuotaText}
+}
+
+func assertNoGenericZeroText(t *testing.T, where, text string) {
+	t.Helper()
+	if !strings.Contains(text, "insufficient_quota") {
+		t.Fatalf("%s 应带错误原文：%s", where, text)
+	}
+	for _, bad := range []string{"零文本产出", "可 continue 续接重试"} {
+		if strings.Contains(text, bad) {
+			t.Fatalf("%s 不应拼通用零文本句 %q：%s", where, bad, text)
+		}
+	}
+}
+
+func TestB453QuotaReasonOmitsGenericZeroTextReadonly(t *testing.T) {
+	e := newB452Env(t, []fake.Step{{Finish: b453ZeroTextQuotaResult()}})
+	h := &fakeQuotaHandler{st: e.st, outcome: RerunOutcome{Ref: proto.TaskRef{Task: "t-new", Machine: "linux-01"}, Carrier: "cb"}}
+	e.m.SetQuotaHandler(h)
+	task := b453Dispatch(t, e, proto.TaskModeReadonly)
+	waitTaskState(t, e.st, task.ID, proto.TaskStateFailed)
+	for _, ev := range e.events(t, task.ID) {
+		if ev.Type == proto.EventTypeFailed {
+			assertNoGenericZeroText(t, "failed 原因", payloadText(ev))
+		}
+	}
+}
+
+func TestB453QuotaReasonOmitsGenericZeroTextBranch(t *testing.T) {
+	e := newB452Env(t, []fake.Step{{Finish: b453ZeroTextQuotaResult()}})
+	e.m.SetQuotaHandler(&fakeQuotaHandler{st: e.st})
+	task := b453Dispatch(t, e, "")
+	waitTaskState(t, e.st, task.ID, proto.TaskStateWaitingReview)
+	eventually(t, 3*time.Second, "turn_failed 落库", func() bool {
+		return indexOfType(e.eventTypes(t, task.ID), proto.EventTypeTurnFailed) >= 0
+	})
+	for _, ev := range e.events(t, task.ID) {
+		if ev.Type == proto.EventTypeTurnFailed {
+			assertNoGenericZeroText(t, "turn_failed 原因", payloadText(ev))
+		}
+	}
+	pending, err := e.st.PendingTickets(task.ID)
+	if err != nil || len(pending) != 1 {
+		t.Fatalf("应恰有一张 notice: %+v err=%v", pending, err)
+	}
+	var req proto.NoticeRequest
+	if err := json.Unmarshal(pending[0].Request, &req); err != nil {
+		t.Fatal(err)
+	}
+	assertNoGenericZeroText(t, "notice 全文", req.Notice)
+}
+
+// 非额度失败照旧：通用处置句原样进 turn_failed（「可 continue」对普通零文本回合是对的）。
+func TestB453NonQuotaZeroTextKeepsGenericReason(t *testing.T) {
+	e := newB452Env(t, []fake.Step{{Finish: executor.Result{OK: false, FailReason: b453ZeroTextGeneric + "；会话错误：upstream 500", ErrorDetail: "upstream 500"}}})
+	e.m.SetQuotaHandler(&fakeQuotaHandler{st: e.st})
+	task := b453Dispatch(t, e, "")
+	waitTaskState(t, e.st, task.ID, proto.TaskStateWaitingReview)
+	eventually(t, 3*time.Second, "turn_failed 落库", func() bool {
+		return indexOfType(e.eventTypes(t, task.ID), proto.EventTypeTurnFailed) >= 0
+	})
+	for _, ev := range e.events(t, task.ID) {
+		if ev.Type == proto.EventTypeTurnFailed && !strings.Contains(payloadText(ev), "可 continue 续接重试") {
+			t.Fatalf("普通零文本失败应保留通用处置句：%s", payloadText(ev))
+		}
+	}
+}

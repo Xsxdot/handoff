@@ -3561,7 +3561,7 @@ func (m *Manager) handleResult(taskID string, ev executor.AdapterEvent) {
 	// 在 turn_failed 之前开 notice 工单。
 	var quotaFail *QuotaFailure
 	if !r.OK {
-		if f, ok := m.classifyQuota(cur, r.FailReason); ok {
+		if f, ok := m.classifyQuota(cur, quotaSourceText(r)); ok {
 			if cur.Mode == proto.TaskModeReadonly {
 				if m.beginReadonlyQuota(cur, f) {
 					return

@@ -123,3 +123,33 @@ func TestZeroTextTurnFailReasonCarriesRealErrorObject(t *testing.T) {
 		}
 	}
 }
+
+// 零文本 + 会话错误：错误原文另走 Result.ErrorDetail（不带「零文本产出 / 可 continue」等通用处置
+// 句），编排层判额度耗尽时据此写原因（真机 R6b/R7 瑕疵 1）。无会话错误时 ErrorDetail 为空。
+func TestZeroTextTurnErrorDetailIsSessionErrorOnly(t *testing.T) {
+	quietLog(t)
+	fs := newFakeServer(t)
+	fs.push(sessionErrorEvent("Forbidden: ENTITLEMENT_ERROR model not in plan", 403))
+	fs.push(statusIdleEvent())
+	_, ch := startFakeRun(t, fs, "task-b453-detail", t.TempDir(), t.TempDir())
+	got := waitEventType(t, ch, "result")
+	if got.Result == nil || got.Result.OK {
+		t.Fatalf("零文本回合应失败: %+v", got)
+	}
+	d := got.Result.ErrorDetail
+	if !strings.Contains(d, "ENTITLEMENT_ERROR model not in plan") || !strings.Contains(d, "403") {
+		t.Fatalf("ErrorDetail 应是会话错误原文：%q", d)
+	}
+	for _, bad := range []string{"零文本", "continue", "供应商流中断"} {
+		if strings.Contains(d, bad) {
+			t.Fatalf("ErrorDetail 不应含通用处置句 %q：%q", bad, d)
+		}
+	}
+
+	fs2 := newFakeServer(t)
+	fs2.push(statusIdleEvent())
+	_, ch2 := startFakeRun(t, fs2, "task-b453-nodetail", t.TempDir(), t.TempDir())
+	if got := waitEventType(t, ch2, "result"); got.Result == nil || got.Result.ErrorDetail != "" {
+		t.Fatalf("无会话错误时 ErrorDetail 应为空: %+v", got.Result)
+	}
+}

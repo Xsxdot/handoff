@@ -2503,7 +2503,8 @@ func (a *Adapter) mapIdle(r *runState, raw json.RawMessage) {
 			OK: false,
 			FailReason: "回合结束但零文本产出（可能是供应商流中断）；executor 仍在线，" +
 				"可 continue 续接重试" + r.turnErrorsSuffix(),
-			VoidReason: executor.VoidReasonTurnDiscipline,
+			ErrorDetail: r.turnErrorsText(),
+			VoidReason:  executor.VoidReasonTurnDiscipline,
 		}})
 		a.advanceWatermark(r)
 		r.clearTurn()
@@ -2676,12 +2677,18 @@ func (r *runState) addTurnError(text string) {
 	r.turnErrors = append(r.turnErrors, text)
 }
 
+// turnErrorsText 是本回合会话错误原文（去重后以「 | 」连接）；无错误为空串。它就是
+// Result.ErrorDetail：不带任何处置建议，编排层判出撞额度时据它重写失败原因。
+func (r *runState) turnErrorsText() string {
+	return strings.Join(r.turnErrors, " | ")
+}
+
 // turnErrorsSuffix 是零文本失败 FailReason 的会话错误后缀（B453 Q14）；无错误为空串。
 func (r *runState) turnErrorsSuffix() string {
 	if len(r.turnErrors) == 0 {
 		return ""
 	}
-	return "；会话错误：" + strings.Join(r.turnErrors, " | ")
+	return "；会话错误：" + r.turnErrorsText()
 }
 
 // partKey 生成 part 累积对账的键：messageID+partID 唯一标识一个 part

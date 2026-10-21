@@ -90,6 +90,11 @@ type Result struct {
 	FinalText  string
 	OK         bool   // true=正常完成；false=失败（见 FailReason）
 	FailReason string // OK=false 时的失败原因/日志尾部
+	// ErrorDetail 是 OK=false 时载体报出的错误原文（如 opencode 会话错误），不含适配层的处置
+	// 建议（「零文本产出…可 continue 续接重试」之类）。空 = 适配层没拿到结构化错误，原因只在
+	// FailReason。为什么分开（B453）：编排层判出撞额度后要重写原因——只读任务已终止、分支任务
+	// 不续接原会话，FailReason 里的「可 continue」在那时是错的指引；只有原文能被原样保留。
+	ErrorDetail string
 	// VoidReason 是本次失败导致挂起工单被作废时写进审计事件的理由。
 	// 空表示沿用缺省 VoidReasonExecutorGone——绝大多数失败路径（进程退出、
 	// 看门狗判死）确实是 executor 没了，不必逐个填。

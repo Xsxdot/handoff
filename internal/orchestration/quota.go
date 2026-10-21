@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Xsxdot/handoff/internal/executor"
 	"github.com/Xsxdot/handoff/internal/executor/turn"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/quota"
@@ -94,6 +95,17 @@ func (m *Manager) classifyQuota(cur *proto.Task, text string) (QuotaFailure, boo
 			"executor", cur.Executor, "account", cur.Account, "signature", cls.Signature)
 	}
 	return QuotaFailure{}, false
+}
+
+// quotaSourceText 是撞额度分类与重写原因的原文：执行器给了错误原文（ErrorDetail）就用它，
+// 否则用 FailReason。为什么不直接用 FailReason：它可能拼着适配层的通用处置句（「零文本产出…
+// 可 continue 续接重试」），判成额度耗尽后只读原任务已终止、分支任务不续接原会话，那句是错的
+// 指引（真机 R6b/R7 瑕疵 1）。普通失败路径不经这里，FailReason 原样进 turn_failed。
+func quotaSourceText(r *executor.Result) string {
+	if strings.TrimSpace(r.ErrorDetail) != "" {
+		return r.ErrorDetail
+	}
+	return r.FailReason
 }
 
 // beginReadonlyQuota 认领只读任务的撞额度处置并另起 goroutine 执行。返回 false = 未接管
