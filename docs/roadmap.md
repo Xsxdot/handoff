@@ -994,3 +994,11 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 - 只读派发时 CLI stderr 打「分支 ，起点 …」（分支名为空）；只读形态应改打「只读，起点 …」。来源：B452 真机 R2。
 - **发布说明**：B452 新增配置键 `artifacts.retention`；老版本 agentd 遇该键拒绝启动，回退旧二进制前须先删该键。来源：B452 真机 R8。
 - 只读熟练工从**未推送**的分支派到远端载体必失败（`--template` 一律带本机 HEAD 作基线，执行机 fetch 不到即 400）；调研外部仓库、联网资料这类不依赖本仓状态的任务，应可退回远端默认分支作基线（如 `--base origin` 或模板级「无需仓库」）。另：熟练工最终文本含执行者过程叙述前缀与协议尾注，与上面「尾注行」同条处理。来源：B453 spec W3 首派 400（2026-10-21）。
+
+## B453 残余（2026-10-22，账号与额度 spec Out of Scope「本期不做、后续要做」）
+
+- CLI 登记/编辑/删除账号（`handoff account add/edit/rm`）；B453 只做 `account list|probe`，登记走控制台。来源：`docs/superpowers/specs/b453.md` OOS。
+- 其他 provider 的账号额度（Claude OAuth、DeepSeek 余额、阿里 Token Plan、cline-pass、zen free、Gemini、Kimi 等）；调研结论见 `docs/superpowers/specs/b453-facts-providers.md`、`b453-facts-orca.md`。来源同上。
+- opencode-go 额度的 cookie 路径（console session `console/api/go/status`），仅在 API key 路径不可用时再议。来源同上。
+- 配额感知的负载均衡（按剩余额度加权、额度预测）；B453 只做低额度/无额度跳过。来源同上。
+- 额度探测主动刷新过期 token；B453 只读凭据、等 CLI 自己刷新。来源同上。
