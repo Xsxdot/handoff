@@ -45,14 +45,25 @@ func (r *funcChainReader) set(fn func(ctx context.Context) (ApproverChain, error
 type stubRemoteDecider struct {
 	mu    sync.Mutex
 	calls []ApproverRing
+	tcs   []ApproverTaskContext // B460：每次调用收到的任务上下文
 	fn    func(ring ApproverRing) RemoteOutcome
 }
 
-func (d *stubRemoteDecider) DecideRemote(_ context.Context, ring ApproverRing, _, _ string, _ time.Duration) RemoteOutcome {
+func (d *stubRemoteDecider) DecideRemote(_ context.Context, ring ApproverRing, _, _ string, tc ApproverTaskContext, _ time.Duration) RemoteOutcome {
 	d.mu.Lock()
 	d.calls = append(d.calls, ring)
+	d.tcs = append(d.tcs, tc)
 	d.mu.Unlock()
 	return d.fn(ring)
+}
+
+func (d *stubRemoteDecider) lastTaskContext() ApproverTaskContext {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if len(d.tcs) == 0 {
+		return ApproverTaskContext{}
+	}
+	return d.tcs[len(d.tcs)-1]
 }
 
 func (d *stubRemoteDecider) called() []ApproverRing {
@@ -209,7 +220,7 @@ func TestDecideSharedChainRemoteApprove(t *testing.T) {
 	a.SetChainReader(&funcChainReader{fn: func(context.Context) (ApproverChain, error) {
 		return ApproverChain{Rings: []ApproverRing{{Machine: "linux-01", Executor: "codex"}}}, nil
 	}})
-	d := a.Decide(context.Background(), "Bash: ls", "摘要")
+	d := a.Decide(context.Background(), "Bash: ls", "摘要", ApproverTaskContext{})
 	if !d.Approve || d.Err != nil {
 		t.Fatalf("应 approve: %+v", d)
 	}
@@ -238,7 +249,7 @@ func TestDecideSharedChainFailoverToSecondRing(t *testing.T) {
 			{Machine: "mac-mini", Executor: "claude"},
 		}}, nil
 	}})
-	d := a.Decide(context.Background(), "x", "")
+	d := a.Decide(context.Background(), "x", "", ApproverTaskContext{})
 	if !d.Approve || d.Err != nil {
 		t.Fatalf("第二环应 approve: %+v", d)
 	}
@@ -273,7 +284,7 @@ func TestDecideSharedChainFailureClassTable(t *testing.T) {
 			a.SetChainReader(&funcChainReader{fn: func(context.Context) (ApproverChain, error) {
 				return ApproverChain{Rings: []ApproverRing{{Machine: "linux-01", Executor: "codex"}}}, nil
 			}})
-			d := a.Decide(context.Background(), "x", "")
+			d := a.Decide(context.Background(), "x", "", ApproverTaskContext{})
 			if d.Err == nil || d.Approve {
 				t.Fatalf("应 fail-closed: %+v", d)
 			}
@@ -294,7 +305,7 @@ func TestDecideSharedChainLocalRingNoNetwork(t *testing.T) {
 	a.SetChainReader(&funcChainReader{fn: func(context.Context) (ApproverChain, error) {
 		return ApproverChain{Rings: []ApproverRing{{Machine: "self", Executor: "codex"}}}, nil
 	}})
-	d := a.Decide(context.Background(), "x", "")
+	d := a.Decide(context.Background(), "x", "", ApproverTaskContext{})
 	if !d.Approve || d.Err != nil {
 		t.Fatalf("本机环应 approve: %+v", d)
 	}
@@ -312,7 +323,7 @@ func TestDecideSharedChainRemoteMissingDecider(t *testing.T) {
 	a.SetChainReader(&funcChainReader{fn: func(context.Context) (ApproverChain, error) {
 		return ApproverChain{Rings: []ApproverRing{{Machine: "linux-01", Executor: "codex"}}}, nil
 	}})
-	d := a.Decide(context.Background(), "x", "")
+	d := a.Decide(context.Background(), "x", "", ApproverTaskContext{})
 	if d.Err == nil || d.Attempts[0].Machine != "linux-01" {
 		t.Fatalf("无远程裁决口应 fail-closed 且记 machine: %+v", d)
 	}
@@ -361,12 +372,12 @@ func TestSharedChainLastGoodOnReadFailure(t *testing.T) {
 	a.SetSelfMachine(func(string) bool { return false })
 	a.SetRemoteDecider(&stubRemoteDecider{fn: func(ApproverRing) RemoteOutcome { return remoteApprove("m") }})
 	a.SetChainReader(reader)
-	if d := a.Decide(context.Background(), "x", ""); !d.Approve {
+	if d := a.Decide(context.Background(), "x", "", ApproverTaskContext{}); !d.Approve {
 		t.Fatalf("首读应 approve: %+v", d)
 	}
 	// 读失败 → 沿用 last-good
 	reader.set(func(context.Context) (ApproverChain, error) { return ApproverChain{}, errors.New("账本抖动") })
-	if d := a.Decide(context.Background(), "x", ""); !d.Approve || d.Err != nil {
+	if d := a.Decide(context.Background(), "x", "", ApproverTaskContext{}); !d.Approve || d.Err != nil {
 		t.Fatalf("读失败应沿用 last-good: %+v", d)
 	}
 }
@@ -387,12 +398,12 @@ func TestSharedChainClearDiscardsLastGood(t *testing.T) {
 	}})
 	a.SetChainReader(reader)
 	// 首读走共享链 → escalate
-	if d := a.Decide(context.Background(), "x", ""); d.Approve || d.Err != nil || d.Attempts[0].Machine != "linux-01" {
+	if d := a.Decide(context.Background(), "x", "", ApproverTaskContext{}); d.Approve || d.Err != nil || d.Attempts[0].Machine != "linux-01" {
 		t.Fatalf("首读应走共享链 escalate: %+v", d)
 	}
 	// clear（ErrApproverChainAbsent）→ 丢弃 last-good，回落本地链 approve
 	reader.set(func(context.Context) (ApproverChain, error) { return ApproverChain{}, ErrApproverChainAbsent })
-	d := a.Decide(context.Background(), "x", "")
+	d := a.Decide(context.Background(), "x", "", ApproverTaskContext{})
 	if !d.Approve || d.Err != nil {
 		t.Fatalf("clear 后应回落本地链 approve: %+v", d)
 	}
@@ -401,7 +412,7 @@ func TestSharedChainClearDiscardsLastGood(t *testing.T) {
 	}
 	// 再读失败：last-good 已清，不应滞留死链 → 仍回落本地链
 	reader.set(func(context.Context) (ApproverChain, error) { return ApproverChain{}, errors.New("账本抖动") })
-	if d := a.Decide(context.Background(), "x", ""); !d.Approve {
+	if d := a.Decide(context.Background(), "x", "", ApproverTaskContext{}); !d.Approve {
 		t.Fatalf("clear 后读失败不应复活死链，应回落本地链: %+v", d)
 	}
 }
@@ -421,13 +432,13 @@ func TestSharedChainReadTimeoutUsesLastGood(t *testing.T) {
 	a.SetRemoteDecider(&stubRemoteDecider{fn: func(ApproverRing) RemoteOutcome { return remoteApprove("m") }})
 	a.SetChainReader(reader)
 	// 先成功读一次，建立 last-good
-	if d := a.Decide(context.Background(), "x", ""); !d.Approve {
+	if d := a.Decide(context.Background(), "x", "", ApproverTaskContext{}); !d.Approve {
 		t.Fatalf("首读应 approve: %+v", d)
 	}
 	// 读挂起：Decide 应在 ~2s 内返回并走 last-good，不被拖到裁决时限（此处设 30s）
 	reader.set(func(ctx context.Context) (ApproverChain, error) { <-release; return ApproverChain{}, nil })
 	start := time.Now()
-	d := a.Decide(context.Background(), "x", "")
+	d := a.Decide(context.Background(), "x", "", ApproverTaskContext{})
 	elapsed := time.Since(start)
 	if !d.Approve || d.Err != nil {
 		t.Fatalf("读超时应走 last-good: %+v", d)
@@ -436,8 +447,8 @@ func TestSharedChainReadTimeoutUsesLastGood(t *testing.T) {
 		t.Fatalf("读封顶应在 ~%s 内返回，实测 %s", ApproverChainReadTimeout, elapsed)
 	}
 	// 连续多次读超时只出一条 WARN
-	a.Decide(context.Background(), "x", "")
-	a.Decide(context.Background(), "x", "")
+	a.Decide(context.Background(), "x", "", ApproverTaskContext{})
+	a.Decide(context.Background(), "x", "", ApproverTaskContext{})
 	warns := strings.Count(buf.String(), "读共享审批链失败")
 	if warns != 1 {
 		t.Fatalf("同类告警应限频为 1 条，实测 %d 条:\n%s", warns, buf.String())

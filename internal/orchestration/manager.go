@@ -2394,10 +2394,15 @@ func (m *Manager) consultApprover(ctx context.Context, taskID string, ev executo
 	// 任务摘要取 PlanSummary；GetTask 失败用空串——摘要是上下文不是裁决前提，
 	// 不因读失败把整个裁决拖下水
 	summary := ""
+	var tc ApproverTaskContext
 	if task, err := m.st.GetTask(taskID); err == nil {
 		summary = task.PlanSummary
+		tc = m.approverTaskContextFrom(task) // B460 S7：同一次读取组装审批上下文
+	} else {
+		m.log.Warn("审批上下文组装失败：读任务失败，按无上下文裁决", "task", taskID,
+			"ticket", ticketID, "cause", err)
 	}
-	d := m.approver.Decide(ctx, ev.Text, summary)
+	d := m.approver.Decide(ctx, ev.Text, summary, tc)
 
 	decision := "error"
 	switch {
