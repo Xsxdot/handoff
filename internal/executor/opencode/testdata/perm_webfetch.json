@@ -1,0 +1,19 @@
+{
+  "id": "per_b460_synthetic_webfetch",
+  "sessionID": "ses_b460_synthetic",
+  "permission": "webfetch",
+  "patterns": [
+    "https://go.dev/doc/"
+  ],
+  "metadata": {
+    "url": "https://go.dev/doc/",
+    "format": "markdown"
+  },
+  "always": [
+    "*"
+  ],
+  "tool": {
+    "messageID": "msg_b460_synthetic",
+    "callID": "call_b460_synthetic"
+  }
+}

@@ -43,16 +43,19 @@ import (
 // 落点提取按段进行（splitWriteSegments 引号感知切段），与整串提取等价：
 // 重定向操作符与引号状态都不跨段生效。cd 段自身的重定向作用于 cd **前**的
 // 工作目录（shell 语义：重定向先于简单命令执行生效），因此先提取后更新基准。
-func cdResolvedTargets(cmd string, scope Scope) (targets []string, unres string) {
-	base := ""      // 已证明的 cd 落点（空 = 尚在起点 Workdir）
+//
+// cwd 是执行器在权限载荷里明示的命令工作目录（B460 Q8，Request.Cwd）：非空时作为
+// 起始基准，相对落点按它解释而不是按 Workdir；空串维持现状。
+func cdResolvedTargets(cmd string, scope Scope, cwd string) (targets []string, unres string) {
+	base := cwd     // 已证明的 cd 落点或载荷明示的 cwd（空 = 尚在起点 Workdir）
 	broken := false // 基准破坏（sticky）：其后相对落点不可解释
 	rebindDone, rebind := false, false
-	// $TMPDIR 重绑定嫌疑是整条命令的属性（先序段的赋值污染后续段），懒判定
-	// 一次并缓存——没有 $TMPDIR cd 目标的命令不付这份成本。
+	// 白名单变量（$TMPDIR / $HANDOFF_ARTIFACTS_DIR）重绑定嫌疑是整条命令的属性
+	// （先序段的赋值污染后续段），懒判定一次并缓存——没有变量前缀目标的命令不付这份成本。
 	rebindSuspect := func() bool {
 		if !rebindDone {
 			rebindDone = true
-			rebind = tmpdirRebindSuspect(cmd)
+			rebind = scopeVarRebindSuspect(cmd)
 		}
 		return rebind
 	}
@@ -65,6 +68,11 @@ func cdResolvedTargets(cmd string, scope Scope) (targets []string, unres string)
 		}
 		if base == "" {
 			return t, true // 无 cd 生效：原样交 InScope（现状行为）
+		}
+		// 白名单变量前缀（B460 Q7）按任务注入值绝对化，与 cd 无关；重绑定嫌疑或
+		// 残留展开字符时不可解释（与下面的字符拒绝同一结论）。
+		if joined, isVar, ok := scopeVarPath(t, scope, rebindSuspect()); isVar {
+			return joined, ok
 		}
 		// 基准已生效：相对落点必须可静态证明。展开/转义/花括号/glob 字符的
 		// 展开结果无法枚举（批次 B 评审 12 绕过的同族教训），一律不可解释。
@@ -116,7 +124,7 @@ func cdWalkBase(cmd string, scope Scope) (base string, broken bool) {
 	rebindSuspect := func() bool {
 		if !rebindDone {
 			rebindDone = true
-			rebind = tmpdirRebindSuspect(cmd)
+			rebind = scopeVarRebindSuspect(cmd)
 		}
 		return rebind
 	}
@@ -146,63 +154,108 @@ func cdWalkBase(cmd string, scope Scope) (base string, broken bool) {
 //
 // 可解析形态与字符拒绝和 rmtargets.go proveDirInTmp 同哲学（独立实现，基准集
 // 不同——那边只认 TaskTmpDir，这里认 Workdir/TaskDir/TaskTmpDir 三基准）：
-//   - $TMPDIR / ${TMPDIR} 及其「/后缀」形态按任务注入值解读（重绑定嫌疑由
-//     rebindSuspect 先行排除）；
+//   - $TMPDIR / ${TMPDIR}、$HANDOFF_ARTIFACTS_DIR / ${HANDOFF_ARTIFACTS_DIR}（B460 Q7）
+//     及其「/后缀」形态按任务注入值解读（重绑定嫌疑由 rebindSuspect 先行排除）；
 //   - 绝对路径原样；
 //   - 相对路径按当前基准（起点 Workdir）拼接。
 //
 // 不可证明（fail）：glob 元字符、单引号残留、白名单前缀之外残留 $ \ ~ { } ,
-// （rmPathBanChars，over-reject 是刻意安全侧取舍）、$TMPDIR 重绑定、解析后
+// （rmPathBanChars，over-reject 是刻意安全侧取舍）、变量重绑定、解析后
 // 逃逸（../../、软链指外）。
 func proveCDInBases(tok, cur string, scope Scope, rebindSuspect bool) (string, bool) {
+	if cur == "" {
+		cur = scope.Workdir
+	}
+	return proveScopedToken(tok, cur, scope, rebindSuspect)
+}
+
+// proveScopedToken 把一个路径词元解析成「可证明落在三基准之一内」的绝对路径。
+//
+// 与 proveCDInBases 的唯一差别：相对词元**必须**有已证明的基准 base，不默认
+// 回落 Workdir——B460 新放行形态的硬边界 B2（无基准的相对落点不可证明：claude
+// 的 Bash 工具跨调用保留 cwd，Workdir 只是假设）。
+func proveScopedToken(tok, base string, scope Scope, rebindSuspect bool) (string, bool) {
 	if strings.ContainsAny(tok, "*?[") || strings.ContainsRune(tok, '\'') {
 		return "", false
 	}
-	// $TMPDIR/${TMPDIR} 白名单前缀剥除后，残留部分不得再含展开/转义/花括号字符
-	var rest string
-	switch {
-	case tok == "$TMPDIR" || tok == "${TMPDIR}":
-		rest = ""
-	case strings.HasPrefix(tok, "$TMPDIR/"):
-		rest = tok[len("$TMPDIR/"):]
-	case strings.HasPrefix(tok, "${TMPDIR}/"):
-		rest = tok[len("${TMPDIR}/"):]
-	default:
-		rest = tok
+	if joined, isVar, ok := scopeVarPath(tok, scope, rebindSuspect); isVar {
+		if !ok {
+			return "", false
+		}
+		return provePathInBases(joined, scope)
 	}
-	if strings.ContainsAny(rest, rmPathBanChars) {
+	if strings.ContainsAny(tok, rmPathBanChars) {
 		return "", false
 	}
 	var joined string
 	switch {
-	case tok == "$TMPDIR" || tok == "${TMPDIR}":
-		if rebindSuspect || scope.TaskTmpDir == "" {
-			return "", false
-		}
-		joined = scope.TaskTmpDir
-	case strings.HasPrefix(tok, "$TMPDIR/"):
-		if rebindSuspect || scope.TaskTmpDir == "" {
-			return "", false
-		}
-		joined = scope.TaskTmpDir + tok[len("$TMPDIR"):]
-	case strings.HasPrefix(tok, "${TMPDIR}/"):
-		if rebindSuspect || scope.TaskTmpDir == "" {
-			return "", false
-		}
-		joined = scope.TaskTmpDir + tok[len("${TMPDIR}"):]
 	case filepath.IsAbs(tok):
 		joined = tok
+	case base == "":
+		return "", false
 	default:
-		anchor := cur
-		if anchor == "" {
-			anchor = scope.Workdir
-		}
-		if anchor == "" {
-			return "", false
-		}
-		joined = filepath.Join(anchor, tok)
+		joined = filepath.Join(base, tok)
 	}
 	return provePathInBases(joined, scope)
+}
+
+// scopeVars 是可证明前缀的白名单变量：变量名 → 从 Scope 取任务注入值。
+// 两者都由 agentd 在启动执行器时注入（TMPDIR 五家 adapter；HANDOFF_ARTIFACTS_DIR
+// 见 orchestration/readonly.go），值只来自任务记录。
+var scopeVars = []struct {
+	name string
+	val  func(Scope) string
+}{
+	{"TMPDIR", func(s Scope) string { return s.TaskTmpDir }},
+	{"HANDOFF_ARTIFACTS_DIR", func(s Scope) string { return s.ArtifactsDir }},
+}
+
+// scopeVarPath 识别 `$NAME`、`${NAME}` 及其「/后缀」形态（NAME 取 scopeVars）。
+//
+// 返回：
+//   - isVar=false：词元不是白名单变量前缀形态（`$TMPDIRX`、`$HOME/x` 都不是）
+//   - isVar=true, ok=true：joined 为按任务注入值拼出的绝对路径（未判范围）
+//   - isVar=true, ok=false：形态是白名单变量，但不可解释——重绑定嫌疑、Scope 无该值、
+//     或后缀残留展开/转义/花括号字符
+func scopeVarPath(tok string, scope Scope, rebindSuspect bool) (joined string, isVar, ok bool) {
+	for _, v := range scopeVars {
+		for _, form := range []string{"$" + v.name, "${" + v.name + "}"} {
+			var rest string
+			switch {
+			case tok == form:
+			case strings.HasPrefix(tok, form+"/"):
+				rest = tok[len(form)+1:]
+			default:
+				continue
+			}
+			val := v.val(scope)
+			if rebindSuspect || val == "" || strings.ContainsAny(rest, rmPathBanChars) {
+				return "", true, false
+			}
+			return filepath.Join(val, rest), true, true
+		}
+	}
+	return "", false, false
+}
+
+// scopeVarRebindSuspect 是 tmpdirRebindSuspect 的白名单变量全集版：任一白名单变量
+// （TMPDIR、HANDOFF_ARTIFACTS_DIR）在本命令里有赋值 / export / unset 等触碰绑定的
+// 形态，或出现间接展开，即整条有嫌疑。合并判定是刻意的 over-reject：改了 TMPDIR 的
+// 命令里 $HANDOFF_ARTIFACTS_DIR 也不再信，代价只是少放行一次。
+func scopeVarRebindSuspect(cmd string) bool {
+	if tmpdirRebindSuspect(cmd) {
+		return true
+	}
+	toks, ok := rmTokens(cmd)
+	if !ok {
+		return true
+	}
+	for _, t := range toks {
+		if t == "HANDOFF_ARTIFACTS_DIR" || strings.HasPrefix(t, "HANDOFF_ARTIFACTS_DIR=") {
+			return true
+		}
+	}
+	return false
 }
 
 // provePathInBases 判定一个绝对化的路径是否落在三基准之一的子树内（含基准
@@ -238,4 +291,40 @@ func provePathInBases(joined string, scope Scope) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// cdChainTrusted 判定命令里的 cd 段能否当作「已生效」（B460 修复，三处放行出口共用：
+// heredoc-in-scope、rm-in-scope、范围内写入）。
+//
+// 参数：segs 为切好的段，ops 为段间连接符（len(ops) == len(segs)-1，取值 "&&"、
+// "||"、";"、"\n"）。
+//
+// 规则：无 cd 段 → 真；有 cd 段时，首个 cd 之后的每个连接符都必须是 `&&`，且任一 cd
+// 前紧邻的连接符不得是 `||`。理由是 shell 的短路语义：
+//   - `cd A; w`、`cd A` + 换行 + `w`：cd 失败 w 照样执行，cwd 未知；
+//   - `cd A || w`、`cd A && x || w`：cd 失败恰好走到 w；
+//   - `x || cd A && w`：x 成功时 cd 被跳过，w 在旧 cwd 执行。
+//
+// 只有全 `&&` 链保证「走到写段时，前面每个 cd 都执行且成功了」。
+func cdChainTrusted(segs, ops []string) bool {
+	first := -1
+	for i, seg := range segs {
+		if toks, ok := rmTokens(seg); ok && len(toks) > 0 && toks[0] == "cd" {
+			if i > 0 && i-1 < len(ops) && ops[i-1] == "||" {
+				return false
+			}
+			if first < 0 {
+				first = i
+			}
+		}
+	}
+	if first < 0 {
+		return true
+	}
+	for j := first; j < len(ops); j++ {
+		if ops[j] != "&&" {
+			return false
+		}
+	}
+	return true
 }

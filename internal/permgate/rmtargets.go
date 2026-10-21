@@ -107,8 +107,13 @@ func rmInScopeVerdict(cmd string, scope Scope) (Verdict, bool) {
 		return Verdict{}, false
 	}
 	root := tmpRoot(scope)
-	segs, ok := splitRmSegments(cmd)
+	segs, ops, ok := splitRmSegments(cmd)
 	if !ok {
+		return Verdict{}, false
+	}
+	if !cdChainTrusted(segs, ops) {
+		// B460 修复：cd 后有 `;` / `||` 时 cd 失败、rm 仍在未知 cwd 执行，
+		// 相对删除目标不可证明——不放宽，维持现状。
 		return Verdict{}, false
 	}
 	cdBase := "" // 已证明的 cd 落点（空 = 尚无可证明基准）
@@ -329,7 +334,8 @@ func tmpdirRebindSuspect(cmd string) bool {
 //     不可见；judgeBash 的落点循环虽会先判重定向落点，但这里必须整段拒绝才
 //     能保证「提取到的目标 = 真实删除目标」
 //   - 空段（连接符前后缺命令）
-func splitRmSegments(cmd string) ([]string, bool) {
+func splitRmSegments(cmd string) ([]string, []string, bool) {
+	var ops []string
 	var segs []string
 	var b strings.Builder
 	var quote rune
@@ -355,41 +361,44 @@ func splitRmSegments(cmd string) ([]string, bool) {
 			quote = r
 			b.WriteRune(r)
 		case r == '\n', r == '(', r == ')', r == '`':
-			return nil, false
+			return nil, nil, false
 		case r == '&':
 			if i+1 >= len(rs) || rs[i+1] != '&' {
-				return nil, false // 单 &：后台执行，不在闭集
+				return nil, nil, false // 单 &：后台执行，不在闭集
 			}
 			if !flush() {
-				return nil, false
+				return nil, nil, false
 			}
+			ops = append(ops, "&&")
 			i++
 		case r == '|':
 			if i+1 < len(rs) && rs[i+1] == '|' {
 				if !flush() {
-					return nil, false
+					return nil, nil, false
 				}
+				ops = append(ops, "||")
 				i++
 				continue
 			}
-			return nil, false // 单管道：不在闭集
+			return nil, nil, false // 单管道：不在闭集
 		case r == ';':
 			if !flush() {
-				return nil, false
+				return nil, nil, false
 			}
+			ops = append(ops, ";")
 		case r == '>' || r == '<':
-			return nil, false
+			return nil, nil, false
 		default:
 			b.WriteRune(r)
 		}
 	}
 	if quote != 0 {
-		return nil, false
+		return nil, nil, false
 	}
 	if !flush() {
-		return nil, false
+		return nil, nil, false
 	}
-	return segs, true
+	return segs, ops, true
 }
 
 // rmTokens 把一段命令切成词元。引号内空白不分词；双引号剥离（内容按可展开

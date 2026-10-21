@@ -1672,6 +1672,9 @@ func (a *Adapter) mapPermissionAsked(r *runState, props json.RawMessage) {
 			// external_directory 的 bash 形态没有 filepath，越界目录在这里
 			ParentDir   string   `json:"parentDir"`
 			Directories []string `json:"directories"`
+			// url 是 webfetch 的抓取地址（B460 S4）。字段名来自合成样本
+			// testdata/perm_webfetch.json，真机样本（U1）到手后核对。
+			URL string `json:"url"`
 		} `json:"metadata"`
 	}
 	if err := json.Unmarshal(props, &pa); err != nil {
@@ -1794,6 +1797,12 @@ func (a *Adapter) mapPermissionAsked(r *runState, props json.RawMessage) {
 		paths = append([]string{pa.Metadata.FilePath}, paths...)
 	}
 	switch {
+	case tool == executor.PermToolWebFetch:
+		// B460 S4：webfetch 不带命令也不带路径，结构只有 URL。取不到 URL 就保持
+		// nil（不伪造空壳），由 manager fail-closed 升级人工。
+		if u := webfetchURL(pa.Metadata.URL, pa.Patterns); u != "" {
+			req = &executor.PermRequest{Tool: tool, URL: u}
+		}
 	case pa.Metadata.Command != "":
 		if tool == executor.PermToolOther {
 			tool = executor.PermToolBash
@@ -1824,6 +1833,21 @@ func (a *Adapter) mapPermissionAsked(r *runState, props json.RawMessage) {
 		Text: turn.TruncateMarked(text, permTextHardLimit),
 		Perm: req,
 	})
+}
+
+// webfetchURL 取 webfetch 请求的抓取地址：先 metadata.url，退路 patterns[0]，
+// 且必须是 http(s) 地址——patterns 也可能是通配摘要（"*"），不能当地址用。
+func webfetchURL(metaURL string, patterns []string) string {
+	isHTTP := func(u string) bool {
+		return strings.HasPrefix(u, "http://") || strings.HasPrefix(u, "https://")
+	}
+	if isHTTP(metaURL) {
+		return metaURL
+	}
+	if len(patterns) > 0 && isHTTP(patterns[0]) {
+		return patterns[0]
+	}
+	return ""
 }
 
 // lateOpenPermissionWait 补开一个「迟到段」并把权限等待挂上去（B383 S1 H2）。

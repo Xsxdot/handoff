@@ -54,7 +54,10 @@ func TestJudgeCDRelativeWriteWitnessesUnchanged(t *testing.T) {
 		{"裸 cd 白名单不变", `cd /etc`, AutoAllow, RuleSafeCommand},
 		{"cd 加只读段不变", `cd /etc && ls`, AutoAllow, RuleSafeCommand},
 		{"无 cd 的相对写不变", `echo x > out.txt`, Consult, ""},
-		{"cd 进 TMPDIR 后写草稿", `cd $TMPDIR && echo x > out`, Consult, ""},
+		// B460 S6：cd 进可证明的范围内目录后 echo 相对写 → 范围内写入放行（主会话确认的断言改写）
+		{"cd 进 TMPDIR 后写草稿", `cd $TMPDIR && echo x > out`, AutoAllow, RuleSafeCommand},
+		{"重绑定 TMPDIR 后 cd 写不放行（B460 S6 反例）", `TMPDIR=/etc; cd $TMPDIR && echo x > out`, Escalate, ""},
+		{"cd 出基准后相对写不放行（B460 S6 反例）", `cd /etc && echo x > out`, Escalate, ""},
 		{"cd 进 TMPDIR 后白名单命令写草稿", `cd $TMPDIR && go test ./... > out`, Consult, ""},
 		{"cd 进工作树子目录后相对写", `cd src && echo x > f`, Consult, ""},
 		{"rm 正例不受影响", `cd "$TMPDIR" && rm -rf verify`, AutoAllow, RuleRmInScope},

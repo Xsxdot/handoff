@@ -5,7 +5,11 @@
 // its orchestration caller and does not duplicate the layout rule.
 package executor
 
-import "path/filepath"
+import (
+	"path/filepath"
+
+	"github.com/Xsxdot/handoff/internal/proto"
+)
 
 // TaskTmpDir returns <dataDir>/tmp/<first eight bytes of taskID>.
 //
@@ -21,4 +25,15 @@ func TaskTmpDir(dataDir, taskID string) string {
 		shortID = shortID[:8]
 	}
 	return filepath.Join(dataDir, "tmp", shortID)
+}
+
+// TaskArtifactsDir returns <dataDir>/tasks/<taskID>/artifacts (B452 F11: the
+// layout is a contract). It performs no I/O.
+//
+// It lives here (not in orchestration) so the approval domain can derive the
+// $HANDOFF_ARTIFACTS_DIR value for permgate without importing orchestration
+// (B460 Q7); orchestration.TaskArtifactsDir delegates to it, keeping a single
+// definition of the layout.
+func TaskArtifactsDir(dataDir, taskID string) string {
+	return filepath.Join(dataDir, "tasks", taskID, proto.ArtifactsDirName)
 }

@@ -30,6 +30,9 @@ func TestWriteArgTargets(t *testing.T) {
 		{"dd 的 of= 形态", "dd if=/dev/zero of=/tmp/x bs=1", []string{"/tmp/x"}},
 		{"落点带引号且含空格", `cp a.txt "/tmp/two words.txt"`, []string{"/tmp/two words.txt"}},
 		{"-- 之后不再当标志", "cp -- -weird.txt /tmp/z", []string{"/tmp/z"}},
+		{"mkdir 全部目录都是落点", "mkdir -p a /tmp/b", []string{"a", "/tmp/b"}},
+		{"mkdir 的 -m 值不是落点", "mkdir -m 700 -p /tmp/c", []string{"/tmp/c"}},
+		{"mkdir 落到家目录", "mkdir ~/d", []string{filepath.Join(home, "d")}},
 
 		// 以下必须摘不出落点——它们是误伤面，摘出来就会平白升级
 		{"命令名不是写命令", "ls /usr/bin/tee /bin", nil},

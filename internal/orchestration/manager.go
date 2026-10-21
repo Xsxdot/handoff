@@ -2227,6 +2227,8 @@ type permissionAutoAllowPayload struct {
 	Paths        []string `json:"paths,omitempty"`
 	Rule         string   `json:"rule"`
 	Reason       string   `json:"reason"`
+	// URL 是网页抓取放行的地址（B460 F10，rule=webfetch 时有值）
+	URL string `json:"url,omitempty"`
 }
 
 // auditAutoAllowOnly 只写自动放行审计并累计计数，不碰原生连接。
@@ -2241,7 +2243,9 @@ func (m *Manager) auditAutoAllowOnly(taskID string, ev executor.AdapterEvent, ve
 	m.log.Info("权限请求自动放行", "task", taskID, "perm", ev.PermissionID,
 		"action", verdict.Action.String(), "rule", verdict.Rule, "reason", verdict.Reason)
 	if verdict.Rule == permgate.RuleSafeCommand || verdict.Rule == permgate.RuleRmInScope ||
-		verdict.Rule == permgate.RuleHeredocInScope {
+		verdict.Rule == permgate.RuleHeredocInScope || verdict.Rule == permgate.RuleWebFetch {
+		// webfetch（B460 S4）同享：网页抓取放行必须留审计（含 URL），且重放幂等
+		// （HasAutoAllow）靠这条事件——漏进名单会让每次重放重复中介。
 		// rm-in-scope（B383 S2a）与 heredoc-in-scope（B383 S2b）与白名单同享
 		// 结构化审计：两者都是「改动前会升级/交模型裁决的形态被 scope 闭集
 		// 放行」——落库事件必须能回放「谁放行的、凭哪条规则」。
@@ -2257,6 +2261,7 @@ func (m *Manager) auditAutoAllowOnly(taskID string, ev executor.AdapterEvent, ve
 				Paths:        append([]string(nil), ev.Perm.Paths...),
 				Rule:         verdict.Rule,
 				Reason:       verdict.Reason,
+				URL:          ev.Perm.URL,
 			}
 			appendEvent := m.appendEvent
 			if appendEvent == nil && m.st != nil {
@@ -2270,7 +2275,7 @@ func (m *Manager) auditAutoAllowOnly(taskID string, ev executor.AdapterEvent, ve
 					"perm", ev.PermissionID, "rule", verdict.Rule, "cause", err)
 			} else {
 				m.log.Info("白名单自动放行审计已落库", "task", taskID,
-					"perm", ev.PermissionID, "rule", verdict.Rule)
+					"perm", ev.PermissionID, "rule", verdict.Rule, "url", ev.Perm.URL)
 			}
 		}
 	}

@@ -42,6 +42,9 @@ type closedHeredocInfo struct {
 	stripped string
 	// target 是 cat 的写落点词元（原文，未绝对化；引号已由词元化剥除）。
 	target string
+	// cdTrusted 为假表示 cd 段后有非 `&&` 连接符（B460 修复）：cd 可能失败而
+	// cat 照样执行，写落点不可证明，放行出口必须拒绝（正文剥离不受影响）。
+	cdTrusted bool
 }
 
 // closedHeredoc 判定命令是否为受控 heredoc 写入闭集形态。
@@ -85,7 +88,7 @@ func closedHeredoc(cmd string) *closedHeredocInfo {
 		return nil // 终止符后还有命令：执行型后继不在闭集
 	}
 	// 命令行区切段：只允许 cd 段与唯一的 cat 段
-	segs, ok := splitHeredocSegments(cmdLine)
+	segs, ops, ok := splitHeredocSegments(cmdLine)
 	if !ok {
 		return nil
 	}
@@ -116,7 +119,8 @@ func closedHeredoc(cmd string) *closedHeredocInfo {
 			return nil
 		}
 	}
-	return &closedHeredocInfo{stripped: cmdLine, target: target}
+	return &closedHeredocInfo{stripped: cmdLine, target: target,
+		cdTrusted: cdChainTrusted(segs, ops)}
 }
 
 // findQuotedHeredocOp 在命令文本里找第一个「引用字面定界符」的 heredoc 操作符
@@ -184,7 +188,8 @@ func hasAnotherHeredocOp(rs []rune, from int) bool {
 //
 // 出现管道（单独 |）、单 &（后台）、括号（子 shell / 进程替换）、空段即整体
 // 不命中——闭集不允许执行型后继。
-func splitHeredocSegments(cmd string) ([]string, bool) {
+func splitHeredocSegments(cmd string) ([]string, []string, bool) {
+	var ops []string
 	var segs []string
 	var b strings.Builder
 	var quote rune
@@ -211,42 +216,46 @@ func splitHeredocSegments(cmd string) ([]string, bool) {
 			b.WriteRune(r)
 		case r == '\n':
 			if !flush() {
-				return nil, false
+				return nil, nil, false
 			}
+			ops = append(ops, "\n")
 		case r == '(', r == ')':
-			return nil, false
+			return nil, nil, false
 		case r == '&':
 			if i+1 >= len(rs) || rs[i+1] != '&' {
-				return nil, false // 单 &：后台执行
+				return nil, nil, false // 单 &：后台执行
 			}
 			if !flush() {
-				return nil, false
+				return nil, nil, false
 			}
+			ops = append(ops, "&&")
 			i++
 		case r == '|':
 			if i+1 < len(rs) && rs[i+1] == '|' {
 				if !flush() {
-					return nil, false
+					return nil, nil, false
 				}
+				ops = append(ops, "||")
 				i++
 				continue
 			}
-			return nil, false // 管道
+			return nil, nil, false // 管道
 		case r == ';':
 			if !flush() {
-				return nil, false
+				return nil, nil, false
 			}
+			ops = append(ops, ";")
 		default:
 			b.WriteRune(r)
 		}
 	}
 	if quote != 0 {
-		return nil, false
+		return nil, nil, false
 	}
 	if !flush() {
-		return nil, false
+		return nil, nil, false
 	}
-	return segs, true
+	return segs, ops, true
 }
 
 // validateHeredocCat 校验 cat 段形态：裸 cat + 恰一个 `>`/`>>` 重定向 + 目标
@@ -310,6 +319,11 @@ func validateHeredocCat(seg, opToken string) (string, bool) {
 func heredocInScopeVerdict(cmd string, scope Scope) (Verdict, bool) {
 	hd := closedHeredoc(cmd)
 	if hd == nil {
+		return Verdict{}, false
+	}
+	if !hd.cdTrusted {
+		// B460 修复：`cd X; cat > f <<'EOF'`、`cd X || cat > f …` 里 cd 失败时 cat
+		// 在未知 cwd 写——不放行，交回既有链路（Consult）。
 		return Verdict{}, false
 	}
 	base, broken := cdWalkBase(hd.stripped, scope)
