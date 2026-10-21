@@ -988,3 +988,5 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 - `NodeOverride.Target` 在小队节点被忽略（`internal/agentd/scheddispatch.go:131-135` 返回空 target），与 `internal/ledger/types.go:215-216` 注释矛盾。来源：2026-10-21 现状摸底。
 - 载体能力标签（如 `ios-simulator`、`chromium`）与熟练工 `requires`，按「哪台机有该能力」调度；B452 只做 `here` 与机器名的硬亲和。来源：`docs/superpowers/specs/b452.md` r1.1。
 - 熟练工跨机转发时载体机未登记项目：CLI 的自动补登记只补「本机 + --target」，补不到载体机；B452 只原文回传「执行机 <M>：」前缀错误并提示在该机登记。来源：`docs/superpowers/plans/b452-plan.md` Q13。
+- `wait --final` / `dispatch --wait` 的本回合判据仍有残余窗口：库里没有回合起点记录，`Continue` 不落事件；首个快照已是 waiting_review 且结果写库被拖慢超过一次退避时，可能采信上一回合结果。根治：续接时写回合起点事件。来源：B452 修复轮交回物。
+- `internal/executor/opencode` 的 `TestProbeReplayClassification/S3` 在全量负载下偶发红（「回放未产出任何终结事件，实际事件 [usage progress usage]」），单跑与整包复跑全绿；时序依赖待查。来源：B452 修复轮全量。
