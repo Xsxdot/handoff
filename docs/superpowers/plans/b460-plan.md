@@ -478,6 +478,7 @@ go test ./cmd/ -run 'B460|B452|Wait|Dispatch' -count=1
 - **F2**：退出 5 时 stdout 为 Q4 格式（拍板后以「拍板」节为准）；stderr 不再输出「在等人回答」类提示行。
 - **F3**：工单全文取工单请求体（`permission` 或 `question` 字段原文），不取事件 payload。
 - **F4**：判据优先级：回合已结束（0/3）> 有待答工单（5）> 等待超时（124）。「有待答工单」以任务快照 `pending_tickets` 非空为准。
+  - **B453 修订（2026-10-22）**：任务处于 `waiting_review` 且待答工单含 `kind: notice`（B453 新增的系统告知工单）时，「有待答工单（5）」先于「回合已结束（3）」；gate/ask 维持本条原序。见 `docs/superpowers/plans/b453-plan.md` §8 F-B460-2 与修订 r1。
 - **F5**：进入等待时已有待答工单 → 首轮快照即以 5 退出，不建事件流连接。
 - **F6**：`dispatch --wait` 与 `wait --final` 共用 F1–F5。
 

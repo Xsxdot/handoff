@@ -1,6 +1,6 @@
 # B453 实现计划：账号与额度（手工登记、所在机定时探测、派发看账号额度）
 
-- 状态：**已拍板（2026-10-22，主会话协调者；用户外出，按 2026-10-22 自主授权裁决）**。裁决见下方「拍板」节；与下方各 Q 的「荐」不一致处以「拍板」节为准。
+- 状态：**已拍板（2026-10-22，主会话协调者；用户外出，按 2026-10-22 自主授权裁决）**。裁决见下方「拍板」节；与下方各 Q 的「荐」不一致处以「拍板」节为准。 **§8 修订 r1**（2026-10-22，审查第 1 轮 I1 回写）。
 - 输入：`docs/superpowers/specs/b453.md` **r1.1**（r1 2026-10-22 用户批准；r1.1 同日增第四种 kind `agy`，提交 `9043ba71`）。L3，形态甲（本地盯），**不扇出**：一张卡、单分支 `cards/B453-charter-1`、按段串行。
 - 事实：`b453-facts-code.md`（基线 fad1aadf，本稿复核过的行号见 §10）、`b453-facts-orca.md`（三家 HTTP + agy CLI 的外部形状）、`b453-facts-providers.md`。台账 `docs/superpowers/specs/b453-ledger.md`「plan」节是本稿全部读数、命令与判断的原始记录。
 - 基线：分支 `cards/B453-charter-1` @ `9043ba71`（已含 main/B460；代码与 `a4e206d8` 相同，之后只有文档提交）。
@@ -389,6 +389,15 @@
 **对 B460 已冻结条目的变更（重走本节，需协调者审核）**
 - **F-B460-1**（改 F2）：新增 `kind: notice` 块：全文取请求体 `notice`，答复行一条 `reply: handoff reply <任务ID> --ticket <工单ID> --answer "已知悉"`；`gate`/`ask` 块不变。工单 kind 取值新增 `notice`。
 - **F-B460-2**（改 F4）：任务状态为 `waiting_review` 且快照 `pending_tickets` 非空时，「有待答工单（5）」先于「回合已结束（3）」；`completed`/`failed` 下次序不变。
+
+**§8 修订 r1（2026-10-22，主会话据审查第 1 轮 I1 回写；实现中形成、经各段主会话裁决认可的冻结形状）**
+- **F2 增补**：PUT 成功回 `200 AccountView`（F5 形状）；`expect` 必填，缺 → 400；重复新建 → 409。
+- **F3 增补**：DELETE 成功回 `200 {"name","version"}`（沿用载体删除回包形状）；被引用 → `409 {"error","carriers":[…]}`；不存在 → 404；版本冲突 → 409；缺 `expect` → 400；删除定义行连带删读数行。
+- **F4 增补**：不存在 → 404；所在机离线/未登记 → 502（「转发到 X 失败」，读数不变）；转发到达的不是所在机 → 409；所在机探测器未运行 → 503；写回失败 → 500。
+- **F5 增补**：`last_error` 形状 `{category, message}`（category 取值见 `internal/quota` 失败类别：unauthorized、credential_missing、credential_expired、credential_invalid、no_subscription、limit_reached、proxy、network、timeout、rate_limited、upstream、parse、version_too_old、cli_missing、unsupported_kind、unsupported_platform）；`proxy` 含 userinfo 时密码段打码为 `scheme://user:***@host:port`，PUT 收到与打码形式相同的值时保留原存值；`carriers` 为引用该账号的载体名数组（无则 `[]`）。
+- **F8 增补**：`extra_usage` 形状 `{unit?, balance?, used?, limit?, unlimited?}`（codex credits → `unit:"credits"` + balance；grok prepaidBalance/onDemandUsed/onDemandCap → balance/used/limit）；`windows[].group?` 为模型组名（agy）；`fingerprint` 形如 `sha256:` + 12 位十六进制。
+- **F15 增补**（D2）：`HomeWakeReq` 另增可选键 `account`（所选账号名）——目标机凭它在本机账号域查代理（代理串不过机间 wire），只认所在机为本机的账号；旧版目标机忽略该键 = 检测回合不走账号代理（可接受降级）。
+- **F-B460-2 实际范围（收窄）**：只有任务处于 `waiting_review` 且快照待答工单中**含 `kind: notice`** 时，「有待答工单（5）」先于「回合已结束（3）」；`gate`/`ask`（permission/question）工单在 `waiting_review` 下维持 B460 F4 原序（回合结论 0/3 优先）；`completed`/`failed` 下次序不变。原文「`pending_tickets` 非空」作废。B460 plan F4 已加交叉注。
 
 **拍板记录**（难逆转、无上下文会惊讶、真取舍）：
 - **定义与读数分两行**（F18，Q1）。被否方案：同行分字段。反过来写不会有任何单测变红（单线程下两种都对），只有 V3 并发负载与 R1 人侧编辑体验能看出差别。
