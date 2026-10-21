@@ -572,6 +572,10 @@ type ledgerBoot struct {
 	report func(phase string)
 	// sleep 退避等待；ctx 取消时立即返回 ctx.Err()
 	sleep func(ctx context.Context, d time.Duration) error
+	// register 自登记（nil = agentd.SelfRegister）；测试注入失败序列（B462 S4）
+	register func(st *ledger.Store, cfg *config.Config, log *slog.Logger) error
+	// importTargets 本地 targets 一次性导入（nil = agentd.ImportLocalTargets）
+	importTargets func(st *ledger.Store, cfg *config.Config, log *slog.Logger) error
 }
 
 // 账本挂载退避：首次 1s，倍增，封顶 30s；±20% 抖动，避免全队同时重启后同秒撞库。
@@ -581,8 +585,7 @@ const (
 )
 
 // openLedgerWithRetry 打开账本，瞬时错误（ledger.IsTransientOpenError）退避重试直到
-// 成功或停机，配置性错误第一次就返回。日志限频：第 1、2、4、8…次失败打 WARN，
-// 其余只经 report 刷新启动闸；重试后成功打一条 INFO 带总次数。
+// 成功或停机，配置性错误第一次就返回。退避、限频与播报见 retryLedgerTransient。
 func openLedgerWithRetry(dsn string, shared bool, boot ledgerBoot, logger *slog.Logger) (*ledger.Store, error) {
 	open := boot.open
 	if open == nil {
@@ -593,6 +596,36 @@ func openLedgerWithRetry(dsn string, shared bool, boot ledgerBoot, logger *slog.
 			return ledger.Open(dsn)
 		}
 	}
+	var lst *ledger.Store
+	attempts, abandoned, err := retryLedgerTransient(boot, logger, "共享账本打开失败", func() error {
+		var err error
+		lst, err = open(dsn, shared)
+		return err
+	}, "dsn_configured", shared)
+	if err != nil {
+		if abandoned {
+			return nil, err
+		}
+		logger.Error("打开账本库失败（配置性错误，不重试）", "dsn_configured", shared, "attempt", attempts, "cause", err,
+			"action", "检查 config.yaml 的 ledger.dsn（地址/库名/账号/密码）后重启")
+		return nil, err
+	}
+	return lst, nil
+}
+
+// retryLedgerTransient 是账本挂载期各步骤（打开、自登记、本地 targets 导入）共用的瞬时
+// 错误退避重试：fn 返回瞬时错误（ledger.IsTransientOpenError，同一判据）时退避重试直到
+// 成功或停机；非瞬时错误第一次就原样返回，由调用方按各自语义处置（打开 = 配置性错误
+// fail 快，自登记撞名 = fail-closed 不挂载）。
+//
+// 参数：boot 提供 ctx/sleep/report（零值取生产缺省）；step 是失败步骤的人话标签，
+// 进启动闸播报「账本未挂载：<step>，第 N 次重试（原因），约 Xs 后再试」与 WARN 日志；
+// attrs 是附加进每条重试日志的诊断键值（如 dsn_configured，不得含 DSN 原文）。
+// 返回：总尝试次数；abandoned=true 表示停机放弃（err 即 ctx.Err()），否则 err 非空即
+// 非瞬时错误原文。
+// 日志限频：第 1、2、4、8…次失败打 WARN，其余只经 report 刷新启动闸；重试后成功打一条
+// WARN 带总次数（与重试 WARN 同级，默认日志级别下事故有始有终）。
+func retryLedgerTransient(boot ledgerBoot, logger *slog.Logger, step string, fn func() error, attrs ...any) (attempts int, abandoned bool, err error) {
 	sleep := boot.sleep
 	if sleep == nil {
 		sleep = sleepCtx
@@ -608,30 +641,28 @@ func openLedgerWithRetry(dsn string, shared bool, boot ledgerBoot, logger *slog.
 	backoff := ledgerRetryInitial
 	started := time.Now()
 	for attempt := 1; ; attempt++ {
-		lst, err := open(dsn, shared)
+		err := fn()
 		if err == nil {
 			if attempt > 1 {
-				// WARN 而非 INFO：与此前的重试 WARN 同级可见，默认日志级别下事故有始有终
-				logger.Warn("账本挂载重试成功，瞬时故障已恢复", "attempts", attempt, "elapsed", time.Since(started).Round(time.Second))
+				logger.Warn("账本挂载重试成功，瞬时故障已恢复", append([]any{"step", step, "attempts", attempt,
+					"elapsed", time.Since(started).Round(time.Second)}, attrs...)...)
 			}
-			return lst, nil
+			return attempt, false, nil
 		}
 		if !ledger.IsTransientOpenError(err) {
-			logger.Error("打开账本库失败（配置性错误，不重试）", "dsn_configured", shared, "attempt", attempt, "cause", err,
-				"action", "检查 config.yaml 的 ledger.dsn（地址/库名/账号/密码）后重启")
-			return nil, err
+			return attempt, false, err
 		}
 		wait := jitter(backoff)
 		reason := ledger.OpenErrorReason(err)
-		report(fmt.Sprintf("账本未挂载：共享账本打开失败，第 %d 次重试（%s），约 %s 后再试", attempt, reason, wait.Round(time.Second)))
+		report(fmt.Sprintf("账本未挂载：%s，第 %d 次重试（%s），约 %s 后再试", step, attempt, reason, wait.Round(time.Second)))
 		if attempt&(attempt-1) == 0 {
-			logger.Warn("打开账本库失败（瞬时错误），退避重试；重试期间账本/镜像/卡派发/自动化未挂载，status 报未就绪",
-				"dsn_configured", shared, "attempt", attempt, "next_retry", wait.Round(time.Millisecond),
-				"elapsed", time.Since(started).Round(time.Second), "cause", err)
+			logger.Warn(step+"（瞬时错误），退避重试；重试期间账本/镜像/卡派发/自动化未挂载，status 报未就绪",
+				append([]any{"attempt", attempt, "next_retry", wait.Round(time.Millisecond),
+					"elapsed", time.Since(started).Round(time.Second), "cause", err}, attrs...)...)
 		}
 		if err := sleep(ctx, wait); err != nil {
-			logger.Warn("停机请求到达，放弃账本挂载重试", "attempts", attempt, "cause", err)
-			return nil, err
+			logger.Warn("停机请求到达，放弃账本挂载重试", append([]any{"step", step, "attempts", attempt, "cause", err}, attrs...)...)
+			return attempt, true, err
 		}
 		if backoff *= 2; backoff > ledgerRetryMax {
 			backoff = ledgerRetryMax
@@ -685,17 +716,40 @@ func setupLedger(cfg *config.Config, srv *agentd.Server, taskStore *store.Store,
 	// B439 S3/S8：自登记（账本打开后、镜像挂载前同步执行）与本地 targets 一次性导入。
 	// 撞名（异实例）→ 账本子系统不挂载，agentd 照常起（与 S2 挂载门同款 fail-closed）。
 	if shared {
-		if err := agentd.SelfRegister(lst, cfg, logger); err != nil {
+		register := boot.register
+		if register == nil {
+			register = agentd.SelfRegister
+		}
+		importTargets := boot.importTargets
+		if importTargets == nil {
+			importTargets = agentd.ImportLocalTargets
+		}
+		// B462 S4：自登记/导入的瞬时错误（与打开同一判据）保留已打开句柄退避重试——
+		// 两步都是幂等 upsert/跳过，池会在下次调用自行重连；关掉重开要重走 ensureSchema、
+		// 再抢 schema 锁，在 too many clients 场景里是加压。非瞬时错误（撞名等）保持原
+		// fail-closed：不挂载、agentd 照常起。
+		if _, abandoned, err := retryLedgerTransient(boot, logger, "自登记失败", func() error {
+			return register(lst, cfg, logger)
+		}, "self_name", cfg.Name); err != nil {
+			_ = lst.Close()
+			if abandoned {
+				return nil, fmt.Errorf("自登记: %w", err)
+			}
 			logger.Error("机器自登记失败，账本子系统不挂载（agentd 照常提供服务）",
 				"cause", err, "action", "改 config.yaml 的 name: 或清理设备表冲突行后重启")
-			_ = lst.Close()
 			return func() {}, nil
 		}
-		if err := agentd.ImportLocalTargets(lst, cfg, logger); err != nil {
+		if _, abandoned, err := retryLedgerTransient(boot, logger, "导入本地 targets 失败", func() error {
+			return importTargets(lst, cfg, logger)
+		}, "self_name", cfg.Name); err != nil {
+			_ = lst.Close()
+			if abandoned {
+				return nil, fmt.Errorf("导入本地 targets: %w", err)
+			}
 			logger.Error("本地 targets 导入设备表失败，账本子系统不挂载", "cause", err)
-			_ = lst.Close()
 			return func() {}, nil
 		}
+		logger.Info("自登记与本地 targets 导入完成", "self_name", cfg.Name)
 	}
 	srv.SetLedger(lst)
 	// B439 F5：有 DSN 的机器把池的选路数据源切到设备表；无 DSN 保持活配置（S5）。

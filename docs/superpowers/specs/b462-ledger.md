@@ -18,3 +18,9 @@
 - 交叉：cards/B453-charter-1 相对 d905c3ab 也改 cmd/agentd.go（setupLedger 内 SetHostAPI 附近，与本卡 685-698 不同块）、README 中英、SKILL.md、CHANGELOG → 施工排序，后合者 rebase。
 - plan r1 落盘：docs/superpowers/plans/b462-plan.md（待拍板 Q1–Q9；另记 spec S3 括注「无 DSN 即不可读」不准确——无 DSN 走 SQLite 回退仍挂载，cmd/agentd.go:675-677）。
 - 主会话拍板 Q1–Q9 全按荐；Q8 认可偏离 spec 字面；spec 修订 r1.1（S3 括注：无 DSN 走 SQLite 属可读；真机托管改系统级 systemd-run / 临时 plist）。
+
+## implement
+- 2026-10-22 implement subagent，worktree 基线 aec19885（cards/B462-charter-1）。
+- 段 1 S4 红（编译）：cmd/agentd_ledger_retry_test.go 追加 4 条 → `go test ./cmd/ -run SetupLedger` → `unknown field register in struct literal of type ledgerBoot`（×4）、`unknown field importTargets`。
+- 段 1 S4 空壳：ledgerBoot 加 register/importTargets 缝（nil=生产函数，无重试）→ 断言红：`TestSetupLedgerRetriesTransientSelfRegister: 自登记重试成功后账本必须挂载`；`…ImportTargets: mounted=false registers=1 imports=1，期望挂载、自登记 1 次、导入 2 次`；`…GivesUpOnShutdownAndClosesHandle: 停机时应放弃自登记重试并返回 context.Canceled，得 <nil>`；撞名用例绿（锁住既有 fail-closed）。段 0 假设复验：shared=true + SQLite 句柄下 NewDeviceTableSource/StartAutomation 跑通，无需额外缝；多层 %w 包裹的 53300 被 IsTransientOpenError 识别。
+- 段 1 S4 实现：抽 retryLedgerTransient（打开/自登记/导入共用，返回 attempts/abandoned/err）；首轮绿后 `TestSetupLedgerFailureDoesNotLogDSNCredentials` 红（WARN 缺 dsn_configured）→ 加 attrs 变参透传 → `go test ./cmd/ -run 'SetupLedger|Ledger'` ok；`go build ./... && go vet ./cmd/` 过；SetupLedger 14 条全 PASS（含既有 3 条重试测试，断言未改）。
