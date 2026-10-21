@@ -82,3 +82,4 @@
   - 绿：同命令 ok。`go test ./cmd/ ./internal/client/` → cmd ok（77s）；client 唯一红 `TestProductionHTTPClientCallersAreGatewayOnly`，命中清单全是 `.claude/worktrees/*` 嵌套工作树副本——memory「handoff-env-sensitive-tests」所记环境假红，与本卡无关。
   - 判断：probe 的「失败结论」按「最近尝试晚于最近成功读数」判，不按 state（撞额度标记优先会把失败掩成 out）；表格多一列「说明」放 `△ 原因`（S11 列之外，便于终端判断）。
 - 收尾编译：`go build ./... && go vet ./...` 通过。
+- 提交：T1+T2 `c94944f6`；T3+T4 `c929fb97`（均只按显式路径提交，未碰 b434-ledger.md / .playwright-mcp / prototypes）。段 1 交回主会话，R1 由协调者在隔离实例上跑。
