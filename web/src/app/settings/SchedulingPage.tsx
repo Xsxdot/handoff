@@ -13,8 +13,8 @@ import { copyToClipboard } from '../lib/clipboard'
 import { errorMessage } from '../lib/format'
 import type { AccountView } from '../../api/accounts'
 import { kindMeta, recoverAt, sameMachine, stateLabel, countdown } from '../accounts/model'
-import { KindIcon, StatusText } from '../accounts/QuotaBits'
-import { useAccounts } from '../accounts/store'
+import { KindIcon, StatusText, Summary } from '../accounts/QuotaBits'
+import { useAccounts, useNow } from '../accounts/store'
 import '../accounts/accounts.css'
 
 type CarrierDraft = Omit<CarrierInput, 'max_concurrency' | 'account'> & { name: string; maxConcurrencyText: string; account: string }
@@ -68,14 +68,18 @@ function dispatchHint(a: AccountView, now: number): string {
   return r !== null ? `暂停派发，预计 ${countdown(r - now)} 后恢复` : '暂停派发，恢复时刻未知'
 }
 
-/** CarrierAccount 载体详情里的「账号」一栏：图标 名称 类型 状态短语；指纹不一致一行红字。 */
+/**
+ * CarrierAccount 载体详情里的「账号」一栏（S4「显示所选账号与其状态」）：图标 名称 类型 一句话读数
+ * （正常 = 每周「已用% 倒计时」，问题 = 状态短语，口径同弹层精简）；指纹不一致一行红字。
+ */
 function CarrierAccount({ row, accounts }: { row: CarrierView; accounts: AccountView[] | null }) {
+  const now = useNow()
   if (!row.account) return <span className="text-muted-foreground">未选</span>
   const a = accounts?.find((x) => x.name === row.account)
-  const hint = a ? dispatchHint(a, Date.now()) : ''
+  const hint = a ? dispatchHint(a, now) : ''
   return (
     <span className="acct-scope">
-      <span className="acct-ref">{a && <KindIcon kind={a.kind} />}<span className="font-mono">{row.account}</span>{a && <span className="k">{kindMeta(a.kind).name}</span>}{a && <StatusText a={a} />}</span>
+      <span className="acct-ref">{a && <KindIcon kind={a.kind} />}<span className="font-mono">{row.account}</span>{a && <span className="k">{kindMeta(a.kind).name}</span>}{a && <span className="st"><Summary a={a} now={now} order="lead" /></span>}</span>
       {hint && <span className="block text-muted-foreground">{hint}</span>}
       {row.account_mismatch && <span className="fp-mismatch block"><span className="q-out">{MISMATCH_TEXT}</span><br />载体 HOME 里读到的凭据不是 {row.account} 的；这个载体实际在用别的账号的额度。改选正确的账号，或把 HOME 换回该账号的凭据后点「检测」。</span>}
     </span>

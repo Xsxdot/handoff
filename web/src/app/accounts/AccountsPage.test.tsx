@@ -38,7 +38,10 @@ describe('账号页', () => {
     const og = screen.getByTestId('kgroup-opencode-go')
     expect([...og.querySelectorAll('[data-testid^="acard-"]')].map((el) => el.getAttribute('data-testid'))).toEqual(['acard-og-team', 'acard-og-mini', 'acard-og-main'])
     expect(card('og-team').querySelector('.a-state')?.textContent).toBe('无额度')
-    expect(card('og-mini').querySelector('.a-state')?.textContent).toBe('△ 代理拒绝连接')
+    expect(card('og-mini').querySelector('.a-state')?.textContent).toBe('△ 代理连接失败')
+    expect(card('grok-mbp').querySelector('.a-state')?.textContent).toBe('△ 凭据已过期')
+    // 完整原因只在卡片正文（无读数时第三行）与展开详情里
+    expect(card('grok-mbp').querySelector('.a-r3')?.textContent).toContain('在该机执行 grok login')
     expect(card('codex-spare').querySelector('.a-state')?.textContent).toBe('··· 未探测')
     expect(card('og-main').querySelector('.a-state')?.textContent).toBe('')
     expect(card('og-main').textContent).toContain('linux-01 · ~/.handoff/home/og-main › auth.json › opencode-go · sha256:3f9a1b2cc21e')

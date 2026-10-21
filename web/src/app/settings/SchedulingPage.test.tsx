@@ -351,5 +351,27 @@ describe('SchedulingPage 编辑弹窗对齐原型（B287）', () => {
       await user.click(within(row).getByRole('button', { name: '编辑 dp' }))
       expect(within(screen.getByRole('dialog')).getByText('凭据指纹与所选账号不一致')).toHaveClass('q-out')
     })
+
+    it('载体行显示所选账号的当前状态：正常报每周「已用% 倒计时」，问题报状态短语（R8 修 2）', async () => {
+      vi.mocked(getSquads).mockResolvedValue({
+        carriers: [
+          { name: 'mimo', machine: 'linux-01', cli: 'opencode', home_dir: '/root/.handoff/home/mimo', credential: 'standalone', status: 'online', version: 7, account: 'og-main' },
+          { name: 'gk', machine: 'macbook-pro', cli: 'grok', home_dir: '/h/gk', credential: 'standalone', status: 'online', version: 2, account: 'grok-mbp' },
+          { name: 'ag', machine: 'linux-01', cli: 'agy', home_dir: '/h/ag', credential: 'standalone', status: 'online', version: 3, account: 'agy-main' },
+        ],
+        squads: [], running: [],
+      })
+      render(<SchedulingPage />)
+      const rowOf = async (name: string) => (await screen.findByText(name, { selector: 'strong' })).closest('article')!
+      const mimo = await rowOf('mimo')
+      expect(mimo.textContent).toMatch(/OpenCode Go\s*62%\s*4d 2h/)
+      expect(within(mimo).getByText('62%')).toHaveClass('q-warn')
+      const gk = await rowOf('gk')
+      expect(gk.textContent).toContain('△ 凭据已过期')
+      expect(gk.textContent).not.toContain('grok login')
+      const ag = await rowOf('ag')
+      expect(ag.textContent).toContain('48%')
+      expect(ag.textContent).not.toContain('35%')
+    })
   })
 })

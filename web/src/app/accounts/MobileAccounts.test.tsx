@@ -48,7 +48,7 @@ describe('移动设置 · 账号与额度', () => {
     expect(row.querySelector('.more')).toBeNull()
     await user.click(within(row).getByRole('button', { name: /og-mini/ }))
     expect(row.querySelector('.q-wins')).not.toBeNull()
-    expect(row.textContent).toContain('△ 代理拒绝连接')
+    expect(row.textContent).toContain('△ 代理 socks5://127.0.0.1:7897 拒绝连接')
     await user.click(within(row).getByRole('button', { name: '立即探测' }))
     expect(probeAccount).toHaveBeenCalledWith('og-mini')
   })

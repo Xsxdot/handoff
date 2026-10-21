@@ -20,7 +20,7 @@ import { usageModeOf } from '../settings/webPrefs'
 import {
   barWindows, byProblem, extraUsageText, failBrief, KIND_ORDER, kindMeta, resetAt, tightest, updatedText, type UsageMode,
 } from './model'
-import { DetailNote, KindIcon, Pct, QBar, REFRESH_ICON, Reset, StatusText, WinsFull, WinsInline } from './QuotaBits'
+import { DetailNote, KindIcon, Pct, QBar, REFRESH_ICON, Reset, Summary, WinsFull, WinsInline } from './QuotaBits'
 import { useAccounts, useNow } from './store'
 import './accounts.css'
 
@@ -47,16 +47,6 @@ function BarReading({ a, mode, now }: { a: AccountView; mode: UsageMode; now: nu
       {cached && <span className="q-mute" title={a.last_error?.message}>△</span>}
     </>
   )
-}
-
-/** CompactValue 弹层精简行右侧：问题短语在前、倒计时在后；正常为「倒计时 已用%」（照 orca）。 */
-function CompactValue({ a, now }: { a: AccountView; now: number }) {
-  if (a.state === 'out' || a.state === 'low' || a.state === 'fail' || a.state === 'none') {
-    const w = barWindows(a, 'compact')[0]
-    return <><StatusText a={a} />{(a.state === 'out' || a.state === 'low') && w && <Reset ts={resetAt(w)} now={now} />}</>
-  }
-  const w = barWindows(a, 'compact')[0]
-  return w ? <><Reset ts={resetAt(w)} now={now} /> <Pct a={a} w={w} /></> : null
 }
 
 /** SidePanel 二级面板：全部窗口、额外额度、失败原因与读数时刻、所在机器、载体、立即探测、管理账号。 */
@@ -200,7 +190,7 @@ export function UsageStatusBar({ onManage }: { onManage: (name?: string) => void
     }
     if (mode === 'compact') {
       return <button key={a.name} className={`up-row${on}`} {...common}>
-        <span className="up-r1"><span className="up-name">{a.name}</span><span className="up-mach">{a.machine}</span><span className="up-val"><CompactValue a={a} now={now} /></span><span className="up-chev">›</span></span>
+        <span className="up-r1"><span className="up-name">{a.name}</span><span className="up-mach">{a.machine}</span><span className="up-val"><Summary a={a} now={now} order="tail" /></span><span className="up-chev">›</span></span>
       </button>
     }
     const hasWins = (a.reading?.windows.length ?? 0) > 0

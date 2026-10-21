@@ -40,7 +40,9 @@ describe('额度底栏', () => {
     // 探测失败有旧读数：数值降弱色 + △；无读数：△ 短因；未探测
     expect(seg('og-mini').querySelector('.q-cached')).not.toBeNull()
     expect(seg('og-mini').textContent).toContain('△')
+    // 短因按失败类别映射（R8 修 1）：底栏段不塞整句 message，整句只在 title 与二级面板
     expect(seg('grok-mbp').textContent).toContain('△ 凭据已过期')
+    expect(seg('grok-mbp').textContent).not.toContain('grok login')
     expect(seg('codex-spare').textContent).toContain('··· 未探测')
   })
 
@@ -66,6 +68,9 @@ describe('额度底栏', () => {
     expect(row.textContent).toMatch(/无额度 · \d+h\d+m 后恢复/)
     expect(within(pop).getByTestId('up-row-agy-main').querySelectorAll('.qg')).toHaveLength(2)
     expect(within(pop).getByTestId('up-row-codex-plus').textContent).toContain('低额度 · 会话 82%')
+    expect(within(pop).getByTestId('up-row-grok-mbp').textContent).toContain('△ 凭据已过期')
+    expect(within(pop).getByTestId('up-row-grok-mbp').textContent).not.toContain('grok login')
+    expect(within(pop).getByTestId('up-row-og-mini').textContent).toContain('△ 代理连接失败')
 
     await user.click(within(pop).getByRole('tab', { name: '精简' }))
     expect(JSON.parse(localStorage.getItem(PREFS_KEY)!).usageMode).toBe('compact')
@@ -75,6 +80,11 @@ describe('额度底栏', () => {
     expect(seg('codex-plus').textContent).toContain('82%')
     expect(seg('codex-plus').textContent).not.toContain('41%')
     expect(within(pop).getByTestId('up-row-og-main').querySelector('.up-r2')).toBeNull()
+    // 多组 kind（agy）精简取各组每周里已用最高的（Claude/GPT 周 48%），不只报 Gemini 周（R8 修 3）
+    expect(seg('agy-main').textContent).toContain('48%')
+    expect(seg('agy-main').textContent).not.toContain('35%')
+    expect(within(pop).getByTestId('up-row-agy-main').textContent).toContain('48%')
+    expect(within(pop).getByTestId('up-row-agy-main').textContent).not.toContain('35%')
     unmount()
     __resetWebPrefsForTest()
     render(<UsageStatusBar onManage={() => {}} />)
@@ -96,6 +106,9 @@ describe('额度底栏', () => {
     expect(side.textContent).toContain('每周')
     expect(side.textContent).toContain('mbp-codex')
     expect(side.textContent).toContain('macbook-pro')
+    // 完整失败原因只在二级面板
+    act(() => { within(pop).getByTestId('up-row-grok-mbp').focus() })
+    expect(screen.getByTestId('usage-side').textContent).toContain('在该机执行 grok login')
     act(() => { within(pop).getByTestId('up-row-codex-spare').focus() })
     expect(screen.getByTestId('usage-side').textContent).toContain('尚未探测')
     await user.click(within(screen.getByTestId('usage-side')).getByRole('button', { name: '立即探测' }))

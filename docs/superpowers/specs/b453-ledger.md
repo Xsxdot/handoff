@@ -331,3 +331,13 @@
   - `CHANGELOG.md` [Unreleased]：新增「升级须知」小节（同批升级后再绑账号；F-B460-1 notice 块；F-B460-2 按实现写窄范围——只对 notice）；新增 7 条、变更 4 条（准入跳过与文案、限额中退役与 F16、429 不算额度、opencode 失败原因带原文与零退出只有错误判失败的行为变化）。
   - `docs/roadmap.md`：关闭 323（CLI 限额探测健康位）、590（自动限额查询）、600（限额探测与账户池）、975（opencode 失败原因为空）；改写 362 中「限额检测」为已完成、「自动接手」仍开；改写 986 为「无额度部分已由 B453 完成，不可达/满负荷仍开」；「B453 残余」补 10 条（Q9 崩溃窗口、转发留存丢亲和、点名/升级前任务不重跑、notice 无推送、本机全队名、签名表合成、opencode-go 欠交、窗口标签重复、三条旁见）。
 - 收尾检查：`go build ./... && go vet ./...` 过；`go test ./internal/skill/` ok（内嵌 SKILL.md）、`go test ./cmd/ -run 'Skill|Account'` ok；文档无其它测试消费（release workflow 按版本标题抽 CHANGELOG，[Unreleased] 新增「升级须知」小节不影响）。本段无代码改动，无红绿周期。
+
+## implement 修复轮 1（R8）
+
+- 来信：R8 浏览器对照原型三处修正——① 底栏段/弹层行的探测失败短因按类别映射，整句 message 只在二级面板/账号卡片；② 载体行显示所选账号状态（S4）；③ 精简模式多组 kind 取各组每周里已用最高的。
+- 判断：① 不加 wire 字段，前端按 `last_error.category` 映射（类别全集读自 `internal/quota/quota.go:68-84`）。协调者列的映射照收；它未列而后端会发的五类补了短语：timeout「探测超时」、no_subscription「无订阅」、parse「读数无法解析」、unsupported_platform「本平台不支持」；unsupported_kind、limit_reached、缺类别与未知类别回「探测失败」（limit_reached 只随 out/读数出现，不走 fail 短因）。短因落点 = `failBrief`，底栏段、弹层详细/精简行、账号卡片状态位、载体行同源；整句仍在 title、二级面板、卡片第三行与详情、移动展开。
+- 判断：② 载体行口径取原型 `summary(acct,'lead')`——正常每周「已用% 倒计时」，低额度/无额度「状态短语 触发窗口倒计时」，探测失败/未探测只有短语。抽成 `QuotaBits.Summary({order})`，弹层精简行原 `CompactValue` 改用它（tail 序），两处一份规则。
+- 判断：③ `weeklyWindow` 改为每周窗口里按「已用最高、并列先重置」取（与 `tightest` 共用 `byTightness`）；详细底栏「最短两个窗口」不动。
+- 红（测试先行，样本 grok-mbp/og-mini 的 message 改成真实长句，免得短因与整句相同让断言空过）：`npx vitest run src/app/accounts src/app/settings/SchedulingPage.test.tsx` → `Tests 7 failed | 43 passed (50)`。失败原因逐条为：账号卡片状态位收到「△ 代理 socks5://127.0.0.1:7897 拒绝连接」、底栏/弹层收到整句「△ grok 凭据已过期，等待 grok CLI 刷新（在该机执行 grok login）」、`failBrief` 回整句、`weeklyWindow` 回「Gemini 周」、载体行不匹配 `/OpenCode Go\s*62%\s*4d 2h/`。
+- 绿：同命令 → `Tests 50 passed (50)`。全量 `npx vitest run` → `Test Files 150 passed (150) / Tests 1998 passed (1998)`；`npm run typecheck` 过；eslint 触及文件 0 error、5 warning（均为 `SchedulingPage.tsx:265` 既有 exhaustive-deps，改前同数）；`go build ./... && go vet ./...` 过。
+- 意外：为比对 lint 基线跑了一次 `git stash` / `git stash pop`，连带把用户未提交的 `b434-ledger.md` 收进又放回，pop 后状态仍为 M、内容未改；此后不再用 stash。

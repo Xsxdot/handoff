@@ -4,8 +4,8 @@
 import { describe, expect, it } from 'vitest'
 import type { AccountView, AccountWindowView } from '../../api/accounts'
 import {
-  barWindows, byProblem, countdown, hotWindow, KIND_ORDER, sameMachine, statusPhrase, tightest,
-  toneClass, windowLabel, winTone,
+  barWindows, byProblem, countdown, failBrief, hotWindow, KIND_ORDER, sameMachine, statusPhrase, tightest,
+  toneClass, weeklyWindow, windowLabel, winTone,
 } from './model'
 
 const NOW = Date.parse('2026-10-22T00:00:00Z')
@@ -65,8 +65,40 @@ describe('账号展示规则', () => {
     expect(statusPhrase(acct('ok', 'ok', [win('weekly', 10, H)]))).toBeNull()
     expect(statusPhrase(acct('low', 'low', [win('session', 82.4, H)]))).toEqual({ tone: 'q-warn', text: '低额度 · 会话 82%' })
     expect(statusPhrase(acct('out', 'out', [win('session', 100, H)]))).toEqual({ tone: 'q-out', text: '无额度' })
-    expect(statusPhrase(acct('f', 'fail', undefined, { last_error: { category: 'proxy', message: '代理拒绝连接' } }))).toEqual({ tone: 'q-mute', text: '△ 代理拒绝连接' })
+    expect(statusPhrase(acct('f', 'fail', undefined, { last_error: { category: 'proxy', message: '代理 socks5://127.0.0.1:7897 拒绝连接' } }))).toEqual({ tone: 'q-mute', text: '△ 代理连接失败' })
     expect(statusPhrase(acct('n', 'none'))).toEqual({ tone: 'q-mute', text: '··· 未探测' })
+  })
+
+  it('探测失败短因按类别映射，不拼整句 message；缺类别/未知类别回「探测失败」（R8 修 1）', () => {
+    const f = (category: string, message = '一整句很长的原因（含处置建议）') => failBrief(acct('f', 'fail', undefined, { last_error: { category, message } }))
+    expect(f('credential_expired', 'opencode-go API key 已过期（在 OpenCode Console 新建 API key，写入该机 auth.json 的 opencode-go 条目）')).toBe('凭据已过期')
+    expect(f('credential_missing')).toBe('凭据缺失')
+    expect(f('credential_invalid')).toBe('凭据无效')
+    expect(f('unauthorized')).toBe('凭据无效')
+    expect(f('proxy')).toBe('代理连接失败')
+    expect(f('network')).toBe('网络不通')
+    expect(f('version_too_old')).toBe('版本过旧，已跳过')
+    expect(f('cli_missing')).toBe('未安装 CLI')
+    expect(f('rate_limited')).toBe('被限速')
+    expect(f('upstream')).toBe('上游错误')
+    expect(f('timeout')).toBe('探测超时')
+    expect(f('no_subscription')).toBe('无订阅')
+    expect(f('parse')).toBe('读数无法解析')
+    expect(f('unsupported_platform')).toBe('本平台不支持')
+    expect(f('unsupported_kind')).toBe('探测失败')
+    expect(f('something_new')).toBe('探测失败')
+    expect(failBrief(acct('f', 'fail'))).toBe('探测失败')
+  })
+
+  it('精简口径的每周窗口：多组 kind 取各组每周里已用最高的，并列取先重置的（R8 修 3）', () => {
+    const agy = acct('agy', 'ok', [win('session', 22, 3 * H, 'Gemini'), win('weekly', 35, 126 * H, 'Gemini'),
+      win('session', 61, 2 * H, 'Claude/GPT'), win('weekly', 48, 126 * H, 'Claude/GPT')])
+    expect(windowLabel(weeklyWindow(agy)!)).toBe('Claude/GPT 周')
+    expect(barWindows(agy, 'compact').map(windowLabel)).toEqual(['Claude/GPT 周'])
+    const tie = acct('t', 'ok', [win('weekly', 40, 100 * H, 'A'), win('weekly', 40, 50 * H, 'B')])
+    expect(weeklyWindow(tie)?.group).toBe('B')
+    // 详细底栏仍取最短两个窗口（agy 即两个 5h），不受影响
+    expect(barWindows(agy, 'detail').map(windowLabel)).toEqual(['Gemini 5h', 'Claude/GPT 5h'])
   })
 
   it('窗口名：agy 带模型组；四种 kind 固定顺序', () => {

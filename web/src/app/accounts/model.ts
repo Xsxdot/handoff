@@ -1,7 +1,7 @@
 // model.ts —— 账号额度的展示规则（B453 spec S8–S10，形态基准 prototypes/b453-accounts/shared/accounts.js）。
 //
 // 职责：纯函数——kind 词表、问题优先排序、窗口分档与色彩类、底栏两模式取哪个窗口、
-// 状态短语、倒计时与时间文案、载体「同机账号」判据。账号页、底栏、弹层、移动设置节、
+// 状态短语与失败短因、倒计时与时间文案、载体「同机账号」判据。账号页、底栏、弹层、移动设置节、
 // 载体对话框共用这一份，保证同一个账号在各处读出同一句话。
 //
 // 边界：
@@ -131,15 +131,21 @@ export function earliestReset(a: AccountView): number | null {
   return minReset(windows(a))
 }
 
+const byTightness = (ws: AccountWindowView[]): AccountWindowView[] => ws.slice().sort((x, y) =>
+  (y.used_percent - x.used_percent) || ((resetAt(x) ?? Infinity) - (resetAt(y) ?? Infinity)))
+
 /** tightest 最紧窗口：已用最高，并列取先重置的（底栏详细段的短细条画它）。 */
 export function tightest(a: AccountView): AccountWindowView | undefined {
-  return windows(a).slice().sort((x, y) => (y.used_percent - x.used_percent) ||
-    ((resetAt(x) ?? Infinity) - (resetAt(y) ?? Infinity)))[0]
+  return byTightness(windows(a))[0]
 }
 
-/** weeklyWindow 每周窗口（精简口径）；没有每周窗口时退为最紧窗口。 */
+/**
+ * weeklyWindow 每周窗口（精简口径）：多组 kind（agy 按模型组各有一个每周）取已用最高的那个，
+ * 并列取先重置的——精简只报一个数，报最紧的组才不掩盖警示；没有每周窗口时退为最紧窗口。
+ */
 export function weeklyWindow(a: AccountView): AccountWindowView | undefined {
-  return windows(a).find((w) => w.key === 'weekly') ?? tightest(a)
+  const weekly = windows(a).filter((w) => w.key === 'weekly')
+  return byTightness(weekly)[0] ?? tightest(a)
 }
 
 const SPAN: Record<string, number> = { session: 0, weekly: 1, monthly: 2 }
@@ -162,9 +168,31 @@ export function barWindows(a: AccountView, mode: UsageMode): AccountWindowView[]
   return w ? [w] : []
 }
 
-/** failBrief 探测失败的短因（底栏/弹层只放得下短语，全文在二级面板与账号页）。 */
+// 失败类别 → 短因（类别是 quota 包的 Category；R8 修 1，2026-10-22 协调者定词）。
+// message 是带处置建议的整句，放不进底栏段/弹层行；未列的类别（含新版服务端新增的）回「探测失败」。
+const FAIL_BRIEF: Record<string, string> = {
+  credential_expired: '凭据已过期',
+  credential_missing: '凭据缺失',
+  credential_invalid: '凭据无效',
+  unauthorized: '凭据无效',
+  proxy: '代理连接失败',
+  network: '网络不通',
+  timeout: '探测超时',
+  version_too_old: '版本过旧，已跳过',
+  cli_missing: '未安装 CLI',
+  rate_limited: '被限速',
+  upstream: '上游错误',
+  no_subscription: '无订阅',
+  parse: '读数无法解析',
+  unsupported_platform: '本平台不支持',
+}
+
+/**
+ * failBrief 探测失败的短因：按 last_error.category 映射成短语（底栏段、弹层行、账号卡片状态位、
+ * 载体行）；完整 message 只在二级面板、账号卡片正文/详情与移动展开里出现。
+ */
 export function failBrief(a: AccountView): string {
-  return a.last_error?.message || '探测失败'
+  return FAIL_BRIEF[a.last_error?.category ?? ''] ?? '探测失败'
 }
 
 /**

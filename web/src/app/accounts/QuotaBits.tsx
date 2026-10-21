@@ -6,7 +6,7 @@
 // 色彩纪律：彩色类（q-warn / q-out）只落在越线的百分比、细条与状态短语节点上（W5 测试锁）。
 import type { AccountView, AccountWindowView } from '../../api/accounts'
 import {
-  countdown, earliestReset, pctText, recoverAt, resetAt, statusPhrase, tinyLabel, toneClass, windowLabel, winTone,
+  barWindows, countdown, earliestReset, pctText, recoverAt, resetAt, statusPhrase, tinyLabel, toneClass, weeklyWindow, windowLabel, winTone,
 } from './model'
 
 // 单色字形：描边/填充走 currentColor，跟随所在文字的灰阶（原型 shared/accounts.js ICONS）。
@@ -46,6 +46,24 @@ export function Reset({ ts, now, tpl = '{}' }: { ts: number | null; now: number;
 export function StatusText({ a }: { a: AccountView }) {
   const p = statusPhrase(a)
   return p ? <span className={p.tone} title={a.last_error?.message}>{p.text}</span> : null
+}
+
+/**
+ * Summary 一句话读数（精简口径）：问题账号「状态短语 倒计时」（低额度/无额度报触发窗口的重置）；
+ * 探测失败/未探测只有短语；正常报每周窗口——lead「已用% 倒计时」（载体行），tail「倒计时 已用%」
+ * （弹层精简行，照 orca）。
+ */
+export function Summary({ a, now, order }: { a: AccountView; now: number; order: 'lead' | 'tail' }) {
+  if (a.state === 'out' || a.state === 'low') {
+    const w = barWindows(a, 'compact')[0]
+    return <><StatusText a={a} />{w && <> <Reset ts={resetAt(w)} now={now} /></>}</>
+  }
+  if (a.state !== 'ok') return <StatusText a={a} />
+  const w = weeklyWindow(a)
+  if (!w) return null
+  return order === 'tail'
+    ? <><Reset ts={resetAt(w)} now={now} /> <Pct a={a} w={w} /></>
+    : <><Pct a={a} w={w} /> <Reset ts={resetAt(w)} now={now} /></>
 }
 
 /** DetailNote 弹层详细首行右侧注记：正常 = 最早重置「x 后重置」；无额度 = 「无额度 · x 后恢复」；其余 = 状态短语。 */
