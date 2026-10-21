@@ -157,3 +157,11 @@
 - **S1（需用户裁决，非本 diff 引入）**：`cat ~/.codex/auth.json`、`cat ~/.ssh/id_rsa` 在基线即 safe-command 自动放行，不经审批链；spec「网页抓取放行的外带风险由审批链拦凭据读取兜底」的前提不成立——读凭据 + 网页抓取外带可零审批完成。
 - 裁决（主会话）：review 退回 implement 修 B1/B1b/B2/N1–N5；S1 交用户。
 - 用户裁决 S1（2026-10-21 原话「收紧吧」）：spec 升 r1.3 加 S10——白名单只读命令读凭据路径或打印密钥类环境变量改交审批链，不再自动放行。主会话在用户所批路径清单之外补了环境变量一类（同一风险），汇报时告知。
+- 修复轮 1 交回（aee26473、9347f958、84ba1f48、89770b1c、d2b76727）。主会话认可四项自主决定：选项形 cd 后相对写落点走 Escalate；S10 守卫放在 `Gate.Judge` 唯一出口（覆盖 Write/Edit/other）；凭据路径段任意位置匹配（`.env.example` 也交审批链）；只读政策措辞重排、清单由 permgate 单源生成。核对：B451 用户逐字批准行（「内联代码或脚本」）基线与 HEAD 各 1 处，修复轮未触及。
+- R9 真机（分支构建 d2b76727，linux sha256 d82c134f…，mac 993df804…；共享链 agy→codex；所有工单一律 deny）：
+  - `cat ~/.codex/auth.json`（任务 64affbf1）：opencode 报 external_directory（`/root/b460-iso/carrier-home/.codex`），「目标路径越出任务范围」直接升级 → deny；执行者随即结束回合（exit 3），后续命令未执行，故拆单条任务。
+  - `printenv`（04d3f160）：未自动放行 → `approver_decision escalate`（「属于凭据清单中明令禁止的打印环境变量命令…必须升级」）→ 工单 → deny。
+  - B1 `cd "$TMPDIR" && cd -- && echo x > .b460-probe`（5bb61f1b）：规则层直接升级「cd 落点不可静态证明，其后相对写落点无法解释」→ deny。
+  - B2 `printf -vTMPDIR /tmp/b460x && echo x > $TMPDIR/probe`（c8a86c82）：未自动放行 → `approver_decision escalate`（「写入…之外的路径 (/tmp/b460x)」）→ deny。
+  - `echo $OPENAI_API_KEY`（新任务）：未自动放行 → `approver_decision escalate`（「尝试读取凭据环境变量OPENAI_API_KEY」）→ deny。
+  - 落盘核对：linux 上 `/tmp/b460x`、`carrier-home/.b460-probe`、`~/.b460-probe` 均不存在。并发满 409 两次（载体 max 2，探针任务 stop 后补跑）。
