@@ -14,6 +14,10 @@ export interface CarrierView {
   status?: CarrierStatus
   last_error?: string
   version: number
+  /** B453 F13：所选账号名；不选即缺席。 */
+  account?: string
+  /** B453 F13：载体 HOME 凭据指纹与账号读数指纹不一致时为 true（仅 true 时出现）。 */
+  account_mismatch?: boolean
 }
 
 export type CarrierStatus = 'pending' | 'online' | 'quota' | 'unreachable'
@@ -52,6 +56,8 @@ export interface CarrierInput {
   model?: string
   credential: string
   max_concurrency?: number
+  /** B453 F13：所选账号名；空/缺席 = 不选（只能选同机账号）。 */
+  account?: string
 }
 
 export interface SquadInput {
@@ -224,11 +230,18 @@ export interface HomeWakeReq {
   credential?: string
   model?: string
   machine?: string
+  /** B453 F15：所选账号的 kind / 凭据条目（目标机据此算凭据指纹）。 */
+  fingerprint_kind?: string
+  fingerprint_entry?: string
+  /** B453：所选账号名（目标机在本机查代理，代理串不过 wire）。 */
+  account?: string
 }
 
 export interface HomeWakeResp {
   outcome: WakeOutcome
   detail?: string
+  /** B453 F15：载体 HOME 凭据短指纹；缺席 = 未算或算不出。 */
+  fingerprint?: string
 }
 
 export interface CarrierDetectResp {

@@ -737,6 +737,10 @@ func setupLedger(cfg *config.Config, srv *agentd.Server, taskStore *store.Store,
 	// 凭据相对路径表仍由 toolchain 唯一维护；组装点注入给 hostapi，避免
 	// hostapi 反向 import maintenance 域或复制三家 CLI 的平台规则。
 	hostAPI := hostapi.NewWithCredentialPathFor(toolchain.CredRelPathFor)
+	// B453：额度适配注册表组装一次，探测器（读数）与检测链（载体 HOME 凭据指纹）共用
+	// 同一份凭据取材，指纹口径不会分叉。
+	quotaReg := newQuotaRegistry()
+	hostAPI.SetCredentialFingerprint(quotaReg.CredentialFingerprint)
 	srv.SetHostAPI(hostAPI)
 	// keystone 域（B156.3）：协调者会话承载 + 隔离 HOME 供给 + ref 解析 +
 	// 叙事/attach 适配，经 SetKeystone 注入。
@@ -781,13 +785,17 @@ func setupLedger(cfg *config.Config, srv *agentd.Server, taskStore *store.Store,
 	// B453：账号域与编制域共用同一注册表端口（账号定义/读数是 registry 的两个新 kind）。
 	acc := accounts.New(reg)
 	srv.SetAccounts(acc)
+	// 编制域读账号做统一准入/载体引用校验/检测撞额度标记；账号域经编制域查「哪些载体选了
+	// 我」做删除拒删（S1）。两向都是同一子系统内的导出调用，接线只在这里。
+	sched.SetAccounts(acc)
+	acc.SetReferrers(sched.CarriersUsingAccount)
 	// 所在机探测器只在挂共享账本的机器上运行（plan Q3）：读数由所在机直写共享账本，
 	// 单机 SQLite 账本没有设备表、也没有「他机」可言。账号未填代理时回落活配置 proxy:（Q5）。
 	var prober *agentd.AccountProber
 	if shared {
 		prober = agentd.NewAccountProber(agentd.AccountProberConfig{
 			Accounts:   acc,
-			Quota:      newQuotaRegistry(),
+			Quota:      quotaReg,
 			IsSelf:     srv.IsSelfMachine,
 			Writer:     cfg.Name,
 			ExpandHome: hostapi.ExpandHomePath,

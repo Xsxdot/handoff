@@ -191,9 +191,11 @@ func TestContractFixtures(t *testing.T) {
 				HomeDir: "/Users/dev/.handoff/homes/opencode", Model: "",
 				Credential: "standalone", MaxConcurrency: 2, Version: 1,
 			}, {
+				// B453 F13：所选账号名 + 指纹不符标记（仅 true 时出现）；首个载体两键缺席。
 				Name: "mac-01-opencode-flash", Machine: "mac-01", CLI: "opencode",
 				HomeDir: "/Users/dev/.handoff/homes/opencode-flash", Model: "flash",
 				Credential: "standalone", MaxConcurrency: 1, Version: 2,
+				Account: "og-mac", AccountMismatch: true,
 			}},
 			Squads: []SquadView{{
 				Name: "coord", Role: "coordinator",
@@ -225,8 +227,10 @@ func TestContractFixtures(t *testing.T) {
 		{"CoordinatorAttachReleaseResp", CoordinatorAttachReleaseResp{OK: true}},
 		{"HomeProbeReq", HomeProbeReq{CLI: "codex", Path: "~/.handoff/home/mbp-codex", Credential: "standalone"}},
 		{"HomeProbeResp", HomeProbeResp{Kind: "empty", Detail: "目录为空，保存后将自动创建并检测一次。"}},
-		{"HomeWakeReq", HomeWakeReq{CLI: "codex", HomeDir: "~/.handoff/home/mbp-codex", Credential: "main_home_sync", Model: ""}},
-		{"HomeWakeResp", HomeWakeResp{Outcome: "need_login", Detail: "需要登录。"}},
+		// B453 F15：所选账号的 kind/条目（目标机据此算指纹）与账号名（目标机据此在本机查代理）。
+		{"HomeWakeReq", HomeWakeReq{CLI: "codex", HomeDir: "~/.handoff/home/mbp-codex", Credential: "main_home_sync", Model: "",
+			FingerprintKind: "codex", FingerprintEntry: "tokens", Account: "cx-mbp"}},
+		{"HomeWakeResp", HomeWakeResp{Outcome: "need_login", Detail: "需要登录。", Fingerprint: "sha256:3f9a1b2cc21e"}},
 		{"CarrierDetectResp", CarrierDetectResp{Name: "mbp-codex", Status: "pending", LastError: "需要登录。", Version: 2}},
 		{"CarrierRunCommandResp", CarrierRunCommandResp{Command: "HOME=~/.handoff/home/mbp-codex codex"}},
 		// B434 拉起器五个 Desktop* case 已随 B435 契约 §7 退役删除（W plan Q3 甲）；

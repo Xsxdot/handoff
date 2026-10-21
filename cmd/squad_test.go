@@ -365,3 +365,37 @@ func TestSquadSetEditLoopUsesReadVersion(t *testing.T) {
 		t.Fatalf("stderr 应有人话回执: %s", errOut)
 	}
 }
+
+// TestSquadListShowsCarrierAccount 锁 B453 S4：表格载体行带所选账号名，指纹不符时注明；
+// --json 载体行原样带 account / account_mismatch（同 GET /api/squads 形状）。
+func TestSquadListShowsCarrierAccount(t *testing.T) {
+	dir := t.TempDir()
+	fixture := `{"carriers":[{"name":"c1","machine":"m1","cli":"codex","home_dir":"/h","credential":"standalone","version":1,"account":"cx-m1","account_mismatch":true},{"name":"c2","machine":"m1","cli":"opencode","home_dir":"/h2","credential":"standalone","version":1}],"squads":[],"running":[]}`
+	stubSquadAgentd(t, dir, http.StatusOK, fixture, nil)
+	out, _, err := runLedgerCLI(t, dir, "squad", "list")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "账号") {
+		t.Fatalf("表头缺「账号」列：%s", out)
+	}
+	for _, line := range strings.Split(out, "\n") {
+		switch {
+		case strings.Contains(line, "c1"):
+			if !strings.Contains(line, "cx-m1") || !strings.Contains(line, "指纹不符") {
+				t.Fatalf("c1 行应带账号名与指纹不符注记：%q", line)
+			}
+		case strings.Contains(line, "c2"):
+			if strings.Contains(line, "cx-m1") || !strings.HasSuffix(strings.TrimSpace(line), "-") {
+				t.Fatalf("未选账号的载体行账号列应为 -：%q", line)
+			}
+		}
+	}
+	out2, _, err := runLedgerCLI(t, dir, "squad", "list", "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(nonEmptyLines(out2)[0], `"account":"cx-m1"`) || !strings.Contains(nonEmptyLines(out2)[0], `"account_mismatch":true`) {
+		t.Fatalf("--json 载体行应带 account/account_mismatch：%s", out2)
+	}
+}

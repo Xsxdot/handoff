@@ -12,6 +12,7 @@ package scheduling
 import (
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -121,4 +122,22 @@ func noUsableMember(squad string, skipped []string) error {
 		return fmt.Errorf("%w: 小队 %s 没有在线载体", ErrNoHealthy, squad)
 	}
 	return fmt.Errorf("%w: 小队 %s 没有可用载体——%s", ErrNoHealthy, squad, strings.Join(skipped, "；"))
+}
+
+// CarriersUsingAccount 列出所选账号为 account 的载体名（排序）。组装点把它注入账号域的
+// 引用查询（accounts.SetReferrers）：删除被引用账号拒删并点名载体（spec S1）、账号读面
+// carriers 列。
+func (s *Service) CarriersUsingAccount(account string) ([]string, error) {
+	carriers, err := s.Carriers()
+	if err != nil {
+		return nil, fmt.Errorf("列载体以查账号 %s 的引用: %w", account, err)
+	}
+	var out []string
+	for _, c := range carriers {
+		if c.Account == account {
+			out = append(out, c.Name)
+		}
+	}
+	sort.Strings(out)
+	return out, nil
 }

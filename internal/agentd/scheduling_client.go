@@ -42,6 +42,9 @@ type SchedulingClient interface {
 	// ReclaimLocalOccupancy 归还上一进程遗留在本机名下的占用（B448 S7）；只在
 	// StartAutomation 入口、本进程首次准入之前经 orchestration.ReconcileSchedRunning 调用。
 	ReclaimLocalOccupancy(owned map[string]int) (scheduling.ReclaimReport, error)
+	// CheckUsable 用统一准入判据（载体已上线 且 所选账号不在低额度/无额度，B453 S5）预检
+	// 一个他机载体：dispatchroute 点名他机载体时在转发前拒，文案与准入同形。
+	CheckUsable(c scheduling.Carrier) error
 
 	// —— 点火队列（scheddispatch / scheddrain）——
 	Enqueue(req scheduling.IgnitionRequest, kind string) (int, error)

@@ -85,8 +85,10 @@ func (s *Server) routeOrdinaryDispatch(req dispatchRequest) (dispatchLanding, er
 			binding, resolved, err := s.prepareReceiverBinding(req.Receiver, overlay, req.Model)
 			return dispatchLanding{binding: binding, resolved: resolved}, err
 		}
-		if c.Status != scheduling.StatusOnline {
-			return dispatchLanding{resolved: resolved}, fmt.Errorf("%w: 载体 %s 状态为 %s", scheduling.ErrNoHealthy, c.Name, c.Status)
+		// 统一准入判据（B453 S5）：载体未上线或所选账号低额度/无额度都在转发前拒，
+		// 点名派发不静默跑；落点机 AdmitFrozen 还会再判一次（同一判据）。
+		if err := s.scheduling.CheckUsable(c); err != nil {
+			return dispatchLanding{resolved: resolved}, err
 		}
 		bound, err := scheduling.BindPhysical(scheduling.IdentityOf(c), overlay)
 		if err != nil {

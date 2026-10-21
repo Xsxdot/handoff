@@ -191,17 +191,17 @@ var squadListCmd = &cobra.Command{
 			return nil
 		}
 		w := tabwriter.NewWriter(cmd.OutOrStdout(), 2, 4, 2, ' ', 0)
-		fmt.Fprintln(w, "类别\t名称\t角色/机器\t成员/CLI\t并发上限\t版本")
+		fmt.Fprintln(w, "类别\t名称\t角色/机器\t成员/CLI\t并发上限\t版本\t账号")
 		for _, c := range resp.Carriers {
-			fmt.Fprintf(w, "载体\t%s\t%s\t%s\t%d\t%d\n",
-				c.Name, c.Machine, c.CLI, c.MaxConcurrency, c.Version)
+			fmt.Fprintf(w, "载体\t%s\t%s\t%s\t%d\t%d\t%s\n",
+				c.Name, c.Machine, c.CLI, c.MaxConcurrency, c.Version, carrierAccountCell(c))
 		}
 		for _, s := range resp.Squads {
-			fmt.Fprintf(w, "小队\t%s\t%s\t%s\t-\t%d\n",
+			fmt.Fprintf(w, "小队\t%s\t%s\t%s\t-\t%d\t-\n",
 				s.Name, s.Role, formatSquadMembers(s.Members), s.Version)
 		}
 		for _, r := range resp.Running {
-			fmt.Fprintf(w, "运行位\t%s\t-\t-\t%d\t-\n", r.Key, r.Count)
+			fmt.Fprintf(w, "运行位\t%s\t-\t-\t%d\t-\t-\n", r.Key, r.Count)
 		}
 		if err := w.Flush(); err != nil {
 			slog.Default().Error("squad.list render failed", "kind", "table", "cause", err)
@@ -227,6 +227,18 @@ func init() {
 	squadListCmd.Flags().BoolVar(&squadJSON, "json", false, "以 NDJSON 输出")
 	squadCmd.AddCommand(squadCreateCmd, squadSetCmd, squadListCmd)
 	rootCmd.AddCommand(squadCmd)
+}
+
+// carrierAccountCell 是载体行的「账号」列（B453 S4）：所选账号名；载体 HOME 凭据指纹与
+// 账号读数指纹不一致时注明（只提示，不拦派发）；未选为 -。
+func carrierAccountCell(c proto.CarrierView) string {
+	if c.Account == "" {
+		return "-"
+	}
+	if c.AccountMismatch {
+		return c.Account + "（凭据指纹不符）"
+	}
+	return c.Account
 }
 
 // parseSquadMember 解析一个完整 --member 值。StringArray 保留空格、斜杠和中文

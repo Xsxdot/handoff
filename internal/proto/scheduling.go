@@ -25,9 +25,14 @@ type CarrierView struct {
 	Model          string `json:"model,omitempty"`
 	Credential     string `json:"credential"`
 	MaxConcurrency int    `json:"max_concurrency,omitempty"`
-	Status         string `json:"status,omitempty"`     // B293：四态英文键；空=存量行未回填
+	Status         string `json:"status,omitempty"`     // B293：状态英文键（B453 起无 quota）；空=存量行未回填
 	LastError      string `json:"last_error,omitempty"` // 最近一次检测说明；不参与准入
 	Version        int    `json:"version"`
+	// Account 是所选账号名（B453 F13，omitempty：不选即缺席）。
+	Account string `json:"account,omitempty"`
+	// AccountMismatch 仅在载体 HOME 的凭据指纹与账号最近读数的指纹都在且不一致时为 true
+	// （键出现）；任一侧缺指纹不比对（键缺席）。只标红，不拦派发（spec S4）。
+	AccountMismatch bool `json:"account_mismatch,omitempty"`
 }
 
 // SquadMember 是小队成员的 wire 形状。MaxConcurrency=0（不限）以键缺席表达。
@@ -71,6 +76,8 @@ type CarrierInput struct {
 	Model          string `json:"model,omitempty"`
 	Credential     string `json:"credential"`
 	MaxConcurrency int    `json:"max_concurrency,omitempty"`
+	// Account 是所选账号名（B453 F13）：空/缺席 = 不选。只能选载体同机的已登记账号。
+	Account string `json:"account,omitempty"`
 }
 
 // SquadInput 是 PUT 小队的请求体。Members 为空合法（岔口四：先建空队再补成员）。
@@ -163,12 +170,22 @@ type HomeWakeReq struct {
 	HomeDir    string `json:"home_dir"`
 	Credential string `json:"credential,omitempty"`
 	Model      string `json:"model,omitempty"`
+	// FingerprintKind / FingerprintEntry 是载体所选账号的 kind 与凭据条目（B453 F15，可选）：
+	// 目标机据此在载体 HOME 里算凭据短指纹、缩小撞额度签名集合；缺席 = 不比对。
+	FingerprintKind  string `json:"fingerprint_kind,omitempty"`
+	FingerprintEntry string `json:"fingerprint_entry,omitempty"`
+	// Account 是所选账号名（B453，可选）：目标机在本机账号域里查它的代理，用于检测回合
+	// 出网——代理串（可能带密码）不过机间 wire。缺席 = 沿用目标机今天的环境。
+	Account string `json:"account,omitempty"`
 }
 
-// HomeWakeResp 是本机唤起结局。outcome 只允许 ready / need_login / quota / unreachable。
+// HomeWakeResp 是本机唤起结局。outcome 只允许 ready / need_login / quota / unreachable；
+// quota 自 B453 起语义是「可达 + 撞额度」（F16），协调侧不再把载体写成限额中。
 type HomeWakeResp struct {
 	Outcome string `json:"outcome"`
 	Detail  string `json:"detail,omitempty"`
+	// Fingerprint 是载体 HOME 凭据短指纹（B453 F15，可选）；缺席 = 未算或算不出（不比对）。
+	Fingerprint string `json:"fingerprint,omitempty"`
 }
 
 // CarrierDetectResp 是 POST /api/squads/carriers/{name}/detect 成功后的投影。

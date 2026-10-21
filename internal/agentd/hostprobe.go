@@ -79,15 +79,19 @@ func (s *Server) handleHomeWake(w http.ResponseWriter, r *http.Request) {
 			"error": "cli 必填"})
 		return
 	}
-	s.log.Info("唤起载体 HOME", "cli", in.CLI, "home_dir", in.HomeDir)
+	s.log.Info("唤起载体 HOME", "cli", in.CLI, "home_dir", in.HomeDir,
+		"account", in.Account, "fingerprint_kind", in.FingerprintKind)
 	reply, err := s.hostAPI.WakeHome(r.Context(), hostapi.WakeRequest{
 		CLI: in.CLI, HomeDir: in.HomeDir, Credential: in.Credential, Model: in.Model,
+		AccountKind: in.FingerprintKind, AccountEntry: in.FingerprintEntry,
+		Proxy: s.hostWakeProxy(in.Account),
 	})
 	if err != nil {
 		s.hostProbeErr(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, proto.HomeWakeResp{Outcome: string(reply.Outcome), Detail: reply.Detail})
+	writeJSON(w, http.StatusOK, proto.HomeWakeResp{Outcome: string(reply.Outcome), Detail: reply.Detail,
+		Fingerprint: reply.Fingerprint})
 }
 
 func (s *Server) hostProbeErr(w http.ResponseWriter, err error) {
