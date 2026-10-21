@@ -388,3 +388,22 @@
 - N2 红（新缝先编译红）：`model.test.ts` 引用未导出的 `credentialMoved` → 新用例全 ×。移函数后绿：`Tests 22 passed (22)`。有牙：从 `credentialMoved` 去掉 `body.machine !== editing.machine` → `× 只改所在机器 → 探测 true`，`AssertionError: expected false to be true`，`1 failed | 21 passed`；还原（`body.machine` 计数回到 1）。
 - 收尾：`npx vitest run src/app/shell/Shell.test.tsx src/app/accounts/` → `Test Files 6 passed / Tests 196 passed`；`npm run typecheck` 退出 0；eslint 触及文件无输出；web 全量 `npx vitest run` 两次：`Test Files 150 passed (150) / Tests 2011 passed (2011)`，两次相同。
 - 第 1 轮 m5 的根因即 N1（全量偶发、单跑确定红），本轮修掉。
+
+## implement 修复轮 4（finish-check linux 红）
+
+### 偏离与自主决定
+
+1. 同形检查多修一条：`TestB453QuotaReasonOmitsGenericZeroTextReadonly` 也是「等到 failed 后遍历 failed 事件断言原因」，读早了循环零次、断言空过（假绿，不会红）。一并改为等 failed 事件落库再断言。在 plan 决策权限内（只改测试）。
+2. 端到端用例除协调者点名的原载体 rq-1，也等新载体 rq-2 名额归还再结束：新任务的自动归档同样经终态回调归还，原写法看到 completed 就结束，归还可能落在 teardown 关库之后，产生同一种 release.error 噪声。在 plan 决策权限内（只改测试）。
+3. 未改 `manager.go` 的「先迁状态、后追加事件」次序（协调者要求；B97 既有设计，非本卡引入）。
+
+### 过程与证据
+
+- 读码结论（归还会不会被永久跳过）：`rerunAfterQuota` 在 `stopWithReason` 认领成功后同步读快照并调 `TaskTerminal` → `releaseTaskCarrierOccupancy`；中间唯一的提前返回是 `stopWithReason` 出错或未认领（并发 loser，名额由认领者归还）。归还只会晚、不会被跳过——不是产品缺陷。
+- 见红手段（不提交）：`manager.go` 在 `transitClaim` 与 `AppendEvent(failed)` 之间临时 `time.Sleep(300ms)`；`quota.go` 在终态回调前临时 `time.Sleep(500ms)`。mac 上即复现与 linux-01 相同的三条：
+  - `b453_quota_test.go:133: 时间线应先有「因额度耗尽改由 cb 重跑」再 failed：progress=0 failed=-1`
+  - `b453_quota_test.go:220: failed 原因应含额度耗尽与 S5 文案，得 `（空）
+  - `b453_rerun_test.go:207: 原载体名额应已归还，得 1`
+- 修：`b453_quota_test.go` 新增 `(*b452Env).waitFailedEvent`（eventually ≤3s 等 failed 事件落库并返回它），三处「终态后读 failed 事件/原因」改经它；`b453_rerun_test.go` 改为 eventually 等 rq-1、rq-2 名额都归还。
+- 绿（临时 sleep 仍在）：`go test ./internal/orchestration/ -run TestB453 -count=1` ok；`go test ./internal/agentd/ -run TestB453QuotaRerunEndToEnd -v` PASS，输出无 `database is closed`。随后还原两处 sleep，`git diff --stat manager.go quota.go` 为空。
+- 收尾（产品代码为 HEAD 原样）：`go test -race -cpu 1,4,16 -count=20` 跑 orchestration 三条 → ok（51.6s）；`go test -race -cpu 1,4,16 -count=5 -run TestB453QuotaRerunEndToEnd ./internal/agentd/` → ok；`go test -count=5 ./internal/orchestration/` → ok（199s）；`go test -count=5 ./internal/agentd/` → ok（422s）；`go vet` 两包、`go build ./...` 过；gofmt 无差异。

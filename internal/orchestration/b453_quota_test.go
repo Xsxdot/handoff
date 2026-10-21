@@ -88,6 +88,24 @@ func (e *b452Env) events(t *testing.T, id string) []proto.Event {
 
 func payloadText(ev proto.Event) string { return string(ev.Payload) }
 
+// waitFailedEvent 等 failed 事件落库并返回它。stopWithReason 先迁 failed、后追加 failed 事件
+// （B97 次序，产品侧不改），waitTaskState 看到 failed 时事件可能还没写——读在两步之间会空过
+// 或误红（finish-check 在 linux-01 16 核上确定性复现）。凡「终态后读 failed 事件/原因」都经这里。
+func (e *b452Env) waitFailedEvent(t *testing.T, id string) proto.Event {
+	t.Helper()
+	var got proto.Event
+	eventually(t, 3*time.Second, "failed 事件落库", func() bool {
+		for _, ev := range e.events(t, id) {
+			if ev.Type == proto.EventTypeFailed {
+				got = ev
+				return true
+			}
+		}
+		return false
+	})
+	return got
+}
+
 // V12 编排侧：只读任务撞额度 → 标账号、回调派新任务、先写 rerun_by 再落 failed，时间线有
 // 「因额度耗尽改由 X 重跑」；不出 turn_failed，不停 waiting_review；终态回调一次。
 func TestB453QuotaReadonlyRerunLinksThenFails(t *testing.T) {
@@ -97,6 +115,7 @@ func TestB453QuotaReadonlyRerunLinksThenFails(t *testing.T) {
 	e.m.SetQuotaHandler(h)
 	task := b453Dispatch(t, e, proto.TaskModeReadonly)
 	waitTaskState(t, e.st, task.ID, proto.TaskStateFailed)
+	e.waitFailedEvent(t, task.ID)
 
 	cur, err := e.st.GetTask(task.ID)
 	if err != nil {
@@ -206,15 +225,10 @@ func TestB453QuotaReadonlyNoCandidateFailsWithReason(t *testing.T) {
 	e.m.SetQuotaHandler(h)
 	task := b453Dispatch(t, e, proto.TaskModeReadonly)
 	waitTaskState(t, e.st, task.ID, proto.TaskStateFailed)
+	reason := payloadText(e.waitFailedEvent(t, task.ID))
 	cur, _ := e.st.GetTask(task.ID)
 	if cur.RerunBy != nil {
 		t.Fatalf("无人可换不应有链接: %+v", cur.RerunBy)
-	}
-	var reason string
-	for _, ev := range e.events(t, task.ID) {
-		if ev.Type == proto.EventTypeFailed {
-			reason = payloadText(ev)
-		}
 	}
 	if !strings.Contains(reason, "额度耗尽") || !strings.Contains(reason, s5) {
 		t.Fatalf("failed 原因应含额度耗尽与 S5 文案，得 %s", reason)
@@ -355,11 +369,7 @@ func TestB453QuotaReasonOmitsGenericZeroTextReadonly(t *testing.T) {
 	e.m.SetQuotaHandler(h)
 	task := b453Dispatch(t, e, proto.TaskModeReadonly)
 	waitTaskState(t, e.st, task.ID, proto.TaskStateFailed)
-	for _, ev := range e.events(t, task.ID) {
-		if ev.Type == proto.EventTypeFailed {
-			assertNoGenericZeroText(t, "failed 原因", payloadText(ev))
-		}
-	}
+	assertNoGenericZeroText(t, "failed 原因", payloadText(e.waitFailedEvent(t, task.ID)))
 }
 
 func TestB453QuotaReasonOmitsGenericZeroTextBranch(t *testing.T) {

@@ -203,9 +203,11 @@ func TestB453QuotaRerunEndToEnd(t *testing.T) {
 	eventually(t, 10*time.Second, "新任务完成并自动归档", func() bool {
 		return b453GetB(t, p, nt.ID).State == proto.TaskStateCompleted
 	})
-	if got := p.carrierCount(t, "rq-1"); got != 0 {
-		t.Fatalf("原载体名额应已归还，得 %d", got)
-	}
+	// 名额归还在编排的撞额度处置 goroutine 里：迁 failed → 追加事件 → 读快照 → 终态回调归还。
+	// 测试看到 failed + rerun_by 时它可能还没走到归还；等两边名额都归还再结束，免得读早了误红、
+	// 或归还落在 teardown 关库之后（scheduling.release.error: database is closed）。
+	eventually(t, 10*time.Second, "原载体 rq-1 名额归还", func() bool { return p.carrierCount(t, "rq-1") == 0 })
+	eventually(t, 10*time.Second, "新载体 rq-2 名额归还", func() bool { return p.carrierCount(t, "rq-2") == 0 })
 	if recs := p.b.logs.find("重跑"); len(recs) == 0 {
 		t.Fatal("B 应有重跑 Info 日志")
 	}
