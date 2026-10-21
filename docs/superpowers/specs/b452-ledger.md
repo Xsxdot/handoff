@@ -121,3 +121,7 @@
 - 第 5 步文档对齐（事实性，自动做）：README.md / README.zh-CN.md 命令表补 `dispatch --template/--wait/--timeout/--here/--machine`、`wait --final/--machine`、新行 `handoff artifacts`；CHANGELOG [Unreleased] 新增一条、变更一条（含回退前删 `artifacts:` 键）。参数逐个对照 `--help` 核过。67bc5900。
 - 第 6 步残余：本卡 OOS、Q13、修复轮残余窗口、真机三条均已在 roadmap；opencode 包负载敏感本节补一条。
 - 生产载体只读核对：mimo（linux-01，opencode，`opencode-go/muse-spark-1.3-contributor`）online；真机测试载体 opencode-go 模型失败系其 HOME 从 root 主 HOME 复制、只有 deepseek 凭据，与生产 mimo 无关。
+- 用户批准原话（2026-10-21）：「全都批准，本机的opencode-go也登上了，有充足的限额，并且登记了一个mini载体专门给你用。」——覆盖本地 --no-ff 合入 main 并推送、三台换版、生产 `template put code-investigate`。
+- 合并：`git merge --no-ff cards/B452-charter-1` → 2286f091；干净克隆 @2286f091 `gofmt` 空、BUILD_OK、VET_OK、`go test ./...` 65 ok；`git push origin main` a9150118..2286f091。
+- 换版：`scripts/build-deploy.sh`（干净克隆，借主检出 web/node_modules 软链，未安装依赖）darwin/arm64 与 linux/amd64，版本 2286f091841a、modified=false、前端嵌入自检过；换版前三台活跃任务 0；顺序 linux-01 → macbook-pro → mac-mini，旧二进制留 `~/.local/bin/handoff.bak-pre-b452`；换版后 `handoff machines` 三台均 2286f091841a，三台 `GET /api/cards` 200、`skilled_dispatch_supported: true`。
+- 生产登记：`handoff template put code-investigate --file skills/handoff/skilled/code-investigate.json` → v1（receiver=mimo）。冒烟①mac-mini → mimo@linux-01 只读 `--wait` exit=0，结论正确（cmd/artifacts.go:19）；②用户新登记的本机载体 mini（opencode 1.19.3，opencode-go/deepseek-v4.1-flash）`--receiver mini --here` exit=0，产物 note.md 原路径 `~/.handoff/tasks/<id>/artifacts`。
