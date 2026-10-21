@@ -978,3 +978,11 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 - `judgeCommand` 会扫到 Python heredoc 正文：B451 起人工清单检查排在硬升级之后，正文含 `handoff dispatch`、黑名单字样时整条硬升级人工（改前同样人工，非回退）；在 handoff 仓改字符串时较易触发，可考虑让 heredoc 正文对黑名单/自指令判据不可见。来源：B451 plan 拍板。
 - mac-mini 的 opencode 为 v2.0.29，`opencode serve` 的 `POST /session` 返回 405，handoff 的 opencode 适配器起不了会话（linux-01 的 1.19.3 正常）；需适配 2.x 或钉版本。来源：B451 真机。
 - `handoff reply <task> --deny` 在 `--config`+`--agentd` 指向的隔离实例上报「ticket_id 与 answer 不能为空」，CLI 未取到待答工单；直调 reply API 正常。来源：B451 真机。
+
+## B452 残余（2026-10-21，熟练工派发 spec Out of Scope「本期不做、后续要做」）
+
+- 对本机**未提交**改动做只读调查（就地只读形态）：B452 的只读形态在接收机以基线提交建 detached 工作树，读不到调用方未提交内容。来源：`docs/superpowers/specs/b452.md`。
+- 只读任务的文件产物通道（报告文件、截图、快照）；`FinalTextLimit` 16 KiB 字符截断长报告。归 B454。来源同上。
+- 载体不可达/满负荷/无额度时顺小队换人；B452 只报错点名机器。归 B453。来源同上。
+- Web 控制台增删改熟练工定义（本期只 CLI `template put --file`）。来源同上。
+- `NodeOverride.Target` 在小队节点被忽略（`internal/agentd/scheddispatch.go:131-135` 返回空 target），与 `internal/ledger/types.go:215-216` 注释矛盾。来源：2026-10-21 现状摸底。
