@@ -66,6 +66,8 @@ func (a *OpencodeGo) Probe(ctx context.Context, req Request) (Snapshot, error) {
 		log().Warn("opencode-go 代理配置无效", "entry", entry, "cause", f)
 		return Snapshot{}, f
 	}
+	// 每次探测一个独立 Transport（账号代理各不相同）；用完即关空闲连接，不在进程里攒连接池。
+	defer transport.CloseIdleConnections()
 	timeout := a.Timeout
 	if timeout <= 0 {
 		timeout = opencodeGoTimeout

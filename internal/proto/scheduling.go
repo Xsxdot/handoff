@@ -6,6 +6,8 @@
 // → View 的手写投影在 agentd（schedapi.go），该边界由其 wire 往返测试锁。
 package proto
 
+import "time"
+
 // CoordinatorRebindReq 是协调者换绑请求。HTTP 控制面只接受 mode=launch；
 // mode=self 由 CLI 本机账本路径执行，identity 不属于 HTTP 可信输入。
 type CoordinatorRebindReq struct {
@@ -181,4 +183,73 @@ type CarrierDetectResp struct {
 // command 由服务端生成，客户端只复制。
 type CarrierRunCommandResp struct {
 	Command string `json:"command"`
+}
+
+// —— 账号与额度（B453，spec §8 F1–F11）——
+//
+// 账号 API 的 wire 形状。producer = agentd（GET/PUT /api/accounts、
+// POST /api/accounts/{name}/probe），consumer = 控制台、`handoff account` CLI、他机
+// agentd（立即探测转发）。`handoff account list --json` 每行即一个 AccountView（F11）。
+// 任何位置都不出现凭据值（F10）。
+
+// AccountsResp 是 GET /api/accounts 的响应体（F1）。空库为 [] 不是 null。
+type AccountsResp struct {
+	Accounts []AccountView `json:"accounts"`
+}
+
+// AccountView 是账号读面（F5）。可缺席键：entry（agy）、proxy、reading（从无成功）、
+// last_attempt_at、last_error。state ∈ ok|low|out|fail|none（F6）；kind ∈
+// opencode-go|codex|grok|agy（F7）。carriers 是引用该账号的载体名，无引用为 []。
+type AccountView struct {
+	Name            string              `json:"name"`
+	Kind            string              `json:"kind"`
+	Machine         string              `json:"machine"`
+	HomeDir         string              `json:"home_dir"`
+	Entry           string              `json:"entry,omitempty"`
+	Proxy           string              `json:"proxy,omitempty"`
+	IntervalMinutes int                 `json:"interval_minutes"`
+	WarnPercent     int                 `json:"warn_percent"`
+	LowPercent      int                 `json:"low_percent"`
+	Version         int                 `json:"version"`
+	State           string              `json:"state"`
+	Stale           bool                `json:"stale"`
+	Reading         *AccountReadingView `json:"reading,omitempty"`
+	LastAttemptAt   *time.Time          `json:"last_attempt_at,omitempty"`
+	LastError       *AccountProblemView `json:"last_error,omitempty"`
+	Carriers        []string            `json:"carriers"`
+}
+
+// AccountReadingView 是最近一次成功读数（F8）。windows 无窗口时为 []。
+type AccountReadingView struct {
+	Windows  []AccountWindowView `json:"windows"`
+	PlanType string              `json:"plan_type,omitempty"`
+	ProbedAt time.Time           `json:"probed_at"`
+}
+
+// AccountWindowView 是一个额度窗口（F8）：key ∈ session|weekly|monthly；group 仅
+// agy 模型组；used_percent 0–100；resets_at 可缺席。
+type AccountWindowView struct {
+	Key         string     `json:"key"`
+	Group       string     `json:"group,omitempty"`
+	UsedPercent float64    `json:"used_percent"`
+	ResetsAt    *time.Time `json:"resets_at,omitempty"`
+}
+
+// AccountProblemView 是 last_error 的形状：失败（或接口明示不可用）的类别与短因。
+type AccountProblemView struct {
+	Category string `json:"category"`
+	Message  string `json:"message"`
+}
+
+// AccountInput 是 PUT /api/accounts/{name}?expect= 的请求体（F9）。名称取路径；
+// 不含 state/reading/version。三项数值用指针区分「缺席 = 取缺省」与「给了 0」。
+type AccountInput struct {
+	Kind            string `json:"kind"`
+	Machine         string `json:"machine"`
+	HomeDir         string `json:"home_dir"`
+	Entry           string `json:"entry,omitempty"`
+	Proxy           string `json:"proxy,omitempty"`
+	IntervalMinutes *int   `json:"interval_minutes,omitempty"`
+	WarnPercent     *int   `json:"warn_percent,omitempty"`
+	LowPercent      *int   `json:"low_percent,omitempty"`
 }

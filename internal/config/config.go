@@ -84,11 +84,13 @@ type Config struct {
 	// https://host:port、socks5://host:port、socks5h://host:port。
 	// 空 = 不配，沿用 HTTPS_PROXY/HTTP_PROXY/NO_PROXY 环境变量（现行为不变）。
 	//
-	// 作用范围只有两处：更新链路的 HTTP 出网（查 release、下资产）与 agentd 的
-	// git clone/fetch。**不作用于协调者↔agentd 链路**——那是 LAN/loopback 地址，
+	// 作用范围三处：更新链路的 HTTP 出网（查 release、下资产）、agentd 的
+	// git clone/fetch、以及账号额度探测（B453 plan Q5：账号未填自己的代理时回落到
+	// 这里）。**不作用于协调者↔agentd 链路**——那是 LAN/loopback 地址，
 	// 代理化轻则每次请求多绕一跳，重则 socks5 代理解析不了 100.x.y.z 直接断链，
 	// 而这条链路的可达性是 handoff 的命根子。也**不作用于 executor**：executor
-	// 的出网归 env 段（B19），两者故障域不交叉——代理挂了只影响升级，不影响任务执行。
+	// 的出网归 env 段（B19），两者故障域不交叉——代理挂了影响升级与额度探测，
+	// 不影响任务执行。
 	//
 	// 为什么放顶层而不是放进 Target：它描述的是「**这台机器**怎么出网」，
 	// 与 RepoRoot / PathDirs 同一个道理。

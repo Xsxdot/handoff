@@ -50,8 +50,10 @@ import (
 	"github.com/Xsxdot/handoff/internal/permgate"
 	"github.com/Xsxdot/handoff/internal/prochost"
 	"github.com/Xsxdot/handoff/internal/proxycfg"
+	"github.com/Xsxdot/handoff/internal/quota"
 	"github.com/Xsxdot/handoff/internal/relay"
 	"github.com/Xsxdot/handoff/internal/scheduling"
+	"github.com/Xsxdot/handoff/internal/scheduling/accounts"
 	"github.com/Xsxdot/handoff/internal/store"
 	"github.com/Xsxdot/handoff/internal/targetclient"
 	"github.com/Xsxdot/handoff/internal/toolchain"
@@ -656,6 +658,16 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 	}
 }
 
+// newQuotaRegistry 组装额度适配注册表（B453，组装点唯一）。凭据相对路径沿用
+// toolchain 唯一维护的表；本平台无已知落点时适配器报 unsupported_platform。
+func newQuotaRegistry() *quota.Registry {
+	og := &quota.OpencodeGo{}
+	if rel, ok := toolchain.CredRelPathFor("opencode"); ok {
+		og.CredRelPath = rel
+	}
+	return quota.NewRegistry(map[string]quota.Prober{quota.KindOpencodeGo: og})
+}
+
 func setupLedger(cfg *config.Config, srv *agentd.Server, taskStore *store.Store, ctx context.Context,
 	logger *slog.Logger, boot ledgerBoot) (func(), error) {
 	ldsn := cfg.Ledger.DSN
@@ -758,6 +770,31 @@ func setupLedger(cfg *config.Config, srv *agentd.Server, taskStore *store.Store,
 	sched.SetSelfName(cfg.Name)
 	sched.SetLegacyAlias(config.IsLegacyLocalAlias)
 	srv.SetScheduling(sched)
+	// B453：账号域与编制域共用同一注册表端口（账号定义/读数是 registry 的两个新 kind）。
+	acc := accounts.New(reg)
+	srv.SetAccounts(acc)
+	// 所在机探测器只在挂共享账本的机器上运行（plan Q3）：读数由所在机直写共享账本，
+	// 单机 SQLite 账本没有设备表、也没有「他机」可言。账号未填代理时回落活配置 proxy:（Q5）。
+	var prober *agentd.AccountProber
+	if shared {
+		prober = agentd.NewAccountProber(agentd.AccountProberConfig{
+			Accounts:   acc,
+			Quota:      newQuotaRegistry(),
+			IsSelf:     srv.IsSelfMachine,
+			Writer:     cfg.Name,
+			ExpandHome: hostapi.ExpandHomePath,
+			Proxy: func() string {
+				if c := srv.Conf()(); c != nil {
+					return c.Proxy
+				}
+				return ""
+			},
+			Logger: logger,
+		})
+		srv.SetAccountProber(prober)
+		prober.Start(ctx)
+	}
+	logger.Info("账号域已挂载", "dsn_configured", shared, "account_prober", prober != nil, "writer", cfg.Name)
 	// B156.3 K5：账本打开后才能启动自动化事件流。
 	// ctx 随 agentd 停机取消；首轮先重放事件与队列，再进入轮询。
 	// B448 r1：StartAutomation 先同步做启动调度占用对账（归还本机遗留名额）再起循环；
@@ -794,7 +831,10 @@ func setupLedger(cfg *config.Config, srv *agentd.Server, taskStore *store.Store,
 	logger.Info("账本镜像子系统已挂载", "holder", holder, "self_name", cfg.Name,
 		"machines", len(srv.Pool().Names()), "dsn_configured", shared)
 	return func() {
-		// 次序硬约束：先停镜像（不再写库）再关账本库。
+		// 次序硬约束：先停探测器与镜像（不再写库）再关账本库。
+		if prober != nil {
+			prober.Stop()
+		}
 		lm.Stop()
 		lst.Close()
 	}, nil

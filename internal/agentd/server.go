@@ -189,6 +189,11 @@ type Server struct {
 	autoLedger *ledgerapi.Facade
 	ptyGate    *ptyapi.Host
 	hostAPI    *hostapi.Host
+	// B453 账号域：账号读写（使用方接口 AccountsClient）与所在机探测器，cmd 组装点
+	// 经 SetAccounts / SetAccountProber 注入。探测器只在挂共享账本的机器上装配；
+	// nil = 本机不执行探测（立即探测到本机账号回 503）。
+	accounts      AccountsClient
+	accountProber *AccountProber
 	// B432 iOS 推送扇出：「需要你」事件 → APNs。NewServer 构造（凭据未配齐时
 	// sender 为 nil，投递静默降级站内），装配点经 StartPush 起 worker；
 	// 两条事件旁路（合成钩子 + 自动化循环）与 badge 同源计数都接在它上面。
@@ -1041,6 +1046,7 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("POST /api/auth/logout", s.handleLogout)
 	s.registerLedgerRoutes(api)
 	s.registerSchedulingRoutes(api)
+	s.registerAccountRoutes(api)
 	s.registerCoordRoutes(api)
 	// B432：iOS 推送设备登记（spec §契约面 1）。独立注册函数与 ledger/scheduling
 	// 同款，避免 Handler() 主表继续膨胀。

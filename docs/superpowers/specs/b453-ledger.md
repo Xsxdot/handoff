@@ -69,3 +69,16 @@
   - 首绿后 `-race -count=30` 撞一次 `TestConcurrentHumanProbeMarkerKeepAllFields`：「读数行连续 8 次冲突」——两写者紧循环同相，一方连续落败（饿死）。修复 1 次：保留预算 8（Q1），重试间加 0~attempt ms 随机退让。复跑 `-race -count=300` → ok（5.3s）。人侧冲突 0 次（Q1 承重属性）。
   - 判断：Derive 段 1 只出 none/fail/out/ok（低额度档段 3）；已过重置时刻的窗口按 0% 计（Q4 补条）；读数行坏行按空行重建（可重建缓存，不卡死写回），定义行坏行报错；RecordProbe/MarkQuota 先查定义行，无定义不写孤儿读数行；阈值与间隔校验提前到段 1（间隔驱动探测器节拍，0 会热循环；阈值是一行次序判断），查重与 HOME 形态仍在段 2。
   - 编译：`go build ./... && go vet ./internal/quota/ ./internal/scheduling/...` 通过。
+- T3 agentd 账号 API + 所在机探测器 + 组装（`internal/agentd/{account_api,account_prober}.go`、`server.go` 字段与路由注册、`internal/proto/scheduling.go` 账号 wire、`cmd/agentd.go setupLedger`、`internal/config/config.go` proxy 注释）：
+  - 红（编译）：`go test ./internal/agentd/ -run AccountProbe` → `srv.SetAccounts undefined … undefined: NewAccountProber … proto.AccountView`。
+  - 红（断言，空壳后）：同命令 → 三个测试「入口机登记: 404 404 page not found」。
+  - 首绿前一处：转发测试 503「账号探测器未运行」——测试夹具没 Start 探测器（生产在组装点 Start），夹具补 `startProber`。非产品缺陷。
+  - 绿：`go test ./internal/agentd/ -run 'AccountProbe|NoDirectHttptest' -race -count=3` ok。
+  - 触及包：`go test ./internal/agentd/ ./internal/proto/ ./internal/config/ ./internal/quota/ ./internal/scheduling/...` → agentd 唯一红 `TestNoDirectHttptestServers`（我的测试直接用了 httptest.NewServer，违反 B234 夹具纪律）→ 改 `testhttp.NewServer` 后绿；其余包 ok。
+  - 自审后加固（未单开红绿，属既有测试覆盖的路径）：探测写回失败或停机取消经单飞记录回传 ProbeNow → 500/503，不把旧读数当「探测成功」交回（静默失败族）；quota 每次探测后 `CloseIdleConnections`。
+  - 判断：两台真 Server 共用一个 ledger.Store 模拟共享 PG——比 stub 远端多锁一条「读数行写者 = 所在机 b、入口机不写」；探测器只在 `shared`（有 DSN）时装配并 Start，cleanup 先停探测器再停镜像、关库；`AccountsClient` 是 agentd 侧新使用方接口（List/Get/Put/RecordProbe 四法，消费点见文件注释），没往 `SchedulingClient` 加方法；PUT 回 AccountView（F2 未定回包形状）；AccountView.proxy 原样回显（可能含 user:pass，日志一律 Redact）——留给协调者裁。
+- T4 CLI（`cmd/account.go`、`internal/client/accounts.go`）：
+  - 红：`go test ./cmd/ -run TestAccount` → `unknown command "account" for "handoff"`（三测试）。
+  - 绿：同命令 ok。`go test ./cmd/ ./internal/client/` → cmd ok（77s）；client 唯一红 `TestProductionHTTPClientCallersAreGatewayOnly`，命中清单全是 `.claude/worktrees/*` 嵌套工作树副本——memory「handoff-env-sensitive-tests」所记环境假红，与本卡无关。
+  - 判断：probe 的「失败结论」按「最近尝试晚于最近成功读数」判，不按 state（撞额度标记优先会把失败掩成 out）；表格多一列「说明」放 `△ 原因`（S11 列之外，便于终端判断）。
+- 收尾编译：`go build ./... && go vet ./...` 通过。
