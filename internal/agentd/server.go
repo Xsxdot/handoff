@@ -522,7 +522,22 @@ func (s *Server) SetManager(m orchestration.OrchestrationClient) {
 		return
 	}
 	s.mgr = m
+	// B452：编排内部终态（只读自动归档）的名额归还回调在挂接时接线——Server 是唯一知道
+	// 编制域名额的一方。用可选接口而非扩大 OrchestrationClient：只有真实编排实现需要它。
+	if tn, ok := m.(interface {
+		SetTerminalNotifier(orchestration.TerminalNotifier)
+	}); ok {
+		tn.SetTerminalNotifier(s)
+	}
 	s.log.Info("manager 已挂接，凭据为编排 client 接口")
+}
+
+// TaskTerminal 实现 orchestration.TerminalNotifier：编排在 HTTP 以外的路径（B452 只读任务
+// 自动归档、启动补归档）认领终态后，由这里归还载体/小队名额，快照规则与 handleDone 相同。
+func (s *Server) TaskTerminal(task *proto.Task) {
+	s.log.Info("编排内部终态，归还名额", "task", task.ID, "state", task.State,
+		"carrier", task.Carrier, "squad", task.Squad, "machine", task.Target)
+	s.releaseTaskCarrierOccupancy(task)
 }
 
 // SetProviders 注入能力 Registry。

@@ -171,6 +171,31 @@ type Config struct {
 	// P2P 是 relay 形态 target 的 NAT 打洞配置（B438，见 p2p.go）。全空 = 缺省
 	// （开启 + 内置 STUN 列表），整节不落盘——omitempty 理由同 Push。
 	P2P P2PConfig `yaml:"p2p,omitempty"`
+	// Artifacts 是任务产物目录的保留配置（B452 S8）。全空 = 缺省保留期，整节不落盘——
+	// omitempty 理由同 Push。
+	Artifacts ArtifactsConfig `yaml:"artifacts,omitempty"`
+}
+
+// DefaultArtifactsRetention 是产物目录在任务终态之后的缺省保留期（B452 F18）。
+const DefaultArtifactsRetention = 168 * time.Hour
+
+// ArtifactsConfig 描述产物目录的保留期。
+//
+// Retention 三态：nil = 未配置（DefaultArtifactsRetention）；0 = 永不清理；正值 = 该时长。
+// 用指针而不在 Load 里填默认值，理由同 EnvForward：填进结构体就会被 Save 落盘，顶死旧版 agentd。
+type ArtifactsConfig struct {
+	Retention *time.Duration `yaml:"retention,omitempty"`
+}
+
+// ArtifactsRetention 返回生效的产物保留期（nil Config 按缺省）；0 表示永不清理。
+func (c *Config) ArtifactsRetention() time.Duration {
+	if c == nil || c.Artifacts.Retention == nil {
+		return DefaultArtifactsRetention
+	}
+	if *c.Artifacts.Retention < 0 {
+		return 0
+	}
+	return *c.Artifacts.Retention
 }
 
 // PlatformInvariantsEnabled 返回本机是否注入平台不变量恒在层。

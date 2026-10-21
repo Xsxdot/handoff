@@ -49,6 +49,8 @@ type PrepareReq struct {
 	Worktree     string
 	NewWorktree  bool
 	WorktreesDir string
+	// Detached：B452 只读形态的 detached 托管树（见 WorkspaceReq.Detached）。
+	Detached bool
 }
 
 // Prepared 是 Prepare 的结果。字段与 agentd.Workspace 同形。

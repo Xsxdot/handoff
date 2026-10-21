@@ -360,6 +360,9 @@ type WorkspaceReq struct {
 	Worktree     string // 已存在 worktree 路径（与 NewWorktree 互斥）
 	NewWorktree  bool
 	WorktreesDir string // agentd 管理的 worktree 根目录（DataDir/worktrees）
+	// Detached 是 B452 只读形态：在 WorktreesDir 下以 Base（必填，基线 sha）建一棵
+	// detached 托管树，不建任何分支。只与 NewWorktree 同用，与 Branch/NewBranch/Worktree 互斥。
+	Detached bool
 }
 
 // Workspace 是准备完成的工作区结果。
@@ -440,6 +443,9 @@ func PrepareWorkspace(ctx context.Context, req WorkspaceReq) (Workspace, error) 
 		if strings.HasPrefix(name.v, "-") {
 			return Workspace{}, rejectWorkspace(name.what+" 不允许以 - 开头（git 参数注入面）", req)
 		}
+	}
+	if req.Detached {
+		return prepareDetached(ctx, req)
 	}
 
 	// 第 2 层：分支名决议（B/N/A 三态收敛为唯一分支名）
@@ -540,6 +546,47 @@ func PrepareWorkspace(ctx context.Context, req WorkspaceReq) (Workspace, error) 
 	if ctx.Err() != nil {
 		log().Error("工作区准备超时", "task", req.TaskID, "timeout", WorkspaceGitTimeout, "cause", ctx.Err())
 	}
+	return ws, nil
+}
+
+// prepareDetached 是 B452 只读形态的工作区准备：WorktreesDir/<id8> 下以基线 sha 建一棵
+// detached 托管树（`git worktree add --detach <p> <sha>`），不建分支。
+//
+// 为什么 Base 必填：只读调查的语义是「看基线这一版」，起点缺省成 HEAD 会让调查对象随
+// 执行机主仓漂移；编排侧总是传决议后的基线 sha，这里把不变式钉死。
+// 为什么核 HEAD 而不是分支名：detached 树没有分支，B76 的身份核对在这里换成「HEAD 就是基线」。
+func prepareDetached(ctx context.Context, req WorkspaceReq) (Workspace, error) {
+	switch {
+	case req.Branch != "" || req.NewBranch != "":
+		return Workspace{}, rejectWorkspace("detached（只读形态）与 branch/new-branch 互斥", req)
+	case req.Worktree != "" || !req.NewWorktree:
+		return Workspace{}, rejectWorkspace("detached（只读形态）只能用于 new-worktree 托管树", req)
+	case req.Base == "":
+		return Workspace{}, rejectWorkspace("detached（只读形态）必须给出基线起点", req)
+	}
+	dirtyCount, dirtyFiles := repoDirtySnapshot(ctx, req.Repo)
+	workDir := filepath.Join(req.WorktreesDir, ID8(req.TaskID))
+	if err := os.MkdirAll(req.WorktreesDir, 0o700); err != nil {
+		return Workspace{}, fmt.Errorf("创建 worktrees 目录 %s: %w", req.WorktreesDir, err)
+	}
+	args := []string{"worktree", "add", "--detach", workDir, req.Base}
+	if _, stderr, err := gitRun(ctx, req.Repo, args...); err != nil {
+		log().Error("detached 托管树创建失败", "task", req.TaskID, "repo", req.Repo,
+			"base", req.Base, "stderr", truncateRunes(stderr, 300), "cause", err)
+		return Workspace{}, fmt.Errorf("git %v: %s: %w", args, strings.TrimSpace(stderr), err)
+	}
+	ws := Workspace{WorkDir: workDir, Managed: true, RepoDirtyCount: dirtyCount, RepoDirtyFiles: dirtyFiles}
+	want, _, rerr := gitRun(ctx, req.Repo, "rev-parse", "--verify", req.Base+"^{commit}")
+	got, stderr, herr := gitRun(ctx, workDir, "rev-parse", "HEAD")
+	if rerr != nil || herr != nil || strings.TrimSpace(got) != strings.TrimSpace(want) {
+		verr := fmt.Errorf("%w: detached 树 HEAD=%s 与基线 %s 不符（工作区 %s）: %s",
+			ErrBranchIdentityMismatch, strings.TrimSpace(got), req.Base, workDir, strings.TrimSpace(stderr))
+		log().Error("detached 树身份核对失败，回滚并拒发", "task", req.TaskID, "cause", verr)
+		rollbackWorkspace(ctx, req.Repo, ws)
+		return Workspace{}, verr
+	}
+	log().Info("detached 托管树准备完成", "task", req.TaskID, "workdir", workDir,
+		"base", req.Base, "repo_dirty", dirtyCount)
 	return ws, nil
 }
 

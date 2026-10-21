@@ -119,7 +119,9 @@ func Open(path string) (*Store, error) {
   -- B229：discipline_version=派发命中的纪律块账本版本；未点名/临时正文为 0。
   -- 与正文落盘文件（任务目录 discipline.md）配套：不落盘，「那次用的哪一版
   -- 正文」在重启后答不上来。
-  discipline_version INTEGER NOT NULL DEFAULT 0)`,
+  discipline_version INTEGER NOT NULL DEFAULT 0,
+  -- B452：mode=任务形态；空串=分支形态（旧任务与普通派发），readonly=只读形态。
+  mode TEXT NOT NULL DEFAULT '')`,
 		`CREATE TABLE IF NOT EXISTS task_usage_ledger (
   -- B83 账本：一行 = 一次「新增消耗」的账目，累计值由对本表求和得到。
   -- 为什么不在 tasks 表上冗余累计列：冗余就有一致性问题（漏写一次永久偏差），
@@ -311,6 +313,7 @@ func Open(path string) (*Store, error) {
 		"usage_context_window": "INTEGER NOT NULL DEFAULT 0",
 		"discipline_name":      "TEXT NOT NULL DEFAULT ''",
 		"discipline_version":   "INTEGER NOT NULL DEFAULT 0",
+		"mode":                 "TEXT NOT NULL DEFAULT ''",
 	} {
 		if _, err := db.ExecContext(context.Background(),
 			"ALTER TABLE tasks ADD COLUMN "+col+" "+typ); err != nil &&
@@ -347,13 +350,13 @@ func (s *Store) Close() error {
 func (s *Store) CreateTask(t *proto.Task) error {
 	_, err := s.db.ExecContext(context.Background(), `
 INSERT INTO tasks (id, target, repo_path, home_dir, carrier, squad, branch, plan_path, plan_summary, executor_session, state, created_at, updated_at,
-  name, executor, model, work_dir, worktree_managed, base_commit, base_ahead, repo_dirty_count, repo_dirty_files, discipline_name, discipline_version)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  name, executor, model, work_dir, worktree_managed, base_commit, base_ahead, repo_dirty_count, repo_dirty_files, discipline_name, discipline_version, mode)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		t.ID, t.Target, t.RepoPath, t.HomeDir, t.Carrier, t.Squad, t.Branch, t.PlanPath, t.PlanSummary,
 		t.ExecutorSession, t.State, fmtTime(t.CreatedAt), fmtTime(t.UpdatedAt),
 		t.Name, t.Executor, t.Model, t.WorkDir, boolToInt(t.WorktreeManaged),
 		t.BaseCommit, t.BaseAhead, t.RepoDirtyCount, t.RepoDirtyFiles, t.DisciplineName,
-		t.DisciplineVersion)
+		t.DisciplineVersion, t.Mode)
 	if err != nil {
 		return fmt.Errorf("写入任务 %s: %w", t.ID, err)
 	}
@@ -368,7 +371,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 // 本常量 + scanTaskRow。原注释只提了后两处，照着做会漏掉前两处。
 const taskColumns = `id, target, repo_path, home_dir, carrier, squad, branch, plan_path, plan_summary, executor_session, state, created_at, updated_at,
   name, executor, model, work_dir, worktree_managed, base_commit, base_ahead, repo_dirty_count, repo_dirty_files, done_note,
-  actual_model, usage_context_tokens, usage_context_window, discipline_name, discipline_version`
+  actual_model, usage_context_tokens, usage_context_window, discipline_name, discipline_version, mode`
 
 // rowScanner 抽象 *sql.Row 与 *sql.Rows 的公共 Scan 能力，让单行与多行查询
 // 共用同一个扫描函数。
@@ -393,7 +396,7 @@ func scanTaskRow(sc rowScanner) (proto.Task, error) {
 		&task.Name, &task.Executor, &task.Model, &task.WorkDir, &worktreeManaged,
 		&task.BaseCommit, &task.BaseAhead, &task.RepoDirtyCount, &task.RepoDirtyFiles,
 		&task.DoneNote, &task.ActualModel, &ctxTokens, &ctxWindow, &task.DisciplineName,
-		&task.DisciplineVersion); err != nil {
+		&task.DisciplineVersion, &task.Mode); err != nil {
 		return proto.Task{}, err
 	}
 	task.CreatedAt = parseTime(createdAt)

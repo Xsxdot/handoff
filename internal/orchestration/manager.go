@@ -54,6 +54,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode"
 
@@ -95,6 +96,9 @@ type appendEventFunc func(string, proto.EventType, any) (proto.Event, error)
 type Manager struct {
 	st  *store.Store
 	hub *Hub
+	// terminal 存 terminalNotifierBox：B452 编排内部终态（只读自动归档）的门面回调，
+	// 组装期写、运行期读，故用 atomic.Value 而非裸字段。
+	terminal atomic.Value
 	// ads 是 executor 注册表（name → Adapter），构造后只读 map，并发安全依旧。
 	// 任务经 task.Executor（adapterFor）或缺省名（resolveExecutor）路由到对应实现。
 	ads map[string]executor.Adapter
@@ -735,6 +739,14 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 		return nil, fmt.Errorf("%w: local_base_branch=true 时 base 必须是非空工作分支名",
 			workspace.ErrBadWorkspaceReq)
 	}
+	// B452：形态校验是纯内存判断，与上面两道门同段——拒发时尚无任何副作用。
+	// 只读形态在此被规整为 NewWorktree（下游占用守卫、工作区准备都按托管树走）。
+	readonly, err := validateDispatchMode(&req)
+	if err != nil {
+		m.log.Warn("dispatch 被拒：任务形态非法", "mode", req.Mode, "branch", req.Branch,
+			"new_branch", req.NewBranch, "worktree", req.Worktree, "cause", err)
+		return nil, err
+	}
 	// dispatch 期解析执行者：req.Executor 空回退缺省；未注册按参数错误拒绝（400）
 	execName, ad, err := m.resolveExecutor(req.Executor)
 	if err != nil {
@@ -900,6 +912,7 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 		Branch: req.Branch, NewBranch: req.NewBranch, Base: start,
 		Worktree: req.Worktree, NewWorktree: req.NewWorktree,
 		WorktreesDir: filepath.Join(m.cfg.DataDir, "worktrees"),
+		Detached:     readonly,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("git 工作区准备: %w", err)
@@ -928,6 +941,17 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 	if err := os.MkdirAll(taskDir, 0o700); err != nil {
 		return nil, fmt.Errorf("创建任务目录 %s: %w", taskDir, err)
 	}
+	// B452 S8：产物目录对所有任务建（Q7 乙），在任务目录下而不在工作树里——工作树回收不碰它，
+	// 权限门的 TaskDir 可写范围天然覆盖它。提示词小节只给只读形态，分支形态提示词零变化。
+	artifactsDir := TaskArtifactsDir(m.cfg.DataDir, taskID)
+	if err := ensureArtifactsDir(artifactsDir); err != nil {
+		m.log.Error("创建产物目录失败，拒派", "task", taskID, "dir", artifactsDir, "cause", err)
+		return nil, fmt.Errorf("创建产物目录 %s: %w", artifactsDir, err)
+	}
+	if readonly {
+		planContent = append(planContent, []byte(artifactsPromptSection(artifactsDir))...)
+	}
+	m.log.Info("产物目录就绪", "task", taskID, "dir", artifactsDir, "prompt_section", readonly)
 	planPath := filepath.Join(taskDir, planName)
 	if err := m.writeTaskDirFile(taskDir, planName, planContent); err != nil {
 		return nil, fmt.Errorf("写计划文件 %s: %w", planPath, err)
@@ -982,6 +1006,9 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 		// B43：新树不含主仓这些未提交改动，随任务落库供 CLI 回显（不阻断派发）
 		RepoDirtyCount: ws.RepoDirtyCount,
 		RepoDirtyFiles: ws.RepoDirtyFiles,
+	}
+	if readonly {
+		task.Mode = proto.TaskModeReadonly
 	}
 	if err := m.st.CreateTask(task); err != nil {
 		return nil, err
@@ -1515,6 +1542,7 @@ func (m *Manager) resumeForContinue(ctx context.Context, taskID string, ad execu
 		envKVs = withCarrierHome(envKVs, task.HomeDir)
 		m.log.Info("续接恢复使用任务载体 HOME", "task", taskID, "home_dir", task.HomeDir)
 	}
+	envKVs = m.resumeEnvWithArtifacts(envKVs, taskID)
 	// 名字与正文都必须从落盘现场取：这里没有派发请求。B229 §2.5.2 续接不再
 	// 解析——首回合之后协调者侧的「最新版」可能已经变了，续接必须看到与会话
 	// 开始时同一份世界（契约 §4.3）。
@@ -3538,6 +3566,12 @@ func (m *Manager) handleResult(taskID string, ev executor.AdapterEvent) {
 	// Manager.Stop 与 reconcileExecutorGone 那两条「先落事件后迁移、迁移失败」
 	// 的真实缺口（另见 B97）。
 	_ = m.sweep(taskID)
+	// B452 S4：只读任务完成即自动归档（不在 waiting_review 停留）。另起 goroutine：Done 会停
+	// executor、关事件通道，在中介循环里同步调用等于停自己。回合失败不自动归档——交人裁决。
+	if r.OK && cur.Mode == proto.TaskModeReadonly {
+		m.log.Info("只读任务回合完成，触发自动归档", "task", taskID, "machine", cur.Target)
+		go m.autoArchiveReadonly(taskID, "completed")
+	}
 }
 
 // transitToReview 把任务迁入 waiting_review；若当前状态不允许直跳（典型为回答-续跑
@@ -3801,6 +3835,7 @@ func (m *Manager) ResumeTask(taskID string) bool {
 		envKVs = withCarrierHome(envKVs, task.HomeDir)
 		m.log.Info("启动恢复使用任务载体 HOME", "task", taskID, "home_dir", task.HomeDir)
 	}
+	envKVs = m.resumeEnvWithArtifacts(envKVs, taskID)
 	// 名字与正文都必须从落盘现场取（B229 §2.5.2，同 resumeForContinue）。
 	discText, derr := m.loadPersistedDiscipline(taskID)
 	switch {

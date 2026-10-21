@@ -360,6 +360,11 @@ var agentdCmd = &cobra.Command{
 		} else if err := srv.RecoverOnStartup(mgr.ResumeTask, mgr.SweepTaskProcs, logger); err != nil {
 			return abortBoot(fmt.Errorf("启动恢复: %w", err))
 		}
+		// B452：只读任务 completed 之后、自动归档之前若 agentd 重启，任务会停在 waiting_review
+		// 占着名额与工作树——对外服务前补做归档（终态回调已在 SetManager 时接好）。
+		mgr.ArchiveCompletedReadonly()
+		// B452 S8：产物目录保留期清扫（启动一次，之后每小时）；保留期每轮现读活配置。
+		go mgr.RunArtifactsRetention(wdCtx, func() time.Duration { return srv.Conf()().ArtifactsRetention() }, time.Hour)
 		if err := srv.StartPreviewServices(wdCtx); err != nil {
 			return abortBoot(fmt.Errorf("启动预览服务: %w", err))
 		}
