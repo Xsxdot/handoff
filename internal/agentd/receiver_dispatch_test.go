@@ -159,12 +159,17 @@ func TestB23327FrozenRemoteTargetRejectedWithoutDispatch(t *testing.T) {
 	}
 }
 
-// TestB23327OrdinaryRemoteBindingRejectedWithoutDispatch 普通派发选到的载体
-// 机器不是本机时，同一道闸。
-func TestB23327OrdinaryRemoteBindingRejectedWithoutDispatch(t *testing.T) {
+// TestB452OrdinaryRemoteBindingForwardsWithoutLocalDispatch 普通派发选到的载体
+// 机器不是本机时，受理机转发到载体机而不在本机开工；载体机不可达 → 502 点名机器。
+//
+// 协调者授权改写（2026-10-21）：本用例原名 TestB23327OrdinaryRemoteBindingRejectedWithoutDispatch，
+// 锁的是 B233.27 的「400 接收机不是载体登记机」；B452 S3 以跨机转发取代该 400。
+// 远端用「起后即关」的本地 httptest 地址（确定的连接被拒），不依赖网络。
+// 不断言「若请求已送达」后缀：connection refused 时它本不该出现（roadmap B448 残余）。
+func TestB452OrdinaryRemoteBindingForwardsWithoutLocalDispatch(t *testing.T) {
 	env := newReceiverTestEnv(t)
 	ctr := wrapDispatchCounter(env.srv)
-	putTarget(t, env.srv, "linux-01", "192.0.2.9:7777")
+	putTarget(t, env.srv, "linux-01", deadPeerAddr(t))
 	putOnlineCarrier(t, mustScheduling(t, env.srv), scheduling.Carrier{
 		Name: "muse", Machine: "linux-01", CLI: "fake",
 		HomeDir: "~/.handoff/home/muse", Credential: scheduling.CredentialStandalone,
@@ -174,7 +179,9 @@ func TestB23327OrdinaryRemoteBindingRejectedWithoutDispatch(t *testing.T) {
 		t.Fatalf("SetDefaultCarrier: %v", err)
 	}
 	rr := postDispatch(t, env.srv, dispatchBody(env.projectID, ""))
-	assertReceiverNotCarrierError(t, rr)
+	if rr.Code != http.StatusBadGateway || !strings.Contains(rr.Body.String(), "linux-01") {
+		t.Fatalf("派发响应=(%d,%s)，want 502 且点名 linux-01", rr.Code, rr.Body.String())
+	}
 	if ctr.n != 0 {
 		t.Fatalf("非本机普通派发调用了 Dispatch %d 次，want 0", ctr.n)
 	}

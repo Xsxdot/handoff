@@ -139,6 +139,16 @@ func (p *b452Pair) carrierCount(t *testing.T, carrier string) int {
 	return runningCountIn(t, p.a.srv.autoLedger, "carrier/"+carrier)
 }
 
+// deadPeerAddr 返回一个确定「连接被拒」的地址：起一个本地 httptest 服务后立即关闭。
+// 不用 TEST-NET 之类的真实地址——没有代理时那种拨号会挂到拨号超时，测试变慢变抖。
+func deadPeerAddr(t *testing.T) string {
+	t.Helper()
+	ts := testhttp.NewServer(t, http.NotFoundHandler())
+	addr := strings.TrimPrefix(ts.URL, "http://")
+	ts.Close()
+	return addr
+}
+
 // TestB452PairFrozenDispatchOverRealHTTP 是段 0 第 1 条承重假设：A 经 clientForTarget(t452-linux)
 // 发出带冻结身份的派发，B 用既有冻结分支建任务；名额只在 B 的 AdmitFrozen 里占（共享账本 +1）。
 // 不改产品代码，只验证夹具与既有 wire 能承载 S3 的转发。

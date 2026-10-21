@@ -7,7 +7,6 @@ import (
 	"context"
 	"encoding/json"
 	"io"
-	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -199,19 +198,14 @@ func TestB452ForwardSquadPicksRemoteMember(t *testing.T) {
 	p.stopOnB(t, task.ID)
 }
 
-// V3(c)：B 够不着 → 502 点名机器并含「若请求已送达」；两机零任务、名额全 0。
+// V3(c)：B 够不着（起后即关的本地地址）→ 502 点名机器；两机零任务、名额全 0。
 func TestB452ForwardUnreachableRemote502(t *testing.T) {
 	p := newB452Pair(t, nil)
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	dead := ln.Addr().String()
-	_ = ln.Close()
-	p.a.setTargets(t, map[string]string{b452MachineB: dead})
+	p.a.setTargets(t, map[string]string{b452MachineB: deadPeerAddr(t)})
 	code, body := b452Post(t, p.a, p.body(`,"receiver":"`+b452CarrierB+`"`), false)
-	if code != http.StatusBadGateway || !strings.Contains(body, b452MachineB) || !strings.Contains(body, "若请求已送达") {
-		t.Fatalf("够不着应 502 点名 %s 且含「若请求已送达」，得 %d %s", b452MachineB, code, body)
+	// 不断言「若请求已送达」后缀：连接被拒时它本不该出现（roadmap B448 残余，协调者 2026-10-21）
+	if code != http.StatusBadGateway || !strings.Contains(body, b452MachineB) {
+		t.Fatalf("够不着应 502 点名 %s，得 %d %s", b452MachineB, code, body)
 	}
 	if p.a.taskCount(t) != 0 || p.b.taskCount(t) != 0 || p.carrierCount(t, b452CarrierB) != 0 {
 		t.Fatalf("零任务零名额：A=%d B=%d count=%d", p.a.taskCount(t), p.b.taskCount(t), p.carrierCount(t, b452CarrierB))
