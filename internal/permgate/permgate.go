@@ -195,7 +195,17 @@ func (g *Gate) Judge(req Request, scope Scope) Verdict {
 // 数据经 URL 外带的风险由审批链拦凭据读取兜底。黑名单仍生效——用户自定义黑名单是
 // 显式意图（可用来封某些域名）。截断已在 Judge 入口先行升级（Q5 顺序：截断 → 黑名单 → 放行）。
 // 只认 adapter 结构化出的 Tool=webfetch，不从文本猜（Tool=other 仍走 judgeCommand）。
+//
+// 形状守卫（B460 修复轮 1 N4）：放行只给「纯抓取」载荷——Command 与 Paths 都为空。
+// adapter 产出的抓取请求从不带这两项；带了说明载荷形状异常（或 adapter 把别的工具误标），
+// 不能凭 Tool 标签放行，回落与未知工具相同的命令判据（judgeCommand：黑名单/包装器/白名单，
+// 其余 Consult）。
 func (g *Gate) judgeWebFetch(req Request) Verdict {
+	if req.Command != "" || len(req.Paths) > 0 {
+		g.log.Info("网页抓取载荷带命令或路径，按普通请求判定",
+			"url", req.URL, "has_command", req.Command != "", "paths", len(req.Paths))
+		return g.judgeCommand(req.Text)
+	}
 	if hit, rule := g.match(req.Text); hit {
 		return Verdict{Action: Escalate, Reason: "网页抓取描述命中黑名单", Rule: rule}
 	}
