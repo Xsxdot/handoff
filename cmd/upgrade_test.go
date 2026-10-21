@@ -86,6 +86,8 @@ type fakePeer struct {
 	pullCalls int
 	pushCalls int
 	lastSum   string
+	lastTag   string // B462：推送的 tag
+	lastBody  []byte // B462：推送的归档原文
 }
 
 func (p *fakePeer) Status(ctx context.Context) (*proto.StatusResp, error) {
@@ -114,9 +116,10 @@ func (p *fakePeer) Status(ctx context.Context) (*proto.StatusResp, error) {
 	return resp, nil
 }
 
-func (p *fakePeer) PushUpdate(_ context.Context, tag, sum string, _ []byte, _ bool) (*proto.UpdateResp, error) {
+func (p *fakePeer) PushUpdate(_ context.Context, tag, sum string, body []byte, _ bool) (*proto.UpdateResp, error) {
 	p.pushCalls++
 	p.lastSum = sum
+	p.lastTag, p.lastBody = tag, body
 	if p.m != nil {
 		p.m.pushed = true
 		if p.m.pushErr != nil {
