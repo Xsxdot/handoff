@@ -299,18 +299,22 @@ type artifactsClient interface {
 // 同机判据（Q8）：本机能 Stat 到 artifactsDir 且是目录 → 直接用原路径（路径含完整任务 UUID，
 // 他机不可能恰有同名目录）；否则经控制门面下载，解到 os.MkdirTemp 的新目录。
 func localArtifactsPath(ctx context.Context, cli artifactsClient, taskID, machine, artifactsDir string) (string, error) {
-	if artifactsDir != "" {
-		if fi, err := os.Stat(artifactsDir); err == nil && fi.IsDir() {
-			entries, err := os.ReadDir(artifactsDir)
-			if err != nil {
-				return "", fmt.Errorf("读本机产物目录 %s: %w", artifactsDir, err)
-			}
-			if len(entries) == 0 {
-				return "", nil
-			}
-			slog.Info("产物目录本机可读，直接使用原路径", "task", taskID, "dir", artifactsDir)
-			return artifactsDir, nil
+	// 版本偏斜：执行机不报 artifacts_dir（B452 之前的 agentd）即视为无产物，不尝试下载。
+	// 老执行机没有产物接口，下载只会换来一个误导性的 404/「版本过旧」。
+	if artifactsDir == "" {
+		slog.Info("任务未报告产物目录，按无产物处理", "task", taskID, "machine", machine)
+		return "", nil
+	}
+	if fi, err := os.Stat(artifactsDir); err == nil && fi.IsDir() {
+		entries, err := os.ReadDir(artifactsDir)
+		if err != nil {
+			return "", fmt.Errorf("读本机产物目录 %s: %w", artifactsDir, err)
 		}
+		if len(entries) == 0 {
+			return "", nil
+		}
+		slog.Info("产物目录本机可读，直接使用原路径", "task", taskID, "dir", artifactsDir)
+		return artifactsDir, nil
 	}
 	rc, err := cli.Artifacts(ctx, taskID, machine)
 	if err != nil {

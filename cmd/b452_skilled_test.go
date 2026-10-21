@@ -533,3 +533,22 @@ func TestB452ReadonlyDirtyNoticeAndBaseCommit(t *testing.T) {
 		t.Fatalf("分支形态脏树应拒发且零派发，得 %v %v", err, b.requests)
 	}
 }
+
+// 修复轮第 4 条：版本偏斜——任务没有 artifacts_dir（老执行机不报该键）即视为无产物：不尝试下载，
+// stdout 只有最终文本，退出 0。
+func TestB452DispatchWaitNoArtifactsDirMeansNoArtifacts(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir()) // 红时会真下载：不得落到系统临时目录
+	a := newB452Agentd(t, &b452Agentd{
+		task:      proto.Task{ID: "t1", State: proto.TaskStateRunning, Target: "linux-01"},
+		stream:    b452StreamEvents(b452CompletedEv(2, "完成")),
+		artifacts: b452ServeTarGz(b452ArtifactsTarGz(t, map[string]string{"r.md": "R"})),
+	})
+	stdout, stderr, err := runB452CLI(t, a, t.TempDir(), "dispatch", "--prompt", "x", "--project", "p",
+		"--wait", "--no-terminal")
+	if err != nil || ExitCode(err) != 0 || stdout != "完成\n" {
+		t.Fatalf("应只输出最终文本并退出 0，得 stdout=%q stderr=%s err=%v", stdout, stderr, err)
+	}
+	if n := a.count("GET /api/tasks/t1/artifacts"); n != 0 {
+		t.Fatalf("无 artifacts_dir 时不得尝试下载，得 %d 次", n)
+	}
+}
