@@ -630,6 +630,8 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 		s.writeDispatchError(w, req.ProjectID, err)
 		return
 	}
+	// B453 Q6：落点机查载体所选账号，把名/kind/代理快照交编排落任务行（Manager 不调编制域）。
+	acct := s.dispatchAccount(binding.Carrier)
 	task, err := s.mgr.Dispatch(r.Context(), orchestration.DispatchReq{
 		ProjectID: req.ProjectID, ProjectName: req.ProjectName,
 		PlanB64: req.PlanB64, PlanName: req.PlanName, Target: binding.Target,
@@ -642,7 +644,10 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 		ResolveDefaultBase: req.ResolveDefaultBase,
 		LocalBaseBranch:    req.LocalBaseBranch,
 		Worktree:           req.Worktree, NewWorktree: req.NewWorktree, BaseCommit: req.BaseCommit,
-		Mode: req.Mode,
+		Mode:         req.Mode,
+		Account:      acct.Name,
+		AccountKind:  acct.Kind,
+		AccountProxy: acct.Proxy,
 	})
 	if err != nil {
 		s.writeDispatchError(w, req.ProjectID, err)

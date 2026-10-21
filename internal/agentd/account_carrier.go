@@ -90,3 +90,22 @@ func (s *Server) hostWakeProxy(account string) string {
 	}
 	return v.Account.Proxy
 }
+
+// dispatchAccount 是派发落点的账号快照：按载体名读载体再读其账号。读不到载体（准入刚读过，
+// 极罕见）或账号 → 零值并 Warn，任务按未选账号跑，不因账号读面拦派发。
+func (s *Server) dispatchAccount(carrierName string) carrierAccount {
+	if strings.TrimSpace(carrierName) == "" || s.scheduling == nil {
+		return carrierAccount{}
+	}
+	c, err := s.scheduling.Carrier(carrierName)
+	if err != nil {
+		s.log.Warn("派发读载体以取账号快照失败，按未选账号派发", "carrier", carrierName, "cause", err)
+		return carrierAccount{}
+	}
+	acct := s.accountOfCarrier(c)
+	if acct.Name != "" {
+		s.log.Info("派发带载体账号快照", "carrier", carrierName, "account", acct.Name,
+			"account_kind", acct.Kind, "proxy_set", acct.Proxy != "")
+	}
+	return acct
+}

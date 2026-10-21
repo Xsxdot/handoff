@@ -66,6 +66,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/permgate"
 	"github.com/Xsxdot/handoff/internal/prochost"
 	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/proxycfg"
 	"github.com/Xsxdot/handoff/internal/store"
 	"github.com/Xsxdot/handoff/internal/workspace"
 	"github.com/google/uuid"
@@ -981,6 +982,11 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 		HomeDir:  taskHomeDir,
 		Carrier:  req.Carrier,
 		Squad:    req.Squad,
+		// B453 Q6：载体所选账号快照（名、kind、代理）随创建写入，续接/恢复从任务行取——
+		// 运行中/续接的任务不随账号代理后改而变（与 HomeDir 同一快照语义）。
+		Account:      req.Account,
+		AccountKind:  req.AccountKind,
+		AccountProxy: req.AccountProxy,
 		// PlanPath 不在 SetTaskField 白名单，只能在创建时一并写入
 		PlanPath:  planPath,
 		State:     proto.TaskStatePending,
@@ -1045,6 +1051,7 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 		m.log.Info("载体 HOME 已覆盖 executor 环境", "task", taskID,
 			"home_override", true, "home_dir", task.HomeDir)
 	}
+	startEnv = m.withAccountProxy(startEnv, task, "首回合")
 	// B452 F17：所有任务的执行器环境都带产物目录（Q7 乙），放在 HOME 覆盖之后，二者互不覆盖。
 	startEnv = withArtifactsDir(startEnv, artifactsDir)
 	var approval executor.ApprovalClient
@@ -1178,6 +1185,19 @@ func withCarrierHome(env []string, homeDir string) []string {
 		out = append(out, kv)
 	}
 	return append(out, "HOME="+expandCarrierHome(homeDir))
+}
+
+// withAccountProxy 以任务行的账号代理快照覆盖 executor 环境的代理键（B453 spec S4、plan Q6）：
+// 账号代理 > env 文件 > 机器进程环境；NO_PROXY 不覆盖、缺失时补 localhost（opencode 执行器经
+// localhost 与自己的 serve 通信）。未选账号或账号未填代理时原样返回（与改动前逐字节一致）。
+// 三处 env 组装（首回合、续接恢复、启动恢复）都在载体 HOME 之后调它，规则本体在 proxycfg。
+func (m *Manager) withAccountProxy(env []string, task *proto.Task, where string) []string {
+	if task == nil || strings.TrimSpace(task.AccountProxy) == "" {
+		return env
+	}
+	m.log.Info("账号代理已覆盖 executor 环境", "task", task.ID, "where", where,
+		"account", task.Account, "account_kind", task.AccountKind, "proxy", proxycfg.Mask(task.AccountProxy))
+	return proxycfg.WithProxyEnv(env, task.AccountProxy)
 }
 
 // userHomeDir 是本机主 HOME 取值缝（B233.14）：生产恒为 os.UserHomeDir；
@@ -1544,6 +1564,7 @@ func (m *Manager) resumeForContinue(ctx context.Context, taskID string, ad execu
 		envKVs = withCarrierHome(envKVs, task.HomeDir)
 		m.log.Info("续接恢复使用任务载体 HOME", "task", taskID, "home_dir", task.HomeDir)
 	}
+	envKVs = m.withAccountProxy(envKVs, task, "续接恢复")
 	envKVs = m.resumeEnvWithArtifacts(envKVs, taskID)
 	// 名字与正文都必须从落盘现场取：这里没有派发请求。B229 §2.5.2 续接不再
 	// 解析——首回合之后协调者侧的「最新版」可能已经变了，续接必须看到与会话
@@ -3845,6 +3866,7 @@ func (m *Manager) ResumeTask(taskID string) bool {
 		envKVs = withCarrierHome(envKVs, task.HomeDir)
 		m.log.Info("启动恢复使用任务载体 HOME", "task", taskID, "home_dir", task.HomeDir)
 	}
+	envKVs = m.withAccountProxy(envKVs, task, "启动恢复")
 	envKVs = m.resumeEnvWithArtifacts(envKVs, taskID)
 	// 名字与正文都必须从落盘现场取（B229 §2.5.2，同 resumeForContinue）。
 	discText, derr := m.loadPersistedDiscipline(taskID)

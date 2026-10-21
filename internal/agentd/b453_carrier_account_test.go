@@ -226,3 +226,39 @@ func TestRouteNamedRemoteCarrierUsesUnifiedCriterion(t *testing.T) {
 		t.Fatalf("点名他机载体而账号无额度应拒并点名，得 %v", err)
 	}
 }
+
+// TestDispatchCarrierAccountSnapshotReachesTaskRow 锁 Q6 的 gateway 半边：落点机派发查载体所选
+// 账号，把名/kind/代理交编排落任务行；任务快照 wire 不带代理串。
+func TestDispatchCarrierAccountSnapshotReachesTaskRow(t *testing.T) {
+	env := newReceiverTestEnv(t)
+	putTarget(t, env.srv, "linux-01", env.srv.conf().Listen)
+	svc := mustScheduling(t, env.srv)
+	acc := accounts.New(env.srv.SchedulingRegistry())
+	env.srv.SetAccounts(acc)
+	svc.SetAccounts(acc)
+	putTestAccount(t, acc, "cx", "linux-01", "socks5://u:secret@127.0.0.1:7897")
+	putOnlineCarrier(t, svc, scheduling.Carrier{
+		Name: "self-box", Machine: "linux-01", CLI: "fake", HomeDir: "",
+		Credential: scheduling.CredentialStandalone, MaxConcurrency: 1, Account: "cx",
+	})
+	rr := postDispatch(t, env.srv, dispatchBody(env.projectID,
+		`,"carrier":"self-box","target":"","frozen_target":"linux-01","executor":"fake","home_dir":""`))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("冻结派发应 200，实得 %d（%s）", rr.Code, rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), "secret") || strings.Contains(rr.Body.String(), "7897") {
+		t.Fatalf("任务快照 wire 不得带账号代理：%s", rr.Body.String())
+	}
+	task := decodeDispatchTask(t, rr)
+	stored, err := env.srv.st.GetTask(task.ID)
+	if err != nil {
+		t.Fatalf("读任务行: %v", err)
+	}
+	if stored.Account != "cx" || stored.AccountKind != accounts.KindCodex || stored.AccountProxy != "socks5://u:secret@127.0.0.1:7897" {
+		t.Fatalf("任务行账号快照 = %q/%q/%q", stored.Account, stored.AccountKind, stored.AccountProxy)
+	}
+	stop := runAction(env.srv, actionRequest(task.ID, "stop", ""), env.srv.handleStop)
+	if stop.Code != http.StatusOK {
+		t.Fatalf("清理任务返回 %d: %s", stop.Code, stop.Body.String())
+	}
+}

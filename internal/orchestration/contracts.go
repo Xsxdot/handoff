@@ -89,6 +89,12 @@ type DispatchReq struct {
 	// proto.TaskModeReadonly=只读形态——强制 detached 托管树、不建分支、与
 	// Branch/NewBranch/Worktree 互斥、completed 后自动归档。其他值拒派（400）。
 	Mode string
+	// Account / AccountKind / AccountProxy 是落点机 gateway 查得的载体所选账号快照
+	// （B453 plan Q6）：Manager 不调编制域（receiver_bind 边界），账号信息只经这里进入。
+	// 空 = 未选账号；AccountProxy 空 = 账号未填代理，执行器环境与今天一致。
+	Account      string
+	AccountKind  string
+	AccountProxy string
 }
 
 // RecoverReport 是显式恢复操作的结果快照，原样作为 HTTP 响应体回给 CLI。

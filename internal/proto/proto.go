@@ -325,6 +325,12 @@ type Task struct {
 	// ArtifactsDir 是执行机上本任务的产物目录绝对路径 <DataDir>/tasks/<id>/artifacts
 	// （B452 F11）。线注解，不入库：由执行机在任务读出时盖章，路径布局即契约。
 	ArtifactsDir string `json:"artifacts_dir,omitempty"`
+	// Account / AccountKind / AccountProxy 是载体所选账号的派发快照（B453 plan Q6）：落本机
+	// 任务库，续接/恢复据此覆盖执行器代理键。线注解 json:"-"：不进任务快照 wire——代理串
+	// 可能带密码，且这三项不是对外承诺（F17 只增 rerun_of/rerun_by）。
+	Account      string `json:"-"`
+	AccountKind  string `json:"-"`
+	AccountProxy string `json:"-"`
 }
 
 // 任务形态取值（B452 F1）。wire 上缺席或空串等于 TaskModeBranch。
