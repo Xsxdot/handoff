@@ -17,3 +17,4 @@
 - F7 build-deploy.sh：参数解析 32-43（非法 os/arch exit 2）、脏计数 48（`--untracked-files=no`）、STAMP 53-57、OUT 59、前端 65-79、go build 86-90、注入自检 98-103、webui 嵌入测试 116。无打包、无 checksums。mobile/toolchain_test.go:101 约束该脚本不得含 `checklinkname`。
 - 交叉：cards/B453-charter-1 相对 d905c3ab 也改 cmd/agentd.go（setupLedger 内 SetHostAPI 附近，与本卡 685-698 不同块）、README 中英、SKILL.md、CHANGELOG → 施工排序，后合者 rebase。
 - plan r1 落盘：docs/superpowers/plans/b462-plan.md（待拍板 Q1–Q9；另记 spec S3 括注「无 DSN 即不可读」不准确——无 DSN 走 SQLite 回退仍挂载，cmd/agentd.go:675-677）。
+- 主会话拍板 Q1–Q9 全按荐；Q8 认可偏离 spec 字面；spec 修订 r1.1（S3 括注：无 DSN 走 SQLite 属可读；真机托管改系统级 systemd-run / 临时 plist）。

@@ -1,11 +1,23 @@
 # B462 实现计划：本机构建换版 `handoff upgrade --from`
 
-- 状态：**待拍板**（2026-10-22 plan subagent 出稿 r1；主会话拍板后逐条回写「待拍板」并改本行为「已拍板（日期）」）。
+- 状态：**已拍板（2026-10-22，主会话；用户离开期授权）**。Q1–Q9 全部按「荐」裁决，见下方「拍板」节；Q8 明确认可偏离 spec 字面（系统级 systemd-run / 临时 plist + bootstrap），spec 同步修订 r1.1。
 - 输入：`docs/superpowers/specs/b462.md` r1（L2，形态甲：本地盯）；台账 `docs/superpowers/specs/b462-ledger.md`（「plan」节 F1–F7 是本稿全部代码事实的取证记录，命令与关键输出都在那里）。
 - 基线：分支 `cards/B462-charter-1` @ `ab03d907`（代码 = origin/main `d905c3ab`）。
 - 读者：零上下文执行者。故事编号沿用 spec：S1–S5。行号以基线为准，漂移时以符号名为准。
 
 ---
+
+## 拍板（2026-10-22，主会话）
+
+- Q1 荐：复用 `release.Installer` + `http.NewFileTransport`；执行者踩到意外可在 `internal/release` 包内退回直读文件（属决策权限内，须在交回物披露）。
+- Q2 荐：S3 判据对所有来源、远端与本机一律适用，判据落 `internal/upgrade`；控制台路径不填换版前状态 = 未知不检查。
+- Q3 荐：探针 `GET /api/disciplines`（200 可读 / 503 不可读 / 404 未知 / 其他错误）。
+- Q4 荐：前出错 = 未知不检查；后 503 立即判「新版已上线但账本未挂载」；后出错重试 3 次仍不行判「账本是否挂载未能确认」。
+- Q5 荐：保留已打开句柄、只重试失败步骤；停机先关句柄再返回。
+- Q6 荐：`build-deploy.sh --pack <目录> <os/arch>...`；目录须不存在或为空，否则退 2；无 `--pack` 逐字节不变。
+- Q7 荐：拒绝已跟踪改动 + 未跟踪 `*.go` 与 `web/` 下文件；其余未跟踪不拦。
+- Q8 荐（**认可偏离 spec 字面**）：linux-01 用系统级 `systemd-run --unit=<测试名> -p Restart=always -p KillMode=process --collect`（root 未开 linger，`--user` 会随 ssh 会话退出）；本机用临时 plist（KeepAlive=true）+ `launchctl bootstrap`。测试单元名须带 `b462` 前缀，绝不与 `handoff-agentd.service` / `dev.gosuper.handoff.agentd` 同名。
+- Q9 荐：超时原因后追加 `WaitVersion` 错误原文。
 
 ## 待拍板（出稿者推荐，主会话裁决）
 
