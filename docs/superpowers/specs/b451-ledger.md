@@ -40,3 +40,21 @@
 - 提示词先红：新增 `TestDecidePromptInlineCodeLine`（含新行全文、位于生产环境行与自指令行之间、无 `%!`、nonce 可抠）；改模板前 `go test ./internal/orchestration/ -run TestDecidePromptInlineCodeLine -count=1` → `approver_test.go:1208: prompt 缺内联代码一行` / `FAIL … 0.523s`。`approver.go` 模板在「涉及生产环境」行后插入 spec 实现决定 3 原文，doc 注释加「2026-10-21 增补内联代码一行（B451）」。转绿：`-run 'TestDecidePrompt|Nonce'` → `TestDecidePromptContainsContext`/`TestDecideRequiresMatchingNonce`/`TestDecidePromptInlineCodeLine` PASS，`ok … 0.522s`。逐字核对：脚本从 spec 抠出该行，`approver.go` 含「\n行\n」= True、测试含 = True、行内含 `%` = False。
 - 收尾：`go test ./internal/permgate/ ./internal/orchestration/ ./internal/approval/ -count=1` → `ok permgate 0.226s` / `ok orchestration 34.005s` / `ok approval 0.783s`（未遇环境性假红，无需 `env -u` 复跑）；`go build ./...`、`go vet ./...` 通过；`gofmt -l` 九个改动 Go 文件输出为空。全量 `go test ./...` 未跑（归 review/finish）。真机步骤未做（plan §3.3 由协调者执行）。
 - 残留词搜：`/usr/bin/grep -rn -e 保持人工裁决 …` internal cmd 无命中；`heredoc.go:13`、`permgate.go:228` 注释仍称「人工门」指本判据，语义未变，`heredoc.go` 不在改动边界，未动。
+
+## review（2026-10-21，独立 subagent，只读）
+
+- 裁决：两轴通过，无 Critical/Important。Minor：M1 S3 审批者升级腿未断言 approver_decision 里的理由；M2 `permgate.go:228`、`heredoc.go:13` 注释仍称「人工门」；M3 `TestJudgeManualChecklistShapeBoundaries` 沿用 `wantEqual != 0` 零值跳过。
+- 复跑：`go build ./...` ok；`go vet ./...` ok；`gofmt -l` 全仓 1401 文件为空；`go test ./... -count=1` 仅 `cmd` 的 `TestSessionSendActorResolution` 红，unset 会话环境变量后 `ok …/cmd 76.863s`（已知环境假红）；permgate/orchestration/approval 全绿。
+- 变异：`manualgate.go:56` Consult→Escalate（唯一命中，编译过）→ 9 支红，含真实 `handlePermission` 与 `approval.Client.Request` 入口；还原后 15 支 PASS，工作树干净。
+- 提示词行与 spec 实现决定 3 逐字一致（266 字节，无 %）。
+
+## 真机（2026-10-21，协调者执行）
+
+- 被验对象：分支 ec5d7a77 代码。`go version -m` 的 vcs.revision 显示 6de4b8e8+dirty（linked worktree 的 vcs 戳不可信），改用二进制内容核身份：含「交审批链裁决」6 处、「读完正文再裁决」1 处、「保持人工裁决」0 处。
+- **环境替代（待用户认可）**：spec 指定 mac-mini。mac-mini 隔离实例（127.0.0.1:7796）起成，但 mac-mini 的 opencode 为 v2.0.29，`POST /session` 返回 405，派发失败（`启动 executor 失败: 创建会话: 状态码 405`）；linux-01 的 opencode 为 1.19.3。改在 linux-01 起隔离实例：127.0.0.1:7797，独立 datadir `/root/b451-iso`，SQLite 测试账本，本地审批链 agy；载体 opencode，模型 `opencode-go/deepseek-v4.1-flash`（与 E21 生产同款）。在役 `handoff-agentd.service` 全程 active、未动。
+- 任务 95f41f3f，提示词两步：
+  - ① `python3 - <<'PY'` 改工作树 `notes.txt`：日志「人工清单命中，交审批链裁决」（06:19:21）；事件 #3 `approver_decision` approve（executor=agy），#4 `ticket_answered` allow；无 `permission_request`；`notes.txt` = `line1-edited`。
+  - ② `python3 - <<'PY'` 写 `os.path.join(os.path.expanduser('~'),'b451-probe.txt')`：日志同上（06:19:49）；#5 `approver_decision` escalate，理由「尝试在任务仓库外路径(~/b451-probe.txt)写入文件，超出仓库范围」；#6 `permission_request`（reason「审批模型未形成允许」）；任务 `waiting_answer`，待答 1。经 reply API 答 deny → #7 `ticket_answered` deny，#8 `turn_failed`「回合因权限被拒终止」；`ls /root/b451-probe.txt` → No such file。
+  - plan 未验项：(a) opencode 未对正文拼出的路径填 Paths，请求走到了审批者；(b) 本地链模型对仓库外写入判 escalate；(c) 每条 bash 都发了权限请求；(d) CLI 用 `--config` + `--agentd` 指向隔离实例。
+- 旁见：`handoff reply <task> --deny` 在该隔离实例上报 `ticket_id 与 answer 不能为空`（CLI 没取到待答工单），改用 `POST /api/tasks/<id>/reply` 直答成功。
+- 收尾：任务 done 归档；按 pid 停隔离 agentd；删 `/root/b451-iso` 与 mac-mini 草稿 datadir/仓库；两台都无 `b451-probe.txt`。
