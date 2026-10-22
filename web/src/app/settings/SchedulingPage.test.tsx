@@ -74,7 +74,7 @@ describe('SchedulingPage', () => {
     expect(screen.getByRole('combobox', { name: 'CLI' })).toBeVisible()
     expect(screen.getByRole('option', { name: 'agy' })).toBeInTheDocument()
     expect(screen.getByRole('combobox', { name: '账号' })).toBeVisible()
-    expect(screen.getByRole('option', { name: '无账号 · 主 HOME（不参与额度判断）' })).toBeInTheDocument()
+    expect(screen.getByRole('option', { name: '无账号 · 主 HOME' })).toBeInTheDocument()
     expect(screen.queryByLabelText('凭据来源')).toBeNull()
     expect(screen.queryByLabelText('HOME 档案')).toBeNull()
   })
@@ -137,7 +137,7 @@ describe('SchedulingPage', () => {
     await user.type(screen.getByLabelText('载体名'), 'freek')
     await user.selectOptions(screen.getByLabelText('机器'), '本机')
     await user.selectOptions(screen.getByLabelText('CLI'), 'grok')
-    await user.selectOptions(screen.getByLabelText('账号'), '')
+    await user.selectOptions(screen.getByLabelText('账号'), 'none')
     await user.click(screen.getByRole('button', { name: '保存' }))
     expect(putCarrier).toHaveBeenCalledWith('freek', 0, expect.objectContaining({ machine: '本机', cli: 'grok', no_account: true }))
     expect(vi.mocked(putCarrier).mock.lastCall?.[2]).not.toHaveProperty('login')
@@ -218,7 +218,7 @@ describe('SchedulingPage', () => {
 
   it('shows an actionable CAS conflict and retains the modal', async () => {
     const user = userEvent.setup()
-    vi.mocked(getSquads).mockResolvedValue({ carriers: [{ name: 'mbp', machine: 'local', cli: 'opencode', home_dir: '/h', status: 'online', version: 3 }], squads: [], running: [] })
+    vi.mocked(getSquads).mockResolvedValue({ carriers: [{ name: 'mbp', machine: 'local', cli: 'opencode', home_dir: '/h', status: 'online', version: 3, no_account: true }], squads: [], running: [] })
     vi.mocked(putCarrier).mockRejectedValue(new Error('409: 版本冲突，请刷新后重试'))
     render(<SchedulingPage />)
     await user.click(await screen.findByRole('button', { name: '编辑 mbp' }))
@@ -308,13 +308,50 @@ describe('SchedulingPage 编辑弹窗对齐原型（B287）', () => {
       render(<SchedulingPage />)
       await user.click(await screen.findByRole('button', { name: '登记载体' }))
       const dlg = screen.getByRole('dialog')
+      // 新建缺省第一条兼容登录（本机 opencode → login-og-mini），不是「无账号」。
+      expect(within(dlg).getByLabelText('账号')).toHaveValue('login-og-mini')
       await user.selectOptions(within(dlg).getByLabelText('机器'), 'linux-01')
       const values = () => [...within(dlg).getByLabelText('账号').querySelectorAll('option')].map((o) => o.value)
-      expect(values()).toEqual(['login-og-main', 'login-og-team', 'login-deepseek-key', ''])
+      expect(values()).toEqual(['login-og-main', 'login-og-team', 'login-deepseek-key', 'none'])
       await user.selectOptions(within(dlg).getByLabelText('机器'), '本机')
-      expect(values()).toEqual(['login-og-mini', 'login-deepseek-key-mini', ''])
-      await user.selectOptions(within(dlg).getByLabelText('账号'), '')
+      expect(values()).toEqual(['login-og-mini', 'login-deepseek-key-mini', 'none'])
+      await user.selectOptions(within(dlg).getByLabelText('账号'), 'none')
       expect(within(dlg).getByText(/无账号 · 主 HOME/)).toBeVisible()
+    })
+
+    it('编辑存量未选载体：显示不可提交占位、只改模型被拦；选择后才发 login 而非 no_account（C1）', async () => {
+      const user = userEvent.setup()
+      vi.mocked(getSquads).mockResolvedValue({
+        carriers: [{ name: 'legacy', machine: 'linux-01', cli: 'opencode', home_dir: '', status: 'online', version: 3 }],
+        squads: [], running: [],
+      })
+      render(<SchedulingPage />)
+      await user.click(await screen.findByRole('button', { name: '编辑 legacy' }))
+      const dlg = screen.getByRole('dialog')
+      expect(within(dlg).getByLabelText('账号')).toHaveValue('')
+      expect(within(dlg).getByRole('option', { name: '未选登录（请选择）' })).toBeInTheDocument()
+      await user.type(within(dlg).getByLabelText('模型'), 'sonnet')
+      await user.click(within(dlg).getByRole('button', { name: '保存' }))
+      expect(putCarrier).not.toHaveBeenCalled()
+      expect(await within(dlg).findByRole('alert')).toHaveTextContent('请先选择一条登录')
+      // 选一条登录后保存：只发 login，绝不因为原来是「未选」而发 no_account。
+      await user.selectOptions(within(dlg).getByLabelText('账号'), 'login-og-main')
+      await user.click(within(dlg).getByRole('button', { name: '保存' }))
+      expect(vi.mocked(putCarrier).mock.lastCall?.[2]).toMatchObject({ login: 'login-og-main', model: 'sonnet' })
+      expect(vi.mocked(putCarrier).mock.lastCall?.[2]).not.toHaveProperty('no_account')
+    })
+
+    it('HOME 变化才触发检测：带登录载体改选「无账号 · 主 HOME」→ 检测一次（C1）', async () => {
+      const user = userEvent.setup()
+      vi.mocked(getSquads).mockResolvedValue({
+        carriers: [{ name: 'mimo', machine: 'linux-01', cli: 'opencode', home_dir: '~/.handoff/home/og-main', status: 'online', version: 7, login: 'login-og-main', account_id: 'opencode-go:og-main', account_name: 'og-main' }],
+        squads: [], running: [],
+      })
+      render(<SchedulingPage />)
+      await user.click(await screen.findByRole('button', { name: '编辑 mimo' }))
+      await user.selectOptions(screen.getByLabelText('账号'), 'none')
+      await user.click(screen.getByRole('button', { name: '保存' }))
+      expect(detectCarrier).toHaveBeenCalledWith('mimo')
     })
 
     it('编辑带登录的载体：预选当前登录，保存回传 login；改选无账号则回 no_account', async () => {
@@ -333,7 +370,7 @@ describe('SchedulingPage 编辑弹窗对齐原型（B287）', () => {
       expect(vi.mocked(putCarrier).mock.lastCall?.[2]).not.toHaveProperty('home_dir')
 
       await user.click(await screen.findByRole('button', { name: '编辑 mimo' }))
-      await user.selectOptions(within(screen.getByRole('dialog')).getByLabelText('账号'), '')
+      await user.selectOptions(within(screen.getByRole('dialog')).getByLabelText('账号'), 'none')
       await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: '保存' }))
       expect(vi.mocked(putCarrier).mock.lastCall?.[2]).not.toHaveProperty('login')
       expect(vi.mocked(putCarrier).mock.lastCall?.[2]).toMatchObject({ no_account: true })
@@ -349,6 +386,9 @@ describe('SchedulingPage 编辑弹窗对齐原型（B287）', () => {
       const row = (await screen.findByText('dp', { selector: 'strong' })).closest('article')!
       expect(within(row).getByText('已失效')).toHaveClass('q-out')
       expect(row.textContent).toContain('暂停派发')
+      // dispatchHint 页面层：登录已失效 → 暂停派发并说明恢复条件（M8）
+      expect(row.textContent).toContain('所用登录已失效')
+      expect(row.textContent).toContain('重新登录后自动恢复')
       expect(within(row).getByRole('button', { name: '复制登录命令' })).toBeVisible()
       expect(row.textContent).not.toContain('凭据指纹与所选账号不一致')
       await user.click(within(row).getByRole('button', { name: '编辑 dp' }))
@@ -364,8 +404,22 @@ describe('SchedulingPage 编辑弹窗对齐原型（B287）', () => {
       render(<SchedulingPage />)
       await user.click(await screen.findByRole('button', { name: '登记载体' }))
       const dlg = screen.getByRole('dialog')
+      // 没有兼容登录才缺省「无账号 · 主 HOME」（原型 settings.html:595）。
+      expect(within(dlg).getByLabelText('账号')).toHaveValue('none')
       const link = within(dlg).getByRole('link', { name: '新增登录' })
       expect(link).toHaveAttribute('href', '/accounts?login=new&agent=opencode')
+    })
+
+    it('空态链接本机别名时用 discovery.self 的机器名补 machine（M2）', async () => {
+      const user = userEvent.setup()
+      __setAccountsForTest([], [{ machine: 'linux-01', self: true, at: new Date().toISOString() }])
+      render(<SchedulingPage />)
+      await user.click(await screen.findByRole('button', { name: '登记载体' }))
+      const dlg = screen.getByRole('dialog')
+      const link = within(dlg).getByRole('link', { name: '新增登录' })
+      expect(link).toHaveAttribute('href', '/accounts?login=new&machine=linux-01&agent=opencode')
+      // 空态按 kind 补括注（原型 settings.html:603 kindsOf 拼接）。
+      expect(dlg.textContent).toContain('（OpenCode Go / 第三方 API key）')
     })
 
     it('载体行显示所选账号的当前状态：正常报每周「已用% 倒计时」，问题报状态短语（R8 修 2）', async () => {
@@ -374,6 +428,7 @@ describe('SchedulingPage 编辑弹窗对齐原型（B287）', () => {
           { name: 'mimo', machine: 'linux-01', cli: 'opencode', home_dir: '', status: 'online', version: 7, login: 'login-og-main', account_id: 'opencode-go:og-main', account_name: 'og-main' },
           { name: 'gk', machine: 'macbook-pro', cli: 'grok', home_dir: '', status: 'online', version: 2, login: 'login-grok-mbp', account_id: 'grok:grok-mbp', account_name: 'grok-mbp' },
           { name: 'ag', machine: 'linux-01', cli: 'agy', home_dir: '', status: 'online', version: 3, login: 'login-agy-main', account_id: 'agy:agy-main', account_name: 'agy-main' },
+          { name: 'out', machine: 'linux-01', cli: 'opencode', home_dir: '', status: 'online', version: 1, login: 'login-og-team', account_id: 'opencode-go:og-team', account_name: 'og-team' },
         ],
         squads: [], running: [],
       })
@@ -382,6 +437,11 @@ describe('SchedulingPage 编辑弹窗对齐原型（B287）', () => {
       const mimo = await rowOf('mimo')
       expect(mimo.textContent).toMatch(/OpenCode Go.*62%\s*4d 2h/)
       expect(within(mimo).getByText('62%')).toHaveClass('q-warn')
+      // 载体行账号名与行内 HOME（I6 补回）
+      expect(mimo.textContent).toContain('og-main')
+      expect(mimo.textContent).toContain('~/.handoff/home/og-main')
+      // 无额度账号的载体行报「无额度」（I6 补回）
+      expect((await rowOf('out')).textContent).toContain('无额度')
       const gk = await rowOf('gk')
       expect(gk.textContent).toContain('△ 凭据已过期')
       expect(gk.textContent).not.toContain('grok login')

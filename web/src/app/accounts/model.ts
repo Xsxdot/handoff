@@ -398,7 +398,12 @@ export function nextProbeText(a: AccountView, now: number): string {
   const t = Date.parse(a.last_attempt_at)
   if (Number.isNaN(t)) return '所在机随即探测'
   const next = t + (a.interval_minutes ?? DEFAULT_INTERVAL) * M
-  return a.state === 'fail' ? `失败后退避重试，不晚于 ${countdown(next - now)} 后` : `下次 ${countdown(next - now)} 后`
+  const left = next - now
+  if (a.state === 'fail') {
+    // 倒计时已到点（「即将」）时整句换成「即将进行」，不写「不晚于 即将 后」。
+    return left <= 0 ? '失败后退避重试，即将进行' : `失败后退避重试，不晚于 ${countdown(left)} 后`
+  }
+  return left <= 0 ? '下次探测即将进行' : `下次 ${countdown(left)} 后`
 }
 
 /** extraUsageText 额外额度一句话；无可报数值返回空串。 */

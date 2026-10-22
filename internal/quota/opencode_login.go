@@ -31,10 +31,11 @@ import (
 // loginQueryTimeout 是读 opencode.db 的上限：库被 opencode 写锁住时 busy_timeout 等到这里为止。
 const loginQueryTimeout = 5 * time.Second
 
-// loginAccount 是 opencode.db 里的当前登录账号。token/org 是凭据，只交出网与抹除，不落日志。
+// loginAccount 是 opencode.db 里的当前登录账号。token/org 是凭据，只交出网与抹除，不落日志；
+// email 只用于登录行的可读 label（自动起名），不进身份材料（身份仍是 id/org）。
 type loginAccount struct {
-	id, org, token string
-	expiry         *time.Time // token_expiry；NULL = 未知（不按过期处理）
+	id, org, token, email string
+	expiry                *time.Time // token_expiry；NULL = 未知（不按过期处理）
 }
 
 func (l loginAccount) expired(now time.Time) bool { return l.expiry != nil && !l.expiry.After(now) }
@@ -76,9 +77,9 @@ func readLoginAccount(home, rel string) (loginAccount, error) {
 	case !active.Valid || strings.TrimSpace(active.String) == "":
 		return loginAccount{}, fail(CategoryCredentialMissing, "%s 无登录账号（当前没有选中的账号，在该机运行 opencode 登录账号）", path)
 	}
-	var token sql.NullString
+	var token, email sql.NullString
 	var expiry sql.NullInt64
-	err = db.QueryRowContext(ctx, "SELECT access_token, token_expiry FROM account WHERE id = ?", active.String).Scan(&token, &expiry)
+	err = db.QueryRowContext(ctx, "SELECT access_token, token_expiry, email FROM account WHERE id = ?", active.String).Scan(&token, &expiry, &email)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		return loginAccount{}, fail(CategoryCredentialMissing, "%s 无登录账号（当前账号在 account 表里不存在）", path)
@@ -87,7 +88,8 @@ func readLoginAccount(home, rel string) (loginAccount, error) {
 	case !token.Valid || strings.TrimSpace(token.String) == "":
 		return loginAccount{}, fail(CategoryCredentialInvalid, "%s 的当前登录账号缺少 access_token，在该机运行 opencode 重新登录", path)
 	}
-	acc := loginAccount{id: active.String, org: strings.TrimSpace(org.String), token: token.String}
+	acc := loginAccount{id: active.String, org: strings.TrimSpace(org.String), token: token.String,
+		email: strings.TrimSpace(email.String)}
 	if expiry.Valid {
 		t := time.UnixMilli(expiry.Int64)
 		acc.expiry = &t
@@ -98,6 +100,11 @@ func readLoginAccount(home, rel string) (loginAccount, error) {
 // loginDSN 是探测器打开 opencode.db 的唯一 DSN：file: URI + mode=ro，驱动以 SQLITE_OPEN_URI
 // 打开——只读连接（写语句报 SQLITE_READONLY）、库不存在不建库；WAL 下照常读到最新提交。
 // handoff 不写 opencode.db（spec r1.3），这一条由 TestOpencodeGoLoginDSNIsReadOnly 锁住。
+//
+// 为什么不用 immutable=1：immutable 告诉 SQLite 库文件永不改变，连接会跳过 WAL 与共享内存
+// 索引，未 checkpoint 的已提交事务（opencode 正在运行时很常见）就读不到——Q5 会据此把刚刷新的
+// 登录误判成「凭据变化/过期」。mode=ro 会碰 -shm，但它只是 WAL 协调用的共享索引，不是凭据，
+// 只读连接也不改写库内容；两害相权取能读到最新提交的 mode=ro。
 func loginDSN(path string) string {
 	return (&url.URL{Scheme: "file", Path: filepath.ToSlash(path), RawQuery: "mode=ro&_pragma=busy_timeout(3000)"}).String()
 }

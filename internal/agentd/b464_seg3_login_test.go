@@ -103,6 +103,9 @@ func withLoginHome(t *testing.T, main string) {
 }
 
 func TestLoginHomeCreatesIsolatedHomeAndCommandTable(t *testing.T) {
+	prev := loginGOOS
+	t.Cleanup(func() { loginGOOS = prev })
+	loginGOOS = "linux" // 这条锁命令表与建目录，不锁平台分支；darwin 上的 claude 拒绝另测。
 	main := t.TempDir()
 	withLoginHome(t, main)
 	env, _ := newSeg3Env(t, "self", nil)
@@ -185,6 +188,24 @@ func TestLoginHomeClaudeDarwinMainHomeOnly(t *testing.T) {
 	loginGOOS = "linux"
 	if code, body := seg3Req(t, env, http.MethodPost, "/api/logins/home", `{"agent":"claude","dir":"cl-linux"}`, nil); code != http.StatusOK {
 		t.Fatalf("linux 上 claude 新增登录应 200：%d %s", code, body)
+	}
+}
+
+// TestLoginHomeClaudeDarwinRejectsWithKeychainReason 另钉一支：darwin 上 claude 新增登录被拒
+// 400，文案必须说明凭据在系统钥匙串（Q6 分支 b）；不是只写「只允许主 HOME」。
+func TestLoginHomeClaudeDarwinRejectsWithKeychainReason(t *testing.T) {
+	main := t.TempDir()
+	withLoginHome(t, main)
+	env, _ := newSeg3Env(t, "self", nil)
+	prev := loginGOOS
+	t.Cleanup(func() { loginGOOS = prev })
+	loginGOOS = "darwin"
+	code, body := seg3Req(t, env, http.MethodPost, "/api/logins/home", `{"agent":"claude","dir":"cl-kc"}`, nil)
+	if code != http.StatusBadRequest || !strings.Contains(body, "钥匙串") {
+		t.Fatalf("darwin 上 claude 新增登录应 400 并说明钥匙串：%d %s", code, body)
+	}
+	if _, err := os.Stat(filepath.Join(main, ".handoff", "home", "cl-kc")); !os.IsNotExist(err) {
+		t.Fatalf("被拒的 claude 登录不得建目录：%v", err)
 	}
 }
 

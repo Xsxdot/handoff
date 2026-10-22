@@ -187,7 +187,8 @@ func (a *OpencodeGo) Logins(home string) ([]LoginFinding, []error) {
 	if cred, err := a.loginCred(home); err == nil {
 		refreshable, updated := loginRefreshInfo(home, a.dbRelPath(), cred.login.id)
 		out = append(out, LoginFinding{Kind: KindOpencodeGo, Source: sourceLoginDB,
-			Fingerprint: Fingerprint(cred.identity), ExpiresAt: cred.login.expiry, Refreshable: refreshable, ChangedAt: updated})
+			Fingerprint: Fingerprint(cred.identity), Label: cred.login.email,
+			ExpiresAt: cred.login.expiry, Refreshable: refreshable, ChangedAt: updated})
 	} else if p, bad := classifyAbsent(err, dbPath); bad {
 		log().Warn("opencode-go opencode.db 看不清，本轮不认该来源", "home", home, "cause", p)
 		problems = append(problems, p)

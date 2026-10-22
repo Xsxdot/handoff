@@ -941,6 +941,11 @@ describe('账号 wire（B453 F1–F9 / B464 A1–A6）', () => {
       expect(Object.prototype.hasOwnProperty.call(ok, key)).toBe(false)
     }
     expect(ok.reading!.windows.map((w) => w.key)).toEqual(['session', 'weekly', 'monthly'])
+    // I5：窗口的 group 键在场样本（缺席 ≠ 空串）；plan_type / used_percent 数值类型 / last_attempt_at
+    expect(ok.reading!.windows.map((w) => w.group)).toEqual([undefined, 'Go', undefined])
+    expect(ok.reading!.plan_type).toBe('Go')
+    expect(typeof ok.reading!.windows[0].used_percent).toBe('number')
+    expect(ok.last_attempt_at).toMatch(/^2026-/)
     expect(ok.reading!.windows[0].resets_at).toMatch(/^2026-/)
     expect(ok.carriers).toEqual(['mimo'])
     expect(ok.logins.map((l) => l.state)).toEqual(['ok', 'gone'])
@@ -969,6 +974,7 @@ describe('账号 wire（B453 F1–F9 / B464 A1–A6）', () => {
     }
     const fail = byName.get('grok-mbp')!
     expect(fail.state).toBe('fail')
+    expect(fail.last_attempt_at).toMatch(/^2026-/)
     expect(Object.prototype.hasOwnProperty.call(fail, 'reading')).toBe(false)
     expect(fail.last_error).toEqual({ category: 'credential_expired', message: '凭据已过期，等待 grok CLI 刷新' })
     // recover_at 可选，服务端推导（越线窗口最晚重置）；不阻挡/未知时键缺席

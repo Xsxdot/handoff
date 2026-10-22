@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest'
 import type { AccountView, AccountWindowView, LoginView } from '../../api/accounts'
 import {
   barWindows, byProblem, countdown, dispatchHint, failBrief, homeText, hotWindow, KIND_ORDER, loginCommandText, loginCredText,
-  loginStateHint, loginStateLabel, machinesText, quotaAccounts, recoverAt, sameMachine, statusPhrase, supportsProbe, tightest,
+  loginStateHint, loginStateLabel, machinesText, nextProbeText, quotaAccounts, recoverAt, sameMachine, statusPhrase, supportsProbe, tightest,
   toneClass, updatedText, weeklyWindow, windowLabel, winTone,
 } from './model'
 
@@ -184,6 +184,15 @@ describe('账号展示规则', () => {
     expect(countdown(30_000)).toBe('1m')
     expect(countdown(2 * H + 41 * 60_000)).toBe('2h41m')
     expect(countdown(98 * H)).toBe('4d 2h')
+  })
+
+  it('下次探测：倒计时「即将」时整句改「即将进行」，不出现「不晚于 即将 后」/「下次 即将 后」', () => {
+    const fail = acct('fail', 'fail', undefined, { last_attempt_at: iso(-20 * 60_000) })
+    expect(nextProbeText(fail, NOW)).toBe('失败后退避重试，即将进行')
+    const ok = acct('ok', 'ok', undefined, { last_attempt_at: iso(-20 * 60_000) })
+    expect(nextProbeText(ok, NOW)).toBe('下次探测即将进行')
+    const nextFail = acct('next-fail', 'fail', undefined, { last_attempt_at: iso(-60_000) })
+    expect(nextProbeText(nextFail, NOW)).toBe('失败后退避重试，不晚于 14m 后')
   })
 
   it('同机判据：名字相等；载体在本机别名时账号不在任何远端机上即算本机', () => {

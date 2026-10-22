@@ -193,8 +193,8 @@ func (s *Service) Reconcile(d Discovery) (ReconcileResult, error) {
 // 不同身份撞同一自动名的并发窗口接受（plan Q2：极低频，改名可修）。
 func (s *Service) ensureAccount(id string, f FoundLogin, machine string, at time.Time,
 	defs map[string]Account, taken map[string]bool) (bool, error) {
-	if _, ok := defs[id]; ok {
-		return false, nil
+	if existing, ok := defs[id]; ok {
+		return false, s.backfillLabel(id, existing, f, machine, defs)
 	}
 	a := Account{ID: id, Kind: f.Kind, Provider: f.Provider, Label: f.Label, Fingerprint: f.Fingerprint,
 		Name: autoName(f.Kind, f.Provider, f.Label, f.Fingerprint, taken), CreatedBy: machine, CreatedAt: at}
@@ -222,6 +222,35 @@ func (s *Service) ensureAccount(id string, f FoundLogin, machine string, at time
 	logger().Info("发现新账号", "id", id, "name", a.Name, "kind", a.Kind, "machine", machine,
 		"label_set", a.Label != "")
 	return true, nil
+}
+
+// backfillLabel 只给已存在账号补可读 label（I1：邮箱优先后来的来源也能补上），不改名字与
+// 其他发现字段。label 只在变化时写一次；并发下他机先写成功按已补处理。
+func (s *Service) backfillLabel(id string, existing Account, f FoundLogin, machine string, defs map[string]Account) error {
+	if f.Label == "" || existing.Label == f.Label {
+		return nil
+	}
+	cur, version, err := s.definition(id)
+	if err != nil {
+		return err
+	}
+	next := cur
+	next.Label = f.Label
+	body, err := json.Marshal(next)
+	if err != nil {
+		return fmt.Errorf("编码账号 %s 失败: %w", id, err)
+	}
+	if _, err := s.repo.Put(KindAccount, id, version, body, "accounts:"+machine); err != nil {
+		if errors.Is(err, schedclient.ErrCASConflict) {
+			logger().Info("补账号 label 时他机已写，跳过", "id", id, "machine", machine)
+			return nil
+		}
+		logger().Error("补账号 label 失败", "id", id, "machine", machine, "cause", err)
+		return fmt.Errorf("补账号 %s 的 label 失败: %w", id, err)
+	}
+	defs[id] = next
+	logger().Info("补账号 label", "id", id, "name", next.Name, "machine", machine)
+	return nil
 }
 
 // upsertLogin 合并写发现器负责的登录字段与按证据推导的状态；内容不变不写。人写字段（代理）

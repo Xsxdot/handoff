@@ -12,12 +12,14 @@
 
 ### 升级须知
 
+- **账号与额度（B464）：账号改为「自动发现的身份」，登录是「机器 × HOME × 来源」的凭据落点。** 旧的 `handoff account add` 式手填登记入口不再有（永不做），控制台账号页改为「＋ 新增登录」（建 HOME + 给命令）；载体对话框从「选账号」改为「选登录」。载体行不再有 `account`/`credential`/`cred_fingerprint` 键，存量载体首次由所在机发现轮按规则自动迁移（HOME 与模型前缀消歧），迁不了的读作「未选登录」、照常派发但保存前须选一条登录或「无账号 · 主 HOME」。混版本期间旧机按账号名、新机按账号 id 记撞额度重跑排除集，最多多换回同一账号一次。
 - **账号与额度（B453）：机队同批升级之后，再在载体上绑定账号。** 旧版 agentd 改写载体（登记/编辑/检测）会丢掉载体的 `account` 键；旧版 CLI 把新的 `notice` 工单打成 `kind: permission` 并给出 `--approve/--deny`。三台都到本版本前不要选账号，选了也要等全队升级后再检查一遍载体。
 - **工单 kind 新增 `notice`（B453，改 B460 F2）。** `--wait` / `wait --final` 的退出码 5 工单块多一种：`kind: notice`，全文取请求体 `notice`，**不打 `reason:` 行**，答复行只有一条 `reply: handoff reply <任务ID> --ticket <工单ID> --answer "已知悉"`；`permission` / `question` 块不变。解析工单块的脚本要认这个新 kind。
 - **待答工单与回合结论的次序（B453，改 B460 F4，窄改）。** 任务处于 `waiting_review` 且有待答的 **`notice`** 工单时，「有待答工单（5）」先于「回合已结束（3）」；`permission` / `question` 工单与 `completed` / `failed` 下的次序都不变（仍是回合已结束 0/3 优先）。
 
 ### 新增
 
+- **账号产品化：各机自动发现已登录账号，载体选「登录」（B464）。** 各机 agentd 启动时与随探测节拍扫描主 HOME 与 `~/.handoff/home/*` 一层，认出 opencode-go（`auth.json` API key 与 `opencode.db` 登录两来源）、codex、grok、agy、claude 与第三方 API key 的身份，写进共享账本并按身份去重（同一身份跨机归并为一个账号，账号 id 由 kind + 身份短指纹确定性导出；邮箱 label 优先作自动名）。一个账号可有多机多登录（凭据各自独立）。载体不再选账号而选**登录**：HOME、凭据、代理都由登录决定，HOME 由服务端按登录镜像（凭据永不复制）。控制台账号页改为六组 + 登录子表 + 「＋ 新增登录」三步（选机器/agent → 建 0700 HOME 并给出登录命令 → 每 5s 轮询 + 立即检查），页头「上次发现 · 立即发现」。CLI 新增 `handoff account discover`，`account list` 账号行下逐条登录行，`squad list` 账号格为 `账号 · 机器 HOME`。统一准入新增「所选登录已失效（发现扫不到凭据）暂停派发」，已过期只标红。代理从账号改挂登录。需挂共享账本（`ledger.dsn`）。
 - **`handoff upgrade --from <目录>`：用本机构建换版（B462）。** 来源换成 `scripts/build-deploy.sh --pack <目录> <os/arch>...` 的产物（每平台一个 `handoff_<tag>_<os>_<arch>.{tar.gz|zip}` + `checksums.txt`，形态与 release 资产逐字一致；tag 为 HEAD 前 12 位，打包拒绝脏树）。巡检「最新」行显示 `<tag>（本机构建 <目录>）`；`--now` 远端一律推送，sha 校验、自检、`.prev`、重启、等新版上线与 release 来源同一路径；目录缺某平台的包时该机单独失败并点名资产。与 `--rollback` 互斥。
 - **换版后账本可读校验（B462）。** `upgrade --now`（任何来源，远端与本机）在新版上线后探 `GET /api/disciplines`：换版前账本可读、换版后回 503 判失败「新版已上线但账本未挂载」，探针连错 3 次判「账本是否挂载未能确认」；换版前不可读或未知不检查。本机换版前账本可读时，触发重启后会等新版上线（120s）再探。控制台「执行机升级」路径行为不变。
 - 熟练工定义 `finish-check`（`skills/handoff/skilled/finish-check.json`）：charter finish 的只读机械检查——gofmt、vet、新鲜全量（已知抖动单包复跑判别）、README 命令表对 `--help`、残余是否入 roadmap、CHANGELOG 是否提到本卡——交熟练工，主会话只读结论。（B461）

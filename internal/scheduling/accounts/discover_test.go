@@ -124,6 +124,50 @@ func TestReconcileAutoNameCollisionAndSourcesDoNotMerge(t *testing.T) {
 	}
 }
 
+// TestReconcileBackfillsAccountLabelWithoutRenaming 锁 I1：先无 label 建账号，后来的来源带上
+// 邮箱 → 只补 label，不改自动名；label 不变的重扫不再写（版本不动）。
+func TestReconcileBackfillsAccountLabelWithoutRenaming(t *testing.T) {
+	svc := accounts.New(newMem())
+	first := reconcile(t, svc, "m1", mainHome(ogFound("opencode.db", fpA)))
+	if first.NewAccounts != 1 {
+		t.Fatalf("应新建一个账号：%+v", first)
+	}
+	views, err := svc.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(views) != 1 || views[0].Account.Name != "opencode-go-aaaa" || views[0].Account.Label != "" {
+		t.Fatalf("首轮自动名/label 不对：%+v", views)
+	}
+	if views[0].Version != 1 {
+		t.Fatalf("首轮账号版本 = %d", views[0].Version)
+	}
+	reconcile(t, svc, "m1", mainHome(accounts.FoundLogin{Kind: accounts.KindOpencodeGo,
+		Source: "opencode.db", Fingerprint: fpA, Label: "u@example.com"}))
+	views, err = svc.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(views) != 1 {
+		t.Fatalf("补 label 不得建新账号：%+v", views)
+	}
+	if views[0].Account.Name != "opencode-go-aaaa" || views[0].Account.Label != "u@example.com" {
+		t.Fatalf("应只补 label、名字不变：%+v", views[0].Account)
+	}
+	if views[0].Version != 2 {
+		t.Fatalf("补 label 应写一次账号行，版本 = %d", views[0].Version)
+	}
+	reconcile(t, svc, "m1", mainHome(accounts.FoundLogin{Kind: accounts.KindOpencodeGo,
+		Source: "opencode.db", Fingerprint: fpA, Label: "u@example.com"}))
+	views, err = svc.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if views[0].Version != 2 {
+		t.Fatalf("label 未变的重扫不得再写，版本 = %d", views[0].Version)
+	}
+}
+
 // TestReconcileLoginStateTransitions 锁段 1 的两态迁移：扫不到 → 已失效（不删行）、再现 →
 // 正常、同槽位换身份 → 改挂账号；出错的 HOME 不标已失效；discovery_run 每轮写。
 func TestReconcileLoginStateTransitions(t *testing.T) {
