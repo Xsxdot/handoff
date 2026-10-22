@@ -553,3 +553,8 @@
 - Minor：m1 `server.go:1596` 注释仍写「SessionRef 冻结镜像不加字段」，需改并记 B233.2 镜像加字段（进程内 DTO、不过 wire，循 B435.2 Q2 甲先例）；m2 向导勾远端时展示含 ssh 行、复制只给 remote_run（登录行两按钮同样不一致）；m3 `homeChanged` 对存量绝对路径/`~` 写法误判 HOME 变（多一次检测，无害）；m4 `backfillLabel` 非空不同即覆写，同 id 两登录不同邮箱会每轮互写——只在原 label 为空时补；m5 `opencode_login.go:79` 旧版 opencode.db 无 email 列时整条 OAuth 登录判凭据缺失——改容错；m6 段 6 改 `shows an actionable CAS conflict` 夹具未逐条列（已核语义不变）；m7 `account probe --help` 与 README 未说明也接受账号 id。
 - 未验真机处置：claude 跨 Mac 归并（S7/R2）与 claude 载体派任务（S7）列为放行前置；S5 删凭据换登录、S2 关对话框由定时发现挂上、R9(a) 按替代判据（R2/R6、R2 发现、单测）；R10 正式归 finish-check；R14 归 finish；N1 修后补 R9c（session:2 再发一条消息看续轮代理日志）。
 - 处置：N1 与 m1–m5、m7 派段 8。
+
+## 真机 R8 claude 载体与 S7 承诺变更（2026-10-22）
+
+- **R8 claude 载体派任务：通过。** 隔离 mac 建 `t464-claude`（t464-mac、cli claude、login-9424b4c0cad7dab9 主 HOME）→ 检测 online（v2）；首次派发 500「裁决 socket 路径过长（172 字节，上限 107）」——隔离数据目录在长 scratch 路径下的测试环境问题（claude 执行器用 `perm.sock`），以 `/tmp/t464m` 软链指向原数据目录、配置 `datadir: /tmp/t464m` 重启后重派任务 0a17f380 回文 `ok-r8-claude`（rc=0），已归档。
+- **S7 claude 跨 Mac 归并：用户裁定不做真机验证，转 roadmap**（用户原话「B」）。mac-pro `claude auth status` → loggedIn False。依据见 spec 头部承诺变更行；finish 落 roadmap「B464 残余」。
