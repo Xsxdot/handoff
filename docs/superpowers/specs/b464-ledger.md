@@ -409,3 +409,12 @@
 - 偏离与自主决定已核：1（fixture 换样本）§9(4) 内；2（修两处既有 lint error：MobileWorkspace 三元语句、TerminalTab 未用参数）不在授权列表但已披露、零产品行为，认可；3（删 `defaultHomeDir`）plan 段 5 明文；4/6 内部实现 §9 内；5（本机别名不预选 machine）认可，R11 时核链接行为；7（既有测试重写清单）记入 review 待审项。
 - 本地复跑（合并提交 682ebf3c 树）：`npm run typecheck` 退出 0；`npx vitest run` → `Test Files 150 passed (150)`、`Tests 2016 passed (2016)`；`npm run lint` → `✖ 33 problems (0 errors, 33 warnings)`；`go build ./...` 通过。
 - 审批：段 5 守护循环自动放行若干 python 编辑；人工放行 2 张（`npm run lint >/tmp/lint.out`、`rm -f /tmp/lint.out`），循环随后补 npm 检查放行规则。
+
+## 真机 R11 / R13（2026-10-22，主会话；隔离 t464-mac 换上合并树 695a3676 的 embedweb 二进制，t464-linux 换 bin-br3-linux 同树）
+
+- **R13 agy token 软链：通过。** 首次派发打到了旧二进制（linux 实例仍是 8cd3a9d6，段 4 前），任务目录 token 为普通文件——身份未钉死导致，作废（任务 9238c515 done）。换版后重派 `t464-agy`（login-f7aede1b494475f3，主 HOME）任务 cc16c3a8：`agyhome/.gemini/antigravity-cli/antigravity-oauth-token` → `/root/.gemini/antigravity-cli/antigravity-oauth-token`（symbolic link），`.orig-google-oauth` 同为软链；原件 `regular file 5374653`，inode 与 R0-9 读数一致、mtime 未变。回文 `ok-r13`。
+- **R11 浏览器形态（browser-worker，内置浏览器 1440×900 与 375×812，截图 scratch/r11/00–11）**：六组同序与空态文案逐字一致；登录子表列与原型一致，多登录（codex 两条一条已过期、og-xsx 跨两机一条带代理）呈现正确，已过期/已失效红字；apikey na 无窗口、无立即探测；fail 账号显示「没有可用登录」；新增登录第 1 步步骤与提示一致；载体对话框 机器→CLI→模型→账号登录→只读信息，无手填 HOME/凭据模式，同账号同机多登录「账号 — HOME」，末项无账号；窄屏账号区在设置页、空组隐藏、无横向溢出。
+  - 「立即发现」首次对 t464-linux 返回 405：同为旧二进制（无 `/api/accounts/discover` 机端路由）；换版后 `POST /api/accounts/discover` → 两机 `ok:true`。
+  - 「未选登录 · 照常派发」与原型「不进派发」相反：spec SC3 / plan Q13 已裁以 spec 为准，非缺陷。
+  - **待修**：(a) 编辑存量「未选」载体时下拉预选「无账号 · 主 HOME」（value 空串），保存即静默改成无账号——违反 plan「编辑必须二选一」，Important；(b) 探测行「不晚于 即将 后」残句；(c) 本机别名时空态链接缺 `machine=`（段 5 偏离 5）；(d) 文案与原型差异：向导第 1 步标签/按钮、下拉末项「（不参与额度判断）」、空态缺「（OpenCode Go / 第三方 API key）」括注。
+  - 环境噪声（非本卡）：侧栏「会话列表已断开：本机未配置控制台人名 console_user」与 `/api/sessions` 403——隔离配置未设 console_user。
