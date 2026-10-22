@@ -66,6 +66,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/permgate"
 	"github.com/Xsxdot/handoff/internal/prochost"
 	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/proxycfg"
 	"github.com/Xsxdot/handoff/internal/store"
 	"github.com/Xsxdot/handoff/internal/workspace"
 	"github.com/google/uuid"
@@ -99,6 +100,11 @@ type Manager struct {
 	// terminal 存 terminalNotifierBox：B452 编排内部终态（只读自动归档）的门面回调，
 	// 组装期写、运行期读，故用 atomic.Value 而非裸字段。
 	terminal atomic.Value
+	// quotaHandler 存 quotaHandlerBox：B453 撞额度回调（标账号、只读重跑），组装期写、运行期读。
+	quotaHandler atomic.Value
+	// quotaInFlight 记正在撞额度处置的只读任务（taskID → true）：处置期间任务仍 running，
+	// 迟到的失败结果（如 executor 被停时的 EOF）必须丢弃，否则会二次重跑。
+	quotaInFlight sync.Map
 	// ads 是 executor 注册表（name → Adapter），构造后只读 map，并发安全依旧。
 	// 任务经 task.Executor（adapterFor）或缺省名（resolveExecutor）路由到对应实现。
 	ads map[string]executor.Adapter
@@ -981,6 +987,13 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 		HomeDir:  taskHomeDir,
 		Carrier:  req.Carrier,
 		Squad:    req.Squad,
+		// B453 Q6：载体所选账号快照（名、kind、代理）随创建写入，续接/恢复从任务行取——
+		// 运行中/续接的任务不随账号代理后改而变（与 HomeDir 同一快照语义）。
+		Account:      req.Account,
+		AccountKind:  req.AccountKind,
+		AccountProxy: req.AccountProxy,
+		// B453 F17：撞额度重跑出来的新任务指回原任务（随创建写入；rerun_by 由原任务回写）
+		RerunOf: req.RerunOf,
 		// PlanPath 不在 SetTaskField 白名单，只能在创建时一并写入
 		PlanPath:  planPath,
 		State:     proto.TaskStatePending,
@@ -1045,6 +1058,7 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 		m.log.Info("载体 HOME 已覆盖 executor 环境", "task", taskID,
 			"home_override", true, "home_dir", task.HomeDir)
 	}
+	startEnv = m.withAccountProxy(startEnv, task, "首回合")
 	// B452 F17：所有任务的执行器环境都带产物目录（Q7 乙），放在 HOME 覆盖之后，二者互不覆盖。
 	startEnv = withArtifactsDir(startEnv, artifactsDir)
 	var approval executor.ApprovalClient
@@ -1178,6 +1192,19 @@ func withCarrierHome(env []string, homeDir string) []string {
 		out = append(out, kv)
 	}
 	return append(out, "HOME="+expandCarrierHome(homeDir))
+}
+
+// withAccountProxy 以任务行的账号代理快照覆盖 executor 环境的代理键（B453 spec S4、plan Q6）：
+// 账号代理 > env 文件 > 机器进程环境；NO_PROXY 不覆盖、缺失时补 localhost（opencode 执行器经
+// localhost 与自己的 serve 通信）。未选账号或账号未填代理时原样返回（与改动前逐字节一致）。
+// 三处 env 组装（首回合、续接恢复、启动恢复）都在载体 HOME 之后调它，规则本体在 proxycfg。
+func (m *Manager) withAccountProxy(env []string, task *proto.Task, where string) []string {
+	if task == nil || strings.TrimSpace(task.AccountProxy) == "" {
+		return env
+	}
+	m.log.Info("账号代理已覆盖 executor 环境", "task", task.ID, "where", where,
+		"account", task.Account, "account_kind", task.AccountKind, "proxy", proxycfg.Mask(task.AccountProxy))
+	return proxycfg.WithProxyEnv(env, task.AccountProxy)
 }
 
 // userHomeDir 是本机主 HOME 取值缝（B233.14）：生产恒为 os.UserHomeDir；
@@ -1453,6 +1480,9 @@ func (m *Manager) Continue(ctx context.Context, taskID, instructions string) (er
 	if err := m.transit(taskID, proto.TaskStateRunning, "continue"); err != nil {
 		return err
 	}
+	// B453 S7：waiting_review 下唯一可能挂着的是 notice 告知工单（Q8 事实）。续接即人已拍板接着干，
+	// 告知作废——留着它，续接回合进行中 --wait 会被陈旧告知立即以 5 打回。
+	VoidTicketsWithAudit(m.st, taskID, "continue：已续接，未确认的告知工单作废", m.log)
 	// 只有 taskID：经 adapterFor 解析该任务实际使用的 adapter（executor 已不在
 	// 按 ErrTaskNotRunning 同语义处置——Send 由 executor 实现方自身包装该哨兵）
 	ad, err := m.adapterFor(taskID)
@@ -1544,6 +1574,7 @@ func (m *Manager) resumeForContinue(ctx context.Context, taskID string, ad execu
 		envKVs = withCarrierHome(envKVs, task.HomeDir)
 		m.log.Info("续接恢复使用任务载体 HOME", "task", taskID, "home_dir", task.HomeDir)
 	}
+	envKVs = m.withAccountProxy(envKVs, task, "续接恢复")
 	envKVs = m.resumeEnvWithArtifacts(envKVs, taskID)
 	// 名字与正文都必须从落盘现场取：这里没有派发请求。B229 §2.5.2 续接不再
 	// 解析——首回合之后协调者侧的「最新版」可能已经变了，续接必须看到与会话
@@ -1781,9 +1812,16 @@ func (m *Manager) Done(ctx context.Context, taskID, note string) (outcome Termin
 //   - adapter.Stop 失败只 Warn 不中断：目的是让任务离开活跃态，executor 残留
 //     由执行者进程兜底，不能因为「停不掉进程」就让任务永远卡在 running
 func (m *Manager) Stop(ctx context.Context, taskID string) (outcome TerminalOutcome, err error) {
+	return m.stopWithReason(ctx, taskID, "协调者主动中止（handoff stop）", "stop")
+}
+
+// stopWithReason 是 Stop 的主体：reason 进 failed 事件原因，trigger 进日志与终态迁移审计。
+// 编排内部触发的终止（B453 撞额度处置，trigger=quota）复用同一条路径——停 executor、清扫、
+// 认领 failed、留存工作树——只换原因文本。
+func (m *Manager) stopWithReason(ctx context.Context, taskID, reason, trigger string) (outcome TerminalOutcome, err error) {
 	// 认领终态清扫，理由同 Done。见 sweepOwned 字段注释。
 	m.noteSweepOwned(taskID)
-	m.log.Info("stop 进入", "task", taskID)
+	m.log.Info("stop 进入", "task", taskID, "trigger", trigger)
 	defer func() {
 		if err != nil {
 			m.log.Error("stop 失败", "task", taskID, "cause", err)
@@ -1826,7 +1864,7 @@ func (m *Manager) Stop(ctx context.Context, taskID string) (outcome TerminalOutc
 	// 失败时不追加事件，任务停在旧状态可重试；崩在两步之间留下的是「failed 但缺
 	// 一条 failed 事件」，show 出来仍可裁决——旧形态「事件说终结了、状态还是
 	// running」只会让协调者干等到 2h 看门狗（handleResult 函数头的同一条理由）。
-	claimed, terr := m.transitClaim(taskID, proto.TaskStateFailed, "stop")
+	claimed, terr := m.transitClaim(taskID, proto.TaskStateFailed, trigger)
 	if terr != nil {
 		return TerminalOutcome{}, terr
 	}
@@ -1835,7 +1873,7 @@ func (m *Manager) Stop(ctx context.Context, taskID string) (outcome TerminalOutc
 		// 不释放、不重复追加事件（契约 §5.2 #11）。
 		return TerminalOutcome{}, fmt.Errorf("任务 %s 已在并发中被终结: %w", taskID, store.ErrBadTransit)
 	}
-	evt, err := m.st.AppendEvent(taskID, proto.EventTypeFailed, NewFailedPayload("协调者主动中止（handoff stop）", "", ""))
+	evt, err := m.st.AppendEvent(taskID, proto.EventTypeFailed, NewFailedPayload(reason, "", ""))
 	if err != nil {
 		return TerminalOutcome{}, fmt.Errorf("追加中止事件: %w", err)
 	}
@@ -1911,6 +1949,13 @@ func (m *Manager) RelayAnswer(taskID, ticketID, answer string) error {
 		return fmt.Errorf("解析工单 %s 请求体: %w", ticketID, err)
 	}
 	switch req.Kind {
+	case proto.TicketKindNotice:
+		// B453 Q7：系统告知只需人知悉——绝不回传执行器（回合早已结束，送进会话等于在原会话
+		// 续跑，那是 B459 接管的范围）。只记已送达，reply 回程照常 200。
+		m.log.Info("告知工单已获答复，只记送达不回传执行器", "task", taskID, "ticket", ticketID,
+			"answer", turn.TruncateRunes(answer, 40))
+		m.markDelivered(taskID, ticketID)
+		return nil
 	case "gate":
 		decision, reason := gateDecision(answer)
 		// ticket id 已按任务命名空间化（taskID:permID，见 handlePermission 的 why），
@@ -3480,6 +3525,10 @@ func (m *Manager) handleResult(taskID string, ev executor.AdapterEvent) {
 		m.log.Debug("任务已终结，忽略 result 事件", "task", taskID, "state", cur.State)
 		return
 	}
+	if m.quotaInFlightFor(taskID) {
+		m.log.Info("任务正在撞额度处置，忽略其间到达的 result 事件", "task", taskID, "ok", ev.Result.OK)
+		return
+	}
 	// 回合已收口（waiting_review）之后到达的**失败**结果一律丢弃：executor 进程
 	// 正常退出时读流会报 EOF，adapter 把它当执行终结投一条 result{OK:false}，
 	// 而这一回合的终态事件早已落库。真机两次实证（grok echo probe、codex 任务
@@ -3507,6 +3556,21 @@ func (m *Manager) handleResult(taskID string, ev executor.AdapterEvent) {
 	m.log.Debug("回合结果正文已准备传输", "task", taskID,
 		"ok", r.OK, "final_text_len", len([]rune(r.FinalText)),
 		"final_text_present", r.FinalText != "")
+	// B453 S6/S7：回合失败先分类。只读任务撞额度由处置 goroutine 接管（不迁 waiting_review、
+	// 不出 turn_failed——否则 --wait 先以 3 结束，看不到重跑链接）；分支任务照常收口，
+	// 在 turn_failed 之前开 notice 工单。
+	var quotaFail *QuotaFailure
+	if !r.OK {
+		if f, ok := m.classifyQuota(cur, quotaSourceText(r)); ok {
+			if cur.Mode == proto.TaskModeReadonly {
+				if m.beginReadonlyQuota(cur, f) {
+					return
+				}
+			} else {
+				quotaFail = &f
+			}
+		}
+	}
 	// 状态先就位：事件一落库就可被 WS 重放读到，晚于事件迁移等于放任协调者
 	// 在 running 上执行 done（详见函数头注释）
 	if err := m.transitToReview(taskID); err != nil {
@@ -3543,8 +3607,13 @@ func (m *Manager) handleResult(taskID string, ev executor.AdapterEvent) {
 		// 类型是 turn_failed 而不是 failed：上面 transitToReview 已经把任务迁到
 		// waiting_review，它**没有终结**。发 failed 会让 wait --follow 打出
 		// 「任务已失败」并以 0 退出，而此时任务好端端等着审（B100 两次真机实测）。
+		failReason := r.FailReason
+		if quotaFail != nil {
+			// 作废旧挂起工单之后、turn_failed 之前：告知工单不被作废，且被唤醒的客户端必能看到它
+			failReason = m.openQuotaNotice(cur, *quotaFail)
+		}
 		evt, err = m.st.AppendEvent(taskID, proto.EventTypeTurnFailed,
-			NewFailedPayload(r.FailReason, r.Branch, r.CommitHash))
+			NewFailedPayload(failReason, r.Branch, r.CommitHash))
 	}
 	if err != nil {
 		m.log.Error("追加 result 事件失败", "task", taskID, "cause", err)
@@ -3845,6 +3914,7 @@ func (m *Manager) ResumeTask(taskID string) bool {
 		envKVs = withCarrierHome(envKVs, task.HomeDir)
 		m.log.Info("启动恢复使用任务载体 HOME", "task", taskID, "home_dir", task.HomeDir)
 	}
+	envKVs = m.withAccountProxy(envKVs, task, "启动恢复")
 	envKVs = m.resumeEnvWithArtifacts(envKVs, taskID)
 	// 名字与正文都必须从落盘现场取（B229 §2.5.2，同 resumeForContinue）。
 	discText, derr := m.loadPersistedDiscipline(taskID)

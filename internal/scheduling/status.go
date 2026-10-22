@@ -1,7 +1,7 @@
 // status.go —— 载体一等状态、默认隔离 HOME、运行命令与检测写状态入口（B293）。
 //
-// 职责：冻结四态词表、用户可见默认 HOME 串、运行命令格式，以及检测结果写回
-// 载体状态的入站面。PutCarrier / admitInto 的四态接线与按位准入规则分别落在
+// 职责：冻结三态词表（B453 退役「限额中」，读时归一）、用户可见默认 HOME 串、运行命令
+// 格式，以及检测结果写回载体状态的入站面。PutCarrier / admitInto 的四态接线与按位准入规则分别落在
 // scheduling.go，本文件集中维护状态迁移和用户可见的派生字符串。
 //
 // 边界：不探文件系统、不拉起 CLI——那是 hostapi.ProbeHome / WakeHome；本文件
@@ -14,8 +14,10 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/Xsxdot/handoff/internal/schedclient"
+	"github.com/Xsxdot/handoff/internal/scheduling/accounts"
 	"github.com/Xsxdot/handoff/internal/scheduling/internal/logging"
 )
 
@@ -25,9 +27,27 @@ type CarrierStatus string
 const (
 	StatusPending     CarrierStatus = "pending"     // 未上线
 	StatusOnline      CarrierStatus = "online"      // 已上线
-	StatusQuota       CarrierStatus = "quota"       // 限额中
 	StatusUnreachable CarrierStatus = "unreachable" // 不可达
 )
+
+// legacyStatusQuota 是 B453 退役的「限额中」wire 值（spec S4、plan Q12/F19）。本版不再
+// 写它；存量行与滚动升级期间旧版 agentd 写回的 quota 一律读作已上线。
+const legacyStatusQuota = "quota"
+
+// UnmarshalJSON 是「限额中」退役的读时归一点：载体 body 无论经哪条路径解码（Carrier、
+// Carriers、CarrierRows、ApplyDetect、PutCarrier 读旧行），quota 都读作 online，不做写迁移。
+// 额度是账号的事，载体本身可达即已上线（spec S4）。
+func (s *CarrierStatus) UnmarshalJSON(data []byte) error {
+	var raw string
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	if raw == legacyStatusQuota {
+		raw = string(StatusOnline)
+	}
+	*s = CarrierStatus(raw)
+	return nil
+}
 
 // IsolatedHomeRoot 是用户可见的默认隔离 HOME 根（含 ~，目标机展开）。
 // 不跟可改的 DataDir：登记串必须跨机可认，DataDir 搬迁不得改已登记默认形态。
@@ -42,8 +62,6 @@ func (s CarrierStatus) Label() string {
 		return "未上线"
 	case StatusOnline:
 		return "已上线"
-	case StatusQuota:
-		return "限额中"
 	case StatusUnreachable:
 		return "不可达"
 	default:
@@ -70,25 +88,34 @@ func RunCommand(c Carrier) string {
 	return "HOME=" + c.HomeDir + " " + c.CLI
 }
 
-// DetectEvidence 是目标机检测观察到的事实。状态迁移（四态表）归 ApplyDetect，
+// DetectEvidence 是目标机检测观察到的事实。状态迁移（三态表）归 ApplyDetect，
 // 本结构不含「该写成哪一态」——那是编制域的规则，不让 gateway 各写一份。
 type DetectEvidence struct {
 	Reachable bool // 机器/进程够得着
 	NeedLogin bool // 需要登录或未见凭据
-	Quota     bool // 识别为额度用尽
+	// Quota = 检测回合撞额度（真额度耗尽，限速不算，plan Q10）。B453 起它不再改载体状态，
+	// 只决定标账号无额度（绑定了账号）还是把原因写进 last_error（未绑定），spec S4。
+	Quota bool
+	// Fingerprint 是载体 HOME 里按所选账号 kind/条目算出的凭据短指纹；空 = 未算或算不出
+	// （旧版目标机、未选账号、凭据缺失），写回后投影不比对（plan F15）。
+	Fingerprint string
 }
 
-// ErrDetectUnwired 是 Ticket 0 骨架哨兵：ApplyDetect 尚未按四态表写状态。
+// ErrDetectUnwired 是 Ticket 0 骨架哨兵：ApplyDetect 尚未按状态表写状态。
 // gateway 映射 503；实现票接线后正常路径不再返回它。
 var ErrDetectUnwired = errors.New("scheduling: 载体检测写状态尚未接线")
 
-// ApplyDetect 按「不可达优先、限额次之、需登录再次之、否则上线」的四态表把
-// 一次检测结果写进载体。它读取 registry 当前版本并以一次 CAS 写回；CAS、读取
-// 或解码失败都保留旧状态并返回带载体名上下文的错误。online 清空 LastError，
-// 其他状态原样保存 detail（包括空 detail）。
+// ApplyDetect 按「不可达优先、需登录次之、否则上线」的三态表把一次检测结果写进载体，
+// 并把本次算出的凭据指纹写回 cred_fingerprint。它读取 registry 当前版本并以一次 CAS
+// 写回；CAS、读取或解码失败都保留旧状态并返回带载体名上下文的错误。
+//
+// 撞额度（ev.Quota）不再是载体状态（spec S4）：载体按可达处理；绑定了账号的先给账号打
+// 撞额度标记（标记写失败 = 本次检测失败，载体不写，重检即可），未绑定或账号已删的把
+// detail 写进 last_error。online 且无额度原因时清空 LastError，其他状态原样保存 detail。
 func (s *Service) ApplyDetect(name string, ev DetectEvidence, detail string) (Carrier, error) {
 	statusLog().Info("开始写入载体检测", "name", name, "reachable", ev.Reachable,
-		"need_login", ev.NeedLogin, "quota", ev.Quota, "detail_bytes", len(detail))
+		"need_login", ev.NeedLogin, "quota", ev.Quota, "fingerprint_set", ev.Fingerprint != "",
+		"detail_bytes", len(detail))
 	rec, err := s.repo.Get(kindCarrier, name)
 	if err != nil {
 		statusLog().Error("读取载体检测目标失败", "name", name, "cause", err)
@@ -105,23 +132,34 @@ func (s *Service) ApplyDetect(name string, ev DetectEvidence, detail string) (Ca
 	previous := carrier.Status
 	switch {
 	case !ev.Reachable:
-		if previous == StatusOnline || previous == StatusQuota || previous == StatusUnreachable {
+		if previous == StatusOnline || previous == StatusUnreachable {
 			carrier.Status = StatusUnreachable
 		} else {
 			carrier.Status = StatusPending
 		}
-	case ev.Quota:
-		carrier.Status = StatusQuota
-	case ev.NeedLogin:
+	case ev.NeedLogin && !ev.Quota:
+		// 撞额度说明 CLI 已经带着凭据跑到了上游，登录类字样只是错误文本的旁证。
 		carrier.Status = StatusPending
 	default:
 		carrier.Status = StatusOnline
 	}
-	if carrier.Status == StatusOnline {
+	quotaToLastError := false
+	if carrier.Status == StatusOnline && ev.Quota {
+		marked, markErr := s.markDetectQuota(carrier, detail)
+		if markErr != nil {
+			return Carrier{}, markErr
+		}
+		quotaToLastError = !marked
+	}
+	switch {
+	case quotaToLastError:
+		carrier.LastError = detail
+	case carrier.Status == StatusOnline:
 		carrier.LastError = ""
-	} else {
+	default:
 		carrier.LastError = detail
 	}
+	carrier.CredFingerprint = ev.Fingerprint
 	body, err := json.Marshal(carrier)
 	if err != nil {
 		statusLog().Error("编码载体检测结果失败", "name", name, "version", rec.Version, "cause", err)
@@ -134,6 +172,31 @@ func (s *Service) ApplyDetect(name string, ev DetectEvidence, detail string) (Ca
 		return Carrier{}, fmt.Errorf("载体 %s 检测写入冲突: %w", name, err)
 	}
 	statusLog().Info("写入载体检测结果成功", "name", name, "version", version,
-		"previous_status", previous, "status", carrier.Status)
+		"previous_status", previous, "status", carrier.Status, "quota_to_last_error", quotaToLastError,
+		"fingerprint_set", carrier.CredFingerprint != "")
 	return carrier, nil
+}
+
+// markDetectQuota 给检测撞额度的载体所选账号打撞额度标记（spec S4、plan Q19）。返回
+// marked=false 表示没有可标的账号（未选、账号域未装配、账号已删），调用方把原因写进
+// last_error；标记写入失败返回错误。
+func (s *Service) markDetectQuota(c Carrier, detail string) (bool, error) {
+	account := strings.TrimSpace(c.Account)
+	if account == "" || s.accounts == nil {
+		return false, nil
+	}
+	err := s.accounts.MarkQuota(account, accounts.QuotaMark{
+		At: time.Now(), Carrier: c.Name, Machine: c.Machine,
+		Category: "quota_exhausted", Message: detail,
+	})
+	switch {
+	case err == nil:
+		return true, nil
+	case errors.Is(err, accounts.ErrNotFound):
+		statusLog().Warn("检测撞额度但所选账号已不存在，原因写入载体最近错误", "name", c.Name, "account", account)
+		return false, nil
+	default:
+		statusLog().Error("检测撞额度标记账号失败", "name", c.Name, "account", account, "cause", err)
+		return false, fmt.Errorf("载体 %s 检测撞额度，标记账号 %s 失败: %w", c.Name, account, err)
+	}
 }

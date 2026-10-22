@@ -6,7 +6,7 @@
 // 同样的操作、白烧一轮。
 import { describe, expect, it } from 'vitest'
 import type { Ticket } from '../../api/types'
-import { buildTicketAnswer, parseTicketRequest, validateReply } from './review'
+import { buildTicketAnswer, parseTicketRequest, ticketKindLabel, validateReply } from './review'
 
 describe('应答编码（硬契约）', () => {
   it('gate 批准 → 恒为 "allow"', () => {
@@ -71,5 +71,22 @@ describe('工单 request 解析（展示读工单、不读事件）', () => {
     const r = parseTicketRequest(ticket('{"kind":"ask","question":"继续吗"}'))
     expect(r.kind).toBe('ask')
     expect(r.text).toBe('继续吗')
+  })
+
+  it('notice：取 notice 全文（B453 告知工单）', () => {
+    const r = parseTicketRequest(ticket({ kind: 'notice', reason: 'quota_exhausted', notice: '分支任务撞额度，已停下\n接管见 B459' }))
+    expect(r.kind).toBe('notice')
+    expect(r.text).toBe('分支任务撞额度，已停下\n接管见 B459')
+  })
+})
+
+describe('notice 告知工单（B453 F-B460-1）', () => {
+  it('确认编码为「已知悉」，与 CLI 打印的答复行一致', () => {
+    expect(buildTicketAnswer('notice', 'acknowledge', '', '')).toBe('已知悉')
+    expect(validateReply('notice', 'acknowledge', '')).toBeNull()
+  })
+
+  it('kind 展示名为「告知」', () => {
+    expect(ticketKindLabel('notice')).toBe('告知')
   })
 })

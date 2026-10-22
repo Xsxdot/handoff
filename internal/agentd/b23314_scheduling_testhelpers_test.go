@@ -64,7 +64,7 @@ func assembleDomainsForTest(t *testing.T, srv *Server) {
 	srv.SetHostAPI(hostAPI)
 	prepareHome := orchestration.NewCoordinatorPrepareHome(srv.Conf(), srv.Providers(), srv.RuleLoader())
 	coord := opencode.NewCoordinator(hostAPI, slog.Default())
-	ks := keystone.New(NewCoordinatorRunner(coord, srv.Providers(), prepareHome, rooms.IsPushResidentSession),
+	ks := keystone.New(NewCoordinatorRunner(coord, srv.Providers(), prepareHome, rooms.IsPushResidentSession, srv.CoordinatorAccountProxy),
 		keystone.NewRoomNarrator(rooms), facade, NewAttachLocator(hostapi.ExpandHomePath))
 	ks.SetSessionRefResolver(NewCoordinatorSessionRefResolver(srv, hostapi.ExpandHomePath))
 	srv.SetKeystone(ks)

@@ -1,5 +1,8 @@
 {
   "cli": "codex",
   "home_dir": "~/.handoff/home/mbp-codex",
-  "credential": "main_home_sync"
+  "credential": "main_home_sync",
+  "fingerprint_kind": "codex",
+  "fingerprint_entry": "tokens",
+  "account": "cx-mbp"
 }

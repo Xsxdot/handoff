@@ -189,6 +189,11 @@ type Server struct {
 	autoLedger *ledgerapi.Facade
 	ptyGate    *ptyapi.Host
 	hostAPI    *hostapi.Host
+	// B453 账号域：账号读写（使用方接口 AccountsClient）与所在机探测器，cmd 组装点
+	// 经 SetAccounts / SetAccountProber 注入。探测器只在挂共享账本的机器上装配；
+	// nil = 本机不执行探测（立即探测到本机账号回 503）。
+	accounts      AccountsClient
+	accountProber *AccountProber
 	// B432 iOS 推送扇出：「需要你」事件 → APNs。NewServer 构造（凭据未配齐时
 	// sender 为 nil，投递静默降级站内），装配点经 StartPush 起 worker；
 	// 两条事件旁路（合成钩子 + 自动化循环）与 badge 同源计数都接在它上面。
@@ -1041,6 +1046,7 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("POST /api/auth/logout", s.handleLogout)
 	s.registerLedgerRoutes(api)
 	s.registerSchedulingRoutes(api)
+	s.registerAccountRoutes(api)
 	s.registerCoordRoutes(api)
 	// B432：iOS 推送设备登记（spec §契约面 1）。独立注册函数与 ledger/scheduling
 	// 同款，避免 Handler() 主表继续膨胀。
@@ -1585,6 +1591,9 @@ type coordinatorRunner struct {
 	// isPushResidentSession 判续接的 CLI 会话是不是 push 驻场者（B444 P2 返工四，review C2）：是 → 本轮不注入
 	// 卡席位对。事实在账本（经 collab），不在 SessionRef（B233.2 冻结镜像不加字段）。nil = 未装配，Resume 拒跑。
 	isPushResidentSession func(sessionID string) (bool, error)
+	// accountProxy 按（CLI, 规范化 HOME）查协调者载体所选账号的代理（B453 S4：协调者回合也套账号代理）；
+	// nil 或返回空串 = 沿用今天的环境。
+	accountProxy func(cli, homeDir string) string
 }
 
 // errResidentLookupUnwired 是 runner 未装配驻场判定依赖时 Resume 的拒绝原因（不猜注不注入）。
@@ -1610,6 +1619,7 @@ func (r coordinatorRunner) Launch(spec keysclient.SessionSpec, prompt string) (k
 	if r.coord == nil {
 		return keysclient.TurnResult{}, executor.UnsupportedError(name, executor.CapCoordination)
 	}
+	spec.Env = r.withAccountProxy(spec.CLI, spec.HomeDir, spec.Env)
 	ctx, cancel := readyCtx()
 	defer cancel()
 	slog.Default().Log(ctx, wakeRoundLogLevel, "协调者回合开始", "cli", spec.CLI,
@@ -1670,6 +1680,7 @@ func (r coordinatorRunner) Resume(ref keysclient.SessionRef, prompt string) (key
 	} else {
 		ref.Env = seatEnv(ref.CLI, ref.SessionID)
 	}
+	ref.Env = r.withAccountProxy(ref.CLI, ref.HomeDir, ref.Env)
 	ctx, cancel := readyCtx()
 	defer cancel()
 	slog.Default().Log(ctx, wakeRoundLogLevel, "协调者回合开始", "cli", ref.CLI,
@@ -1705,16 +1716,39 @@ func classifyRunnerErr(err error) error {
 	return err
 }
 
+// withAccountProxy 给协调者回合的追加环境套上载体所选账号的代理（B453 S4）：六个代理键以账号
+// 代理覆盖（hostapi.buildEnv 让 req.Env 的键覆盖进程环境），NO_PROXY 不覆盖、缺席时补本机回环。
+// 查询未装配或无代理 → env 原样。homeDir 是 prepareHome 之后的规范化 HOME。
+func (r coordinatorRunner) withAccountProxy(cli, homeDir string, env []string) []string {
+	if r.accountProxy == nil {
+		return env
+	}
+	proxy := r.accountProxy(cli, homeDir)
+	if proxy == "" {
+		return env
+	}
+	return proxycfg.WithProxyEnv(env, proxy)
+}
+
 // NewCoordinatorRunner 构造 keystone 的会话承载缝（B233.18：类型与 Launch/Resume
 // 实现留在本包，构造上移 cmd 组装点，故导出本构造函数；返回 keysclient.Runner
 // 使用方接口，cmd 不感知具体类型）。
 //
 // isPushResidentSession（B444 P2 返工四）：续接会话是否为 push 驻场者的账本事实读口（组装点从 collab 取）；
 // 为 nil 时 Resume 一律拒跑（Launch 不受影响）。
+//
+// accountProxy（B453 S4）：按（CLI, 规范化 HOME）查协调者载体所选账号代理；nil = 不套用。
 func NewCoordinatorRunner(coord executor.Coordinator, reg *executor.Registry,
 	prepareHome func(keysclient.SessionSpec) (string, error),
-	isPushResidentSession func(sessionID string) (bool, error)) keysclient.Runner {
-	return coordinatorRunner{coord: coord, reg: reg, prepareHome: prepareHome, isPushResidentSession: isPushResidentSession}
+	isPushResidentSession func(sessionID string) (bool, error),
+	accountProxy func(cli, homeDir string) string) keysclient.Runner {
+	return coordinatorRunner{coord: coord, reg: reg, prepareHome: prepareHome,
+		isPushResidentSession: isPushResidentSession, accountProxy: accountProxy}
+}
+
+// CoordinatorAccountProxy 是组装点注入 NewCoordinatorRunner 的账号代理查询（见 coordinatorAccountProxy）。
+func (s *Server) CoordinatorAccountProxy(cli, homeDir string) string {
+	return s.coordinatorAccountProxy(cli, homeDir)
 }
 
 // seatEnv 拼 resume 回合注入子进程的 HANDOFF 席位对（B435.2 F-RM1，R plan Q2 甲；agentd 是

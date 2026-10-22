@@ -620,7 +620,10 @@ func (s *Server) collectInboxItems(member string) ([]proto.InboxItem, error) {
 		return nil, err
 	}
 	for _, task := range tasks {
-		if task.State != proto.TaskStateWaitingAnswer {
+		// B453 Q7：分支任务撞额度停在 waiting_review、带 notice 告知工单——它同样「需要你」，
+		// 只取 notice（waiting_review 上的其余工单维持旧口径不上浮）。
+		noticeOnly := task.State == proto.TaskStateWaitingReview
+		if task.State != proto.TaskStateWaitingAnswer && !noticeOnly {
 			continue
 		}
 		pending, err := s.mgr.PendingTickets(task.ID)
@@ -633,6 +636,9 @@ func (s *Server) collectInboxItems(member string) ([]proto.InboxItem, error) {
 		}
 		watchers := s.hub.Watchers(task.ID)
 		for _, tk := range pending {
+			if noticeOnly && tk.Kind != proto.TicketKindNotice {
+				continue
+			}
 			if watchers > 0 && !s.ticketDestructive(task.ID, tk.ID) {
 				continue
 			}
@@ -729,10 +735,13 @@ func bodyTitle(body string) string {
 	return body
 }
 
-// ticketTitle 收件箱 ticket 条目标题：gate=权限工单、ask=提问工单。
+// ticketTitle 收件箱 ticket 条目标题：gate=权限工单、notice=告知工单（B453）、其余=提问工单。
 func ticketTitle(tk proto.Ticket) string {
-	if tk.Kind == "gate" {
+	switch tk.Kind {
+	case "gate":
 		return "权限工单待答复"
+	case proto.TicketKindNotice:
+		return "告知工单待确认"
 	}
 	return "提问工单待答复"
 }

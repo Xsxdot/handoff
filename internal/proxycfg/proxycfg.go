@@ -154,3 +154,27 @@ func Redact(proxy string) string {
 	}
 	return u.String()
 }
+
+// Mask 返回读面/失败文案用的代理文本：userinfo 带密码时只把密码段打码（`user:***@host`，
+// 不做 URL 转义、保留用户名，便于人认出是哪个代理）；无密码或无 userinfo 原样；解析
+// 不了的串整段隐藏（同 Redact 的理由）。B453：账号 API 回显、探测失败文案与日志同一口径。
+func Mask(proxy string) string {
+	if proxy == "" {
+		return ""
+	}
+	u, err := url.Parse(proxy)
+	if err != nil || u.Host == "" {
+		return "<无法解析的 proxy 值，已隐藏>"
+	}
+	if u.User == nil {
+		return proxy
+	}
+	if _, has := u.User.Password(); !has {
+		return proxy
+	}
+	out := u.Scheme + "://" + u.User.Username() + ":***@" + u.Host + u.EscapedPath()
+	if u.RawQuery != "" {
+		out += "?" + u.RawQuery
+	}
+	return out
+}

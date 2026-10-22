@@ -1,0 +1,7 @@
+{
+  "error": "账号 codex-plus 仍被载体引用：mbp-codex、mbp-oc-codex；先在自动化页给它们换账号或清空选择",
+  "carriers": [
+    "mbp-codex",
+    "mbp-oc-codex"
+  ]
+}

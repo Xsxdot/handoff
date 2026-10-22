@@ -409,7 +409,7 @@ log states which path this run used.
 | `handoff dispatch [plan.md]` | Dispatch a task (project identified by current directory) | `--prompt "<instruction>"` (at least one of this and a plan file); `--target <machine>`; `--executor`/`--model`/`--name`; `--branch\|--new-branch <b>`; `--base <t>`; `--worktree <path>\|--new-worktree`; `--allow-dirty`; `--no-sync-check`; `--no-terminal`; `--template <name>` (skilled-worker definition from the ledger: receiver + mode); `--wait [--timeout]` (block to terminal, print the final text and an `artifacts: <path>` line; exit 0 done / 3 not completed / 4 machine affinity unmet / 5 pending ticket (stdout prints the ticket text, reply and resume commands) / 124 timeout); `--here\|--machine <m>` (machine affinity: refused, never moved to another machine) |
 | `handoff wait <task>` | Block until the next event that needs you (`--until-done` waits silently for the archive instead) | `--follow` (keep subscribing until the task ends); `--until-done` (dependency latch, prints only the `archived` event; mutually exclusive with `--follow`); `--notify`; `--timeout <duration>` (one-shot = total budget, `--follow` = idle budget, `--until-done` = total budget); `--no-sync`; `--final [--machine <m>]` (print only the final text and artifacts line; same exit codes as `dispatch --wait`) |
 | `handoff card wait <id>` | Follow a card or dynamic subtree ledger; default prints the first actionable event and exits, `--follow` keeps the subscription until all current members are terminal | `--subtree`; `--follow`; `--timeout <duration>` (one-shot = total budget, `--follow` = idle budget) |
-| `handoff reply <task>` | Answer a ticket | `--ticket <id>` plus exactly one of `--approve` / `--deny [--reason]` / `--answer "text"` |
+| `handoff reply <task>` | Answer a ticket | `--ticket <id>` plus exactly one of `--approve` / `--deny [--reason]` / `--answer "text"` (a `notice` ticket is acknowledged with `--answer "已知悉"`) |
 | `handoff diff <task>` | git diff + commit list (defaults to the task's own base commit, falling back to the repo's default branch) | `--base <rev>` |
 | `handoff fetch <task> <file>` | Read a single file from the task repo | — |
 | `handoff run <task> <command...>` | Run a review command inside the task repo (sh -c, 10min timeout; one argument is a shell command, multiple arguments are shell-quoted) | handoff's own flags must come **before** the task id |
@@ -426,6 +426,8 @@ log states which path this run used.
 | `handoff reclaim` | Clean up managed worktrees left by terminal-state tasks (branches kept) | — |
 | `handoff gc` | Preview or delete terminal-task cache leaves (`tmp/<id8>` and `tasks/<id>/tmp`) and leftover managed worktrees on the target agentd | `--yes` (apply); `--force` (dirty trees only); `--json`; `--target` |
 | `handoff footprint` | Per-task process usage and this machine's process headroom | — |
+| `handoff account list` | Subscription accounts and their quota readings (registered in the console; needs `ledger.dsn`) | `--json` (one AccountView object per line, same shape as `GET /api/accounts`) |
+| `handoff account probe <name>` | Ask the account's own machine to probe it now and print the new reading | exit code 1 when the probe fails |
 | `handoff status` | Is agentd usable, version, active tasks, executor liveness | `--target <name>`; `--json`; exit code 0=usable 1=unreachable |
 | `handoff upgrade` | Survey/upgrade this machine and all targets | `--now`; `--target <name>`; `--force`; `--rollback`; `--from <dir>` (local build) |
 | `handoff version` | Print the version (first line is the bare version, for scripts to compare) | — |
@@ -434,6 +436,52 @@ log states which path this run used.
 Global flags: `--agentd http://127.0.0.1:7777` (agentd address), `--target <name>`
 (resolve address and token from config), `--config <path>` (default
 `~/.handoff/config.yaml`).
+
+## Accounts and Quota
+
+Carriers run on subscription accounts. handoff tracks four kinds — **opencode-go**,
+**codex**, **grok** and **agy** (Antigravity) — so dispatch can skip a carrier whose
+account is out of quota instead of failing mid-task. Accounts live in the shared ledger
+(`ledger.dsn` required), so every machine's console and CLI see the same list.
+
+- **Register in the console**: dock ◔ → Accounts → "＋ 登记账号": name (unique,
+  immutable), kind, the machine the credentials live on, credential HOME, entry
+  (pre-filled per kind: opencode-go = automatic — the `opencode-go` API key in opencode's
+  `auth.json` if present, otherwise the account logged in to opencode on that HOME
+  (`opencode.db`); enter `opencode.db` to use only the login, or another name to use only
+  that `auth.json` entry; codex = `auth.json › tokens`, grok = `auth.json ›
+  https://auth.x.ai`; agy uses the agy CLI's own login, no entry), optional proxy, probe interval (5/10/15/30/60 min, default 15), warn line
+  (default 60%, color only) and low line (default 80%, pauses dispatch). Deleting an
+  account that a carrier still references is refused and names the carriers.
+- **Probing happens only on the account's own machine** (credentials never leave it; the
+  ledger stores only the location and a short fingerprint). opencode-go, codex and grok
+  read their HTTP usage endpoints with the stored key/token (read-only — tokens are never
+  refreshed; an opencode-go login is read from `opencode.db` read-only and calls the
+  console status endpoint with its token and org, so an expired login reports "re-login
+  to opencode on that machine"); agy runs `agy -p /usage` and is skipped on agy < 1.1.11, where `/usage` would
+  itself burn quota. "Probe now" from any console or `handoff account probe` is forwarded
+  to that machine.
+- **States**: ok / low (any window ≥ low line) / out (any window at 100%, the provider
+  says unavailable, or a task hit the quota — that mark lasts until the next *successful*
+  probe) / probe failed / not probed. The console footer shows every account's usage
+  (problem accounts first); mobile shows the same list under Settings.
+- **Carriers pick an account** (same machine only, optional) in Settings → Automation.
+  If the credentials in the carrier's HOME are not that account's, the row shows a red
+  "fingerprint mismatch" line — saving is allowed, dispatch is not blocked.
+- **Dispatch skips low/out accounts** at every admission point (squad, named carrier, card
+  dispatch, coordinator seat). Probe failed / not probed means unknown and still
+  dispatches. A refused named carrier says why, e.g. `载体 t453-agy 不可用：账号 agy-linux
+  低额度，预计 2d19h 后恢复`.
+- **Hitting quota mid-task**: a read-only skilled task dispatched through a squad is
+  re-run on another member automatically (each account tried once) and `--wait` follows
+  the chain to the new task; a branch task stops in pending review with a `notice`
+  ticket (`--wait` exits 5; acknowledge with `--answer "已知悉"`) and its worktree kept.
+  429 rate limits and expired credentials are not treated as quota.
+- **Account proxy**: when set, the carrier's task, detection and coordinator turns use it,
+  overriding proxy keys from the executor env file and the machine environment
+  (`NO_PROXY` is kept, and gets localhost added if absent). No proxy = unchanged behavior.
+- The carrier status "限额中" (quota) is retired; carriers are pending / online /
+  unreachable, and stored "quota" reads as online.
 
 ## Task States and Events
 
@@ -681,6 +729,10 @@ on a running exe.
 
 The CLI checks for a new version in the background at most once a day, prints one line
 on stderr if there is one, and never replaces itself.
+
+**Accounts (B453): upgrade every machine before binding carriers to accounts.** An older
+agentd rewriting a carrier drops its `account`, and an older CLI prints a `notice` ticket
+as a permission prompt with `--approve/--deny`.
 
 ## Session Recovery
 

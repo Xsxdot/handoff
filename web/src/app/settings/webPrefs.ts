@@ -9,9 +9,11 @@
 //     混键会让两边的 v 迁移互相绑架。这里是「Web 客户端行为偏好」另一族。
 //   - 不认识 React：状态与订阅在 useWebPrefs.ts（镜像 useTreePrefs 的模式），
 //     本文件只有类型、默认值与 load/save 纯函数
-//   - 桌面不读：消费点只有 Shell 的 compact 分支（openSession scene 档、
-//     MobileTabBar 角标门控）与 SettingsHub 的两个控件
+//   - sessionOpenMode / badges 桌面不读：消费点只有 Shell 的 compact 分支（openSession
+//     scene 档、MobileTabBar 角标门控）与 SettingsHub 的两个控件
+//   - usageMode（B453 S9）桌面读：额度底栏与「使用量」弹层的详细/精简
 export type SessionOpenMode = 'chat' | 'scene'
+export type UsageMode = 'detail' | 'compact'
 
 // WebPrefs 是落盘的全部偏好。v 用于将来改形状时判断要不要整份丢弃。
 export interface WebPrefs {
@@ -23,6 +25,9 @@ export interface WebPrefs {
   // badges：底栏角标（需要你/未读）。false = needsCount/unread 双双归 0，
   // 只门控 MobileTabBar，会话列表行内未读点不受影响。
   badges: boolean
+  // usageMode：额度底栏与「使用量」弹层的模式（B453 S9），缺省详细。可选键——
+  // 它晚于 v1 形状加入，旧落盘没有它；不升 v，免得整份偏好被丢回默认。
+  usageMode?: UsageMode
 }
 
 export const PREFS_KEY = 'handoff.web.prefs'
@@ -43,7 +48,8 @@ function isPrefs(v: unknown): v is WebPrefs {
   return (
     p.v === 1 &&
     (p.sessionOpenMode === 'chat' || p.sessionOpenMode === 'scene') &&
-    typeof p.badges === 'boolean'
+    typeof p.badges === 'boolean' &&
+    (p.usageMode === undefined || p.usageMode === 'detail' || p.usageMode === 'compact')
   )
 }
 
@@ -76,4 +82,9 @@ export function savePrefs(p: WebPrefs): void {
   } catch (err) {
     console.warn('[webPrefs] 偏好写入失败，本次改动只在内存里生效', err)
   }
+}
+
+// usageModeOf 读额度弹层模式；键缺席（旧落盘或从未切换过）= 详细。
+export function usageModeOf(p: WebPrefs): UsageMode {
+  return p.usageMode ?? 'detail'
 }

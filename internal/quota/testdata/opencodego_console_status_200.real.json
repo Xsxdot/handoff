@@ -1,0 +1,37 @@
+{
+  "subscriberUserId": "<redacted>",
+  "product": "go-plus",
+  "renewalProduct": "go-plus",
+  "paymentMethodId": "<redacted>",
+  "paymentMethodKind": "alipay",
+  "renewalCurrency": "usd",
+  "useBalance": true,
+  "cancelAtPeriodEnd": false,
+  "resumability": "renewing",
+  "renewalPending": false,
+  "nextPeriodPaid": false,
+  "access": {
+    "startsAt": "2026-10-20T03:33:08.000Z",
+    "endsAt": "2026-11-20T03:33:08.000Z",
+    "cancelAtPeriodEnd": false,
+    "meters": {
+      "fiveHour": {
+        "startsAt": "2026-10-22T02:43:46.000Z",
+        "resetsAt": "2026-10-22T07:43:46.000Z",
+        "limitMicroCents": "4800000000",
+        "usedMicroCents": "17968895"
+      },
+      "week": {
+        "startsAt": "2026-10-19T00:00:00.000Z",
+        "resetsAt": "2026-10-26T00:00:00.000Z",
+        "limitMicroCents": "12000000000",
+        "usedMicroCents": "585476885"
+      },
+      "month": {
+        "resetsAt": "2026-11-20T03:33:08.000Z",
+        "limitMicroCents": "24000000000",
+        "usedMicroCents": "585476885"
+      }
+    }
+  }
+}

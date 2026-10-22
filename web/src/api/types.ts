@@ -45,6 +45,30 @@ export interface Task {
   timing?: TaskTiming      // 耗时聚合；缺省=还没有耗时账目，或本次是列表读取
   machine: string      // ""=本机；否则为本机 cfg.Targets 的键，由汇总方盖章（W3a §3）
   project_id: string   // 归属项目；未归属为 ""（W3a §1.3）
+  // B453 F17：只读任务撞额度换人重跑的双向链接；缺席 = 不在重跑链上
+  rerun_of?: TaskRef   // 本任务重跑的原任务
+  rerun_by?: TaskRef   // 接替本任务的新任务（原任务以额度耗尽 failed）
+}
+
+// TaskRef 指向一条可能在他机的任务（B453 F17）：machine 为任务所在机自名，"" = 未配自名的单机。
+export interface TaskRef {
+  task: string
+  machine: string
+}
+
+// NoticeRequest 是 kind=notice 告知工单的 request（B453 F-B460-1，proto.NoticeRequest）。
+// 人读全文在 notice；其余结构化字段供展示，缺席即未知。答复恒为「已知悉」，不回传执行器。
+export interface NoticeRequest {
+  kind: 'notice'
+  reason: string        // 机读类别：quota_exhausted
+  notice: string
+  carrier?: string
+  machine?: string
+  account?: string
+  windows?: string[]
+  recover_at?: string   // 预计恢复时刻；缺席 = 未知
+  branch?: string
+  worktree?: string
 }
 
 // Usage 是任务当前的 context 占用。

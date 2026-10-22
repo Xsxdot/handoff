@@ -30,6 +30,7 @@ import (
 
 	"github.com/Xsxdot/handoff/internal/hostapi"
 	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/proxycfg"
 	"github.com/Xsxdot/handoff/internal/schedclient"
 	"github.com/Xsxdot/handoff/internal/scheduling"
 )
@@ -78,8 +79,9 @@ func (s *Server) handleSquadsGet(w http.ResponseWriter, r *http.Request) {
 		Carriers: make([]proto.CarrierView, 0, len(carrierRows)),
 		Squads:   make([]proto.SquadView, 0, len(squadRows)),
 	}
+	fingerprints := s.accountFingerprints()
 	for _, row := range carrierRows {
-		resp.Carriers = append(resp.Carriers, carrierView(row.Carrier, row.Version))
+		resp.Carriers = append(resp.Carriers, carrierView(row.Carrier, row.Version, accountMismatch(row.Carrier, fingerprints)))
 	}
 	for _, row := range squadRows {
 		resp.Squads = append(resp.Squads, squadView(row.Squad, row.Version))
@@ -127,10 +129,10 @@ func (s *Server) handleCarrierPut(w http.ResponseWriter, r *http.Request) {
 	carrier := scheduling.Carrier{
 		Name: name, Machine: in.Machine, CLI: in.CLI, HomeDir: in.HomeDir,
 		Model: in.Model, Credential: scheduling.CredentialSource(in.Credential),
-		MaxConcurrency: in.MaxConcurrency,
+		MaxConcurrency: in.MaxConcurrency, Account: in.Account,
 	}
 	s.log.Info("登记载体", "name", name, "expect", expect,
-		"machine", in.Machine, "cli", in.CLI)
+		"machine", in.Machine, "cli", in.CLI, "account", in.Account)
 	if err := s.scheduling.PutCarrier(carrier, expect); err != nil {
 		s.schedPutErr(w, "载体", name, err)
 		return
@@ -252,18 +254,24 @@ func (s *Server) handleCarrierDetect(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
 		return
 	}
-	s.log.Info("检测载体开始", "name", name, "machine", carrier.Machine, "path", r.URL.Path)
+	acct := s.accountOfCarrier(carrier)
+	s.log.Info("检测载体开始", "name", name, "machine", carrier.Machine, "path", r.URL.Path,
+		"account", acct.Name, "account_kind", acct.Kind)
 	var wake proto.HomeWakeResp
 	if s.IsSelfMachine(carrier.Machine) {
+		if acct.Proxy != "" {
+			s.log.Info("检测回合使用账号代理", "name", name, "account", acct.Name, "proxy", proxycfg.Mask(acct.Proxy))
+		}
 		reply, wakeErr := s.hostAPI.WakeHome(r.Context(), hostapi.WakeRequest{
 			CLI: carrier.CLI, HomeDir: carrier.HomeDir, Credential: string(carrier.Credential), Model: carrier.Model,
+			AccountKind: acct.Kind, AccountEntry: acct.Entry, Proxy: acct.Proxy,
 		})
 		if wakeErr != nil {
 			s.log.Error("本机载体唤起失败", "name", name, "machine", carrier.Machine, "cause", wakeErr)
 			s.hostProbeErr(w, wakeErr)
 			return
 		}
-		wake = proto.HomeWakeResp{Outcome: string(reply.Outcome), Detail: reply.Detail}
+		wake = proto.HomeWakeResp{Outcome: string(reply.Outcome), Detail: reply.Detail, Fingerprint: reply.Fingerprint}
 	} else {
 		target, ok := s.remoteTarget(carrier.Machine)
 		if !ok {
@@ -278,8 +286,10 @@ func (s *Server) handleCarrierDetect(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadGateway, poolErr)
 			return
 		}
+		// 代理串不过机间 wire：只发账号名，目标机在本机账号域查（F15 + 本卡增键 account）。
 		body, marshalErr := json.Marshal(proto.HomeWakeReq{
 			CLI: carrier.CLI, HomeDir: carrier.HomeDir, Credential: string(carrier.Credential), Model: carrier.Model,
+			FingerprintKind: acct.Kind, FingerprintEntry: acct.Entry, Account: acct.Name,
 		})
 		if marshalErr != nil {
 			s.log.Error("远程载体检测失败：编码唤起请求", "name", name, "machine", carrier.Machine, "cause", marshalErr)
@@ -320,6 +330,7 @@ func (s *Server) handleCarrierDetect(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadGateway, err)
 		return
 	}
+	ev.Fingerprint = wake.Fingerprint
 	c, err := s.scheduling.ApplyDetect(name, ev, wake.Detail)
 	if err != nil {
 		if errors.Is(err, scheduling.ErrDetectUnwired) {
@@ -352,7 +363,8 @@ func (s *Server) handleCarrierDetect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.log.Info("载体检测完成", "name", name, "machine", carrier.Machine,
-		"outcome", wake.Outcome, "status", c.Status, "version", version)
+		"outcome", wake.Outcome, "status", c.Status, "version", version,
+		"account", acct.Name, "fingerprint_set", c.CredFingerprint != "")
 	writeJSON(w, http.StatusOK, proto.CarrierDetectResp{
 		Name: c.Name, Status: string(c.Status), LastError: c.LastError,
 		Version: version,
@@ -448,14 +460,16 @@ func (s *Server) schedDeleteErr(w http.ResponseWriter, name string, err error) {
 	}
 }
 
-// carrierView 把载体实体投影成 wire DTO。逐字段来源：八个业务字段来自实体，
-// Version 来自 registry 行版本——没有派生字段，不存在恒空死字段。
-func carrierView(c scheduling.Carrier, version int) proto.CarrierView {
+// carrierView 把载体实体投影成 wire DTO。逐字段来源：九个业务字段（含所选账号）来自
+// 实体，Version 来自 registry 行版本，AccountMismatch 是唯一派生字段（载体指纹 vs 账号
+// 读数指纹，见 accountMismatch）。cred_fingerprint 本身不出 wire。
+func carrierView(c scheduling.Carrier, version int, mismatch bool) proto.CarrierView {
 	return proto.CarrierView{
 		Name: c.Name, Machine: c.Machine, CLI: c.CLI, HomeDir: c.HomeDir,
 		Model: c.Model, Credential: string(c.Credential),
 		MaxConcurrency: c.MaxConcurrency,
 		Status:         string(c.Status), LastError: c.LastError, Version: version,
+		Account: c.Account, AccountMismatch: mismatch,
 	}
 }
 

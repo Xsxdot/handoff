@@ -121,7 +121,15 @@ func Open(path string) (*Store, error) {
   -- 正文」在重启后答不上来。
   discipline_version INTEGER NOT NULL DEFAULT 0,
   -- B452：mode=任务形态；空串=分支形态（旧任务与普通派发），readonly=只读形态。
-  mode TEXT NOT NULL DEFAULT '')`,
+  mode TEXT NOT NULL DEFAULT '',
+  -- B453：载体所选账号的派发快照（名、kind、代理）。续接/恢复从这里取，账号代理后改
+  -- 不影响已派任务；空串=未选账号或旧任务。account_proxy 可能带密码，只在本机库里，
+  -- 不出任务快照 wire（proto.Task 对应字段 json:"-"）。
+  account TEXT NOT NULL DEFAULT '', account_kind TEXT NOT NULL DEFAULT '',
+  account_proxy TEXT NOT NULL DEFAULT '',
+  -- B453 F17：只读任务撞额度重跑链的双向链接（任务 ID + 所在机自名）；空串 = 不在链上。
+  rerun_of_task TEXT NOT NULL DEFAULT '', rerun_of_machine TEXT NOT NULL DEFAULT '',
+  rerun_by_task TEXT NOT NULL DEFAULT '', rerun_by_machine TEXT NOT NULL DEFAULT '')`,
 		`CREATE TABLE IF NOT EXISTS task_usage_ledger (
   -- B83 账本：一行 = 一次「新增消耗」的账目，累计值由对本表求和得到。
   -- 为什么不在 tasks 表上冗余累计列：冗余就有一致性问题（漏写一次永久偏差），
@@ -314,6 +322,13 @@ func Open(path string) (*Store, error) {
 		"discipline_name":      "TEXT NOT NULL DEFAULT ''",
 		"discipline_version":   "INTEGER NOT NULL DEFAULT 0",
 		"mode":                 "TEXT NOT NULL DEFAULT ''",
+		"account":              "TEXT NOT NULL DEFAULT ''",
+		"account_kind":         "TEXT NOT NULL DEFAULT ''",
+		"account_proxy":        "TEXT NOT NULL DEFAULT ''",
+		"rerun_of_task":        "TEXT NOT NULL DEFAULT ''",
+		"rerun_of_machine":     "TEXT NOT NULL DEFAULT ''",
+		"rerun_by_task":        "TEXT NOT NULL DEFAULT ''",
+		"rerun_by_machine":     "TEXT NOT NULL DEFAULT ''",
 	} {
 		if _, err := db.ExecContext(context.Background(),
 			"ALTER TABLE tasks ADD COLUMN "+col+" "+typ); err != nil &&
@@ -348,15 +363,20 @@ func (s *Store) Close() error {
 // 注意：
 //   - 状态迁移合法性由 UpdateTaskState 校验，此处仅原样入库，不含业务规则
 func (s *Store) CreateTask(t *proto.Task) error {
+	var rerunOf proto.TaskRef // rerun_by 只由 SetTaskRerunBy 回写：建任务时不可能已有接替者
+	if t.RerunOf != nil {
+		rerunOf = *t.RerunOf
+	}
 	_, err := s.db.ExecContext(context.Background(), `
 INSERT INTO tasks (id, target, repo_path, home_dir, carrier, squad, branch, plan_path, plan_summary, executor_session, state, created_at, updated_at,
-  name, executor, model, work_dir, worktree_managed, base_commit, base_ahead, repo_dirty_count, repo_dirty_files, discipline_name, discipline_version, mode)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  name, executor, model, work_dir, worktree_managed, base_commit, base_ahead, repo_dirty_count, repo_dirty_files, discipline_name, discipline_version, mode,
+  account, account_kind, account_proxy, rerun_of_task, rerun_of_machine)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		t.ID, t.Target, t.RepoPath, t.HomeDir, t.Carrier, t.Squad, t.Branch, t.PlanPath, t.PlanSummary,
 		t.ExecutorSession, t.State, fmtTime(t.CreatedAt), fmtTime(t.UpdatedAt),
 		t.Name, t.Executor, t.Model, t.WorkDir, boolToInt(t.WorktreeManaged),
 		t.BaseCommit, t.BaseAhead, t.RepoDirtyCount, t.RepoDirtyFiles, t.DisciplineName,
-		t.DisciplineVersion, t.Mode)
+		t.DisciplineVersion, t.Mode, t.Account, t.AccountKind, t.AccountProxy, rerunOf.Task, rerunOf.Machine)
 	if err != nil {
 		return fmt.Errorf("写入任务 %s: %w", t.ID, err)
 	}
@@ -371,7 +391,8 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 
 // 本常量 + scanTaskRow。原注释只提了后两处，照着做会漏掉前两处。
 const taskColumns = `id, target, repo_path, home_dir, carrier, squad, branch, plan_path, plan_summary, executor_session, state, created_at, updated_at,
   name, executor, model, work_dir, worktree_managed, base_commit, base_ahead, repo_dirty_count, repo_dirty_files, done_note,
-  actual_model, usage_context_tokens, usage_context_window, discipline_name, discipline_version, mode`
+  actual_model, usage_context_tokens, usage_context_window, discipline_name, discipline_version, mode,
+  account, account_kind, account_proxy, rerun_of_task, rerun_of_machine, rerun_by_task, rerun_by_machine`
 
 // rowScanner 抽象 *sql.Row 与 *sql.Rows 的公共 Scan 能力，让单行与多行查询
 // 共用同一个扫描函数。
@@ -384,20 +405,29 @@ type rowScanner interface {
 // 返回：扫描失败时原样返回错误（含 sql.ErrNoRows，由调用方翻译成 ErrNotFound）
 func scanTaskRow(sc rowScanner) (proto.Task, error) {
 	var (
-		task            proto.Task
-		createdAt       string
-		updatedAt       string
-		worktreeManaged int
-		ctxTokens       int
-		ctxWindow       int
+		task             proto.Task
+		createdAt        string
+		updatedAt        string
+		worktreeManaged  int
+		ctxTokens        int
+		ctxWindow        int
+		rerunOf, rerunBy proto.TaskRef
 	)
 	if err := sc.Scan(&task.ID, &task.Target, &task.RepoPath, &task.HomeDir, &task.Carrier, &task.Squad, &task.Branch, &task.PlanPath,
 		&task.PlanSummary, &task.ExecutorSession, &task.State, &createdAt, &updatedAt,
 		&task.Name, &task.Executor, &task.Model, &task.WorkDir, &worktreeManaged,
 		&task.BaseCommit, &task.BaseAhead, &task.RepoDirtyCount, &task.RepoDirtyFiles,
 		&task.DoneNote, &task.ActualModel, &ctxTokens, &ctxWindow, &task.DisciplineName,
-		&task.DisciplineVersion, &task.Mode); err != nil {
+		&task.DisciplineVersion, &task.Mode, &task.Account, &task.AccountKind, &task.AccountProxy,
+		&rerunOf.Task, &rerunOf.Machine, &rerunBy.Task, &rerunBy.Machine); err != nil {
 		return proto.Task{}, err
+	}
+	// 空任务 ID = 不在重跑链上：读回 nil，不编造空链接（wire 上缺席即无链）
+	if rerunOf.Task != "" {
+		task.RerunOf = &rerunOf
+	}
+	if rerunBy.Task != "" {
+		task.RerunBy = &rerunBy
 	}
 	task.CreatedAt = parseTime(createdAt)
 	task.UpdatedAt = parseTime(updatedAt)
@@ -1499,4 +1529,23 @@ func fmtTime(t time.Time) string {
 func parseTime(s string) time.Time {
 	t, _ := time.Parse(time.RFC3339Nano, s)
 	return t
+}
+
+// SetTaskRerunBy 回写原任务的「改由谁重跑」链接（B453 F17）。任务不存在返回 ErrNotFound。
+func (s *Store) SetTaskRerunBy(id string, by proto.TaskRef) error {
+	res, err := s.db.ExecContext(context.Background(),
+		"UPDATE tasks SET rerun_by_task = ?, rerun_by_machine = ?, updated_at = ? WHERE id = ?",
+		by.Task, by.Machine, fmtTime(time.Now()), id)
+	if err != nil {
+		return fmt.Errorf("回写任务 %s 重跑链接: %w", id, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("读取回写任务 %s 重跑链接影响行数: %w", id, err)
+	}
+	if n == 0 {
+		return fmt.Errorf("任务 %s: %w", id, ErrNotFound)
+	}
+	log().Info("回写重跑链接", "task", id, "rerun_by", by.Task, "rerun_by_machine", by.Machine)
+	return nil
 }

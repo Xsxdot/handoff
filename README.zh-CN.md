@@ -225,7 +225,7 @@ handoff dispatch --target devbox --new-worktree plan.md
 | `handoff agentd` | 前台启动 agentd（开发/调试用，日常走 service） | `--executor=opencode\|claude\|grok\|codex\|fake`（默认 opencode） |
 | `handoff dispatch [plan.md]` | 派发任务（项目由当前目录识别） | `--prompt "<指令>"`（与 plan 文件至少其一）；`--target <机器>`；`--executor`/`--model`/`--name`；`--branch\|--new-branch <b>`；`--base <t>`；`--worktree <路径>\|--new-worktree`；`--allow-dirty`；`--no-sync-check`；`--no-terminal`；`--template <名>`（账本里的熟练工定义：接收者 + 形态）；`--wait [--timeout]`（阻塞到终态，输出最终文本与 `artifacts: <路径>` 行；退出码 0 完成 / 3 未完成 / 4 机器亲和不满足 / 5 待答工单（stdout 打印工单全文、答复与续等命令）/ 124 超时）；`--here\|--machine <机器>`（机器亲和：不满足即拒绝，不换机） |
 | `handoff wait <task>` | 阻塞等下一个需要你的事件 | `--follow`(持续订阅到任务终结)；`--notify`；`--timeout <时长>`；`--no-sync`；`--final [--machine <机器>]`（只输出最终文本与产物行，退出码同 `dispatch --wait`） |
-| `handoff reply <task>` | 回答工单 | `--ticket <id>` + `--approve` / `--deny [--reason]` / `--answer "文本"` 三选一 |
+| `handoff reply <task>` | 回答工单 | `--ticket <id>` + `--approve` / `--deny [--reason]` / `--answer "文本"` 三选一（`notice` 告知工单答 `--answer "已知悉"` 即关单） |
 | `handoff diff <task>` | git diff + 提交列表（默认用任务自己的基线提交，没有才退回仓库默认分支） | `--base <基准>` |
 | `handoff fetch <task> <文件>` | 读任务仓库内单个文件 | — |
 | `handoff run <task> <命令...>` | 在任务仓库执行审阅命令（sh -c，10min 超时；单参数按 shell 命令，多参数逐个 shell 转义） | handoff 自有 flag 必须在任务名**之前** |
@@ -242,12 +242,48 @@ handoff dispatch --target devbox --new-worktree plan.md
 | `handoff reclaim` | 回收终态任务残留的 managed worktree（不删分支） | — |
 | `handoff gc` | 预览或清理目标 agentd 上终态任务的缓存叶子（`tmp/<id8>` 与 `tasks/<id>/tmp`）和残留 managed 工作树 | `--yes` 执行；`--force` 仅脏树；`--json`；`--target` |
 | `handoff footprint` | 各任务进程占用与本机进程余量 | — |
+| `handoff account list` | 订阅账号与额度读数（控制台登记；需 `ledger.dsn`） | `--json`（一行一个账号对象，与 `GET /api/accounts` 元素同形） |
+| `handoff account probe <名称>` | 让账号所在机立即探测一次并打印新读数 | 探测失败退出码 1 |
 | `handoff status` | agentd 能不能用、版本、活跃任务与 executor 存活 | `--target <名>`；`--json`；退出码 0=能用 1=够不着 |
 | `handoff upgrade` | 巡检/升级本机与全部 target | `--now`；`--target <名>`；`--force`；`--rollback`；`--from <目录>`（本机构建） |
 | `handoff version` | 打印版本（首行纯版本号，供脚本比对） | — |
 | `handoff skill [install]` | 查看/重装内嵌 AI skill（安装升级时自动同步，日常无需手工） | — |
 
 全局参数：`--agentd http://127.0.0.1:7777`（agentd 地址）、`--target <name>`（按配置换算地址与 token）、`--config <path>`（默认 `~/.handoff/config.yaml`）。
+
+## 账号与额度
+
+载体背后是订阅账号。handoff 认四种：**opencode-go**、**codex**、**grok**、**agy**
+（Antigravity）。派发前看账号额度，跳过额度不够的载体，而不是派出去半路撞墙。账号存在
+共享账本里（需 `ledger.dsn`），各机控制台与 CLI 看到同一份。
+
+- **在控制台登记**：侧栏 dock「◔」→ 账号页 →「＋ 登记账号」：账号名（唯一、登记后不可改）、
+  类型、凭据所在机器、凭据 HOME、凭据条目（按类型预填：opencode-go = 自动——该 HOME 的 opencode
+  `auth.json` 有 `opencode-go` API key 条目就用它，否则用该 HOME 登录的 opencode 账号
+  （`opencode.db`），填 `opencode.db` 则只用登录账号、填其他名字则只用 `auth.json` 同名条目；
+  codex = `auth.json › tokens`，grok = `auth.json › https://auth.x.ai`；agy
+  用 agy CLI 自己的登录态，不填条目）、可选代理、探测间隔（5/10/15/30/60 分钟，缺省 15）、
+  预警线（缺省 60%，只变色）、低额度线（缺省 80%，达到即暂停派发）。还有载体引用的账号拒删，
+  并列出这些载体。
+- **只在账号所在机探测**（凭据不离机，账本只存位置与短指纹）。opencode-go、codex、grok
+  用凭据读各自的用量接口（只读，不刷新 token；opencode-go 登录账号只读打开 `opencode.db`，以其
+  token 与组织调 console 状态端点，登录过期即报「在该机运行 opencode 重新登录」）；agy 执行 `agy -p /usage`，agy < 1.1.11 时跳过
+  （旧版会把 `/usage` 当普通提示词白花一次额度）。任一控制台的「立即探测」与
+  `handoff account probe` 都转发到所在机执行。
+- **状态五档**：正常 / 低额度（任一窗口 ≥ 低额度线）/ 无额度（任一窗口到 100%、接口明示
+  不可用、或被任务撞额度标记——标记持续到下一次**成功**探测）/ 探测失败 / 未探测。控制台
+  所有页面底部有额度底栏（问题账号排前），移动端在设置页「账号与额度」看。
+- **载体选账号**（只能选同机账号，可不选）在「设置 · 自动化」。载体 HOME 里的凭据不是所选
+  账号的，载体行一行红字「凭据指纹与所选账号不一致」——可以保存、不拦派发。
+- **派发跳过低额度/无额度**：小队派发、点名载体、卡派发、协调者席位走同一判据。探测失败、
+  未探测 = 额度未知，照常派发。点名被拒时写明原因，例如「载体 t453-agy 不可用：账号
+  agy-linux 低额度，预计 2d19h 后恢复」。
+- **任务中途撞额度**：经小队派发的只读熟练工任务自动换一个成员重跑（每个账号只试一次），
+  `--wait` 跟到新任务；分支任务停在待审核并开一张 `notice` 告知工单（`--wait` 退出 5，答
+  `--answer "已知悉"` 关单），工作树保留。429 限速、凭据过期不算额度耗尽。
+- **账号代理**：填了代理时，引用它的载体的任务回合、检测回合、协调者回合都走它，覆盖执行器
+  env 文件与机器环境里的代理键（`NO_PROXY` 保留，缺失时补 localhost）。不填与以前完全一致。
+- 载体状态「限额中」退役：载体只剩 未上线 / 已上线 / 不可达，存量「限额中」读作已上线。
 
 ## 任务状态与事件
 
@@ -400,6 +436,9 @@ handoff upgrade --now --from /tmp/handoff-pack [--target devbox] [--force]
 这正是 Windows 允许对一个正在运行的 exe 做的操作。
 
 CLI 每天最多后台查一次新版本，有更新在 stderr 提示一行，不会自动替换自己。
+
+**账号与额度（B453）：全队都升级之后再给载体绑账号。** 旧版 agentd 改写载体会丢掉 `account`，
+旧版 CLI 会把 `notice` 告知工单打成带 `--approve/--deny` 的权限请求。
 
 ## 会话恢复
 

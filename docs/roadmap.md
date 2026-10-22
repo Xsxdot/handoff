@@ -320,8 +320,8 @@
   自然有家）；兼任/分派定性（B156.2 悬置到三期、三期再悬置到四期：本期拉起全是
   用户语境内判断，定性问题没有出现的场合）。
   来源：`specs/2026-08-26-b156.3-automation-keystone-design.md` Out of Scope。
-- **CLI 限额探测（小队成员健康位）**：探测到额度耗尽的成员不领活；三期只预留
-  成员健康位的形状。触发条件：小队真跑起来后第一次撞限额。来源：同上。
+- ~~**CLI 限额探测（小队成员健康位）**：探测到额度耗尽的成员不领活；三期只预留
+  成员健康位的形状。触发条件：小队真跑起来后第一次撞限额。来源：同上。~~ 已由 B453 完成（账号额度由所在机定时探测，全部准入点跳过低额度/无额度账号的载体）。
 - **多协调机下的拉起仲裁实测**：机制按镜像 lease 同模式设计；真出现第二台协调机
   指向同一账本库时再验，与上文「双协调机对等两条判据的复活条件」合流。来源：同上。
 - **被依赖子系统的实现迁进标准结构**：B156.3 按用户 08-26 的架构硬约束只建薄 api
@@ -359,8 +359,8 @@ review 对目标 75607559 的 1 major + 3 minor 全部作为后续核销项记�
 ## 来自 B156.2 spec 定稿（2026-08-25，二期协作层的推迟项）
 
 - **三期承接（B156.3 的输入）**：规则引擎自动拉起协调者会话（本期拉起一律由用户执行）；
-  兼任/分派的定性策略（本期机制双轨不定性）；限额检测与自动接手（本期只有手动换绑+
-  重建四步）；答复/消息事件主动唤醒休眠会话（本期送达=回合末收+resume 后查账两条路）；
+  兼任/分派的定性策略（本期机制双轨不定性）；~~限额检测~~ 已由 B453 完成；自动接手（本期只有手动换绑+
+  重建四步；B453 只做只读任务撞额度换人重跑、分支任务撞额度发告知工单，协调者会话撞额度的接手仍未做）；答复/消息事件主动唤醒休眠会话（本期送达=回合末收+resume 后查账两条路）；
   叙事员轮再评估（本期弃选）。来源：`specs/2026-08-25-b156.2-collaboration-rooms-design.md`
   Out of Scope。
 - **多人时代（触发条件：第二个人类成员共用账本）**：多人类成员与登录权限体系、线程、
@@ -587,7 +587,7 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 
 ## 来自 B293 spec（2026-08-29，隔离 HOME 与载体四态）
 
-- **自动限额查询**：周期探测账户额度，把载体状态在「已上线」↔「限额中」之间自动迁移，不必人点检测。B156.3 已把「CLI 限额探测」推进 roadmap，本卡只把「限额中」状态位落地并允许检测写入。来源：B293 spec Out of Scope。
+- ~~**自动限额查询**：周期探测账户额度，把载体状态在「已上线」↔「限额中」之间自动迁移，不必人点检测。B156.3 已把「CLI 限额探测」推进 roadmap，本卡只把「限额中」状态位落地并允许检测写入。来源：B293 spec Out of Scope。~~ 已由 B453 完成（改为周期探测账号额度、派发看账号；载体「限额中」状态退役）。
 - **不经检测写入不可达**：派发失败或后台探活把「已上线」改成「不可达」。本期状态写入点只有创建/改 HOME 与检测。来源：同上。
 
 ## 来自 B282 finish（2026-08-28）
@@ -597,7 +597,7 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 
 ## 来自 B292 spec（2026-08-29）——本期不做、后续要做
 
-- **CLI 限额探测与账户池**：同 HOME / 同凭据的多个载体共享真实账户额度，载体级物理上限管不到跨载体的账户池。B156.3 已记为已知缝（健康位只留形状），B292 调度仍按各载体物理上限保守计数。来源：`docs/superpowers/specs/2026-08-26-b156.3-automation-keystone-design.md` roadmap；`docs/superpowers/specs/2026-08-29-b292-squad-member-concurrency-design.md` Out of Scope。
+- ~~**CLI 限额探测与账户池**：同 HOME / 同凭据的多个载体共享真实账户额度，载体级物理上限管不到跨载体的账户池。B156.3 已记为已知缝（健康位只留形状），B292 调度仍按各载体物理上限保守计数。~~ 已由 B453 完成（账号为账本实体，多个载体选同一账号即共享其额度判断；按剩余额度加权的负载均衡见「B453 残余」）。来源：`docs/superpowers/specs/2026-08-26-b156.3-automation-keystone-design.md` roadmap；`docs/superpowers/specs/2026-08-29-b292-squad-member-concurrency-design.md` Out of Scope。
 - **隔离 HOME 默认路径 / 改路径探测 / 建载体后唤起 / 不健康不派发**：B293。
 
 ## 来自 B273 spec（2026-08-27，本期不做）
@@ -972,7 +972,7 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 - 叫机器人 / 建会话的既有 HTTP 入口在首轮超过 ~11 分钟时调用方连接被 server 写超时切断（首轮结果照落），见 plan Q4。来源：B448 真机 R10。
 - PG 测试腿既有缺陷：`TestB439DevicesPG` 对 jsonb attrs 做字节比对（PG 规范化空格）恒红；`TestPGSmokeEndToEnd`、`TestB435DriverModeMigrationPG` 等共用 public schema，项目自动前缀互占导致顺序相关红。来源：B448 真机 R9。
 - 载体登记后须在载体机跑一次 detect 才 online，否则叫机器人报「小队内没有已上线且有空的载体」，文案未提示去探测。来源：B448 真机 R1。
-- 载体 CLI 回合失败时只截 stderr 尾部；opencode 把错误（如 403 ENTITLEMENT_ERROR）写在 stdout JSON，导致失败原因显示为空。来源：B448 R11。
+- ~~载体 CLI 回合失败时只截 stderr 尾部；opencode 把错误（如 403 ENTITLEMENT_ERROR）写在 stdout JSON，导致失败原因显示为空。来源：B448 R11。~~ 已由 B453 完成（plan Q14：stdout 错误事件与 serve 会话错误进失败原因，真样本回放锁定）。
 - 生产遗留无主计数 `carrier/cmd`、`squad/leader/cmd` = 1（载体已删除，r1 前旧格式），需一次性人工清理或随「删载体清计数」处理。来源：B448 R11。
 - 执行者偏好用内联 Python heredoc 改文件（E21 实测 bash 82 次、edit 7 次），B451 后每次多一次 10–15s 审批链调用；可在 implement 纪律块或执行者指令里要求改文件用 edit/write 工具。来源：B451 spec Out of Scope。
 - `judgeCommand` 会扫到 Python heredoc 正文：B451 起人工清单检查排在硬升级之后，正文含 `handoff dispatch`、黑名单字样时整条硬升级人工（改前同样人工，非回退）；在 handoff 仓改字符串时较易触发，可考虑让 heredoc 正文对黑名单/自指令判据不可见。来源：B451 plan 拍板。
@@ -983,7 +983,7 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 
 - 对本机**未提交**改动做只读调查（就地只读形态）：B452 的只读形态在接收机以基线提交建 detached 工作树，读不到调用方未提交内容。来源：`docs/superpowers/specs/b452.md`。
 - ~~只读任务的文件产物通道（报告文件、截图、快照）；`FinalTextLimit` 16 KiB 字符截断长报告。归 B454。~~ 已并入 B452 spec r1.2 S8（2026-10-21 用户同意）。来源同上。
-- 载体不可达/满负荷/无额度时顺小队换人；B452 只报错点名机器。归 B453。来源同上。
+- 载体不可达/满负荷/无额度时顺小队换人；B452 只报错点名机器。~~无额度~~ 部分已由 B453 完成（派发跳过低额度/无额度；只读任务撞额度换人重跑）；不可达、满负荷时仍只报错点名机器。来源同上。
 - Web 控制台增删改熟练工定义（本期只 CLI `template put --file`）。来源同上。
 - `NodeOverride.Target` 在小队节点被忽略（`internal/agentd/scheddispatch.go:131-135` 返回空 target），与 `internal/ledger/types.go:215-216` 注释矛盾。来源：2026-10-21 现状摸底。
 - 载体能力标签（如 `ios-simulator`、`chromium`）与熟练工 `requires`，按「哪台机有该能力」调度；B452 只做 `here` 与机器名的硬亲和。来源：`docs/superpowers/specs/b452.md` r1.1。
@@ -993,6 +993,31 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 - `dispatch --wait` / `wait --final` 输出的最终文本含执行者的协议尾注行（`{"branch":…}` / `{"summary":…}`），主会话读到一行协议噪声；可在 CLI 输出前剥去末行尾注。来源：B452 真机 R2/R3。
 - 只读派发时 CLI stderr 打「分支 ，起点 …」（分支名为空）；只读形态应改打「只读，起点 …」。来源：B452 真机 R2。
 - **发布说明**：B452 新增配置键 `artifacts.retention`；老版本 agentd 遇该键拒绝启动，回退旧二进制前须先删该键。来源：B452 真机 R8。
+- 只读熟练工从**未推送**的分支派到远端载体必失败（`--template` 一律带本机 HEAD 作基线，执行机 fetch 不到即 400）；调研外部仓库、联网资料这类不依赖本仓状态的任务，应可退回远端默认分支作基线（如 `--base origin` 或模板级「无需仓库」）。另：熟练工最终文本含执行者过程叙述前缀与协议尾注，与上面「尾注行」同条处理。来源：B453 spec W3 首派 400（2026-10-21）。
+
+## B453 残余（2026-10-22，账号与额度 spec Out of Scope「本期不做、后续要做」）
+
+- CLI 登记/编辑/删除账号（`handoff account add/edit/rm`）；B453 只做 `account list|probe`，登记走控制台。来源：`docs/superpowers/specs/b453.md` OOS。
+- 其他 provider 的账号额度（Claude OAuth、DeepSeek 余额、阿里 Token Plan、cline-pass、zen free、Gemini、Kimi 等）；调研结论见 `docs/superpowers/specs/b453-facts-providers.md`、`b453-facts-orca.md`。来源同上。
+- opencode-go 额度的 cookie 路径（console session `console/api/go/status`），仅在 API key 路径不可用时再议。来源同上。
+- 配额感知的负载均衡（按剩余额度加权、额度预测）；B453 只做低额度/无额度跳过。来源同上。
+- 额度探测主动刷新过期 token；B453 只读凭据、等 CLI 自己刷新。来源同上。
+- 只读任务重跑的崩溃窗口：agentd 在「派出新任务」之后、「写回原任务 `rerun_by`」之前崩溃，新任务照跑但原任务无回链，`--wait` 跟不到。来源：B453 plan Q9 残余。
+- 经他机转发受理的只读派发，留存的重跑输入不带机器亲和（`machine`/`here` 在受理机已被转发体删去），重跑不保亲和；本机落点的请求保留。来源：B453 段 4 交回。
+- 点名载体（不经小队）派发的只读任务撞额度只失败、不重跑（没有可换的成员集合）；升级前派发、没有留存输入的任务同样不重跑。来源：同上。
+- 分支任务撞额度的 `notice` 工单不发推送（推送扇出按事件分类，notice 没有对应事件），只在 `--wait` 退出 5、控制台工单面板与收件箱可见。来源：同上。
+- `/api/machines`（或身份读面）加本机全队名：控制台读不到本机名，载体对话框「同机账号」靠「账号所在机不是任何已登记远端机」推断，账号登记的「所在机器」也只能自由输入。来源：B453 段 5。
+- 撞额度分类签名表仍是合成的（opencode-go `ENTITLEMENT_ERROR`、codex `insufficient_quota`/`usage_limit_reached`、grok、agy），R6a 只拿到「key 过期」反例与成功样本；有真样本后替换并补回放。来源：B453 真机 R6a。
+- ~~opencode-go 欠交（待用户二选一）：唯一的 `auth.json › opencode-go` API key（linux-01 `muse`）已过期，真机探测得 401 `api_key_expired`；mac-mini 的 opencode 是 OAuth 账号登录（登录态在 `opencode.db`），没有 API key。或在 OpenCode Console 新建 API key 写入某载体 HOME，或同意新增 `opencode.db › account`（OAuth token）凭据位置（plan Q2 备选）。来源：B453 真机 R1。~~ 已由 B453 r1.3 关闭（2026-10-22 用户选 opencode.db 登录账号来源，真机 R1′ og-mini 读到三窗口）。
+- 窗口标签词表在 `cmd/account.go` 与 `scheduling/accounts.WindowLabel` 各一份（CLI 只消费 wire、不 import 编制域，不能直接复用后者）；要合一就把标签放到 `proto` 侧。来源：B453 段 4 交回、段 6 核对。
+- 旁见（非本卡引入，只记）：删除载体后 `squad list` / `GET /api/squads` 仍列出计数 0 的运行位行（`carrier/<名>`、`squad/<队>/<名>`）——运行位行取 `RunningCounts()` 全量键（B390 观察面），删载体不清计数，与上文 B448 R11「生产遗留无主计数」同一条缝。来源：B453 真机 R6b。
+- 旁见（非本卡）：只回复「OK」的回合被当成 question 工单，`dispatch --wait` 以 5 退出。来源：B453 真机 R3。
+- 旁见（非本卡）：撞额度停下的分支任务 `done` 归档后列表显示 `completed`，看列表会误读为完成。来源：B453 真机 R7。
+- agy 没有专属的撞额度签名：`internal/quota` 分类表对 agy 只靠通用词判定，未见真实 agy 撞额度报文；拿到真实样本后补专属签名与表驱动用例。来源：B453 审查第 1 轮 m3。
+- 载体检测时的限速说明（429，按 B453 不算额度）会在 `ApplyDetect` 写回时被清掉，载体卡片看不到「最近一次检测被限速」；要么保留为检测证据的一部分，要么另设短期提示。来源：B453 审查第 1 轮 m4。
+- 撞额度标记的来源（哪个任务、哪台机器、何时打的标记）未投影到 `AccountView`，控制台只显示「无额度」而无法追到触发任务；需要时扩 F5 可选键（走冻结变更）。来源：B453 审查第 1 轮 m6。
+- agy 在 Windows 上的额度探测：非目标平台，现报「本平台未支持」；需要时再接。来源：`docs/superpowers/plans/b453-plan.md:162`「留待后续」，B461 finish-check 残余核对发现未入账。
+- opencode-go 同 HOME 的「自动」条目（auth.json 有 key 时实际选中 `auth.json › opencode-go`）与显式 `opencode-go` 条目查重不判同一凭据，可重复登记；要判重须改 F9 的字面语义（走冻结变更）。来源：B453 审查第 3 轮 R3-m2。
 
 ## B460 残余（2026-10-21，熟练工工单治理 spec Out of Scope「本期不做、后续要做」）
 

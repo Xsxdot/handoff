@@ -1,4 +1,5 @@
 {
   "outcome": "need_login",
-  "detail": "需要登录。"
+  "detail": "需要登录。",
+  "fingerprint": "sha256:3f9a1b2cc21e"
 }

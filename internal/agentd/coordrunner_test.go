@@ -56,7 +56,7 @@ func testCoordRunnerWithResidents(h *hostapi.Host, prepareHome func(keysclient.S
 	ocRep, _ := executor.BaselineReport(executor.HarnessOpenCode)
 	coordReg := executor.NewRegistry(executor.StaticProvider{HarnessName: executor.HarnessOpenCode, Rep: ocRep})
 	coord := opencode.NewCoordinator(h, slog.Default())
-	return NewCoordinatorRunner(coord, coordReg, prepareHome, isPushResidentSession)
+	return NewCoordinatorRunner(coord, coordReg, prepareHome, isPushResidentSession, nil)
 }
 
 // TestCoordinatorRunnerPassesPreparedHomeToSubprocess 锁 runner 与 prepareHome 缝的

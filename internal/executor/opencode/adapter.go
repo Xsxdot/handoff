@@ -52,6 +52,7 @@ import (
 
 	"github.com/Xsxdot/handoff/internal/executor"
 	"github.com/Xsxdot/handoff/internal/executor/turn"
+	"github.com/Xsxdot/handoff/internal/hostapi"
 	"github.com/Xsxdot/handoff/internal/prochost"
 	"github.com/Xsxdot/handoff/internal/proto"
 )
@@ -283,6 +284,10 @@ type runState struct {
 	// B383 Wave 0 把 turnRejected 从 []string 改成 map（permID→描述）：登记前移到
 	// 发 API **之前**（旧序是成功后才登记，SSE idle 会在登记前抢先消费空回合），
 	// 转发失败时按 permID 摘除——登记与摘除都要以 permID 为键，map 是为此服务的。
+	// turnErrors 是本回合收到的会话/消息错误摘要（B453 Q14，去重、到达序）：供应商拒绝
+	// （额度、授权、模型不在套餐内）表现为 session.error / assistant info.error + 零文本 idle，
+	// 零文本失败的 FailReason 必须带上它，撞额度分类才有原文可判。turnMu 保护，clearTurn 清空。
+	turnErrors   []string
 	permText     map[string]string // permID -> 权限描述（会话级：permID 全局唯一，不随回合清空）
 	turnRejected map[string]string // 本回合拒绝标记表 permID -> 描述（已确认已拒），mapIdle 消费后清空
 	// rejectInFlight 是已登记但尚未结算（API 未返回）的拒绝应答数（turnMu 保护）。
@@ -1498,6 +1503,15 @@ func (a *Adapter) mapEvent(r *runState, raw json.RawMessage) {
 	case ev.Type == "session.error":
 		a.log.Warn("opencode 会话报错", "task", r.taskID,
 			"properties", turn.TruncateRunes(string(ev.Properties), 200))
+		var props struct {
+			Error json.RawMessage `json:"error"`
+		}
+		if err := json.Unmarshal(ev.Properties, &props); err != nil {
+			a.log.Debug("session.error 载荷解析失败，按原文记", "task", r.taskID, "cause", err)
+			r.addTurnError(turn.TruncateRunes(string(ev.Properties), 400))
+			break
+		}
+		r.addTurnError(hostapi.OpencodeErrorText(props.Error))
 	default:
 		a.log.Debug("未知 SSE 事件，跳过", "task", r.taskID, "type", ev.Type)
 	}
@@ -1982,13 +1996,20 @@ func (a *Adapter) mapMessageUpdated(r *runState, props json.RawMessage) {
 	}
 	var msg struct {
 		Info struct {
-			ID   string `json:"id"`
-			Role string `json:"role"`
+			ID    string          `json:"id"`
+			Role  string          `json:"role"`
+			Error json.RawMessage `json:"error"`
 		} `json:"info"`
 	}
 	if err := json.Unmarshal(props, &msg); err != nil {
 		a.log.Debug("message.updated 载荷解析失败，跳过", "task", r.taskID, "cause", err)
 		return
+	}
+	if msg.Info.Role == "assistant" {
+		// B453 Q14：消息级错误（供应商拒绝）随消息帧反复回发，addTurnError 按文本去重
+		if text := hostapi.OpencodeErrorText(msg.Info.Error); text != "" {
+			r.addTurnError(text)
+		}
 	}
 	if msg.Info.Role != "user" || msg.Info.ID == "" {
 		return // assistant 消息不携带文本，无事可做
@@ -2481,8 +2502,9 @@ func (a *Adapter) mapIdle(r *runState, raw json.RawMessage) {
 		a.emit(r, executor.AdapterEvent{Type: "result", SessionID: r.session, Result: &executor.Result{
 			OK: false,
 			FailReason: "回合结束但零文本产出（可能是供应商流中断）；executor 仍在线，" +
-				"可 continue 续接重试",
-			VoidReason: executor.VoidReasonTurnDiscipline,
+				"可 continue 续接重试" + r.turnErrorsSuffix(),
+			ErrorDetail: r.turnErrorsText(),
+			VoidReason:  executor.VoidReasonTurnDiscipline,
 		}})
 		a.advanceWatermark(r)
 		r.clearTurn()
@@ -2638,6 +2660,35 @@ func (r *runState) clearTurn() {
 	r.turnRejected = make(map[string]string)
 	r.rejectInFlight = 0
 	r.rejectRearmGen = 0
+	r.turnErrors = nil
+}
+
+// addTurnError 登记一条本回合的会话/消息错误摘要（空串忽略、同文去重）。调用方须已持 turnMu。
+func (r *runState) addTurnError(text string) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return
+	}
+	for _, e := range r.turnErrors {
+		if e == text {
+			return
+		}
+	}
+	r.turnErrors = append(r.turnErrors, text)
+}
+
+// turnErrorsText 是本回合会话错误原文（去重后以「 | 」连接）；无错误为空串。它就是
+// Result.ErrorDetail：不带任何处置建议，编排层判出撞额度时据它重写失败原因。
+func (r *runState) turnErrorsText() string {
+	return strings.Join(r.turnErrors, " | ")
+}
+
+// turnErrorsSuffix 是零文本失败 FailReason 的会话错误后缀（B453 Q14）；无错误为空串。
+func (r *runState) turnErrorsSuffix() string {
+	if len(r.turnErrors) == 0 {
+		return ""
+	}
+	return "；会话错误：" + r.turnErrorsText()
 }
 
 // partKey 生成 part 累积对账的键：messageID+partID 唯一标识一个 part

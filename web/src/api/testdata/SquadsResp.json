@@ -17,7 +17,9 @@
       "model": "flash",
       "credential": "standalone",
       "max_concurrency": 1,
-      "version": 2
+      "version": 2,
+      "account": "og-mac",
+      "account_mismatch": true
     }
   ],
   "squads": [

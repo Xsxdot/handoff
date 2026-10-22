@@ -97,6 +97,8 @@ type ocEvent struct {
 		Type string `json:"type"`
 		Text string `json:"text"`
 	} `json:"part"`
+	// Error 是 type=error 事件行的错误对象（B453 Q14：额度/授权类错误只在这里，stderr 只有一行概括）。
+	Error json.RawMessage `json:"error"`
 }
 
 // driveTurn 是一回合的进程编排主体（门禁通过后由此接力）。
@@ -153,7 +155,7 @@ func driveTurn(ctx context.Context, req TurnRequest) (TurnReply, error) {
 	watchDone := make(chan struct{})
 	go watchDeadline(ctx, cmd.Process, watchDone)
 
-	reply, parseErr := consumeEvents(stdout)
+	reply, errEvents, parseErr := consumeEvents(stdout)
 	waitErr := cmd.Wait()
 	close(watchDone)
 	dur := time.Since(started)
@@ -174,15 +176,28 @@ func driveTurn(ctx context.Context, req TurnRequest) (TurnReply, error) {
 		// 「Session not found」（plan §三 F3）才能正确降级重建。
 		// B399 r2：只有这一判据允许降级重建，包成哨兵供 keystone errors.Is 分流。
 		if strings.Contains(tail, "Session not found") {
-			return TurnReply{}, fmt.Errorf("hostapi: 回合失败（%v）stderr 尾部: %s: %w",
-				waitErr, tail, ErrSessionNotFound)
+			return TurnReply{}, fmt.Errorf("hostapi: 回合失败（%v）stderr 尾部: %s%s: %w",
+				waitErr, tail, errorEventsSuffix(errEvents), ErrSessionNotFound)
 		}
-		return TurnReply{}, fmt.Errorf("hostapi: 回合失败（%v）stderr 尾部: %s",
-			waitErr, tail)
+		return TurnReply{}, fmt.Errorf("hostapi: 回合失败（%v）stderr 尾部: %s%s",
+			waitErr, tail, errorEventsSuffix(errEvents))
 	}
 	if parseErr != nil {
 		log().Warn("回合输出解析异常", "cli", req.CLI, "cause", parseErr)
 		return TurnReply{}, fmt.Errorf("hostapi: 回合输出解析失败: %w", parseErr)
+	}
+	if len(errEvents) > 0 {
+		if strings.TrimSpace(reply.Output) == "" {
+			// B453 Q14：零退出但只有 error 事件、无文本——不是成功的空回合（检测会误读成
+			// 「回合无输出」、协调者回合会当没事发生），按失败报出错误事件原文供分类。
+			log().Warn("载体 CLI 零退出但事件流报错且无文本，按回合失败处理", "cli", req.CLI,
+				"duration", dur.String(), "error_events", len(errEvents))
+			return TurnReply{}, fmt.Errorf("hostapi: 回合失败（退出码 0，事件流报错且无文本）%s",
+				errorEventsSuffix(errEvents))
+		}
+		// 有文本产出：回合照常成功，错误事件只留观测（不改既有成功语义）
+		log().Warn("载体 CLI 回合有文本产出但事件流含错误事件", "cli", req.CLI,
+			"error_events", len(errEvents), "first", truncateRunes(errEvents[0], 200))
 	}
 	if reply.SessionID == "" {
 		// exit 0 却没拿到会话 id：上游输出形态可能升级，如实响报，
@@ -306,8 +321,9 @@ func buildEnv(req TurnRequest) ([]string, string, error) {
 // type=text 且 part.type=text 的文本按到达序以换行拼接为回合输出。Output
 // 允许为空（工具型回合可能没有 text part），sessionID 不允许（driveTurn 执法）。
 // 非 JSON 行（杂散告警等）跳过并记 Debug，不让脏行炸掉整条流。
-func consumeEvents(r io.Reader) (TurnReply, error) {
-	var reply TurnReply
+//
+// type=error 的事件行（B453 Q14）摘要后单独返回 errEvents，由 driveTurn 并进失败文本。
+func consumeEvents(r io.Reader) (reply TurnReply, errEvents []string, err error) {
 	var texts []string
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024) // 单行上限 8MB：长回合的 text part 可以很大
@@ -327,12 +343,27 @@ func consumeEvents(r io.Reader) (TurnReply, error) {
 		if ev.Type == "text" && ev.Part.Type == "text" {
 			texts = append(texts, ev.Part.Text)
 		}
+		if ev.Type == "error" {
+			msg := OpencodeErrorText(ev.Error)
+			if msg == "" {
+				msg = truncateRunes(string(bytes.TrimSpace(line)), opencodeErrorTextLimit)
+			}
+			errEvents = append(errEvents, msg)
+		}
 	}
 	if err := sc.Err(); err != nil {
-		return TurnReply{}, fmt.Errorf("读事件流: %w", err)
+		return TurnReply{}, errEvents, fmt.Errorf("读事件流: %w", err)
 	}
 	reply.Output = strings.Join(texts, "\n")
-	return reply, nil
+	return reply, errEvents, nil
+}
+
+// errorEventsSuffix 把事件流里的错误事件摘要拼成失败文本后缀；无则空串。
+func errorEventsSuffix(errEvents []string) string {
+	if len(errEvents) == 0 {
+		return ""
+	}
+	return "；事件流错误: " + strings.Join(errEvents, " | ")
 }
 
 // lookPathWithFallback 先走 PATH，失败时尝试常见安装位，避免 agentd 的最小 PATH

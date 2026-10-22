@@ -50,8 +50,10 @@ import (
 	"github.com/Xsxdot/handoff/internal/permgate"
 	"github.com/Xsxdot/handoff/internal/prochost"
 	"github.com/Xsxdot/handoff/internal/proxycfg"
+	"github.com/Xsxdot/handoff/internal/quota"
 	"github.com/Xsxdot/handoff/internal/relay"
 	"github.com/Xsxdot/handoff/internal/scheduling"
+	"github.com/Xsxdot/handoff/internal/scheduling/accounts"
 	"github.com/Xsxdot/handoff/internal/store"
 	"github.com/Xsxdot/handoff/internal/targetclient"
 	"github.com/Xsxdot/handoff/internal/toolchain"
@@ -244,6 +246,8 @@ var agentdCmd = &cobra.Command{
 		mgr.SetWorkspace(workspace.NewCapability())
 		mgr.SetLiveConfig(srv.Conf()) // B233.13 P1：活配置注入移出 SetManager，改组装点显式接线
 		srv.SetManager(mgr)
+		// B453 S6/S7：回合撞额度的回调（标账号、只读任务换人重跑）实现在控制门面，组装点唯一接线。
+		mgr.SetQuotaHandler(srv)
 		// 任务级进程点名（B93 §3.2）：watchdog 的 scanTaskProcs 按任务数进程，
 		// 生产计数实现恒为 Manager.TaskProcCount（与 sweep 的 mgr.SweepTaskProcs 同款接线）
 		orchestration.SetTaskProcCounter(mgr.TaskProcCount)
@@ -687,6 +691,24 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 	}
 }
 
+// newQuotaRegistry 组装额度适配注册表（B453，组装点唯一）。凭据相对路径沿用
+// toolchain 唯一维护的表；本平台无已知落点时适配器报 unsupported_platform。agy 不读
+// 凭据文件（登录态归 CLI 自管），经 PATH 找 agy（启动时 pathenv 已扩 PATH）。
+func newQuotaRegistry() *quota.Registry {
+	rel := func(cli string) string {
+		if p, ok := toolchain.CredRelPathFor(cli); ok {
+			return p
+		}
+		return ""
+	}
+	return quota.NewRegistry(map[string]quota.Prober{
+		quota.KindOpencodeGo: &quota.OpencodeGo{CredRelPath: rel("opencode")},
+		quota.KindCodex:      &quota.Codex{CredRelPath: rel("codex")},
+		quota.KindGrok:       &quota.Grok{CredRelPath: rel("grok")},
+		quota.KindAgy:        &quota.Agy{},
+	})
+}
+
 func setupLedger(cfg *config.Config, srv *agentd.Server, taskStore *store.Store, ctx context.Context,
 	logger *slog.Logger, boot ledgerBoot) (func(), error) {
 	ldsn := cfg.Ledger.DSN
@@ -771,12 +793,17 @@ func setupLedger(cfg *config.Config, srv *agentd.Server, taskStore *store.Store,
 	// 凭据相对路径表仍由 toolchain 唯一维护；组装点注入给 hostapi，避免
 	// hostapi 反向 import maintenance 域或复制三家 CLI 的平台规则。
 	hostAPI := hostapi.NewWithCredentialPathFor(toolchain.CredRelPathFor)
+	// B453：额度适配注册表组装一次，探测器（读数）与检测链（载体 HOME 凭据指纹）共用
+	// 同一份凭据取材，指纹口径不会分叉。
+	quotaReg := newQuotaRegistry()
+	hostAPI.SetCredentialFingerprint(quotaReg.CredentialFingerprint)
 	srv.SetHostAPI(hostAPI)
 	// keystone 域（B156.3）：协调者会话承载 + 隔离 HOME 供给 + ref 解析 +
 	// 叙事/attach 适配，经 SetKeystone 注入。
 	prepareHome := orchestration.NewCoordinatorPrepareHome(srv.Conf(), srv.Providers(), srv.RuleLoader())
 	coord := opencode.NewCoordinator(hostAPI, slog.Default())
-	runner := agentd.NewCoordinatorRunner(coord, srv.Providers(), prepareHome, rooms.IsPushResidentSession)
+	runner := agentd.NewCoordinatorRunner(coord, srv.Providers(), prepareHome, rooms.IsPushResidentSession,
+		srv.CoordinatorAccountProxy)
 	resolver := agentd.NewCoordinatorSessionRefResolver(srv, hostapi.ExpandHomePath)
 	ks := keystone.New(runner, keystone.NewRoomNarrator(rooms), facade,
 		agentd.NewAttachLocator(hostapi.ExpandHomePath))
@@ -812,6 +839,35 @@ func setupLedger(cfg *config.Config, srv *agentd.Server, taskStore *store.Store,
 	sched.SetSelfName(cfg.Name)
 	sched.SetLegacyAlias(config.IsLegacyLocalAlias)
 	srv.SetScheduling(sched)
+	// B453：账号域与编制域共用同一注册表端口（账号定义/读数是 registry 的两个新 kind）。
+	acc := accounts.New(reg)
+	srv.SetAccounts(acc)
+	// 编制域读账号做统一准入/载体引用校验/检测撞额度标记；账号域经编制域查「哪些载体选了
+	// 我」做删除拒删（S1）。两向都是同一子系统内的导出调用，接线只在这里。
+	sched.SetAccounts(acc)
+	acc.SetReferrers(sched.CarriersUsingAccount)
+	// 所在机探测器只在挂共享账本的机器上运行（plan Q3）：读数由所在机直写共享账本，
+	// 单机 SQLite 账本没有设备表、也没有「他机」可言。账号未填代理时回落活配置 proxy:（Q5）。
+	var prober *agentd.AccountProber
+	if shared {
+		prober = agentd.NewAccountProber(agentd.AccountProberConfig{
+			Accounts:   acc,
+			Quota:      quotaReg,
+			IsSelf:     srv.IsSelfMachine,
+			Writer:     cfg.Name,
+			ExpandHome: hostapi.ExpandHomePath,
+			Proxy: func() string {
+				if c := srv.Conf()(); c != nil {
+					return c.Proxy
+				}
+				return ""
+			},
+			Logger: logger,
+		})
+		srv.SetAccountProber(prober)
+		prober.Start(ctx)
+	}
+	logger.Info("账号域已挂载", "dsn_configured", shared, "account_prober", prober != nil, "writer", cfg.Name)
 	// B156.3 K5：账本打开后才能启动自动化事件流。
 	// ctx 随 agentd 停机取消；首轮先重放事件与队列，再进入轮询。
 	// B448 r1：StartAutomation 先同步做启动调度占用对账（归还本机遗留名额）再起循环；
@@ -848,7 +904,10 @@ func setupLedger(cfg *config.Config, srv *agentd.Server, taskStore *store.Store,
 	logger.Info("账本镜像子系统已挂载", "holder", holder, "self_name", cfg.Name,
 		"machines", len(srv.Pool().Names()), "dsn_configured", shared)
 	return func() {
-		// 次序硬约束：先停镜像（不再写库）再关账本库。
+		// 次序硬约束：先停探测器与镜像（不再写库）再关账本库。
+		if prober != nil {
+			prober.Stop()
+		}
 		lm.Stop()
 		lst.Close()
 	}, nil

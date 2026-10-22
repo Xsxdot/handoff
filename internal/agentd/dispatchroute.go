@@ -85,8 +85,10 @@ func (s *Server) routeOrdinaryDispatch(req dispatchRequest) (dispatchLanding, er
 			binding, resolved, err := s.prepareReceiverBinding(req.Receiver, overlay, req.Model)
 			return dispatchLanding{binding: binding, resolved: resolved}, err
 		}
-		if c.Status != scheduling.StatusOnline {
-			return dispatchLanding{resolved: resolved}, fmt.Errorf("%w: 载体 %s 状态为 %s", scheduling.ErrNoHealthy, c.Name, c.Status)
+		// 统一准入判据（B453 S5）：载体未上线或所选账号低额度/无额度都在转发前拒，
+		// 点名派发不静默跑；落点机 AdmitFrozen 还会再判一次（同一判据）。
+		if err := s.scheduling.CheckUsable(c); err != nil {
+			return dispatchLanding{resolved: resolved}, err
 		}
 		bound, err := scheduling.BindPhysical(scheduling.IdentityOf(c), overlay)
 		if err != nil {
@@ -97,10 +99,15 @@ func (s *Server) routeOrdinaryDispatch(req dispatchRequest) (dispatchLanding, er
 			Model: scheduling.EffectiveModel(c.Model, req.Model),
 		}}, nil
 	case scheduling.ReceiverSquad:
+		// B453 F14：重跑链排除谓词与亲和谓词分开组合——亲和改写文案只认亲和本身
+		exclude := rerunExclusion(req.ExcludeAccounts)
 		b, err := s.scheduling.SelectWhere(scheduling.IgnitionRequest{
 			Squad: resolved.Name, Model: req.Model, Actor: "dispatch",
-		}, accept)
+		}, andAccept(accept, exclude.accept))
 		if err != nil {
+			if exclude.active() && errors.Is(err, scheduling.ErrNoHealthy) {
+				return dispatchLanding{resolved: resolved}, s.rerunNoMemberError(err, resolved.Name, exclude)
+			}
 			if accept != nil && errors.Is(err, scheduling.ErrNoHealthy) {
 				return dispatchLanding{resolved: resolved}, fmt.Errorf("%w：要求在 %s 上执行，但小队 %s 在该机没有在线成员（成员：%s；受理机 %s）",
 					errAffinityUnmet, want, resolved.Name, s.squadMemberMachines(resolved.Name), s.selfLabel())

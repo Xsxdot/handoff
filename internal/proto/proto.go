@@ -325,6 +325,24 @@ type Task struct {
 	// ArtifactsDir 是执行机上本任务的产物目录绝对路径 <DataDir>/tasks/<id>/artifacts
 	// （B452 F11）。线注解，不入库：由执行机在任务读出时盖章，路径布局即契约。
 	ArtifactsDir string `json:"artifacts_dir,omitempty"`
+	// Account / AccountKind / AccountProxy 是载体所选账号的派发快照（B453 plan Q6）：落本机
+	// 任务库，续接/恢复据此覆盖执行器代理键。线注解 json:"-"：不进任务快照 wire——代理串
+	// 可能带密码，且这三项不是对外承诺（F17 只增 rerun_of/rerun_by）。
+	Account      string `json:"-"`
+	AccountKind  string `json:"-"`
+	AccountProxy string `json:"-"`
+	// RerunOf / RerunBy 是只读任务撞额度换人重跑的双向链接（B453 F17）：RerunOf 指回被重跑的
+	// 原任务（随新任务建任务落库），RerunBy 指向接替的新任务（原任务迁 failed 之前回写）。
+	// 缺席 = 不在重跑链上。客户端 `--wait`/`wait --final` 见 failed + rerun_by 即跟到新任务。
+	RerunOf *TaskRef `json:"rerun_of,omitempty"`
+	RerunBy *TaskRef `json:"rerun_by,omitempty"`
+}
+
+// TaskRef 指向一条可能在他机的任务（B453 F17/F14）：Task 为任务 ID，Machine 为任务所在
+// 机器的自名（空 = 未配自名的单机部署，按本机解释）。
+type TaskRef struct {
+	Task    string `json:"task"`
+	Machine string `json:"machine"`
 }
 
 // 任务形态取值（B452 F1）。wire 上缺席或空串等于 TaskModeBranch。
@@ -395,7 +413,27 @@ type Event struct {
 	CreatedAt time.Time       `json:"created_at"`
 }
 
-// Ticket 表示一次需人工介入的请求，Kind 取 "gate"（许可门）或 "ask"（提问）。
+// TicketKindNotice 是系统告知工单（B453 Q7/F-B460-1）：人答「已知悉」即关单，答复不回传执行器。
+// 目前唯一来源是分支任务撞额度停下（S7）。
+const TicketKindNotice = "notice"
+
+// NoticeRequest 是 notice 工单的请求体（B453 F-B460-1）：CLI 退出 5 的块全文取 Notice；
+// 其余为结构化字段，供控制台与日志用。RecoverAt 缺席 = 预计恢复时刻未知。
+type NoticeRequest struct {
+	Kind      string     `json:"kind"`   // 恒为 notice（编排侧按请求体 kind 分流应答）
+	Reason    string     `json:"reason"` // 告知原因：quota_exhausted
+	Notice    string     `json:"notice"` // 人读全文
+	Carrier   string     `json:"carrier,omitempty"`
+	Machine   string     `json:"machine,omitempty"`
+	Account   string     `json:"account,omitempty"`
+	Windows   []string   `json:"windows,omitempty"`
+	RecoverAt *time.Time `json:"recover_at,omitempty"`
+	Branch    string     `json:"branch,omitempty"`
+	Worktree  string     `json:"worktree,omitempty"`
+}
+
+// Ticket 表示一次需人工介入的请求，Kind 取 "gate"（许可门）、"ask"（提问）或
+// "notice"（系统告知，B453）。
 //
 // JSON 线格式契约（attach 输出 pending_tickets 与 REST 响应共用此结构，
 // key 必须小写）：{"id":..,"task_id":..,"kind":..,"request":{..},"answer":..,..}。
