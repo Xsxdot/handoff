@@ -250,6 +250,99 @@ func TestCoordinatorHomeSupplyOnLaunchAndResume(t *testing.T) {
 	})
 }
 
+// snapshotHomeFiles 记录 HOME 下普通文件的正文与 mtime，用于证明「零写入」。
+func snapshotHomeFiles(t *testing.T, root string) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		out[rel] = string(data) + "|" + info.ModTime().UTC().Format(time.RFC3339Nano)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("快照 %s: %v", root, err)
+	}
+	return out
+}
+
+// TestCoordinatorHomeMainHomeSkipsAllWrites 锁 B464 S8/Q9：供给目标展开后就是主 HOME
+// （含经软链的同路径）时整段跳过——config.yaml 投影、provider 配置投影、规则/skills
+// 全不写，只做展开与校验；主 HOME 的活配置与规则文件字节与 mtime 都不变。
+func TestCoordinatorHomeMainHomeSkipsAllWrites(t *testing.T) {
+	mainHome := t.TempDir()
+	write := func(rel, content string) {
+		t.Helper()
+		path := filepath.Join(mainHome, rel)
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		old := time.Now().Add(-time.Hour).Truncate(time.Second)
+		if err := os.Chtimes(path, old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(filepath.Join(".handoff", "config.yaml"), "token: agentd-live\n")
+	write(filepath.Join(".config", "opencode", "AGENTS.md"), "agents-doc")
+	write(filepath.Join(".config", "opencode", "skills", "plan", "SKILL.md"), "skill-plan")
+	write(filepath.Join(".config", "opencode", "opencode.jsonc"), `{"provider":{"x":{}}}`)
+
+	// 目标是主 HOME 的软链：判据必须 EvalSymlinks 后比较，不能按字面路径。
+	linkParent := t.TempDir()
+	linkedMain := filepath.Join(linkParent, "main-home-link")
+	if err := os.Symlink(mainHome, linkedMain); err != nil {
+		t.Skipf("当前平台不支持 symlink: %v", err)
+	}
+
+	liveCfg := &config.Config{Token: "agentd-live", DataDir: t.TempDir(), StallTimeout: 2 * time.Hour}
+	supplier := coordinatorHomeSupplier{
+		currentConfig: func() *config.Config { return liveCfg },
+		userHomeDir:   func() (string, error) { return mainHome, nil },
+		expandHomeDir: func(string) (string, error) { return linkedMain, nil },
+		profileFor: func(cli string) (executor.Profile, error) {
+			t.Errorf("目标就是主 HOME 时不得调用 Profile.Prepare（cli=%s）", cli)
+			return opencode.New(nil).Profile(), nil
+		},
+		loadRules: func(string, string) ([]executor.ProfileFile, []executor.ProfileFile, error) {
+			t.Error("目标就是主 HOME 时不得装载规则/skills")
+			return nil, nil, nil
+		},
+	}
+
+	before := snapshotHomeFiles(t, mainHome)
+	prepared, err := supplier.Prepare(keysclient.SessionSpec{CLI: "opencode", HomeDir: "~", Workdir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("目标 = 主 HOME 时 Prepare 应成功跳过写入: %v", err)
+	}
+	if prepared != linkedMain {
+		t.Fatalf("Prepare 返回 %q, want %q", prepared, linkedMain)
+	}
+	after := snapshotHomeFiles(t, mainHome)
+	if len(after) != len(before) {
+		t.Fatalf("主 HOME 文件集合变了：before=%d after=%d", len(before), len(after))
+	}
+	for rel, want := range before {
+		if got, ok := after[rel]; !ok || got != want {
+			t.Fatalf("主 HOME 文件 %s 被写入或改写：before=%q after=%q", rel, want, got)
+		}
+	}
+}
+
 func TestCoordinatorHomeSupplierRejectsSymlinkedTargetHome(t *testing.T) {
 	mainHome := t.TempDir()
 	targetOutside := t.TempDir()

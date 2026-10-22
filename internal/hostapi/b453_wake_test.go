@@ -55,7 +55,7 @@ func TestWakeHomeAccountKindAndProxy(t *testing.T) {
 	swapUserHomeDir(t, t.TempDir())
 	var env []string
 	captureDetectTurn(t, &env, errors.New("insufficient_quota"))
-	host := newProbeHost()
+	host := New()
 	reply, err := host.WakeHome(context.Background(), WakeRequest{
 		CLI: "opencode", HomeDir: t.TempDir(), Timeout: testWakeBudget,
 		AccountKind: "codex", Proxy: "socks5://127.0.0.1:7897",
@@ -75,7 +75,7 @@ func TestWakeHomeWithoutAccountKeepsEnv(t *testing.T) {
 	swapUserHomeDir(t, t.TempDir())
 	var env []string
 	captureDetectTurn(t, &env, nil)
-	host := newProbeHost()
+	host := New()
 	if _, err := host.WakeHome(context.Background(), WakeRequest{CLI: "opencode", HomeDir: t.TempDir(), Timeout: testWakeBudget}); err != nil {
 		t.Fatalf("WakeHome: %v", err)
 	}

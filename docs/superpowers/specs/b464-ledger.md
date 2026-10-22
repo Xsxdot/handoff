@@ -280,3 +280,52 @@
 
 - `git commit`（全部段 3 改动 + 本台账）→ `cadcab14 feat(B464): 新增登录、单 HOME 检查、立即发现扇出与 CLI discover（段 3）`，`23 files changed, 1586 insertions(+), 50 deletions(-)`。
 - 提交前 `go build ./...`、`go vet`（六个触及包树）、`gofmt -l` 均无输出；`git status --porcelain` 仅本台账待 amend。
+
+## implement 段 4（2026-10-22，handoff runner 小队）
+
+- 执行者：`card dispatch --step implement` 派出的 runner。**基线核对**：派发文写「分支 `cards/B464-charter-1` @ `606f236d`」，实际工作树在 `cards/B464-charter-2` @ `363a5485`（含段 1–3；`606f236d` 在本仓不存在，`origin/cards/B464-charter-1` 在 8cd3a9d6，是本分支祖先）。按「只在当前分支工作、不切分支」纪律就地执行，收尾 branch 为 `cards/B464-charter-2`。
+- 范围：只做 plan §7 段 4（Q9 协调者主 HOME 整段跳过；删除清单剩余项；Q8 agy token 软链；契约 fixture 刷新），不碰段 5 的账号页/载体对话框重做。
+- 纪律：零真机动作（不起/不重启 agentd、不读真实凭据、不连生产账本）；测试一律夹具 HOME/临时目录；Go 测试 `env -u CLAUDE_CODE_SESSION_ID`；只 commit 不 push。
+
+### 偏离与自主决定
+
+1. **`ResumeReq.HomeDir`（自行拍板，超出 plan §6 修改清单的字面文件集）**：agy 冷恢复也调用 `WriteTaskEnv`，若只改 Start 路径，重启后的冷恢复会退回「按进程主 HOME 取 token」，与 Q8 不一致。给 `executor.ResumeReq` 增 `HomeDir`（任务行载体 HOME 快照），manager 两处 Resume 调用透传 `task.HomeDir`；不改变 Env 的 HOME 语义。无冻结契约变化（executor 包内，非 §11 条目）。对照 §9「新文件拆分/私有命名」不覆盖此决定，属为实现 S8/Q8 闭环的最小必要扩展，特此披露。
+2. **前端只做删除残留（自行拍板，对照「不碰段 5」）**：§4 删除清单点名 web `probeHome`，若只删服务端端点会留下生产调用方。故最小删除 `web/src/api/scheduling.ts` 的 `ProbeKind/HomeProbeReq/HomeProbeResp/probeHome`、`SchedulingPage.tsx` 的 HOME 实时探测 effect 与提示、对应测试与两个 fixture；未重做账号页/载体对话框（留段 5）。`defaultHomeDir` 仍留（段 5 重写载体对话框时一并处置）。
+3. **契约 fixture 无漂移、未跑 `-update`**：段 4 删除的是未再注册的 `HomeProbeReq/Resp` fixture 与已删 wire 类型，剩余类型的序列化结果逐字节未变；`TestContractFixtures` 直接绿，故没有可红的 fixture 漂移，未执行 `-update`（不是跳过）。
+4. **Q9 判据的失败回退（§9 授权内）**：`sameHomePath` 先 `filepath.EvalSymlinks` 两侧比较；解析失败（目标不存在等）退回 `filepath.Clean` 字面比较。
+5. **agy 软链的重复准备（§9 授权内）**：同一 taskDir 再次 `WriteTaskEnv` 时先删旧 token（链接或历史副本）再建链，避免 `os.Symlink` 因已存在失败。
+6. **既有测试改写（§9 允许类）**：删除 `ProbeHome` 四个测试与 `TestCredentialPolicyLiterals`；agentd 远程转发测试去掉 probe 段、只保留 wake 的登录 roundtrip 与未知机器 400；`newProbeHost()`（注入凭据路径表）改为 `hostapi.New()`。
+
+### 实现落地
+
+- **Q9 协调者供给**（`internal/orchestration/coordinator_home.go`）：展开 → 绝对路径后先判定目标是否为主 HOME（EvalSymlinks 后比较，含软链同路径）；是则记 Info「协调者供给目标即主 HOME，跳过全部写入」并返回，不调 `Profile.Prepare`、不投影 config/provider、不装规则/skills、不 MkdirAll。非主 HOME 路径行为不变（仍 reject 白名单软链、写投影配置、写规则/skills）。
+- **删除只读探测**：删 `hostapi.ProbeHome/ProbeRequest/ProbeReply/ProbeKind`、凭据路径解析器（`Host.resolveCredential`/`NewWithCredentialPathFor`/`resolveCredentialPath`/`mainHomeHasCredential`/`applyMainHomeSync`）、`WakeHome` 内对凭据表的判态；`inspectHome` 收窄为 `resolveHomePath`（只展开 + stat/目录校验，不存在交给 WakeHome 报需要登录）。删 `POST /api/host/probe` 与 `handleHomeProbe`、`proto.HomeProbeReq/Resp`；`cmd/agentd.go` 组装改 `hostapi.New()`。`toolchain.CredRelPathFor` 保留给 quota 取材。
+- **删 `ProfileReq.Credential` / `executor.CredentialPolicy` 两常量**（`internal/executor/profile.go`）；协调者供给不再传凭据策略。
+- **Q8 agy token**（`internal/executor/agy/taskenv.go`）：token 源改为载体登录 HOME（空 = 主 HOME；`~`/`~/…` 在目标机展开，相对路径拒绝），任务 HOME 内 `antigravity-oauth-token` 与 `.orig-google-oauth`（存在时）都改为指向登录 HOME 原件的单文件软链，不再 `ReadFile`+`WriteFile` 拷贝。登录 HOME 缺 token → 可行动错误（点名该 HOME、说明在该 HOME 登录、明确不会从其他 HOME 复制）；软链建立失败也带源/目标上下文。建立成功各一条 Info。
+- **冷恢复**：`agy/resume.go` 冷恢复把 `req.HomeDir` 传给 `WriteTaskEnv`；manager 两处 Resume 传 `task.HomeDir`。
+- **注释与残留**：`schedapi.carrierView` 删掉 AccountMismatch/cred_fingerprint 的过时说明；`status.go`、`profile.go`、`hostprobe.go` 中 ProbeHome/main_home_sync 文案同步；`proto` 契约测试的 `TestHomeWakeReqOmitsEmptyCredential` 改为 `TestHomeWakeReqOmitsEmptyLogin`（锁 `login` 缺席）。
+- **契约 fixture**：从用例表删 `HomeProbeReq/Resp`，删 `web/src/api/testdata/HomeProbeReq.json`、`HomeProbeResp.json`；web 契约测试与 fetch 测试去掉 probe 引用。
+
+### 红证据（先红/变异补证，均还原后复跑绿）
+
+- Q9：`TestCoordinatorHomeMainHomeSkipsAllWrites` 先以临时变异让 `sameHomePath` 恒 false → `--- FAIL: TestCoordinatorHomeMainHomeSkipsAllWrites（目标 = 主 HOME 时 Prepare 应成功跳过写入: 协调者隔离 HOME 白名单路径是 symlink …main-home-link）`；还原后 `ok`，`grep -c MUTATION-B464S4` = 0。
+- Q8：临时让 `resolveLoginHome` 忽略入参恒回主 HOME → `--- FAIL: TestWriteTaskEnvLinksTokenFromLoginHome（软链目标 = <主 HOME token>, want 登录 HOME token）`、`--- FAIL: TestWriteTaskEnvMissingLoginTokenIsActionable（登录 HOME 缺 token 时 WriteTaskEnv 应失败）`；还原后 `ok`，标记计数 0。
+- 删除型改动的「红」是编译/调用面消失：`ProbeHome`/`HomeProbeReq`/`CredentialPolicy` 删后 `go build ./...` 通过、全量触及包测试通过；probe 转发测试改为只保留 wake 后通过。
+
+### 命令与读数（本段真实跑到）
+
+- `go build ./...` → 无输出。
+- `go vet ./internal/hostapi/... ./internal/orchestration/... ./internal/executor/... ./internal/proto/... ./internal/agentd/... ./internal/scheduling/... ./cmd/... ./internal/toolchain/...` → 无输出。
+- `gofmt -l <改动的 .go>` → 空。
+- `env -u CLAUDE_CODE_SESSION_ID go test -count=1`（触及包全树）→ 全 ok：hostapi 1.1s、orchestration 86.0s、executor 0.2s、agy 0.3s、claudecode 4.0s、codex 5.9s、grok 1.3s、opencode 25.2s、proto 0.01s、agentd 317.6s、accountwork 0.2s、scheduling 24.6s、accounts 0.05s、cmd 147.7s。
+- `go test ./internal/proto/ -run TestContractFixtures` → `ok`（无漂移，未 `-update`）。
+- web（临时软链主仓 `web/node_modules`，跑完删除）：`npm run typecheck` 通过；`npx vitest run src/api/contract.test.ts src/api/scheduling.fetch.test.ts` 通过；全量 `npx vitest run` → 148 文件过、2003 例 11 红（AccountsPage 5 + SchedulingPage 6），与段 1/2 的既有红同源（手工登记/凭据枚举/按名选账号/指纹红字），本段删掉 1 例 probe 测试后由 12 红降为 11，无新增红。
+
+### 未验证 / 交后续
+
+- R9（协调者真机拉起、沙盒 HOME 零写入）、R13（agy 任务 token 软链真机）属主会话真机项，本段未跑。
+- 段 5 重写账号页/载体对话框时消解上述 11 例既有红，并处置 `defaultHomeDir` 等 B453 残留。
+
+### 提交（提交当时的命令与输出；末条随后 amend 收进本台账，hash 会变）
+
+- `git commit`（全部段 4 改动 + 本台账）→ `66f9bd4e feat(B464): 协调者主 HOME 零写入、删只读探测与凭据模式残留、agy token 软链（段 4）`，`37 files changed, 441 insertions(+), 587 deletions(-)`；提交后 `git status --porcelain` 空。

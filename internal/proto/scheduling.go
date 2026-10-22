@@ -155,20 +155,6 @@ type CoordinatorAttachReleaseResp struct {
 	OK bool `json:"ok"`
 }
 
-// HomeProbeReq 是 POST /api/host/probe 的请求体。machine 走 query（?machine=），
-// 不进 body——转发基座靠 query 选路。Credential 空 = standalone。
-type HomeProbeReq struct {
-	CLI        string `json:"cli"`
-	Path       string `json:"path"`
-	Credential string `json:"credential,omitempty"`
-}
-
-// HomeProbeResp 是路径探测的三类结果。kind 只允许 empty / logged_in / occupied。
-type HomeProbeResp struct {
-	Kind   string `json:"kind"`
-	Detail string `json:"detail,omitempty"`
-}
-
 // HomeWakeReq 是 POST /api/host/wake 的请求体（本机唤起，供检测编排转发）。
 //
 // B464 W1：删 credential/fingerprint_kind/fingerprint_entry/account；login 是载体所选登录 id

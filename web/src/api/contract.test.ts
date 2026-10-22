@@ -132,8 +132,6 @@ import queueFixture from './testdata/QueueResp.json'
 import coordinatorLaunchFixture from './testdata/CoordinatorLaunchResp.json'
 import coordinatorStatusFixture from './testdata/CoordinatorStatus.json'
 import coordinatorAttachReleaseFixture from './testdata/CoordinatorAttachReleaseResp.json'
-import homeProbeReqFixture from './testdata/HomeProbeReq.json'
-import homeProbeRespFixture from './testdata/HomeProbeResp.json'
 import homeWakeReqFixture from './testdata/HomeWakeReq.json'
 import homeWakeRespFixture from './testdata/HomeWakeResp.json'
 import carrierDetectRespFixture from './testdata/CarrierDetectResp.json'
@@ -172,8 +170,6 @@ import {
   type CoordinatorLaunchResp,
   type CoordinatorStatus,
   type CoordinatorAttachReleaseResp,
-  type HomeProbeReq,
-  type HomeProbeResp,
   type HomeWakeReq,
   type HomeWakeResp,
   type QueueEntry,
@@ -707,12 +703,7 @@ describe('scheduling wire', () => {
     expect(r.rebuilt).toBe(false)
     expect(r.escalated).toBe(false)
   })
-  it('B293 probe/detect/run-command fixture 键与默认 HOME/四态词表', () => {
-    const probeReq: HomeProbeReq = homeProbeReqFixture
-    expect(probeReq.cli).toBe('codex')
-    expect(probeReq.path).toBe('~/.handoff/home/mbp-codex')
-    const probeResp = homeProbeRespFixture as HomeProbeResp
-    expect(probeResp.kind).toBe('empty')
+  it('B293 detect/run-command fixture 键与默认 HOME/四态词表', () => {
     const wakeReq: HomeWakeReq = homeWakeReqFixture
     expect(wakeReq.home_dir).toBe('~/.handoff/home/mbp-codex')
     expect(wakeReq.model).toBeUndefined()

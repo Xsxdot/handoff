@@ -1,23 +1,15 @@
 // profile.go —— HOME/配置 Profile 能力面（B233.2）。
 //
-// 职责：定义 Inspect / Prepare / Verify 与凭据策略字面值。
+// 职责：定义 Inspect / Prepare / Verify。
 //
 // 边界：
-//   - HOME 期望（哪个目录、是否隔离、凭据策略、期望规则/skills）属载体
+//   - HOME 期望（哪个目录、是否隔离、期望规则/skills）属载体
 //   - 原生写入属 harness；本文件无 I/O
-//   - 不是 hostapi.ProbeHome / WakeHome（那是载体登录探测，B293）
-//   - 禁止复制会话库或整棵 HOME；失败不得把半残 HOME 标成功
+//   - 不是 hostapi.WakeHome（那是载体登录检测，B293/B464）
+//   - 禁止复制会话库、凭据或整棵 HOME；失败不得把半残 HOME 标成功
 package executor
 
 import "context"
-
-// CredentialPolicy 是凭据供给策略，字面值与 hostapi.ProbeRequest.Credential 对齐。
-type CredentialPolicy string
-
-const (
-	CredentialStandalone   CredentialPolicy = "standalone"
-	CredentialMainHomeSync CredentialPolicy = "main_home_sync"
-)
 
 // ProfileFile 是一条期望写入原生位置的受管文件（规则或 skill）。
 type ProfileFile struct {
@@ -32,7 +24,6 @@ type ProfileFile struct {
 type ProfileReq struct {
 	HomeDir     string
 	Isolated    bool
-	Credential  CredentialPolicy
 	Rules       []ProfileFile
 	Skills      []ProfileFile
 	TaskOverlay []ProfileFile

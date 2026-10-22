@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { fetchMachines } from '../../api/client'
-import { detectCarrier, deleteCarrier, getCarrierRunCommand, getSquads, probeHome, putCarrier, putSquad } from '../../api/scheduling'
+import { detectCarrier, deleteCarrier, getCarrierRunCommand, getSquads, putCarrier, putSquad } from '../../api/scheduling'
 import { SchedulingPage } from './SchedulingPage'
 import { __resetAccountsStoreForTest, __setAccountsForTest } from '../accounts/store'
 import { sampleAccounts } from '../accounts/testAccounts'
@@ -16,7 +16,7 @@ vi.mock('../../api/client', async () => {
 
 vi.mock('../../api/scheduling', async () => {
   const actual = await vi.importActual<typeof import('../../api/scheduling')>('../../api/scheduling')
-  return { ...actual, deleteCarrier: vi.fn(), detectCarrier: vi.fn(), getCarrierRunCommand: vi.fn(), getSquads: vi.fn(), probeHome: vi.fn(), putCarrier: vi.fn(), putSquad: vi.fn() }
+  return { ...actual, deleteCarrier: vi.fn(), detectCarrier: vi.fn(), getCarrierRunCommand: vi.fn(), getSquads: vi.fn(), putCarrier: vi.fn(), putSquad: vi.fn() }
 })
 
 beforeEach(() => {
@@ -25,7 +25,6 @@ beforeEach(() => {
   vi.mocked(deleteCarrier).mockResolvedValue({ name: 'mbp', version: 1 })
   vi.mocked(detectCarrier).mockResolvedValue({ name: 'mbp', status: 'online', version: 1 })
   vi.mocked(getCarrierRunCommand).mockResolvedValue({ command: 'HOME=/h opencode' })
-  vi.mocked(probeHome).mockResolvedValue({ kind: 'empty' })
   vi.mocked(putCarrier).mockResolvedValue({ name: 'mbp', version: 1 })
   vi.mocked(putSquad).mockResolvedValue({ name: 'exec', version: 8 })
   vi.mocked(fetchMachines).mockResolvedValue({
@@ -131,20 +130,7 @@ describe('SchedulingPage', () => {
     await user.click(screen.getByRole('button', { name: '登记载体' }))
     await user.type(screen.getByLabelText('载体名'), 'mbp')
     await waitFor(() => expect(fetchMachines).toHaveBeenCalled())
-    expect(probeHome).not.toHaveBeenCalled()
     expect(screen.getByRole('option', { name: 'linux-01' })).toBeInTheDocument()
-  })
-
-  it('probes the current draft through the API and renders the result', async () => {
-    const user = userEvent.setup()
-    vi.mocked(probeHome).mockResolvedValue({ kind: 'logged_in', detail: 'credential found' })
-    render(<SchedulingPage />)
-    await user.click(screen.getByRole('button', { name: '登记载体' }))
-    await user.type(screen.getByLabelText('HOME 档案'), '~/.handoff/home/mbp')
-    await waitFor(() => expect(probeHome).toHaveBeenCalledWith({
-      cli: 'opencode', path: '~/.handoff/home/mbp', machine: '本机',
-    }))
-    expect(await screen.findByText(/已发现该 CLI 凭据。 credential found/)).toBeVisible()
   })
 
   it('按载体行编辑小队成员政策并保留模型元信息', async () => {

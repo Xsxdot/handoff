@@ -32,6 +32,47 @@ const (
 	preToolUseMatcher = "*"
 )
 
+// resolveLoginHome 返回载体登录 HOME 的绝对路径（空 = 本机主 HOME）。
+// 登记串可能是 ~ 或 ~/…（跨机可认的用户可见形态），必须在目标机展开；相对路径
+// 视为非法输入，避免把任务凭据落到 agentd 的当前工作目录。
+func resolveLoginHome(raw string) (string, error) {
+	home := strings.TrimSpace(raw)
+	if home == "" {
+		mainHome, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("解析本机主 HOME: %w", err)
+		}
+		return filepath.Clean(mainHome), nil
+	}
+	if home == "~" || strings.HasPrefix(home, "~/") || strings.HasPrefix(home, `~\`) {
+		mainHome, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("展开登录 HOME %q: %w", raw, err)
+		}
+		if home == "~" {
+			home = mainHome
+		} else {
+			home = filepath.Join(mainHome, strings.TrimLeft(home[1:], `/\`))
+		}
+	}
+	if !filepath.IsAbs(home) {
+		return "", fmt.Errorf("登录 HOME 不是绝对路径: %q", raw)
+	}
+	return filepath.Clean(home), nil
+}
+
+// linkOAuthToken 把任务 HOME 的 token 建成指向登录 HOME 原件的单文件软链。
+// 重复调用（同一 taskDir 再准备）先清掉旧链接或旧副本，保证任务侧只有一串。
+func linkOAuthToken(source, dest string) error {
+	if err := os.Remove(dest); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("清理旧 token %s: %w", dest, err)
+	}
+	if err := os.Symlink(source, dest); err != nil {
+		return err
+	}
+	return nil
+}
+
 // nativeCommandAllow 是写入任务 HOME settings.json 的 agy 原生 allow。
 //
 // command(*) 是 command 命名空间通配：消掉 headless 对未知首词的 soft-deny。
@@ -69,13 +110,18 @@ type hookNamedConfig struct {
 // WriteTaskEnv 在任务 HOME 落下 agy 策略物料，并渲染首回合 prompt。
 //
 // 参数：workdir 为任务工作区（本函数不再往其中写 gate）；taskDir 为任务专属目录；
-// sockPath 为权限裁决套接字；其余参数用于 prompt 与 hooks 命令。
+// sockPath 为权限裁决套接字；loginHome 是载体所选登录的 HOME（空 = 本机主 HOME，
+// 形如 ~ 或 ~/… 的串在目标机展开）；其余参数用于 prompt 与 hooks 命令。
 // 返回任务 HOME 内 hooks.json 路径和首回合 prompt；oauth 凭据缺失或任一物料
 // 写入失败时返回错误。
 //
+// B464 Q8：任务 HOME 的 agy token 是指向登录 HOME 的单文件软链，绝不复制。软链下
+// agy 原地刷新写的是登录 HOME 自己的凭据；若它换目录项写，任务侧副本随任务目录
+// 回收，登录 HOME 不受影响（R0-9 已证 agy 原地写）。
+//
 // 不写 workspace .agents/hooks.json：headless 读的是 HOME；B309 --add-dir 会
 // 再加载 workspace 那份，双写同一 gate 导致同一 step_N 打两次（B310/B314）。
-func WriteTaskEnv(workdir, taskDir, taskID, planContent, sockPath, handoffBin, disciplineBlock string) (hooksPath, promptText string, err error) {
+func WriteTaskEnv(workdir, taskDir, taskID, planContent, sockPath, handoffBin, disciplineBlock, loginHome string) (hooksPath, promptText string, err error) {
 	log := slog.Default()
 	agyHome := filepath.Join(taskDir, agyHomeDirName)
 	agyGeminiDir := filepath.Join(agyHome, ".gemini")
@@ -97,35 +143,38 @@ func WriteTaskEnv(workdir, taskDir, taskID, planContent, sockPath, handoffBin, d
 	}
 	log.Info("agy 准备任务环境", "task", taskID, "task_dir", taskDir, "workdir", workdir, "path", agyHome)
 
-	userHome, err := os.UserHomeDir()
+	loginHomeAbs, err := resolveLoginHome(loginHome)
 	if err != nil {
-		log.Error("解析 agy oauth 用户 HOME 失败", "task", taskID, "cause", err)
-		return hooksPath, "", fmt.Errorf("解析用户 HOME: %w", err)
+		log.Error("解析 agy 登录 HOME 失败", "task", taskID, "login_home", loginHome, "cause", err)
+		return hooksPath, "", err
 	}
-	sourceOAuth := filepath.Join(userHome, ".gemini", "antigravity-cli", "antigravity-oauth-token")
-	oauthData, err := os.ReadFile(sourceOAuth)
-	if err != nil {
-		log.Error("读取 agy oauth token 失败", "task", taskID, "source", sourceOAuth, "cause", err)
-		return hooksPath, "", fmt.Errorf("读取 agy oauth token %s: %w", sourceOAuth, err)
+	sourceOAuth := filepath.Join(loginHomeAbs, ".gemini", "antigravity-cli", "antigravity-oauth-token")
+	if _, statErr := os.Stat(sourceOAuth); statErr != nil {
+		if os.IsNotExist(statErr) {
+			log.Error("agy 登录 HOME 缺 oauth token", "task", taskID, "login_home", loginHomeAbs, "source", sourceOAuth, "cause", statErr)
+			return hooksPath, "", fmt.Errorf("登录 HOME %s 里没有 agy OAuth token：在该 HOME 运行 agy 完成登录后再派发（任务不会从其他 HOME 复制凭据）: %w", loginHomeAbs, statErr)
+		}
+		log.Error("检查 agy oauth token 失败", "task", taskID, "source", sourceOAuth, "cause", statErr)
+		return hooksPath, "", fmt.Errorf("检查 agy oauth token %s: %w", sourceOAuth, statErr)
 	}
 	destOAuth := filepath.Join(agyCLIDir, "antigravity-oauth-token")
-	if err := os.WriteFile(destOAuth, oauthData, 0600); err != nil {
-		log.Error("拷贝 agy oauth token 失败", "task", taskID, "source", sourceOAuth, "destination", destOAuth, "cause", err)
-		return hooksPath, "", fmt.Errorf("写入 agy oauth token %s: %w", destOAuth, err)
+	if err := linkOAuthToken(sourceOAuth, destOAuth); err != nil {
+		log.Error("软链 agy oauth token 失败", "task", taskID, "source", sourceOAuth, "destination", destOAuth, "cause", err)
+		return hooksPath, "", fmt.Errorf("软链 agy oauth token %s -> %s: %w", destOAuth, sourceOAuth, err)
 	}
-	log.Info("agy oauth token 已拷贝到任务 HOME", "task", taskID, "source", sourceOAuth, "destination", destOAuth, "bytes", len(oauthData))
+	log.Info("agy oauth token 已软链到任务 HOME", "task", taskID, "source", sourceOAuth, "destination", destOAuth)
 
 	originalOAuth := sourceOAuth + ".orig-google-oauth"
-	if originalData, readErr := os.ReadFile(originalOAuth); readErr == nil {
+	if _, statErr := os.Stat(originalOAuth); statErr == nil {
 		destOriginal := filepath.Join(agyCLIDir, "antigravity-oauth-token.orig-google-oauth")
-		if err := os.WriteFile(destOriginal, originalData, 0600); err != nil {
-			log.Error("拷贝 agy 原始 oauth token 失败", "task", taskID, "source", originalOAuth, "destination", destOriginal, "cause", err)
-			return hooksPath, "", fmt.Errorf("写入 agy 原始 oauth token %s: %w", destOriginal, err)
+		if err := linkOAuthToken(originalOAuth, destOriginal); err != nil {
+			log.Error("软链 agy 原始 oauth token 失败", "task", taskID, "source", originalOAuth, "destination", destOriginal, "cause", err)
+			return hooksPath, "", fmt.Errorf("软链 agy 原始 oauth token %s -> %s: %w", destOriginal, originalOAuth, err)
 		}
-		log.Info("agy 原始 oauth token 已拷贝到任务 HOME", "task", taskID, "source", originalOAuth, "destination", destOriginal, "bytes", len(originalData))
-	} else if !os.IsNotExist(readErr) {
-		log.Error("读取 agy 原始 oauth token 失败", "task", taskID, "source", originalOAuth, "cause", readErr)
-		return hooksPath, "", fmt.Errorf("读取 agy 原始 oauth token %s: %w", originalOAuth, readErr)
+		log.Info("agy 原始 oauth token 已软链到任务 HOME", "task", taskID, "source", originalOAuth, "destination", destOriginal)
+	} else if !os.IsNotExist(statErr) {
+		log.Error("检查 agy 原始 oauth token 失败", "task", taskID, "source", originalOAuth, "cause", statErr)
+		return hooksPath, "", fmt.Errorf("检查 agy 原始 oauth token %s: %w", originalOAuth, statErr)
 	}
 
 	settings := struct {

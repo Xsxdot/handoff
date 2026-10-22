@@ -81,8 +81,8 @@ func TestResumeColdWriteTaskEnvFailureRestoresHooks(t *testing.T) {
 		writeTaskEnvFn = oldWrite
 		startProc = oldStart
 	}()
-	writeTaskEnvFn = func(workdir, taskDir, taskID, planContent, sockPath, handoffBin, disciplineBlock string) (string, string, error) {
-		path, prompt, err := WriteTaskEnv(workdir, taskDir, taskID, planContent, sockPath, handoffBin, disciplineBlock)
+	writeTaskEnvFn = func(workdir, taskDir, taskID, planContent, sockPath, handoffBin, disciplineBlock, loginHome string) (string, string, error) {
+		path, prompt, err := WriteTaskEnv(workdir, taskDir, taskID, planContent, sockPath, handoffBin, disciplineBlock, loginHome)
 		if err != nil {
 			return path, prompt, err
 		}

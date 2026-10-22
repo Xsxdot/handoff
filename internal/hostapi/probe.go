@@ -1,8 +1,9 @@
-// probe.go —— 本机隔离 HOME 的路径探测与检测回合（B293 探测 + B295 检测）。
+// probe.go —— 本机载体 HOME 的检测回合（B295；B464 删只读探测）。
 //
-// 职责：问本机某路径相对某 CLI 是空 / 已登录 / 非空无凭据；以及用该 HOME
-// 检测可用性。名单内 CLI 走 RunTurn 发固定短消息；名单外只查命令是否可执行
-// （B342：不把未实装当成检测失败的唯一结局）。只暴露本机能力。
+// 职责：用载体（登录）HOME 检测 CLI 可用性。名单内 CLI 走 RunTurn 发固定短消息；
+// 名单外只查命令是否可执行（B342：不把未实装当成检测失败的唯一结局）。只暴露
+// 本机能力。B464 起不再提供只读「这个 HOME 像不像已登录」探测：登录由发现器的
+// 离线取材判定，HOME 提示由 `POST /api/logins/check` 承担。
 //
 // 边界：不写编制域状态（那是 scheduling.ApplyDetect）；不绑卡、不经 keystone、
 // 不进派发状态机；不在控制台拉登录 TUI。跨机由 gateway 经 ?machine= 转发。
@@ -38,29 +39,6 @@ var detectTurn = func(h *Host, ctx context.Context, req TurnRequest) (TurnReply,
 	return h.RunTurn(ctx, req)
 }
 
-// ProbeKind 是路径探测的三类结果（与设置页提示一一对应）。
-type ProbeKind string
-
-const (
-	ProbeEmpty    ProbeKind = "empty"     // 不存在或目录无任何条目
-	ProbeLoggedIn ProbeKind = "logged_in" // 可见该 CLI 凭据
-	ProbeOccupied ProbeKind = "occupied"  // 非空且未见该 CLI 凭据
-)
-
-// ProbeRequest 描述一次只读探测。Credential 取载体词表（standalone /
-// main_home_sync）；空 = standalone。值不得当凭据明文使用。
-type ProbeRequest struct {
-	Path       string
-	CLI        string
-	Credential string
-}
-
-// ProbeReply 是探测结果。Kind 是冻结三值；Detail 给人看，不参与准入。
-type ProbeReply struct {
-	Kind   ProbeKind
-	Detail string
-}
-
 // WakeOutcome 是一次唤起在本机观察到的结局，供编制域套四态表。
 type WakeOutcome string
 
@@ -91,24 +69,6 @@ type WakeReply struct {
 	Detail  string
 }
 
-// ProbeHome 只读探测目标机路径，先在目标 Host 进程展开 ~。它不创建、删除或
-// 改写文件；Credential 只选择凭据路径表，不是凭据内容。返回 empty、logged_in
-// 或 occupied，失败返回带目标路径上下文的错误。
-func (h *Host) ProbeHome(ctx context.Context, req ProbeRequest) (ProbeReply, error) {
-	started := time.Now()
-	log().Info("开始探测载体 HOME", "cli", req.CLI, "path", req.Path,
-		"main_home_sync", req.Credential == "main_home_sync")
-	state, err := h.inspectHome(ctx, req)
-	if err != nil {
-		log().Error("探测载体 HOME 失败", "cli", req.CLI, "path", req.Path,
-			"elapsed", time.Since(started).String(), "cause", err)
-		return ProbeReply{}, err
-	}
-	log().Info("探测载体 HOME 完成", "cli", req.CLI, "path", state.path,
-		"kind", state.reply.Kind, "elapsed", time.Since(started).String())
-	return state.reply, nil
-}
-
 // WakeHome 用目标机展开后的载体 HOME 跑一次检测。名单内经 RunTurn 发 DetectPrompt；名单外
 // 只查命令（B342）。Timeout=0 使用 DefaultDetectTimeout。不进控制台登录 TUI。
 //
@@ -123,115 +83,66 @@ func (h *Host) WakeHome(ctx context.Context, req WakeRequest) (WakeReply, error)
 	req.Timeout = timeout
 	log().Info("开始检测载体 HOME", "cli", req.CLI, "home_dir", req.HomeDir,
 		"account_kind", req.AccountKind, "timeout", timeout.String())
-	state, err := h.inspectHome(ctx, ProbeRequest{Path: req.HomeDir, CLI: req.CLI})
+	targetHome, err := h.resolveHomePath(ctx, req.HomeDir, req.CLI)
 	if err != nil {
-		log().Error("检测前探测失败", "cli", req.CLI, "path", req.HomeDir,
+		log().Error("检测前解析 HOME 失败", "cli", req.CLI, "path", req.HomeDir,
 			"elapsed", time.Since(started).String(), "cause", err)
 		return WakeReply{}, err
 	}
-	if _, statErr := os.Stat(state.path); errors.Is(statErr, os.ErrNotExist) {
-		detail := fmt.Sprintf("载体 HOME %s 不存在：该登录已失效或尚未在这里登录（在该机该 HOME 登录对应 CLI 后重新检测）", state.path)
-		log().Warn("检测载体 HOME：目录不存在，不创建", "cli", req.CLI, "path", state.path)
+	if _, statErr := os.Stat(targetHome); errors.Is(statErr, os.ErrNotExist) {
+		detail := fmt.Sprintf("载体 HOME %s 不存在：该登录已失效或尚未在这里登录（在该机该 HOME 登录对应 CLI 后重新检测）", targetHome)
+		log().Warn("检测载体 HOME：目录不存在，不创建", "cli", req.CLI, "path", targetHome)
 		return WakeReply{Outcome: WakeNeedLogin, Detail: detail}, nil
 	}
 
-	reply, err := h.runWake(ctx, req, state.path)
+	reply, err := h.runWake(ctx, req, targetHome)
 	if err != nil {
-		log().Error("检测载体 HOME 失败", "cli", req.CLI, "path", state.path,
+		log().Error("检测载体 HOME 失败", "cli", req.CLI, "path", targetHome,
 			"elapsed", time.Since(started).String(), "cause", err)
 		return WakeReply{}, err
 	}
-	log().Info("检测载体 HOME 完成", "cli", req.CLI, "path", state.path,
+	log().Info("检测载体 HOME 完成", "cli", req.CLI, "path", targetHome,
 		"outcome", reply.Outcome, "elapsed", time.Since(started).String())
 	return reply, nil
 }
 
-// homeProbeState 同时保留「目标目录本身是否为空」与对外三态（ProbeHome 的 main_home_sync
-// 对照归 B464 段 4 随 /api/host/probe 一并删除）。
-type homeProbeState struct {
-	path        string
-	targetEmpty bool
-	reply       ProbeReply
-}
-
-// inspectHome 执行 ProbeHome 的共享只读判定，并返回 WakeHome 所需的目标空态。
-func (h *Host) inspectHome(ctx context.Context, req ProbeRequest) (homeProbeState, error) {
+// resolveHomePath 在目标 Host 进程展开载体 HOME（空 = 主 HOME），返回绝对路径。
+// 只做解析与存在性/目录类型校验，不创建、不改写任何文件；目录不存在交给
+// WakeHome 报「需要登录」。B464 起检测不再按凭据路径表判态：HOME 里有什么
+// 凭据就用什么，没有就是需要登录。
+func (h *Host) resolveHomePath(ctx context.Context, rawPath, cli string) (string, error) {
 	if err := ctx.Err(); err != nil {
-		return homeProbeState{}, fmt.Errorf("hostapi: 探测 HOME 被取消: %w", err)
+		return "", fmt.Errorf("hostapi: 解析 HOME 被取消: %w", err)
 	}
-	path := strings.TrimSpace(req.Path)
+	path := strings.TrimSpace(rawPath)
 	if path == "" {
 		home, err := userHomeDir()
 		if err != nil {
-			return homeProbeState{}, fmt.Errorf("hostapi: 空 HOME 回落到主 HOME 失败: %w", err)
+			return "", fmt.Errorf("hostapi: 空 HOME 回落到主 HOME 失败: %w", err)
 		}
 		if home == "" {
-			return homeProbeState{}, fmt.Errorf("hostapi: 空 HOME 回落到主 HOME 失败: 主 HOME 为空")
+			return "", fmt.Errorf("hostapi: 空 HOME 回落到主 HOME 失败: 主 HOME 为空")
 		}
-		log().Info("空 HOME 按主 HOME 探测", "cli", req.CLI)
+		log().Info("空 HOME 按主 HOME 检测", "cli", cli)
 		path = filepath.Clean(home)
 	} else {
-		expanded, err := ExpandHomePath(req.Path)
+		expanded, err := ExpandHomePath(rawPath)
 		if err != nil {
-			return homeProbeState{}, err
+			return "", err
 		}
 		path = expanded
 	}
 	info, err := os.Stat(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			state := homeProbeState{path: path, targetEmpty: true,
-				reply: ProbeReply{Kind: ProbeEmpty, Detail: "目标 HOME 不存在"}}
-			return h.applyMainHomeSync(ctx, req, state)
+			return path, nil
 		}
-		return homeProbeState{}, fmt.Errorf("hostapi: stat 目标 HOME %q: %w", path, err)
+		return "", fmt.Errorf("hostapi: stat 目标 HOME %q: %w", path, err)
 	}
 	if !info.IsDir() {
-		return homeProbeState{}, fmt.Errorf("hostapi: 目标 HOME %q 不是目录", path)
+		return "", fmt.Errorf("hostapi: 目标 HOME %q 不是目录", path)
 	}
-	entries, err := os.ReadDir(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			state := homeProbeState{path: path, targetEmpty: true,
-				reply: ProbeReply{Kind: ProbeEmpty, Detail: "目标 HOME 不存在"}}
-			return h.applyMainHomeSync(ctx, req, state)
-		}
-		return homeProbeState{}, fmt.Errorf("hostapi: 读取目标 HOME %q: %w", path, err)
-	}
-	if len(entries) == 0 {
-		state := homeProbeState{path: path, targetEmpty: true,
-			reply: ProbeReply{Kind: ProbeEmpty, Detail: "目标 HOME 为空"}}
-		return h.applyMainHomeSync(ctx, req, state)
-	}
-	rel, ok := h.resolveCredentialPath(req.CLI)
-	if !ok {
-		return homeProbeState{path: path, reply: ProbeReply{
-			Kind: ProbeOccupied, Detail: "目录非空，未提供该 CLI 的文件判据"}}, nil
-	}
-	credPath := filepath.Join(path, rel)
-	if _, err := os.Stat(credPath); err == nil {
-		return homeProbeState{path: path, reply: ProbeReply{
-			Kind: ProbeLoggedIn, Detail: "目录中发现该 CLI 凭据"}}, nil
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return homeProbeState{}, fmt.Errorf("hostapi: stat 凭据路径 %q: %w", credPath, err)
-	}
-	return homeProbeState{path: path, reply: ProbeReply{
-		Kind: ProbeOccupied, Detail: "目录非空，未发现该 CLI 凭据"}}, nil
-}
-
-// applyMainHomeSync 只对目标为空态追加主 HOME 的只读对照，不改变目标目录。
-func (h *Host) applyMainHomeSync(ctx context.Context, req ProbeRequest, state homeProbeState) (homeProbeState, error) {
-	if req.Credential != "main_home_sync" {
-		return state, nil
-	}
-	loggedIn, err := h.mainHomeHasCredential(ctx, req.CLI)
-	if err != nil {
-		return homeProbeState{}, err
-	}
-	if loggedIn {
-		state.reply = ProbeReply{Kind: ProbeLoggedIn, Detail: "主 HOME 有该 CLI 凭据"}
-	}
-	return state, nil
+	return path, nil
 }
 
 // ExpandHomePath 只展开当前用户的 ~、~/ 与 ~\ 前缀为目标机绝对路径；
@@ -249,40 +160,6 @@ func ExpandHomePath(path string) (string, error) {
 		path = filepath.Join(home, strings.TrimLeft(path[1:], `/\`))
 	}
 	return filepath.Clean(path), nil
-}
-
-// resolveCredentialPath 通过组装点注入的既有凭据表解析相对路径。
-func (h *Host) resolveCredentialPath(cli string) (string, bool) {
-	if h.resolveCredential == nil {
-		return "", false
-	}
-	rel, ok := h.resolveCredential(filepath.Base(cli))
-	if !ok || rel == "" || filepath.IsAbs(rel) {
-		return "", false
-	}
-	return rel, true
-}
-
-// mainHomeHasCredential 只在目标目录为空且请求明确 main_home_sync 时读取主 HOME。
-func (h *Host) mainHomeHasCredential(ctx context.Context, cli string) (bool, error) {
-	if err := ctx.Err(); err != nil {
-		return false, fmt.Errorf("hostapi: 读取主 HOME 凭据被取消: %w", err)
-	}
-	rel, ok := h.resolveCredentialPath(cli)
-	if !ok {
-		return false, nil
-	}
-	home, err := userHomeDir()
-	if err != nil {
-		return false, fmt.Errorf("hostapi: 获取主 HOME: %w", err)
-	}
-	if _, err := os.Stat(filepath.Join(home, rel)); err == nil {
-		return true, nil
-	} else if errors.Is(err, os.ErrNotExist) {
-		return false, nil
-	} else {
-		return false, fmt.Errorf("hostapi: stat 主 HOME 凭据 %q: %w", filepath.Join(home, rel), err)
-	}
 }
 
 // runWake 用隔离 HOME 走检测。名单内 CLI 发 DetectPrompt；名单外只查同名

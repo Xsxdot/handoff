@@ -34,7 +34,7 @@ func TestReapRestoresHooks(t *testing.T) {
 	taskDir := t.TempDir()
 	workDir := t.TempDir()
 	ad := New(slog.New(slog.NewTextHandler(io.Discard, nil)))
-	if _, _, err := WriteTaskEnv(workDir, taskDir, "T-reap", "# Plan", "/tmp/perm.sock", "/bin/handoff", ""); err != nil {
+	if _, _, err := WriteTaskEnv(workDir, taskDir, "T-reap", "# Plan", "/tmp/perm.sock", "/bin/handoff", "", ""); err != nil {
 		t.Fatalf("WriteTaskEnv 失败: %v", err)
 	}
 	hooksPath := filepath.Join(workDir, agentsDirName, hooksFileName)
@@ -60,7 +60,7 @@ func TestReapMissingProcInfoRestoresHooks(t *testing.T) {
 	taskDir := t.TempDir()
 	workDir := t.TempDir()
 	ad := New(slog.New(slog.NewTextHandler(io.Discard, nil)))
-	if _, _, err := WriteTaskEnv(workDir, taskDir, "T-reap-no-proc", "# Plan", "/tmp/perm.sock", "/bin/handoff", ""); err != nil {
+	if _, _, err := WriteTaskEnv(workDir, taskDir, "T-reap-no-proc", "# Plan", "/tmp/perm.sock", "/bin/handoff", "", ""); err != nil {
 		t.Fatalf("WriteTaskEnv 失败: %v", err)
 	}
 	hooksPath := filepath.Join(workDir, agentsDirName, hooksFileName)

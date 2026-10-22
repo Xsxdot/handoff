@@ -1,10 +1,12 @@
-// hostprobe.go —— 本机隔离 HOME 探测/唤起的 HTTP 面（B293）。
+// hostprobe.go —— 本机载体 HOME 唤起的 HTTP 面（B293；B464 删只读探测）。
 //
-// 职责：解码 → 调 hostapi.Host.ProbeHome / WakeHome → 编码。本机能力，经
+// 职责：解码 → 调 hostapi.Host.WakeHome → 编码。本机能力，经
 // forwardIfRequested 按 ?machine= 一跳转发到目标机同名端点。
 //
 // 边界：不写编制域状态（检测写状态在 schedapi 的 detect 端点）；不发明第二套
 // 转发。Ticket 0 空壳：hostapi 方法恒 ErrUnavailable → 本层 503。
+// B464 删除 `POST /api/host/probe` 与 ProbeHome：HOME 的登录识别统一走
+// `POST /api/logins/check`（发现器离线取材），检测只保留唤起。
 package agentd
 
 import (
@@ -18,7 +20,6 @@ import (
 )
 
 func (s *Server) registerHostProbeRoutes(api *http.ServeMux) {
-	api.HandleFunc("POST /api/host/probe", s.withHostAPI(s.handleHomeProbe))
 	api.HandleFunc("POST /api/host/wake", s.withHostAPI(s.handleHomeWake))
 }
 
@@ -32,34 +33,6 @@ func (s *Server) withHostAPI(h http.HandlerFunc) http.HandlerFunc {
 		}
 		h(w, r)
 	}
-}
-
-// handleHomeProbe POST /api/host/probe?machine=：只读探测。?machine= 先转发。
-func (s *Server) handleHomeProbe(w http.ResponseWriter, r *http.Request) {
-	if s.forwardIfRequested(w, r) {
-		return
-	}
-	var in proto.HomeProbeReq
-	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{
-			"error": fmt.Sprintf("解析请求体: %v", err)})
-		return
-	}
-	if in.CLI == "" || in.Path == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{
-			"error": "cli 与 path 必填"})
-		return
-	}
-	s.log.Info("探测隔离 HOME", "cli", in.CLI, "path", in.Path,
-		"main_home_sync", in.Credential == "main_home_sync")
-	reply, err := s.hostAPI.ProbeHome(r.Context(), hostapi.ProbeRequest{
-		Path: in.Path, CLI: in.CLI, Credential: in.Credential,
-	})
-	if err != nil {
-		s.hostProbeErr(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, proto.HomeProbeResp{Kind: string(reply.Kind), Detail: reply.Detail})
 }
 
 // handleHomeWake POST /api/host/wake?machine=：本机有时限唤起。?machine= 先转发。

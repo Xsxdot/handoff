@@ -54,17 +54,25 @@ func (p coordinatorHomeSupplier) Prepare(spec keysclient.SessionSpec) (string, e
 	if !filepath.IsAbs(targetHome) {
 		return "", fmt.Errorf("协调者供给 HOME 未展开为绝对路径: %q", targetHome)
 	}
-	if err := rejectCoordinatorHomeSymlinks(targetHome); err != nil {
-		slog.Default().Error("检查协调者隔离 HOME 白名单失败", "cli", spec.CLI,
-			"target", targetHome, "cause", err)
-		return "", err
-	}
 	if p.userHomeDir == nil {
 		return "", errors.New("协调者供给缺少主 HOME 读取函数")
 	}
 	mainHome, err := p.userHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("读取主 HOME: %w", err)
+	}
+	// B464 S8/Q9：目标展开后就是主 HOME（含经软链的同路径）时整段跳过写入——
+	// 同源同目标，写 .handoff/config.yaml、provider 配置、规则与 skills 只会改写
+	// agentd 自己的活配置与主 HOME 规则文件。只做展开与校验，不做任何写入。
+	if sameHomePath(targetHome, mainHome) {
+		slog.Default().Info("协调者供给目标即主 HOME，跳过全部写入", "cli", spec.CLI,
+			"target", targetHome)
+		return targetHome, nil
+	}
+	if err := rejectCoordinatorHomeSymlinks(targetHome); err != nil {
+		slog.Default().Error("检查协调者隔离 HOME 白名单失败", "cli", spec.CLI,
+			"target", targetHome, "cause", err)
+		return "", err
 	}
 	if p.currentConfig == nil {
 		return "", errors.New("协调者供给缺少活配置读取函数")
@@ -108,11 +116,10 @@ func (p coordinatorHomeSupplier) Prepare(spec keysclient.SessionSpec) (string, e
 		return "", err
 	}
 	rep, err := prof.Prepare(context.Background(), executor.ProfileReq{
-		HomeDir:    targetHome,
-		Isolated:   true,
-		Credential: executor.CredentialMainHomeSync,
-		Rules:      rules,
-		Skills:     skills,
+		HomeDir:  targetHome,
+		Isolated: true,
+		Rules:    rules,
+		Skills:   skills,
 	})
 	if err != nil {
 		return "", err
@@ -181,6 +188,18 @@ func projectCoordinatorConfig(cfg *config.Config) (config.Config, error) {
 		}
 	}
 	return projected, nil
+}
+
+// sameHomePath 报告两个 HOME 路径是否指向同一个目录：先按 EvalSymlinks 展开后
+// 比较（/Users/x 与经软链的同路径算同一个），解析失败（路径不存在等）才退回
+// Clean 字面比较。
+func sameHomePath(a, b string) bool {
+	ra, ea := filepath.EvalSymlinks(a)
+	rb, eb := filepath.EvalSymlinks(b)
+	if ea == nil && eb == nil {
+		return ra == rb
+	}
+	return filepath.Clean(a) == filepath.Clean(b)
 }
 
 // rejectCoordinatorHomeSymlinks 只检查隔离 HOME 根和供给白名单中的路径。

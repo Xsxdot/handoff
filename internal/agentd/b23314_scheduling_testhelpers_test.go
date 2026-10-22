@@ -25,7 +25,6 @@ import (
 	"github.com/Xsxdot/handoff/internal/ledger"
 	"github.com/Xsxdot/handoff/internal/orchestration"
 	"github.com/Xsxdot/handoff/internal/scheduling"
-	"github.com/Xsxdot/handoff/internal/toolchain"
 )
 
 // newSchedulingForTest 构造编制域具体服务并镜像 cmd 的 SetKnownMachines（经
@@ -60,7 +59,7 @@ func assembleDomainsForTest(t *testing.T, srv *Server) {
 	rooms := collab.New(facade)
 	rooms.SetCursorStore(cursor.New(filepath.Join(srv.Conf()().DataDir, "room-cursors.json")))
 	srv.SetRooms(rooms)
-	hostAPI := hostapi.NewWithCredentialPathFor(toolchain.CredRelPathFor)
+	hostAPI := hostapi.New()
 	srv.SetHostAPI(hostAPI)
 	prepareHome := orchestration.NewCoordinatorPrepareHome(srv.Conf(), srv.Providers(), srv.RuleLoader())
 	coord := opencode.NewCoordinator(hostAPI, slog.Default())

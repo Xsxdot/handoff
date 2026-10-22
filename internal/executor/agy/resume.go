@@ -114,7 +114,7 @@ func (a *Adapter) Resume(req executor.ResumeReq) (out executor.ResumeOutcome, er
 		if selfExe == "" {
 			selfExe = "handoff"
 		}
-		if _, _, werr := writeTaskEnvFn(req.RepoPath, req.TaskDir, req.TaskID, "", sockPath, selfExe, ""); werr != nil {
+		if _, _, werr := writeTaskEnvFn(req.RepoPath, req.TaskDir, req.TaskID, "", sockPath, selfExe, "", req.HomeDir); werr != nil {
 			_ = ps.Close()
 			restoreErr := RestoreTaskEnv(req.TaskDir)
 			a.drop(req.TaskID)

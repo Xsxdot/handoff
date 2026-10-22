@@ -5,12 +5,12 @@
 // 服务端按所选登录镜像（本页只读显示）。PUT 是整体替换，必须回传所选登录。账号数据读 Shell 级
 // 共享快照（accounts/store），本页不另拉。B464 段 1 只做与新 wire 对齐的最小改动，对话框按原型
 // 重做属后续段。
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { ReactElement } from 'react'
 import { ChevronRight } from 'lucide-react'
-import type { CarrierInput, CarrierStatus, CarrierView, HomeProbeResp, SquadInput, SquadMember, SquadView, SquadsResp } from '../../api/scheduling'
+import type { CarrierInput, CarrierStatus, CarrierView, SquadInput, SquadMember, SquadView, SquadsResp } from '../../api/scheduling'
 import { fetchMachines } from '../../api/client'
-import { CARRIER_STATUS_LABEL, deleteCarrier, detectCarrier, getCarrierRunCommand, getSquads, probeHome, putCarrier, putSquad } from '../../api/scheduling'
+import { CARRIER_STATUS_LABEL, deleteCarrier, detectCarrier, getCarrierRunCommand, getSquads, putCarrier, putSquad } from '../../api/scheduling'
 import { copyToClipboard } from '../lib/clipboard'
 import { errorMessage } from '../lib/format'
 import type { AccountView, LoginView } from '../../api/accounts'
@@ -157,9 +157,6 @@ export function SchedulingPage({ compact = false }: SchedulingPageProps = {}): R
   const [draft, setDraft] = useState<CarrierDraft | SquadDraft | null>(null)
   const [saveError, setSaveError] = useState('')
   const [saving, setSaving] = useState(false)
-  const [probe, setProbe] = useState<HomeProbeResp | null>(null)
-  const [probeError, setProbeError] = useState('')
-  const [probing, setProbing] = useState(false)
   const [detecting, setDetecting] = useState('')
   const [detectError, setDetectError] = useState<Record<string, string>>({})
   const [deleting, setDeleting] = useState('')
@@ -169,7 +166,6 @@ export function SchedulingPage({ compact = false }: SchedulingPageProps = {}): R
   const [expandedCarriers, setExpandedCarriers] = useState<Set<string>>(() => new Set())
   const [expandedSquads, setExpandedSquads] = useState<Set<string>>(() => new Set())
   const [compactSection, setCompactSection] = useState<'carriers' | 'squads'>('carriers')
-  const probeSequence = useRef(0)
   const { accounts } = useAccounts()
   // 已登记远端机名（machineOptions 去掉本机别名）：同机判据用它推断「本机」的账号。
   const remoteNames = machineOptions.filter((m) => m !== '本机')
@@ -209,8 +205,6 @@ export function SchedulingPage({ compact = false }: SchedulingPageProps = {}): R
     setDialog({ kind: 'carrier', value: row })
     setDraft(carrierDraft(row))
     setSaveError('')
-    setProbe(null)
-    setProbeError('')
   }
 
   const openSquad = (row: SquadView | null): void => {
@@ -224,46 +218,8 @@ export function SchedulingPage({ compact = false }: SchedulingPageProps = {}): R
       setDialog(null)
       setDraft(null)
       setSaveError('')
-      setProbe(null)
-      setProbeError('')
     }
   }
-
-  // 探测请求只消费当前 draft；序号使旧响应不能覆盖用户刚改过的 HOME/CLI/机器。
-  // `~` 仍原样交给目标机解释，页面不展开路径。
-  useEffect(() => {
-    if (dialog?.kind !== 'carrier' || draft === null || !('cli' in draft)) return
-    const carrier = draft as CarrierDraft
-    if (carrier.home_dir === '' || carrier.cli === '') {
-      setProbe(null)
-      setProbeError('')
-      return
-    }
-    const sequence = ++probeSequence.current
-    setProbing(true)
-    setProbe(null)
-    setProbeError('')
-    const timer = window.setTimeout(() => {
-      const started = performance.now()
-      console.info({ event: 'scheduling.probe.start', cli: carrier.cli, machine: carrier.machine, path: carrier.home_dir })
-      void probeHome({
-        cli: carrier.cli,
-        path: carrier.home_dir,
-        machine: carrier.machine,
-      }).then((result) => {
-        if (sequence !== probeSequence.current) return
-        console.info({ event: 'scheduling.probe.success', cli: carrier.cli, machine: carrier.machine, path: carrier.home_dir, kind: result.kind, elapsed: performance.now() - started })
-        setProbe(result)
-      }).catch((cause: unknown) => {
-        if (sequence !== probeSequence.current) return
-        console.error({ event: 'scheduling.probe.failure', cli: carrier.cli, machine: carrier.machine, path: carrier.home_dir, elapsed: performance.now() - started, cause })
-        setProbeError(errorMessage(cause))
-      }).finally(() => {
-        if (sequence === probeSequence.current) setProbing(false)
-      })
-    }, 0)
-    return () => window.clearTimeout(timer)
-  }, [dialog?.kind, draft && 'home_dir' in draft ? draft.home_dir : '', draft && 'cli' in draft ? draft.cli : '', draft && 'machine' in draft ? draft.machine : ''])
 
   const detect = async (name: string): Promise<void> => {
     setDetecting(name)
@@ -506,9 +462,6 @@ export function SchedulingPage({ compact = false }: SchedulingPageProps = {}): R
             })()}</div>
             <div><label htmlFor="sched-carrier-conc" className={FIELD_LABEL}>并发上限（0 / 留空 = 不限）</label><input id="sched-carrier-conc" aria-label="并发上限" className={INPUT} type="number" min="0" value={(draft as CarrierDraft).maxConcurrencyText} onChange={(event) => updateDraft({ maxConcurrencyText: event.target.value })} /></div>
             <p className="text-[11px] leading-5 text-muted-foreground sm:col-span-2">载体在所选登录的 HOME 里跑，凭据不复制；同一登录可被多个载体共用，派发按账号额度判断。</p>
-            {probing && <p className="text-[11px] text-muted-foreground sm:col-span-2">正在检测目标机 HOME…</p>}
-            {probe && <p className="text-[11px] sm:col-span-2">{probe.kind === 'empty' ? '目标 HOME 为空，检测时可创建。' : probe.kind === 'logged_in' ? '已发现该 CLI 凭据。' : '目录非空但未见该 CLI 凭据，不会覆盖已有文件。'}{probe.detail ? ` ${probe.detail}` : ''}</p>}
-            {probeError && <p role="alert" className="text-[11px] text-destructive sm:col-span-2">HOME 检测失败：{probeError}</p>}
           </div> : <div className="grid gap-x-3 gap-y-2.5 sm:grid-cols-2">
             <div><label htmlFor="sched-squad-name" className={FIELD_LABEL}>小队名（唯一）</label><input id="sched-squad-name" aria-label="小队名" className={INPUT} readOnly={dialog.value !== null} value={draft.name} onChange={(event) => updateDraft({ name: event.target.value })} /></div>
             <div><label htmlFor="sched-squad-role" className={FIELD_LABEL}>角色（不混编）</label><select id="sched-squad-role" aria-label="角色" className={INPUT} value={(draft as SquadDraft).role} onChange={(event) => updateDraft({ role: event.target.value })}><option value="executor">执行者队</option><option value="coordinator">协调者队</option></select></div>
