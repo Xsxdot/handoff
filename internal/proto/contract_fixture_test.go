@@ -72,6 +72,9 @@ func TestContractFixtures(t *testing.T) {
 		{"AccountInput", accountInputSample()},
 		{"AccountRenameInput", AccountInput{Name: "og-main"}},
 		{"LoginProxyInput", loginProxyInputSample()},
+		{"LoginHomeResp", loginHomeRespSample()},
+		{"LoginCheckResp", loginCheckRespSample()},
+		{"AccountDiscoverResp", accountDiscoverRespSample(now)},
 		{"AccountDeleteRefusal", AccountDeleteRefusal{
 			Error:    "账号 codex-plus 仍被载体引用：mbp-codex、mbp-oc-codex；先在自动化页给它们换账号或清空选择",
 			Carriers: []string{"mbp-codex", "mbp-oc-codex"},
@@ -1009,9 +1012,14 @@ func accountsRespSample(now time.Time) AccountsResp {
 	}
 	oauth := login("login-aa00000000000001", "linux-01", "~/.handoff/home/mimo", "opencode.db", "sha256:3f9a1b2cc21e", "ok", "mimo")
 	oauth.ExpiresAt = at(30 * 24 * time.Hour)
+	oauth.Relogin = &LoginCommand{SSH: "ssh dev@linux-01",
+		Run: "HOME=/home/dev/.handoff/home/mimo opencode console login"}
 	proxied := login("login-cc00000000000001", "macbook-pro", "~/.handoff/home/mbp-codex", "auth.json", "sha256:e7a033d5c0aa", "ok",
 		"mbp-codex", "mbp-oc-codex")
 	proxied.Proxy = "socks5://u:***@127.0.0.1:7897"
+	proxied.Relogin = &LoginCommand{SSH: "ssh dev@macbook-pro",
+		Run:  "HOME=/Users/dev/.handoff/home/mbp-codex codex login",
+		Note: "远端或无浏览器机器用 codex login --device-auth"}
 	return AccountsResp{Accounts: []AccountView{{
 		ID: "opencode-go:3f9a1b2cc21e", Name: "og-main", Kind: "opencode-go", Label: "dev@example.com",
 		Fingerprint:     "sha256:3f9a1b2cc21e",
@@ -1074,6 +1082,32 @@ func accountsRespSample(now time.Time) AccountsResp {
 	}}, Discovery: []DiscoveryView{
 		{Machine: "linux-01", Self: true, At: at(-30 * time.Second)},
 		{Machine: "macbook-pro", Self: false, Error: "列不出 ~/.handoff/home：permission denied"},
+	}}
+}
+
+// loginHomeRespSample 是 B464 A11 新增登录回执：HOME 机器无关写法 + 带 HOME 前缀的命令 + ssh 行。
+func loginHomeRespSample() LoginHomeResp {
+	return LoginHomeResp{Home: "~/.handoff/home/cx-abcd", Command: LoginCommand{
+		SSH: "ssh dev@linux-01", Run: "HOME=/home/dev/.handoff/home/cx-abcd codex login",
+		Note: "远端或无浏览器机器用 codex login --device-auth"}}
+}
+
+// loginCheckRespSample 是 B464 A12 检查结果：新账号与已有账号各一条；未识别时是 []。
+func loginCheckRespSample() LoginCheckResp {
+	return LoginCheckResp{Logins: []LoginCheckItem{
+		{Login: "login-aa00000000000001", Account: "opencode-go:3f9a1b2cc21e", AccountName: "og-main",
+			NewAccount: false, AccountLogins: 2},
+		{Login: "login-0102030405060708", Account: "codex:0b1c2d3e4f50", AccountName: "cx@example.com",
+			NewAccount: true, AccountLogins: 1},
+	}}
+}
+
+// accountDiscoverRespSample 是 B464 A10 立即发现结果：一台成功带 at、一台失败带原因。
+func accountDiscoverRespSample(now time.Time) AccountDiscoverResp {
+	at := now.UTC()
+	return AccountDiscoverResp{Machines: []MachineDiscoverResult{
+		{Machine: "linux-01", OK: true, At: &at},
+		{Machine: "macbook-pro", OK: false, Error: "转发到 macbook-pro 失败: 连接被拒绝"},
 	}}
 }
 

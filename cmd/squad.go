@@ -230,8 +230,8 @@ func init() {
 }
 
 // carrierAccountCell 是载体行的「账号」列（B453 S4；B464 起载体 → 登录 → 账号）：所选登录的
-// 账号名（读不到名字回落登录 id），登录已失效时注明；「无账号 · 主 HOME」与未选（存量未迁移）
-// 分开显示。
+// 账号名 · 机器 HOME（plan S9；HOME 镜像为空 = 主 HOME，显示 ~），登录已失效时注明；
+// 「无账号」与未选（存量未迁移）分开显示。
 func carrierAccountCell(c proto.CarrierView) string {
 	switch {
 	case c.NoAccount:
@@ -243,10 +243,15 @@ func carrierAccountCell(c proto.CarrierView) string {
 	if name == "" {
 		name = c.Login
 	}
-	if c.LoginState == "gone" {
-		return name + "（登录已失效）"
+	home := c.HomeDir
+	if strings.TrimSpace(home) == "" {
+		home = "~"
 	}
-	return name
+	cell := name + " · " + c.Machine + " " + home
+	if c.LoginState == "gone" {
+		cell += "（登录已失效）"
+	}
+	return cell
 }
 
 // parseSquadMember 解析一个完整 --member 值。StringArray 保留空格、斜杠和中文

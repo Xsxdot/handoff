@@ -1,0 +1,14 @@
+{
+  "machines": [
+    {
+      "machine": "linux-01",
+      "ok": true,
+      "at": "2026-08-11T02:30:00Z"
+    },
+    {
+      "machine": "macbook-pro",
+      "ok": false,
+      "error": "转发到 macbook-pro 失败: 连接被拒绝"
+    }
+  ]
+}

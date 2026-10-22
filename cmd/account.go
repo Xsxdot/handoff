@@ -26,6 +26,9 @@ import (
 
 var accountJSON bool
 
+// accountDiscoverMachine 是 account discover 的 --machine（空 = 全队扇出）。
+var accountDiscoverMachine string
+
 var accountCmd = &cobra.Command{Use: "account",
 	Short: "账号与额度：只读列表与立即探测（登记/编辑走控制台「◔ 账号」页）"}
 
@@ -58,6 +61,52 @@ var accountListCmd = &cobra.Command{
 			return nil
 		}
 		return renderAccountTable(cmd.OutOrStdout(), resp.Accounts, time.Now())
+	},
+}
+
+var accountDiscoverCmd = &cobra.Command{
+	Use:   "discover",
+	Short: "让全部机器（或 --machine 指定的一台）立即发现已登录账号",
+	Long: "向入口机发起一次立即发现（POST /api/accounts/discover）：不带 --machine 时全部已登记机器" +
+		"（含本机）各扫一次；单台失败只写在那一行。全部成功退出 0，任一失败退出 1。",
+	Args: cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		machine := strings.TrimSpace(accountDiscoverMachine)
+		slog.Default().Info("account.discover", "machine", machine)
+		cl, done, err := newTargetClient()
+		if err != nil {
+			slog.Default().Error("account.discover dial failed", "cause", err)
+			return err
+		}
+		defer done()
+		resp, err := cl.DiscoverAccounts(cmd.Context(), machine)
+		if err != nil {
+			slog.Default().Error("account.discover failed", "machine", machine, "cause", err)
+			return fmt.Errorf("立即发现: %w", err)
+		}
+		w := tabwriter.NewWriter(cmd.OutOrStdout(), 2, 4, 2, ' ', 0)
+		failed := 0
+		for _, m := range resp.Machines {
+			if !m.OK {
+				failed++
+				fmt.Fprintf(w, "%s\t失败\t%s\n", m.Machine, m.Error)
+				continue
+			}
+			detail := "成功"
+			if m.At != nil {
+				detail = "成功\t" + m.At.Local().Format("2006-01-02 15:04:05")
+			}
+			fmt.Fprintf(w, "%s\t%s\n", m.Machine, detail)
+		}
+		if err := w.Flush(); err != nil {
+			slog.Default().Error("account.discover render failed", "cause", err)
+			return err
+		}
+		slog.Default().Info("account.discover succeeded", "machines", len(resp.Machines), "failed", failed)
+		if failed > 0 {
+			return fmt.Errorf("有 %d 台机器发现失败（见 stdout 各行原因）", failed)
+		}
+		return nil
 	},
 }
 
@@ -246,6 +295,7 @@ func humanDuration(d time.Duration) string {
 
 func init() {
 	accountListCmd.Flags().BoolVar(&accountJSON, "json", false, "一行一个账号对象（与 GET /api/accounts 元素同形）")
-	accountCmd.AddCommand(accountListCmd, accountProbeCmd)
+	accountDiscoverCmd.Flags().StringVar(&accountDiscoverMachine, "machine", "", "只让这台机器立即发现（缺省 = 全部已登记机器）")
+	accountCmd.AddCommand(accountListCmd, accountDiscoverCmd, accountProbeCmd)
 	rootCmd.AddCommand(accountCmd)
 }

@@ -83,7 +83,9 @@ const ogID = "opencode-go:aaaa11112222"
 // seedAccount 以一次发现归并建出夹具账号（B464：账号只由发现建）并返回其定义。
 func seedAccount(t *testing.T, svc *accounts.Service) accounts.Account {
 	t.Helper()
-	if _, err := svc.Reconcile(accounts.Discovery{Machine: "linux-01", At: base, Homes: []accounts.ScannedHome{
+	// 发现时刻取 now 而不是固定 base：可探登录要求所在机发现在 DiscoveryFreshFor 内，
+	// 固定 base 会让这两个用例在作者写下的时点之后必然过期（时间炸弹，与产品行为无关）。
+	if _, err := svc.Reconcile(accounts.Discovery{Machine: "linux-01", At: time.Now(), Homes: []accounts.ScannedHome{
 		{Home: "~", HomeAbs: "/root", Logins: []accounts.FoundLogin{
 			{Kind: accounts.KindOpencodeGo, Source: "opencode.db", Fingerprint: "sha256:aaaa11112222"}}},
 	}}); err != nil {

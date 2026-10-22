@@ -67,6 +67,7 @@ func (s *Server) registerAccountRoutes(api *http.ServeMux) {
 	api.HandleFunc("DELETE /api/accounts/{ref}", s.withAccounts(s.handleAccountDelete))
 	api.HandleFunc("POST /api/accounts/{ref}/probe", s.withAccounts(s.handleAccountProbe))
 	api.HandleFunc("PUT /api/logins/{id}/proxy", s.withAccounts(s.handleLoginProxyPut))
+	s.registerLoginRoutes(api)
 }
 
 // handleLoginProxyPut PUT /api/logins/{id}/proxy（A9）：体 {proxy}（空串 = 清除，键缺席 400）；
@@ -109,7 +110,7 @@ func (s *Server) handleLoginProxyPut(w http.ResponseWriter, r *http.Request) {
 	}
 	s.log.Info("设置登录代理成功", "login", id, "machine", lv.Login.Machine, "home", lv.Login.Home,
 		"proxy", accounts.MaskProxy(lv.Login.Proxy))
-	writeJSON(w, http.StatusOK, loginView(lv))
+	writeJSON(w, http.StatusOK, s.loginView(lv))
 }
 
 func (s *Server) withAccounts(h http.HandlerFunc) http.HandlerFunc {
@@ -140,7 +141,7 @@ func (s *Server) handleAccountsGet(w http.ResponseWriter, r *http.Request) {
 	}
 	resp := proto.AccountsResp{Accounts: make([]proto.AccountView, 0, len(views)), Discovery: s.discoveryViews(runs)}
 	for _, v := range views {
-		resp.Accounts = append(resp.Accounts, accountView(v))
+		resp.Accounts = append(resp.Accounts, s.accountView(v))
 	}
 	s.log.Info("已读取账号列表", "accounts", len(resp.Accounts), "machines", len(resp.Discovery))
 	writeJSON(w, http.StatusOK, resp)
@@ -221,7 +222,7 @@ func (s *Server) handleAccountPut(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.log.Info("编辑账号成功", "id", a.ID, "version", v.Version, "state", v.State)
-	writeJSON(w, http.StatusOK, accountView(v))
+	writeJSON(w, http.StatusOK, s.accountView(v))
 }
 
 // handleAccountDelete DELETE /api/accounts/{ref}?expect=N（A7）：名下登录被载体引用 409 且体含
@@ -338,7 +339,7 @@ func (s *Server) handleAccountProbe(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.log.Info("立即探测完成", "name", name, "machine", machine, "state", nv.State)
-		writeJSON(w, http.StatusOK, accountView(nv))
+		writeJSON(w, http.StatusOK, s.accountView(nv))
 		return
 	}
 	if isForwarded(r) {
@@ -375,7 +376,7 @@ func (s *Server) handleAccountProbe(w http.ResponseWriter, r *http.Request) {
 
 // accountView 是账号域 View → wire 的唯一手写投影。last_error 取最近一次尝试失败；
 // 最近成功读数明示不可用（如无订阅）时取其原因——两者都是「为什么不能用」。
-func accountView(v accounts.View) proto.AccountView {
+func (s *Server) accountView(v accounts.View) proto.AccountView {
 	a, rec := v.Account, v.Record
 	out := proto.AccountView{
 		ID: a.ID, Name: a.Name, Kind: a.Kind, Provider: a.Provider, Label: a.Label, Fingerprint: a.Fingerprint,
@@ -385,7 +386,7 @@ func accountView(v accounts.View) proto.AccountView {
 		Logins: make([]proto.LoginView, 0, len(v.Logins)), Carriers: append([]string{}, v.Carriers...),
 	}
 	for _, lv := range v.Logins {
-		out.Logins = append(out.Logins, loginView(lv))
+		out.Logins = append(out.Logins, s.loginView(lv))
 	}
 	if r := rec.Reading; r != nil {
 		rv := &proto.AccountReadingView{Windows: make([]proto.AccountWindowView, 0, len(r.Windows)),
@@ -409,12 +410,22 @@ func accountView(v accounts.View) proto.AccountView {
 	return out
 }
 
-// loginView 是登录行 → wire 的唯一手写投影（A4）：代理打码，未设代理键缺席；到期缺席与零值区分。
-func loginView(lv accounts.LoginView) proto.LoginView {
+// loginView 是登录行 → wire 的唯一手写投影（A4）：代理打码，未设代理键缺席；到期缺席与零值区分；
+// relogin 用同一份登录命令表（login_api.go），ssh 行按入口机设备表给出（relay 目标与本机缺席）。
+func (s *Server) loginView(lv accounts.LoginView) proto.LoginView {
 	l := lv.Login
-	return proto.LoginView{ID: l.ID, Machine: l.Machine, Home: l.Home, Source: l.Source, Fingerprint: l.Fingerprint,
+	out := proto.LoginView{ID: l.ID, Machine: l.Machine, Home: l.Home, Source: l.Source, Fingerprint: l.Fingerprint,
 		State: string(l.State), ChangedAt: l.ChangedAt.UTC(), ExpiresAt: utcPtr(l.ExpiresAt),
 		Proxy: accounts.MaskProxy(l.Proxy), Carriers: append([]string{}, lv.Carriers...)}
+	if cmd, ok := loginCommandFor(l.Kind, l.Provider); ok {
+		homeAbs := l.HomeAbs
+		if strings.TrimSpace(homeAbs) == "" {
+			homeAbs = l.Home
+		}
+		out.Relogin = &proto.LoginCommand{SSH: s.loginSSHLine(l.Machine), Run: loginRunCommand(homeAbs, cmd.run),
+			Note: cmd.note}
+	}
+	return out
 }
 
 func utcPtr(t *time.Time) *time.Time {

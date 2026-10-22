@@ -23,6 +23,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -164,6 +165,57 @@ func (d *Discoverer) RunOnce(ctx context.Context) (accounts.ReconcileResult, err
 		d.cfg.AfterRound(res)
 	}
 	return res, nil
+}
+
+// CheckHome 对指定 HOME 跑一次单 HOME 发现并写账本（B464 段 3 的
+// POST /api/logins/check）：只扫这一个 HOME，其他 HOME 的登录不标「已失效」（Discovery.Partial）。
+// home 只接受 `~` 或 `~/.handoff/home/<dir>`（由 gateway 校验形状，这里只展开）。
+// 返回本轮归并结果（NewAccountLogins 标出本次新建账号的登录），不触发存量载体迁移——
+// 迁移的前置是「本机刚刚完整扫过」（plan §5），单 HOME 检查不满足。
+func (d *Discoverer) CheckHome(ctx context.Context, home string) (accounts.ReconcileResult, error) {
+	d.round.Lock()
+	defer d.round.Unlock()
+	if err := ctx.Err(); err != nil {
+		return accounts.ReconcileResult{}, err
+	}
+	mainAbs, err := d.cfg.MainHome()
+	if err != nil || mainAbs == "" || !filepath.IsAbs(mainAbs) {
+		return accounts.ReconcileResult{}, fmt.Errorf("取主 HOME 失败（%q）: %v", mainAbs, err)
+	}
+	mainAbs = filepath.Clean(mainAbs)
+	abs, err := expandLoginHome(mainAbs, home)
+	if err != nil {
+		return accounts.ReconcileResult{}, err
+	}
+	started := time.Now()
+	sc := d.scanHome(home, abs)
+	res, err := d.cfg.Accounts.Reconcile(accounts.Discovery{Machine: d.cfg.Machine, At: time.Now(),
+		Homes: []accounts.ScannedHome{sc}, Partial: true})
+	if err != nil {
+		d.log.Error("单 HOME 检查：写回账本失败", "machine", d.cfg.Machine, "home", home, "cause", err)
+		return res, fmt.Errorf("单 HOME 检查写回账本失败: %w", err)
+	}
+	d.log.Info("单 HOME 检查完成", "machine", d.cfg.Machine, "home", home, "found", len(sc.Logins),
+		"added", res.Added, "changed", res.Changed, "new_accounts", res.NewAccounts,
+		"errors", len(sc.Errors), "elapsed", time.Since(started))
+	return res, nil
+}
+
+// expandLoginHome 把登录 HOME 的机器无关写法展开成所在机绝对路径（plan L6）：
+// `~` → 主 HOME；`~/.handoff/home/<dir>` → 主 HOME 下的隔离 HOME。
+func expandLoginHome(mainAbs, home string) (string, error) {
+	switch {
+	case home == accounts.MainHome:
+		return mainAbs, nil
+	case strings.HasPrefix(home, "~/"+isolatedHomeRel+"/"):
+		dir := strings.TrimPrefix(home, "~/"+isolatedHomeRel+"/")
+		if dir == "" || strings.ContainsAny(dir, `/\`) || dir == "." || dir == ".." {
+			return "", fmt.Errorf("登录 HOME 目录名不合法: %q", dir)
+		}
+		return filepath.Join(mainAbs, isolatedHomeRel, dir), nil
+	default:
+		return "", fmt.Errorf("登录 HOME 只接受 %s 或 %s/<目录名>，得 %q", accounts.MainHome, "~/"+isolatedHomeRel, home)
+	}
 }
 
 // scan 列出本轮要看的 HOME 并逐个离线取材。主 HOME 取不到是硬错误（整轮作废）；隔离 HOME 根

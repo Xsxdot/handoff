@@ -885,6 +885,7 @@ func setupLedger(cfg *config.Config, srv *agentd.Server, taskStore *store.Store,
 		})
 		discoverer.Start(ctx)
 		prober.Start(ctx)
+		srv.SetAccountDiscoverer(discoverer)
 	}
 	logger.Info("账号域已挂载", "dsn_configured", shared, "account_prober", prober != nil,
 		"account_discoverer", discoverer != nil, "writer", cfg.Name)

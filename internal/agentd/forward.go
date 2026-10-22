@@ -114,10 +114,32 @@ func copyForwardHeaders(w http.ResponseWriter, headers http.Header) {
 // 为什么状态码的处置留给调用方而不在这里收口：建树这条路的成功与失败去向不同——
 // 成功/失败分叉留给调用方：失败原样透传；成功由 handler 挂卡再写响应。本函数不写账本。
 func (s *Server) forwardJSON(r *http.Request, name string, c *client.Client, token string, body []byte) (status int, headers http.Header, payload []byte, err error) {
+	return s.forwardJSONWithQuery(r, name, c, token, body, false)
+}
+
+// forwardJSONKeepQuery 与 forwardJSON 相同，但保留查询串（含 ?machine=）。
+//
+// 为什么需要它：B464 段 3 的新增登录/单 HOME 检查必须让目标机复核「我是不是被指定的那台」
+// （转发到达非目标机 409），并且入口机要读目标机响应补 ssh 行/原样回送状态码。普通转发会
+// 摘掉 machine（那是本机的路由指令），这两条路需要它作为目标机的自证输入。
+func (s *Server) forwardJSONKeepQuery(r *http.Request, name string, c *client.Client, token string, body []byte) (status int, headers http.Header, payload []byte, err error) {
+	return s.forwardJSONWithQuery(r, name, c, token, body, true)
+}
+
+func (s *Server) forwardJSONWithQuery(r *http.Request, name string, c *client.Client, token string, body []byte, keepQuery bool) (status int, headers http.Header, payload []byte, err error) {
 	target, err := forwardURL(c.BaseURL(), r.URL)
 	if err != nil {
 		s.log.Error("建树 JSON 转发失败：目标地址不合法", "machine", name, "cause", err)
 		return 0, nil, nil, err
+	}
+	if keepQuery {
+		base, perr := url.Parse(normalizeAddr(c.BaseURL()))
+		if perr != nil {
+			s.log.Error("JSON 转发失败：目标地址不合法", "machine", name, "cause", perr)
+			return 0, nil, nil, perr
+		}
+		base.Path, base.RawQuery = r.URL.Path, r.URL.RawQuery
+		target = base.String()
 	}
 	req, err := http.NewRequestWithContext(r.Context(), r.Method, target, bytes.NewReader(body))
 	if err != nil {

@@ -195,6 +195,9 @@ type Server struct {
 	// nil = 本机不执行探测（立即探测到本机账号回 503）。
 	accounts      AccountsClient
 	accountProber *accountwork.Prober
+	// accountDiscoverer 是本机发现器（B464 段 3：/api/logins/check 的单 HOME 发现与
+	// /api/accounts/discover 的本机那一份）；只在挂共享账本的机器上装配，nil = 本机不发现。
+	accountDiscoverer *accountwork.Discoverer
 	// B432 iOS 推送扇出：「需要你」事件 → APNs。NewServer 构造（凭据未配齐时
 	// sender 为 nil，投递静默降级站内），装配点经 StartPush 起 worker；
 	// 两条事件旁路（合成钩子 + 自动化循环）与 badge 同源计数都接在它上面。

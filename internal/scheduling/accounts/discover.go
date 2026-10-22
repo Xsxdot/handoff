@@ -54,16 +54,21 @@ type Discovery struct {
 	At      time.Time
 	Homes   []ScannedHome
 	Errors  []string
+	// Partial = 本轮只扫了 Homes 里的 HOME，其余 HOME 没扫过（B464 段 3 的单 HOME 检查）：
+	// 本机其他 HOME 的登录不标「已失效」，被扫 HOME 里扫不到的照常标。
+	Partial bool
 }
 
 // ReconcileResult 是一轮归并的结果。Logins 是归并后本机的全部登录（含已失效，按 id 排序），
-// 供存量载体迁移（plan §5）使用。
+// 供存量载体迁移（plan §5）使用。NewAccountLogins 是本次新建账号的登录 id 集合（B464 段 3
+// 单 HOME 检查要回答「挂到新账号还是已有账号」）。
 type ReconcileResult struct {
-	Logins      []Login
-	Added       int
-	Changed     int
-	Gone        int
-	NewAccounts int
+	Logins           []Login
+	Added            int
+	Changed          int
+	Gone             int
+	NewAccounts      int
+	NewAccountLogins map[string]bool
 }
 
 // Reconcile 把一轮发现结果写进账本（见文件头）。返回本机登录与计数；任一行写失败返回错误，
@@ -118,6 +123,12 @@ func (s *Service) Reconcile(d Discovery) (ReconcileResult, error) {
 			if err != nil {
 				return res, err
 			}
+			if created {
+				if res.NewAccountLogins == nil {
+					res.NewAccountLogins = map[string]bool{}
+				}
+				res.NewAccountLogins[id] = true
+			}
 			if added {
 				res.Added++
 			} else if changed {
@@ -125,7 +136,7 @@ func (s *Service) Reconcile(d Discovery) (ReconcileResult, error) {
 			}
 		}
 	}
-	complete := len(d.Errors) == 0
+	complete := len(d.Errors) == 0 && !d.Partial
 	rows, err := s.loginRows()
 	if err != nil {
 		return res, err

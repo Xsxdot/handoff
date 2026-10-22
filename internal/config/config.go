@@ -359,6 +359,33 @@ type Target struct {
 // IsRelay reports whether this target uses the relay form.
 func (t Target) IsRelay() bool { return t.Relay != "" }
 
+// SSHHost 把一台直连 target 换算成 ssh 目标（`user@host` 或裸 `host`）。
+//
+// 规则：取 Addr 冒号前段（Addr 形如 devbox:7777，ssh 目标是主机名，不含 agentd 端口）；
+// User 非空时返回 user@host。relay 形态没有 addr，返回空串——调用方据此不给 ssh 行。
+//
+// 为什么下沉到 config：pull 拼远程 git 地址与 B464 新增登录给「远端机器附 ssh 一行」是
+// 同一个换算，必须在设备表 User@host 旁边只有一份（plan Q18）。
+func SSHHost(t Target) string {
+	if t.IsRelay() {
+		return ""
+	}
+	host := strings.TrimSpace(t.Addr)
+	if host == "" {
+		return ""
+	}
+	if i := strings.Index(host, "://"); i >= 0 {
+		host = host[i+3:]
+	}
+	if i := strings.IndexByte(host, ':'); i >= 0 {
+		host = host[:i]
+	}
+	if t.User != "" {
+		return t.User + "@" + host
+	}
+	return host
+}
+
 // Validate validates a target. Relay and direct targets are mutually exclusive:
 // relay targets require Relay, Credential, Node, and Token, while direct targets
 // require Addr.

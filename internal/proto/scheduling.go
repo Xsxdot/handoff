@@ -249,18 +249,77 @@ type AccountView struct {
 
 // LoginView 是一条登录（A4）：机器、HOME（`~` 或 `~/.handoff/home/<dir>`）、凭据来源名、身份短
 // 指纹、状态（ok|expired|gone）、最近变更时刻、使用它的载体（无则 []）。可缺席：expires_at、
-// proxy（密码段打码）、relogin（B464 段 3）。
+// proxy（密码段打码）、relogin（重新登录命令；B464 段 3）。
 type LoginView struct {
-	ID          string     `json:"id"`
-	Machine     string     `json:"machine"`
-	Home        string     `json:"home"`
-	Source      string     `json:"source"`
-	Fingerprint string     `json:"fingerprint"`
-	State       string     `json:"state"`
-	ChangedAt   time.Time  `json:"changed_at"`
-	ExpiresAt   *time.Time `json:"expires_at,omitempty"`
-	Proxy       string     `json:"proxy,omitempty"`
-	Carriers    []string   `json:"carriers"`
+	ID          string        `json:"id"`
+	Machine     string        `json:"machine"`
+	Home        string        `json:"home"`
+	Source      string        `json:"source"`
+	Fingerprint string        `json:"fingerprint"`
+	State       string        `json:"state"`
+	ChangedAt   time.Time     `json:"changed_at"`
+	ExpiresAt   *time.Time    `json:"expires_at,omitempty"`
+	Proxy       string        `json:"proxy,omitempty"`
+	Relogin     *LoginCommand `json:"relogin,omitempty"`
+	Carriers    []string      `json:"carriers"`
+}
+
+// LoginCommand 是「在这台机器的这个 HOME 下重新登录」的命令（B464 A4/A11）：run 带
+// `HOME=<登录 HOME 绝对路径>` 前缀；ssh 只在目标机是入口机能直连的远端时给出（relay 目标与
+// 本机缺席）；note 是各 CLI 的补充做法（无浏览器机器等）。
+type LoginCommand struct {
+	SSH  string `json:"ssh,omitempty"`
+	Run  string `json:"run"`
+	Note string `json:"note,omitempty"`
+}
+
+// LoginHomeReq 是 POST /api/logins/home 的请求体（A11）：agent ∈ opencode|codex|grok|agy|claude，
+// dir 是新 HOME 的目录名（只允许 [a-z0-9-]，建在目标机的 ~/.handoff/home/ 下）。
+type LoginHomeReq struct {
+	Agent string `json:"agent"`
+	Dir   string `json:"dir"`
+}
+
+// LoginHomeResp 是 POST /api/logins/home 的响应（A11）：home 是机器无关写法
+// `~/.handoff/home/<dir>`；command 是给人在该机执行的登录命令。
+type LoginHomeResp struct {
+	Home    string       `json:"home"`
+	Command LoginCommand `json:"command"`
+}
+
+// LoginCheckReq 是 POST /api/logins/check 的请求体（A12）：home 只接受 `~` 或
+// `~/.handoff/home/<dir>`（防借发现读任意路径）。
+type LoginCheckReq struct {
+	Home string `json:"home"`
+}
+
+// LoginCheckItem 是检查结果里的一条已识别登录（A12）：识别到新身份时 new_account=true，
+// account_logins 是该账号当前登录总数。
+type LoginCheckItem struct {
+	Login         string `json:"login"`
+	Account       string `json:"account"`
+	AccountName   string `json:"account_name"`
+	NewAccount    bool   `json:"new_account"`
+	AccountLogins int    `json:"account_logins"`
+}
+
+// LoginCheckResp 是 POST /api/logins/check 的响应（A12）：尚未识别为 [] 不是 null。
+type LoginCheckResp struct {
+	Logins []LoginCheckItem `json:"logins"`
+}
+
+// MachineDiscoverResult 是一台机器在一轮「立即发现」里的结果（A10）：单机失败只表现在这一行，
+// 整体仍 200。
+type MachineDiscoverResult struct {
+	Machine string     `json:"machine"`
+	OK      bool       `json:"ok"`
+	Error   string     `json:"error,omitempty"`
+	At      *time.Time `json:"at,omitempty"`
+}
+
+// AccountDiscoverResp 是 POST /api/accounts/discover 的响应（A10）。
+type AccountDiscoverResp struct {
+	Machines []MachineDiscoverResult `json:"machines"`
 }
 
 // DiscoveryView 是一台机器的「上次发现」（A5）。self = 是否应答本请求的机器；at 缺席 = 从未

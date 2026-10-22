@@ -218,3 +218,65 @@
 - 「没有可用登录」只在读面推导、不进准入：维持（额度未知照常派发，与 B453 语义一致）。
 - `opencode.db` `mode=ro` 碰 `-shm` 与 `immutable=1` 取舍：交独立审查裁决。
 - 执行形态改丙（用户 2026-10-22）：段 3 起经 `card dispatch --step implement` 派 runner 小队，本会话只审与验。
+
+## implement 段 3（2026-10-22，handoff runner 小队）
+
+- 执行者：`card dispatch --step implement` 派出的 runner；分支 `cards/B464-charter-1`，起点 `8cd3a9d6`。
+- 范围：只做 plan §7 段 3（S2、S1 立即发现、S9），不碰段 4/5，不重做段 1/2。
+- 纪律：零真机动作（不起/不重启 agentd、不读本机真实凭据、不连生产账本）；测试一律夹具 HOME/临时目录；Go 测试 `env -u CLAUDE_CODE_SESSION_ID`；按纪律块只 commit 不 push。
+
+### 偏离与自主决定
+
+1. **既有测试夹具的时间炸弹修复（自行拍板）**：`internal/scheduling/accounts/accounts_test.go` 的 `seedAccount` 把发现时刻从固定 `base`（2026-10-22 08:00Z）改为 `time.Now()`。全量跑该包时 `TestMergeProbeAndMarkSeparateRowsDoNotBumpDefinition`、`TestMergeProbeClearsMarkOnlyWhenStartedAfterMark` 在真实时钟晚于 base+3min 后红（`ProbeLogin` 的新鲜度窗口使读面推导成 `fail/no_login`，与段 3 改动无关）。只改夹具、不改任何断言；对照 plan §9，属既有测试夹具备份修复（类 (3) 账号域测试面的边角），无产品行为变化。
+2. **新增登录/检查的转发实现**：plan 写「`?machine=` 一跳转发（`forwardIfRequested`）」。实际新增 `forwardJSONKeepQuery`（`forward.go`），保留 `?machine=` 让目标机自证「我是被指定的那台」（V13 的转发到达非目标机 409），并让入口机读目标响应后补 ssh 行。行为与 plan 一致；函数拆分/命名在 §9 授权内。
+3. **`squad list` 无账号格的文案**：所选登录格改为「账号名 · 机器 HOME」；`no_account` 仍显示「无账号」、未选仍为 `-`，沿用既有契约与测试断言（S9 只规定「账号名 · 机器 HOME」的载体行）。
+4. **`LoginView.relogin` 对所有已知 kind 的登录下发**（不只已过期/已失效）：A4 是可选键，S3 的「给复制登录命令」由界面决定展示；放在 wire 上可让段 5 直接用同一份命令表。命令表只在 `internal/agentd/login_api.go` 一处（R0-8 原文）。
+5. **C2 的「登录数」**：A10 冻结的响应形状没有登录计数，CLI 每行输出「机器、成功/失败、时刻或原因」，不擅自给 A10 增键。
+6. **契约 fixture 刷新**：新增 `LoginHomeResp.json`、`LoginCheckResp.json`、`AccountDiscoverResp.json`；`AccountsResp.json` 的两条登录样本补 `relogin`（plan §9 类 (4)）。web `contract.test.ts` 65/65 通过，未改前端类型（段 5 范围）。
+7. **不 push**：卡补充⑧要求 push，纪律块要求「必须 git add 并 commit（不要 push）」；按「纪律块与本 prompt 冲突时以纪律块为准」执行，只提交本分支。
+
+### 实现落地（按文件）
+
+- `internal/proto/scheduling.go`：A4 `LoginView.relogin` + `LoginCommand`；A10 `AccountDiscoverResp/MachineDiscoverResult`；A11 `LoginHomeReq/Resp`；A12 `LoginCheckReq/Resp/Item`。
+- `internal/agentd/login_api.go`（新）：
+  - `POST /api/logins/home`：agent 五值白名单；目录名 `[a-z0-9-]`；`os.MkdirAll(~/.handoff/home, 0700)` 后 `Lstat` 拒绝软链根，再 `Mkdir` 新目录（已存在 409，umask 后显式 `Chmod 0700`）；`accounts.LoginMainHomeOnly(kind, GOOS)` → darwin 上 claude 400 并说明「钥匙串同机共用、请直接在主 HOME 登录」；命令表 `opencode console login / opencode auth login -p <provider> / codex login（note device-auth）/ grok login / agy（交互）/ claude auth login`，全部 `HOME=<abs>` 前缀。
+  - 他机：`forwardJSONKeepQuery` 一跳，目标机 `X-Handoff-Forwarded` + `machine` 自证；入口机用 `config.SSHHost` 补 `ssh user@host`（relay/本机为空）。
+  - `POST /api/logins/check`：`~` 或 `~/.handoff/home/<dir>` 白名单（目录名同 Q18 字符集）；`accountwork.Discoverer.CheckHome` 单 HOME 发现（`Discovery.Partial`，不把本机其他 HOME 的登录标失效）；回 `new_account`/`account_logins`/账号名。
+  - `POST /api/accounts/discover`：本机自名 + 设备表全队并发扇出（30s/机），单机失败只写该行、整体 200；无 machine 只跑一台；带防环头只跑本机；404 →「该机 agentd 版本过旧」。
+- `internal/agentd/forward.go`：`forwardJSON` 与新增 `forwardJSONKeepQuery` 共用 `forwardJSONWithQuery`。
+- `internal/agentd/accountwork/discoverer.go`：新增 `CheckHome`（单飞、Partial、不触发 §5 迁移）与 `expandLoginHome`。
+- `internal/scheduling/accounts/discover.go`：`Discovery.Partial`（部分扫描不误标已失效）、`ReconcileResult.NewAccountLogins`（新账号归属供检查回答）。
+- `internal/agentd/account_api.go`：`accountView/loginView` 改为 `Server` 方法以注入 relogin 的 ssh 行；注册段 3 路由。
+- `internal/agentd/server.go` + `cmd/agentd.go`：`accountDiscoverer` 字段、`SetAccountDiscoverer` 组装点注入。
+- `internal/config/config.go`：`SSHHost(Target)` 共用换算；`cmd/attach.go` 的 `sshHostFromTarget` 改为委托。
+- `internal/client/accounts.go`：`DiscoverAccounts(ctx, machine)`（CLI 消费；agentd 扇出用 `MarkForwarded` 复用同一方法）。
+- `cmd/account.go`：`account discover [--machine]`，每机一行、任一失败退出 1。
+- `cmd/squad.go`：载体账号格 `账号名 · 机器 HOME`（主 HOME 显示 `~`）。
+
+### 命令与读数（本段真实跑到）
+
+- `go build ./...` → 无输出（通过）。
+- `go vet ./internal/agentd/... ./internal/scheduling/... ./internal/proto/... ./internal/client/... ./cmd/... ./internal/config/...` → 无输出。
+- `gofmt -l <改动的 .go>` → 空。
+- 先红：
+  - 新符号首红为编译红（`undefined: loginHomeDir / proto.LoginHomeResp / loginSSHLine …`）；cmd 侧 `account discover` 为断言红（请求为空、`unknown flag: --machine`；账号格仍只打账号名）。
+  - 空壳/实现后补一次变异断言红：临时让 `loginSSHLine` 恒返回空串 → `TestLoginHomeForwardKeepsQueryAndAddsSSH`（"入口机应补 ssh 行…: \"\""）、`TestLoginSSHLineOnlyForDirectRemoteTarget`（machine "direct" ssh = ""）、`TestAccountViewReloginCarriesCommandAndSSH`（远端 relogin 无 ssh）三红；还原后 `grep -c MUTATION-B464S3 internal/agentd/login_api.go` = 0。
+  - 契约 fixture：新增三个文件 + `AccountsResp` 漂移 → 先红（3 个 fixture 不存在、AccountsResp 不一致）→ `-update` → `go test ./internal/proto/ -run TestContractFixtures` ok。
+- 触及包测试（`env -u CLAUDE_CODE_SESSION_ID go test -count=1`）：
+  - `./internal/agentd/...` ok（末次全量 agentd 309.1s、accountwork 0.24s；此前同批 281.5s）
+  - `./internal/scheduling/...` ok（scheduling 23.4s、accounts 0.04s）
+  - `./internal/proto/` ok、`./internal/client/` ok（17.1s）、`./cmd/` ok（142.0s）、`./internal/config/` ok
+- `go test -race -count=1 ./internal/scheduling/accounts/ ./internal/agentd/accountwork/` → 均 ok。
+- web 契约镜像（临时软链主仓 `web/node_modules`，跑完删除）：`npx vitest run src/api/contract.test.ts` → 65/65 通过。
+- 全量跑 accounts 包时暴露的既有时间炸弹（见偏离 1）：`--- FAIL: TestMergeProbeAndMarkSeparateRowsDoNotBumpDefinition（有撞额度标记应为无额度，得 fail）`、`TestMergeProbeClearsMarkOnlyWhenStartedAfterMark（开始早于标记的探测抹掉了标记）`；根因是固定 `base` 超出 `DiscoveryFreshFor`；夹具改 `time.Now()` 后该包 ok（断言未改）。
+
+### 未验证 / 交后续
+
+- R3（需用户本人登录）、R10（README/`--help` 与命令表一致）属主会话真机项，本段未跑。
+- 前端 `web/src/api/accounts.ts` 尚未镜像 `relogin` 与新 fixture 类型（段 5 范围）。
+- `opencode` 新增登录默认给 OAuth 命令，第三方 key 用法放在 note；若产品要求新增登录直接建 apikey 载体，需在段 5/后续明确入口（A11 的 agent 五值不含 apikey）。
+
+### 提交（提交当时的命令与输出；末条随后 amend 收进本台账，hash 会变）
+
+- `git commit`（全部段 3 改动 + 本台账）→ `cadcab14 feat(B464): 新增登录、单 HOME 检查、立即发现扇出与 CLI discover（段 3）`，`23 files changed, 1586 insertions(+), 50 deletions(-)`。
+- 提交前 `go build ./...`、`go vet`（六个触及包树）、`gofmt -l` 均无输出；`git status --porcelain` 仅本台账待 amend。

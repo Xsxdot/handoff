@@ -47,3 +47,26 @@ func (c *Client) ProbeAccount(ctx context.Context, name string) (*proto.AccountV
 	}
 	return &out, nil
 }
+
+// DiscoverAccounts 让入口机立即发现：machine 空 = 全部已登记机器（含本机）各扫一次，非空 =
+// 只跑指定机（POST /api/accounts/discover，B464 A10/C2）。单机失败在 Machines 行里，不是 error；
+// 只有请求本身失败（连不上入口机、入口机 5xx）才是 error。
+func (c *Client) DiscoverAccounts(ctx context.Context, machine string) (*proto.AccountDiscoverResp, error) {
+	path := "/api/accounts/discover"
+	if machine != "" {
+		path += "?machine=" + url.QueryEscape(machine)
+	}
+	resp, err := c.do(ctx, http.MethodPost, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, c.httpError("discover accounts", resp)
+	}
+	var out proto.AccountDiscoverResp
+	if err := decodeWire(resp, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
