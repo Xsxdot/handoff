@@ -397,7 +397,7 @@
 - **A8**：`POST /api/accounts/{ref}/probe`：转发到可探登录所在机（一跳）；无可探登录 → 409；`na` 账号 → 409；其余码同 B453 F4 r1。
 - **A9**：`PUT /api/logins/{id}/proxy` 体 `{proxy}`（空串 = 清除）→ `200 LoginView`；服务端合并写，不要求 `expect`；打码回填保留原值；校验失败 400。
 - **A10**：`POST /api/accounts/discover[?machine=<名>]`：无 `machine` = 入口机对全部已登记机器（含本机）扇出；有 = 只对该机；→ `200 {"machines":[{"machine","ok","error?","at?"}]}`；单机失败不改变整体 200。
-- **A11**：`POST /api/logins/home?machine=<名>` 体 `{agent, dir}` → `200 {"home","command":{"ssh?","run","note?"}}`；`agent` ∈ `opencode | codex | grok | agy | claude`；目录名非法 400；已存在 409；目标机不可达 502。
+- **A11**：`POST /api/logins/home?machine=<名>` 体 `{agent, dir}` → `200 {"home","command":{"ssh?","run","note?"}}`（**r5 增补 2026-10-22，用户真机反馈**：`command` 增可选 `remote_run`——远端/无浏览器机器的登录命令全文，与 `run` 同样带 `HOME=` 前缀；仅有该变体的 kind 给出（codex：`codex login --device-auth`）。A4 `LoginView.relogin` 同形。加法变更，旧客户端忽略；codex 的 `note` 不再承载该命令）；`agent` ∈ `opencode | codex | grok | agy | claude`；目录名非法 400；已存在 409；目标机不可达 502。
 - **A12**：`POST /api/logins/check?machine=<名>` 体 `{home}` → `200 {"logins":[{"login","account","account_name","new_account","account_logins"}]}`；尚未识别为 `[]`；`home` 只接受 `~` 或 `~/.handoff/home/<dir>`，否则 400。
 
 **编制 wire（producer agentd；consumer 控制台、`squad list`）**

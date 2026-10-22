@@ -435,3 +435,9 @@
 - 复跑：`go vet` / `gofmt -l` 空；全量 go test 红 I3 与 `TestServeMultipleListeners`（单跑 -count=3 ok，负载偶发，非本卡）；vitest 无负载 150/2016 全过；typecheck 0。
 - 变异 M1–M6 全部转红、还原回绿（账号 id 归并、迁移规则 3、准入 gone、登录代理、前端二选一、前端 gone 暂停）；缺口：M3 只红在域层（真机 R4 补）、M6 只红在纯函数层。
 - 处置：全部 Critical/Important 与 Minor 1–5、8 并入段 6（修复 + plan 段 6 文档收口）派 runner 小队。
+
+## 真机 R3 / R2·R8 claude（2026-10-22，用户本人登录）
+
+- **R3 新增登录：通过。** 用户在隔离控制台「新增登录」选 t464-mac + codex，建 HOME `cx-0jr3`，执行向导给出的 `HOME=/Users/df-zidong/.handoff/home/cx-0jr3 codex login`。`account list`：新账号 `codex:858e29a5d44e`，名字与 label 为邮箱，登录 `login-19d26058573c8aa4 t464-mac ~/.handoff/home/cx-0jr3 auth.json ok`——新身份新建账号、未与 linux 上的 errenyu02 归并（不同身份）。用户反馈「都好了，正常」。
+- **claude 纳入账号体系：通过（单机）。** 用户在 mac 主 HOME `claude auth login` 后立即发现：`claude:e2d13b9309d1`，label 为登录邮箱，state `na`（claude 不探额度，Q11），登录 `t464-mac ~ claude-auth ok`。向导选 claude 被拒（darwin 钥匙串只认主 HOME）用户确认正常。跨 Mac 归并（mbp）未验——记入 finish 残余或 R14 时补。
+- **用户反馈（纳入下一轮）**：向导第 2 步 codex 的 `--device-auth` 写在说明括号里无法复制。裁定：`LoginCommand` 增可选 `remote_run`（plan §11 A11 r5 增补），向导第 2 步对有远端变体的 kind 显示「远端登录（该机没有浏览器）」勾选项，勾选时显示与复制 `remote_run`；所选机器不是控制台本机（discovery self）时默认勾选；账号页登录行在有 `remote_run` 时多一个「复制远端登录命令」。
