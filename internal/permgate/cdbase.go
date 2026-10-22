@@ -59,37 +59,52 @@ func cdResolvedTargets(cmd string, scope Scope, cwd string) (targets []string, u
 		}
 		return rebind
 	}
-	resolve := func(t string) (string, bool) {
+	// resolve 返回落点 t 的待判路径（glob 落点另带现存匹配项）；why 非空 = 不可解释。
+	resolve := func(t string) (paths []string, why string) {
 		if filepath.IsAbs(t) {
-			return t, true // 绝对落点与 cd 无关
+			return []string{t}, "" // 绝对落点与 cd 无关
 		}
 		if broken {
-			return "", false // 基准已破坏：相对落点无法解释
+			return nil, fmt.Sprintf("cd 落点不可静态证明，其后相对写落点 %q 无法解释", t)
 		}
 		if base == "" {
-			return t, true // 无 cd 生效：原样交 InScope（现状行为）
+			return []string{t}, "" // 无 cd 生效：原样交 InScope（现状行为）
 		}
+		// B466：基准已生效、落点本身不可解释——与「cd 不可证明」分开写，免得把
+		// 已证明的 cd 说成不可证明（E40.3 的拒因因此误导了排查方向）。
+		unexplained := fmt.Sprintf("cd 后相对写落点 %q 含展开、转义或花括号等字符，无法静态解释", t)
 		// 白名单变量前缀（B460 Q7）按任务注入值绝对化，与 cd 无关；重绑定嫌疑或
 		// 残留展开字符时不可解释（与下面的字符拒绝同一结论）。
 		if joined, isVar, ok := scopeVarPath(t, scope, rebindSuspect()); isVar {
-			return joined, ok
+			if !ok {
+				return nil, unexplained
+			}
+			return []string{joined}, ""
 		}
-		// 基准已生效：相对落点必须可静态证明。展开/转义/花括号/glob 字符的
-		// 展开结果无法枚举（批次 B 评审 12 绕过的同族教训），一律不可解释。
-		if strings.ContainsAny(t, "$\\~{},*?[") || strings.ContainsRune(t, '\'') {
-			return "", false
+		// 基准已生效：相对落点必须可静态证明。展开/转义/花括号/方括号/extglob 括号
+		// 的展开结果无法枚举（批次 B 评审 12 绕过的同族教训），一律不可解释。
+		if strings.ContainsAny(t, "$\\~{},[()") || strings.ContainsRune(t, '\'') {
+			return nil, unexplained
 		}
-		return filepath.Join(base, t), true
+		joined := filepath.Join(base, t)
+		if !strings.ContainsAny(t, "*?") {
+			return []string{joined}, ""
+		}
+		matches, ok := globWriteMatches(t, joined)
+		if !ok {
+			return nil, unexplained
+		}
+		return append([]string{joined}, matches...), ""
 	}
 	for _, seg := range splitWriteSegments(cmd) {
 		// 先提取本段写落点（cd 段的重定向作用于 cd 前目录），再更新基准
 		for _, src := range []func(string) []string{RedirectTargets, WriteArgTargets} {
 			for _, t := range src(seg) {
-				r, ok := resolve(t)
-				if !ok {
-					return nil, fmt.Sprintf("cd 落点不可静态证明，其后相对写落点 %q 无法解释", t)
+				r, why := resolve(t)
+				if why != "" {
+					return nil, why
 				}
-				targets = append(targets, r)
+				targets = append(targets, r...)
 			}
 		}
 		toks, ok := rmTokens(seg)
@@ -115,6 +130,28 @@ func cdResolvedTargets(cmd string, scope Scope, cwd string) (targets []string, u
 		}
 	}
 	return targets, ""
+}
+
+// globWriteMatches 证明 cd 基准下的 glob 写落点（B466：`cd server && gofmt -w app/*.go`）。
+//
+// 参数：raw 为落点原文（相对、已过字符拒绝，只剩 `*` `?` 两种 glob 字符），joined 为
+// 按基准拼好的模式。
+//
+// 返回：现存匹配项（交调用方逐个 InScope——匹配项是指向外部的软链时照样越界）；
+// ok=false 表示不可证明：含 glob 的路径分量以 `.` 开头（bash 只有以 `.` 开头的模式
+// 才能匹配 `.` 与 `..`，dotglob 打开也一样；zsh 的 `*` 从不匹配它们），或模式非法。
+// 其余分量里的 `*` `?` 不跨 `/`、不产出 `..`，展开结果不会离开模式的目录骨架。
+func globWriteMatches(raw, joined string) ([]string, bool) {
+	for _, comp := range strings.Split(raw, "/") {
+		if strings.ContainsAny(comp, "*?") && strings.HasPrefix(comp, ".") {
+			return nil, false
+		}
+	}
+	matches, err := filepath.Glob(joined)
+	if err != nil {
+		return nil, false
+	}
+	return matches, true
 }
 
 // cdWalkBase 只跟踪 cd 基准（不提取落点），供 heredoc 闭集校验 cd 段。

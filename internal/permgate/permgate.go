@@ -308,12 +308,16 @@ func (g *Gate) judgeBash(req Request, scope Scope) Verdict {
 		judged = hd.stripped
 		g.log.Debug("heredoc 闭集命中，正文按数据剔除", "command", req.Command)
 	}
-	redirects := RedirectTargets(judged)
-	writeArgs := WriteArgTargets(judged)
+	// B466：落点解析只看「数据型」heredoc 正文剥离后的命令——python/cat 正文里的
+	// `=> {`、`x > *p` 不是 shell 重定向。闭集命中时 judged 已无正文（幂等）；其余判据面
+	// 仍看 judged（python 正文是会执行的代码，黑名单与人工清单必须读它）。
+	targetCmd := stripDataHeredocBodies(judged)
+	redirects := RedirectTargets(targetCmd)
+	writeArgs := WriteArgTargets(targetCmd)
 	// B383 S2b①：cd 相对写基准。相对落点的解释基准 = 按命令顺序已生效、可
 	// 静态证明的 cd 目录（起点 Workdir）；cd 目标越出三基准或不可证明时基准
 	// 破坏，其后相对落点无法解释 → 整条升级。无 cd 的命令行为零变化。
-	resolved, unres := cdResolvedTargets(judged, scope, req.Cwd)
+	resolved, unres := cdResolvedTargets(targetCmd, scope, req.Cwd)
 	if unres != "" {
 		g.log.Debug("cd 基准不可证明", "command", req.Command, "cause", unres)
 		return Verdict{Action: Escalate, Reason: unres}
@@ -656,18 +660,21 @@ func hasCommandSubstitution(cmd string) bool {
 //
 // 返回：命中 id（"compound"）、段数、是否整条可静默。
 func compoundSilent(command string) (id string, segments int, ok bool) {
-	segs, ok := splitSilentSegments(command)
+	segs, ops, ok := splitSilentSegmentsOps(command)
 	if !ok {
 		return "", 0, false
 	}
 	cdActive := false
+	cdTrusted := cdChainTrusted(segs, ops)
 	for _, seg := range segs {
-		// cd 改变后续段的实际工作目录，而参数位写落点按 Workdir 解析——相对
-		// 落点会被误判成范围内（`cd /etc && gofmt -w passwd` 实际写 /etc/passwd）。
+		// cd 改变后续段的实际工作目录。B466：调用方 judgeBash 已用 cdResolvedTargets 把
+		// 参数位写落点按 cd 基准绝对化并判过范围（`cd /etc && gofmt -w passwd` 在那里先行
+		// 升级），所以 cd 链可信（全 `&&`，写段执行时 cd 必已成功）时 cd 后的相对写落点
+		// 已被证明；只有 cd 链不可信（`cd x; gofmt -w f`：cd 失败时在未知 cwd 写）才拒。
 		// 重定向落点有 hasNonDiscardWriteRedirect 全拦；这里只补参数位写命令。
 		if isCDSegment(seg) {
 			cdActive = true
-		} else if cdActive && segmentHasRelativeWriteTarget(seg) {
+		} else if cdActive && !cdTrusted && segmentHasRelativeWriteTarget(seg) {
 			return "", len(segs), false
 		}
 		if _, ok := matchSilentSegment(seg); !ok {

@@ -52,7 +52,9 @@ func TestJudgeHeredocUnmatchedKeepsStatusQuo(t *testing.T) {
 		{"管道至 bash 消费正文", "cat <<'EOF' | bash\nrm -rf /\nEOF", Escalate},
 		{"未引用定界符正文黑名单命中", "cat <<EOF\nrm -rf /\nEOF", Escalate},
 		{"未引用定界符正文藏越界写", "cat > f <<EOF\nhi > /etc/x\nEOF", Escalate},
-		{"cat 无重定向正文藏越界写", "cat <<'EOF'\necho x > /etc/y\nEOF", Escalate},
+		// B466：cat 的正文是数据（打到 stdout），其中的 `> /etc/y` 不是重定向——落点解析
+		// 不再读它；正文仍不剔除出黑名单/人工清单面，出口回到「未命中闭集」的 Consult。
+		{"cat 无重定向正文里的伪重定向", "cat <<'EOF'\necho x > /etc/y\nEOF", Consult},
 		{"bash 消费正文", "bash <<'EOF'\nrm -rf /\nEOF", Escalate},
 		{"sh 消费正文", "sh > f <<'EOF'\nrm -rf /\nEOF", Escalate},
 		{"执行型后继", "cat > main.go <<'EOF'\nbody\nEOF\necho done", Consult},
