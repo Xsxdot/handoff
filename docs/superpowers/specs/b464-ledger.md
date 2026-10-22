@@ -674,3 +674,9 @@
 - 段 9（276f5303，8 文件 +269/−7）：I-1 `SchedulingPage.tsx` 三态比较并收正式用例；I-2 新增 `b464_coordinator_carrier_test.go`（清队首轮、冷唤醒两支生产入口测试）；m-a 重读后判 `cur.Label`；m-b 收窄 `no such column: email`；台账更正段 8 N1「等价于」表述。合并 a0e20a82。
 - **最终局部核验（本地 subagent，2f72c64b..a0e20a82）：通过，可进 finish。** 自做变异：A `scheddrain.go:508` → 红 `TestB464QueuedFirstRoundCarriesSeatCarrierToLoginProxy`；D `scheddrain.go:702` → 红 `TestB464ColdWakeCarriesSeatCarrierToLoginProxy`；C `keystone.go:348` overlay 短路 → 红同上；I-1 旧判据 → `Tests 1 failed | 27 passed (28)`，还原 28 passed。复跑 `env -u CLAUDE_CODE_SESSION_ID go test -count=1 ./...` RC=0（全包 ok）、vet/gofmt 空、vitest `150 files / 2027 tests` 全过、tsc 0。Minor（记账不阻塞）：m-a 早返回未写回内存 defs、未打日志（下轮发现自愈）；C 只由 agentd 入口测试捕获；m3 的 `~` 一例无牙（沿用）。
 - **review 裁决：通过**（技术轮 → 第 2 轮 → 段 8 局部复审 → 段 9 局部核验；真机 R1–R9c/R11–R13 见各节；S7 claude 跨 Mac 归并经用户裁定转 roadmap；R10 正式检查与 R14 归 finish）。
+
+## finish 第 1 步：finish-check（2026-10-22，熟练工 finish-check@linux-01，检查提交 100e9056）
+
+- 回报末行 `commit` = 100e90560184008abe74971b7f2598ac4e1be094（与卡分支推送头一致）。
+- 结论五行：格式 通过（0 文件）；静态检查 通过；全量测试 通过（ok 68 / FAIL 0 / 已知抖动 0）；命令表 有差异 11 条；残余与 CHANGELOG 通过（残余 36 条、未入 0；CHANGELOG `[Unreleased]` :15、:22 命中 B464）。
+- 命令表裁决：差异为 `completion/decision/discipline/frames/help/machines/preview/room/session/template/workflow` 11 个顶层子命令未入 README，属 B461 残余既有缺口（`docs/roadmap.md` B461 残余已记），非本卡引入；B464 的 `account list/probe/discover`、`squad list` 双向一致（R10 关闭）。判 finish-check 通过。
