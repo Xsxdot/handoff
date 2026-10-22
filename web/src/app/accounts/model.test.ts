@@ -2,10 +2,11 @@
 // 边界：只测纯函数——排序、窗口分档、底栏两模式取哪个窗口、同机判据、倒计时；
 // 渲染与色彩类落点由组件测试锁。
 import { describe, expect, it } from 'vitest'
-import type { AccountInput, AccountView, AccountWindowView } from '../../api/accounts'
+import type { AccountView, AccountWindowView, LoginView } from '../../api/accounts'
 import {
-  barWindows, byProblem, countdown, credentialMoved, entryText, failBrief, hotWindow, KIND_ORDER, recoverAt, sameMachine, statusPhrase, tightest,
-  toneClass, weeklyWindow, windowLabel, winTone,
+  barWindows, byProblem, countdown, dispatchHint, failBrief, homeText, hotWindow, KIND_ORDER, loginCommandText, loginCredText,
+  loginStateHint, loginStateLabel, machinesText, quotaAccounts, recoverAt, sameMachine, statusPhrase, supportsProbe, tightest,
+  toneClass, updatedText, weeklyWindow, windowLabel, winTone,
 } from './model'
 
 const NOW = Date.parse('2026-10-22T00:00:00Z')
@@ -112,30 +113,70 @@ describe('账号展示规则', () => {
     expect(recoverAt(acct('bad', 'out', undefined, { recover_at: 'not-a-time' }))).toBeNull()
   })
 
-  describe('保存后是否自动探测 credentialMoved（B464：账号只由发现建，编辑只改间隔/阈值）', () => {
-    const editing = acct('cx', 'ok')
-    const body: AccountInput = { interval_minutes: 30, warn_percent: 50, low_percent: 90 }
-    it('新建（已不可达）探测', () => expect(credentialMoved(null, body)).toBe(true))
-    it('编辑间隔/阈值不探测', () => expect(credentialMoved(editing, body)).toBe(false))
+  it('登录状态词与提示：正常无提示；已过期只提示；已失效给恢复说明（S3）', () => {
+    expect(loginStateLabel('ok')).toBe('正常')
+    expect(loginStateHint('ok')).toBe('')
+    expect(loginStateLabel('expired')).toBe('已过期')
+    expect(loginStateHint('expired')).toContain('自行刷新')
+    expect(loginStateLabel('gone')).toBe('已失效')
+    expect(loginStateHint('gone')).toContain('重新登录后自动恢复')
   })
 
-  it('凭据位置一句话取可探登录：opencode.db = 登录账号、其他 = HOME › 来源、agy = CLI 登录态、无登录（B464）', () => {
-    const login = (home: string, source: string) => ({ id: 'login-x', machine: 'm', home, source, fingerprint: 'sha256:000000000000',
-      state: 'ok', changed_at: iso(-60_000), carriers: [] })
-    const withLogin = (kind: string, home: string, source: string) => acct('a', 'ok', undefined, { kind, logins: [login(home, source)], probe_login: 'login-x' })
-    expect(entryText(withLogin('opencode-go', '/root', 'opencode.db'))).toBe('/root › opencode.db 登录账号')
-    expect(entryText(withLogin('opencode-go', '/root', 'auth.json'))).toBe('/root › auth.json')
-    expect(entryText(withLogin('agy', '/root', 'agy'))).toBe('/root（agy CLI 自己的登录态）')
-    expect(entryText(acct('none', 'ok'))).toBe('没有登录')
+  it('凭据时刻：有到期读到期/已到期；apikey 无到期读「key 不过期」；其余读变更时刻（S3）', () => {
+    const base: LoginView = { id: 'l', machine: 'm', home: '~', source: 's', fingerprint: 'sha256:0', state: 'ok', changed_at: iso(-H), carriers: [] }
+    expect(loginCredText({ ...base, expires_at: iso(2 * H) }, 'grok', NOW)).toMatch(/^到期 /)
+    expect(loginCredText({ ...base, expires_at: iso(-2 * H) }, 'grok', NOW)).toMatch(/^已于 .* 到期$/)
+    expect(loginCredText(base, 'apikey', NOW)).toBe('key 不过期')
+    expect(loginCredText(base, 'codex', NOW)).toBe('变更 1 小时前')
+    expect(homeText('~')).toBe('~（主 HOME）')
+    expect(homeText('~/.handoff/home/x')).toBe('~/.handoff/home/x')
   })
 
-  it('窗口名：agy 带模型组；四种 kind 固定顺序', () => {
+  it('重新登录命令：远端先 ssh 再执行，note 放括号；缺席为空串', () => {
+    expect(loginCommandText({ ssh: 'ssh root@linux-01', run: 'HOME=/h codex login' })).toBe('ssh root@linux-01 后执行：HOME=/h codex login')
+    expect(loginCommandText({ run: 'codex login', note: '无浏览器用 --device-auth' })).toBe('codex login（无浏览器用 --device-auth）')
+    expect(loginCommandText(undefined)).toBe('')
+  })
+
+  it('六组 kind：只有支持探测的进底栏；claude/apikey 是 na 且状态短语弱前景（S7）', () => {
+    expect(KIND_ORDER).toEqual(['opencode-go', 'codex', 'grok', 'agy', 'claude', 'apikey'])
+    expect(supportsProbe('opencode-go')).toBe(true)
+    expect(supportsProbe('claude')).toBe(false)
+    expect(supportsProbe('apikey')).toBe(false)
+    const accounts = [acct('a', 'ok'), acct('cl', 'na', undefined, { kind: 'claude' }), acct('k', 'na', undefined, { kind: 'apikey' })]
+    expect(quotaAccounts(accounts).map((x) => x.name)).toEqual(['a'])
+    expect(statusPhrase(accounts[1])).toEqual({ tone: 'q-mute', text: '不支持额度探测' })
+    expect(updatedText(accounts[1], NOW)).toBe('不支持额度探测')
+    expect(failBrief(acct('f', 'fail', undefined, { last_error: { category: 'no_login', message: '没有可用登录' } }))).toBe('没有可用登录')
+  })
+
+  it('账号机器一句话：登录去重、按登录顺序；无登录回「无登录」', () => {
+    const login = (id: string, machine: string): LoginView => ({ id, machine, home: '~', source: 's', fingerprint: 'sha256:0', state: 'ok', changed_at: iso(0), carriers: [] })
+    const a = acct('a', 'ok', undefined, { logins: [login('l1', 'linux-01'), login('l2', 'mac-mini'), login('l3', 'linux-01')] })
+    expect(machinesText(a)).toBe('linux-01 · mac-mini')
+    expect(machinesText(acct('b', 'ok'))).toBe('无登录')
+  })
+
+  it('派发提示：已失效暂停、已过期只提示、无额度/低额度暂停、na 照常、未探测额度未知', () => {
+    const login = (state: string): LoginView => ({ id: 'l', machine: 'linux-01', home: '~/.handoff/home/x', source: 's', fingerprint: 'sha256:0', state, changed_at: iso(0), carriers: [] })
+    const call = (a: AccountView, state = 'ok') => dispatchHint(a, login(state), NOW)!
+    expect(call(acct('a', 'ok'), 'gone')).toMatchObject({ paused: true, relogin: true })
+    expect(call(acct('a', 'ok'), 'gone').text).toContain('暂停派发：所用登录已失效')
+    expect(call(acct('a', 'ok'), 'expired')).toMatchObject({ paused: false, relogin: true })
+    expect(call(acct('a', 'out', [win('session', 100, 3 * H)], { recover_at: iso(3 * H) }))).toMatchObject({ paused: true })
+    expect(call(acct('a', 'low', [win('session', 82, 2 * H)], { recover_at: iso(2 * H) })).text).toContain('已用 82%')
+    expect(call(acct('a', 'na', undefined, { kind: 'claude' }))).toMatchObject({ paused: false })
+    expect(call(acct('a', 'fail', undefined, { last_error: { category: 'proxy', message: 'x' } })).paused).toBe(false)
+    expect(call(acct('a', 'none')).paused).toBe(false)
+  })
+
+  it('窗口名：agy 带模型组；六种 kind 固定顺序', () => {
     expect(windowLabel(win('session', 1))).toBe('会话 5h')
     expect(windowLabel(win('weekly', 1))).toBe('每周')
     expect(windowLabel(win('monthly', 1))).toBe('每月')
     expect(windowLabel(win('session', 1, undefined, 'Gemini'))).toBe('Gemini 5h')
     expect(windowLabel(win('weekly', 1, undefined, 'Claude/GPT'))).toBe('Claude/GPT 周')
-    expect(KIND_ORDER).toEqual(['opencode-go', 'codex', 'grok', 'agy'])
+    expect(KIND_ORDER).toHaveLength(6)
   })
 
   it('倒计时', () => {

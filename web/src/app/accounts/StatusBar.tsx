@@ -18,7 +18,7 @@ import { errorMessage } from '../lib/format'
 import { useWebPrefs } from '../settings/useWebPrefs'
 import { usageModeOf } from '../settings/webPrefs'
 import {
-  accountPlace, barWindows, byProblem, extraUsageText, failBrief, KIND_ORDER, kindMeta, resetAt, tightest, updatedText, type UsageMode,
+  accountPlace, barWindows, byProblem, extraUsageText, failBrief, KIND_ORDER, kindMeta, quotaAccounts, resetAt, tightest, updatedText, type UsageMode,
 } from './model'
 import { DetailNote, KindIcon, Pct, QBar, REFRESH_ICON, Reset, Summary, WinsFull, WinsInline } from './QuotaBits'
 import { useAccounts, useNow } from './store'
@@ -95,7 +95,8 @@ export function UsageStatusBar({ onManage }: { onManage: (name?: string) => void
   const popRef = useRef<HTMLDivElement>(null)
   const sideRef = useRef<HTMLDivElement>(null)
 
-  const sorted = accounts ? byProblem(accounts) : []
+  // 底栏与使用量弹层只列支持额度探测的 kind（claude / 第三方 API key 的 na 不进）。
+  const sorted = accounts ? byProblem(quotaAccounts(accounts)) : []
   const selected = sorted.find((a) => a.name === current)
 
   const close = useCallback(() => { setOpen(false); setCurrent('') }, [])
@@ -207,7 +208,7 @@ export function UsageStatusBar({ onManage }: { onManage: (name?: string) => void
       <footer ref={barRef} data-testid="usage-statusbar" className="usage-statusbar" title="使用量" onClick={onBarClick}>
         <span className="sb-lead">已用</span>
         <div ref={segsRef} className="sb-segs">
-          {sorted.length === 0 && <span>还没有登记账号</span>}
+          {sorted.length === 0 && <span>还没有可探测额度的账号</span>}
           {sorted.map((a, i) => (
             <button key={a.name} type="button" className="sb-seg" data-acct={a.name} data-testid={`sb-seg-${a.name}`} hidden={hiddenFrom >= 0 && i >= hiddenFrom}>
               <KindIcon kind={a.kind} /><span className="sb-name">{a.name}</span><span className="sb-val"><BarReading a={a} mode={mode} now={now} /></span>
@@ -226,7 +227,7 @@ export function UsageStatusBar({ onManage }: { onManage: (name?: string) => void
               <button type="button" role="tab" aria-selected={mode === 'compact'} onClick={() => setMode('compact')}>精简</button>
             </div>
             <div className={`up-list ${mode}`}>
-              {sorted.length === 0 && <p className="up-empty">还没有登记账号。到「账号」页登记后，这里显示各账号额度。</p>}
+              {sorted.length === 0 && <p className="up-empty">还没有可探测额度的账号。到「账号与额度」页新增登录后，这里显示额度。</p>}
               {kinds.map((kind) => {
                 const list = sorted.filter((a) => a.kind === kind)
                 if (list.length === 0) return null

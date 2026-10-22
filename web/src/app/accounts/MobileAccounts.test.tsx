@@ -27,7 +27,7 @@ describe('移动设置 · 账号与额度', () => {
     const sec = screen.getByTestId('settings-section-accounts')
     expect(sec).toHaveTextContent('账号与额度')
     const list = screen.getByTestId('mobile-accounts')
-    expect([...list.querySelectorAll('.m-acct-group')].map((g) => g.textContent)).toEqual(['OpenCode Go', 'Codex', 'Grok', 'Antigravity'])
+    expect([...list.querySelectorAll('.m-acct-group')].map((g) => g.textContent)).toEqual(['OpenCode Go', 'Codex', 'Grok', 'Antigravity', 'Claude', '第三方 API key'])
     const rows = [...list.querySelectorAll('[data-testid^="m-acct-"]')].map((r) => r.getAttribute('data-testid'))
     expect(rows.slice(0, 3)).toEqual(['m-acct-og-team', 'm-acct-og-mini', 'm-acct-og-main'])
     const main = screen.getByTestId('m-acct-og-main')
@@ -36,6 +36,8 @@ describe('移动设置 · 账号与额度', () => {
     expect(screen.getByTestId('m-acct-agy-main').querySelectorAll('.qg')).toHaveLength(2)
     expect(screen.getByTestId('m-acct-og-team').textContent).toContain('无额度')
     expect(screen.getByText('登记、编辑和删除账号请到桌面控制台的「账号」页。')).toBeInTheDocument()
+    // 不支持额度探测的 kind 也在列表里，但展开后没有「立即探测」
+    expect(screen.getByTestId('m-acct-claude-main').textContent).toContain('不支持额度探测')
     // 只读：没有编辑/删除入口
     expect(within(list).queryByRole('button', { name: /编辑|删除/ })).toBeNull()
   })
@@ -51,6 +53,15 @@ describe('移动设置 · 账号与额度', () => {
     expect(row.textContent).toContain('△ 代理 socks5://127.0.0.1:7897 拒绝连接')
     await user.click(within(row).getByRole('button', { name: '立即探测' }))
     expect(probeAccount).toHaveBeenCalledWith('og-mini')
+  })
+
+  it('不支持额度探测的账号在移动节里没有立即探测入口', async () => {
+    const user = userEvent.setup()
+    hub()
+    const row = screen.getByTestId('m-acct-claude-main')
+    await user.click(within(row).getByRole('button', { name: /claude-main/ }))
+    expect(row.textContent).toContain('不支持额度探测')
+    expect(within(row).queryByRole('button', { name: '立即探测' })).toBeNull()
   })
 
   it('账本未启用（无快照）时不出这一节', () => {

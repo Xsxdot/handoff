@@ -126,8 +126,12 @@ import type {
 import squadsFixture from './testdata/SquadsResp.json'
 import accountsRespFixture from './testdata/AccountsResp.json'
 import accountInputFixture from './testdata/AccountInput.json'
+import accountDiscoverRespFixture from './testdata/AccountDiscoverResp.json'
+import loginCheckRespFixture from './testdata/LoginCheckResp.json'
+import loginHomeRespFixture from './testdata/LoginHomeResp.json'
+import loginProxyInputFixture from './testdata/LoginProxyInput.json'
 import accountDeleteRefusalFixture from './testdata/AccountDeleteRefusal.json'
-import type { AccountDeleteRefusal, AccountInput, AccountView, AccountsResp } from './accounts'
+import type { AccountDeleteRefusal, AccountDiscoverResp, AccountInput, AccountView, AccountsResp, LoginCheckResp, LoginHomeResp, LoginProxyInput, LoginView } from './accounts'
 import queueFixture from './testdata/QueueResp.json'
 import coordinatorLaunchFixture from './testdata/CoordinatorLaunchResp.json'
 import coordinatorStatusFixture from './testdata/CoordinatorStatus.json'
@@ -176,7 +180,6 @@ import {
   type RegistryRunningView,
   type SquadView,
   CARRIER_STATUS_LABEL,
-  defaultHomeDir,
 } from './scheduling'
 
 describe('契约 fixture 与 TS 类型', () => {
@@ -714,7 +717,6 @@ describe('scheduling wire', () => {
     expect(detect.version).toBe(2)
     const run: CarrierRunCommandResp = carrierRunCommandRespFixture
     expect(run.command).toBe('HOME=~/.handoff/home/mbp-codex codex')
-    expect(defaultHomeDir('mbp-codex')).toBe('~/.handoff/home/mbp-codex')
     expect(CARRIER_STATUS_LABEL[detect.status]).toBe('未上线')
   })
   it('CoordinatorStatus 保留 attach 三元组、machine 空串与 null 未绑定态', () => {
@@ -947,9 +949,9 @@ describe('账号 wire（B453 F1–F9 / B464 A1–A6）', () => {
     expect(ok.logins[0].expires_at).toMatch(/^2026-/)
     expect(Object.prototype.hasOwnProperty.call(ok.logins[1], 'expires_at')).toBe(false)
     expect(Object.prototype.hasOwnProperty.call(ok.logins[0], 'proxy')).toBe(false)
-    const key = byName.get('opencode-go-key-77d0')!
+    const key = byName.get('deepseek-key-77d0')!
     expect(key.kind).toBe('apikey')
-    expect(key.provider).toBe('opencode-go')
+    expect(key.provider).toBe('deepseek')
     expect(key.state).toBe('out')
     expect(key.stale).toBe(true)
     for (const k of ['interval_minutes', 'warn_percent', 'low_percent']) {
@@ -987,6 +989,40 @@ describe('账号 wire（B453 F1–F9 / B464 A1–A6）', () => {
     for (const key of ['state', 'reading', 'version', 'name', 'kind', 'machine', 'home_dir', 'entry', 'proxy']) {
       expect(Object.prototype.hasOwnProperty.call(input, key)).toBe(false)
     }
+  })
+  it('LoginView 带服务端 relogin（A4）：ssh 可缺席、run 必给、note 可缺席', () => {
+    const resp: AccountsResp = accountsRespFixture as AccountsResp
+    const withSsh: LoginView = resp.accounts[0].logins[0]
+    expect(withSsh.relogin).toEqual({
+      ssh: 'ssh dev@linux-01',
+      run: 'HOME=/home/dev/.handoff/home/mimo opencode console login',
+    })
+    const bare = resp.accounts[0].logins[1]
+    expect(Object.prototype.hasOwnProperty.call(bare, 'relogin')).toBe(false)
+    const noted = resp.accounts[2].logins[0]
+    expect(noted.relogin?.note).toContain('device-auth')
+  })
+  it('LoginProxyInput 必带 proxy 键（空串 = 清除，A9）', () => {
+    const input: LoginProxyInput = loginProxyInputFixture
+    expect(Object.keys(input)).toEqual(['proxy'])
+    expect(input.proxy).toContain('***')
+  })
+  it('LoginHomeResp 带机器无关 HOME 与登录命令（A11）', () => {
+    const resp: LoginHomeResp = loginHomeRespFixture
+    expect(resp.home).toBe('~/.handoff/home/cx-abcd')
+    expect(resp.command.ssh).toBe('ssh dev@linux-01')
+    expect(resp.command.run).toContain('codex login')
+    expect(resp.command.note).toContain('device-auth')
+  })
+  it('LoginCheckResp 区分新账号/已有账号与登录数（A12）；AccountDiscoverResp 逐机成败（A10）', () => {
+    const check: LoginCheckResp = loginCheckRespFixture
+    expect(check.logins.map((l) => l.new_account)).toEqual([false, true])
+    expect(check.logins[0].account_logins).toBe(2)
+    expect(check.logins[1].account_name).toBe('cx@example.com')
+    const discover: AccountDiscoverResp = accountDiscoverRespFixture
+    expect(discover.machines.map((m) => [m.machine, m.ok])).toEqual([['linux-01', true], ['macbook-pro', false]])
+    expect(discover.machines[1].error).toContain('连接被拒绝')
+    expect(discover.machines[1]).not.toHaveProperty('at')
   })
   it('AccountDeleteRefusal 列出引用载体（F3）', () => {
     const refusal: AccountDeleteRefusal = accountDeleteRefusalFixture

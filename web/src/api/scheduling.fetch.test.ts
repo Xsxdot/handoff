@@ -7,7 +7,6 @@ import {
   attachCoordinator,
   getCoordinatorStatus,
   getQueue,
-  defaultHomeDir,
   detectCarrier,
   deleteCarrier,
   getCarrierRunCommand,
@@ -127,9 +126,7 @@ describe('scheduling fetch seam', () => {
     )
   })
 
-  it('locks default HOME string and status labels', () => {
-    expect(defaultHomeDir('mbp-opencode')).toBe('~/.handoff/home/mbp-opencode')
-    expect(defaultHomeDir('  ')).toBe('')
+  it('locks status labels', () => {
     expect(CARRIER_STATUS_LABEL.pending).toBe('未上线')
     expect(CARRIER_STATUS_LABEL.online).toBe('已上线')
     // B453：「限额中」退役（spec S4 / Q12），词表只剩三态，前后端同一份。
