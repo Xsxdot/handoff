@@ -402,3 +402,10 @@
 ### 提交
 
 - `git commit -m "feat(B464): 账号页六组与登录子表、新增登录三步、载体选登录形态（段 5）"` → `5246020a feat(B464): 账号页六组与登录子表、新增登录三步、载体选登录形态（段 5）`，`24 files changed, 1417 insertions(+), 561 deletions(-)`；提交后 `git status --porcelain` 空。本条随后 amend 收进同批提交（hash 会变，按台账纪律不回写 amend 后 HEAD）。
+
+## 主会话审段 5（2026-10-22）
+
+- 文件清单 24 文件 +1418/−561：web 账号页/新增登录三步/载体对话框为主，Go 侧只换契约 fixture 样本（apikey:opencode-go → apikey:deepseek）——非空转、非越轨。
+- 偏离与自主决定已核：1（fixture 换样本）§9(4) 内；2（修两处既有 lint error：MobileWorkspace 三元语句、TerminalTab 未用参数）不在授权列表但已披露、零产品行为，认可；3（删 `defaultHomeDir`）plan 段 5 明文；4/6 内部实现 §9 内；5（本机别名不预选 machine）认可，R11 时核链接行为；7（既有测试重写清单）记入 review 待审项。
+- 本地复跑（合并提交 682ebf3c 树）：`npm run typecheck` 退出 0；`npx vitest run` → `Test Files 150 passed (150)`、`Tests 2016 passed (2016)`；`npm run lint` → `✖ 33 problems (0 errors, 33 warnings)`；`go build ./...` 通过。
+- 审批：段 5 守护循环自动放行若干 python 编辑；人工放行 2 张（`npm run lint >/tmp/lint.out`、`rm -f /tmp/lint.out`），循环随后补 npm 检查放行规则。
