@@ -545,3 +545,11 @@
 
 - **R7 两载体共用一条登录：通过。** t464-oc（opencode-go/deepseek-v4.1-flash）与 t464-oc-mac（改为 opencode-go/glm-5.3-flash，v4→检测 v5 online）均选 og-xsx 的 t464-mac 主 HOME 登录 login-f633b59a1d048754；账号页登录行载体列「共用：t464-oc、t464-oc-mac」（R11 首轮已见）。两载体检测均 online，各派一条最小任务回文 `ok-r7`（rc=0）。凭据快照（只读时间列）：`~/.local/share/opencode/opencode.db` 的 `account` 行 `(token_expiry, time_created, time_updated)` 检测与派发前后均为 `(1795174063183, 1792582064186, 1792582064186)`；`auth.json` 不存在。opencode.db 文件 mtime 随 opencode 写会话变化，非凭据写入。
 - **R9 范围说明**：plan R9(a)（协调者载体选 `~/.handoff/home/t464-*` 登录）未单独跑——隔离 HOME 下可选的 opencode 登录只有生产共用的 muse HOME（opencode-go-54ce，已过期），在其上拉协调者会往该 HOME 写规则与配置，触及生产载体所用目录，故不做；隔离 HOME 供给的写白名单与零凭据复制由 `internal/orchestration` 单测锁定（段 1 V 断言）。R9(b) 以「真实主 HOME + 前后 sha256/mtime 快照」代替沙盒进程 HOME（R9、R9b 两次均无差异，且日志直证「跳过全部写入」）。
+
+## 最终审查第 2 轮（2026-10-22，本地 subagent，755c0aa5..2d31245a）
+
+- 裁决：**不通过**（1 条 Important）。上一轮 C1/I1–I6/M1–M5/M8 全部核销且修法正确；`go test -count=1 ./...` EXIT=0（68 包）、vet/gofmt 空、vitest 2024 全过、tsc 0；CLI `--help` 与 README 中英对照一致。变异 1/1b/2a/3/4/5 转红还原回绿，**2b（删 scheddrain→keystone 的 Carrier 传递）0 红**。
+- **N1（Important）**：I2 只修首轮——`internal/agentd/residentpush.go:264-273` `wakeResidentRound` 组 spec/ref 不带 `Carrier`（`binding.Carrier` 在手），`internal/keystone/resident.go:74` 缓存驻场 ref 同缺；驻场续轮 Resume 回落 (CLI,HOME) 反查，同 HOME 多登录即放弃代理（R9 夹具正是此形）。传递链无测试锁。
+- Minor：m1 `server.go:1596` 注释仍写「SessionRef 冻结镜像不加字段」，需改并记 B233.2 镜像加字段（进程内 DTO、不过 wire，循 B435.2 Q2 甲先例）；m2 向导勾远端时展示含 ssh 行、复制只给 remote_run（登录行两按钮同样不一致）；m3 `homeChanged` 对存量绝对路径/`~` 写法误判 HOME 变（多一次检测，无害）；m4 `backfillLabel` 非空不同即覆写，同 id 两登录不同邮箱会每轮互写——只在原 label 为空时补；m5 `opencode_login.go:79` 旧版 opencode.db 无 email 列时整条 OAuth 登录判凭据缺失——改容错；m6 段 6 改 `shows an actionable CAS conflict` 夹具未逐条列（已核语义不变）；m7 `account probe --help` 与 README 未说明也接受账号 id。
+- 未验真机处置：claude 跨 Mac 归并（S7/R2）与 claude 载体派任务（S7）列为放行前置；S5 删凭据换登录、S2 关对话框由定时发现挂上、R9(a) 按替代判据（R2/R6、R2 发现、单测）；R10 正式归 finish-check；R14 归 finish；N1 修后补 R9c（session:2 再发一条消息看续轮代理日志）。
+- 处置：N1 与 m1–m5、m7 派段 8。
