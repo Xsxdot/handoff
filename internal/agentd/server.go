@@ -1595,9 +1595,9 @@ type coordinatorRunner struct {
 	// isPushResidentSession 判续接的 CLI 会话是不是 push 驻场者（B444 P2 返工四，review C2）：是 → 本轮不注入
 	// 卡席位对。事实在账本（经 collab），不在 SessionRef（B233.2 冻结镜像不加字段）。nil = 未装配，Resume 拒跑。
 	isPushResidentSession func(sessionID string) (bool, error)
-	// accountProxy 按（CLI, 规范化 HOME）查协调者载体所选登录的代理（B453 S4：协调者回合也套代理）；
-	// nil 或返回空串 = 沿用今天的环境。
-	accountProxy func(cli, homeDir string) string
+	// accountProxy 按（载体名, CLI, 规范化 HOME）查协调者载体所选登录的代理（B453 S4：协调者回合
+	// 也套代理；B464 I2：优先用载体名，零值才回落按 CLI+HOME 反查）。nil 或返回空串 = 沿用今天的环境。
+	accountProxy func(carrier, cli, homeDir string) string
 }
 
 // errResidentLookupUnwired 是 runner 未装配驻场判定依赖时 Resume 的拒绝原因（不猜注不注入）。
@@ -1623,14 +1623,15 @@ func (r coordinatorRunner) Launch(spec keysclient.SessionSpec, prompt string) (k
 	if r.coord == nil {
 		return keysclient.TurnResult{}, executor.UnsupportedError(name, executor.CapCoordination)
 	}
-	spec.Env = r.withAccountProxy(spec.CLI, spec.HomeDir, spec.Env)
+	spec.Env = r.withAccountProxy(spec.Carrier, spec.CLI, spec.HomeDir, spec.Env)
 	ctx, cancel := readyCtx()
 	defer cancel()
 	slog.Default().Log(ctx, wakeRoundLogLevel, "协调者回合开始", "cli", spec.CLI,
 		"mode", "launch", "home_dir", spec.HomeDir, "workdir", spec.Workdir,
 		"timeout", coordWakeTurnTimeout.String())
 	got, err := r.coord.Launch(ctx, executor.CoordSessionSpec{
-		CLI: spec.CLI, HomeDir: spec.HomeDir, Model: spec.Model, Workdir: spec.Workdir, Env: spec.Env,
+		CLI: spec.CLI, HomeDir: spec.HomeDir, Model: spec.Model, Workdir: spec.Workdir,
+		Carrier: spec.Carrier, Env: spec.Env,
 	}, prompt)
 	if err != nil {
 		slog.Default().Log(ctx, wakeRoundLogLevel, "协调者回合失败", "cli", spec.CLI,
@@ -1653,6 +1654,7 @@ func (r coordinatorRunner) Resume(ref keysclient.SessionRef, prompt string) (key
 	if r.prepareHome != nil {
 		spec := keysclient.SessionSpec{
 			CLI: ref.CLI, HomeDir: ref.HomeDir, Model: ref.Model, Workdir: ref.Workdir,
+			Carrier: ref.Carrier,
 		}
 		prepared, err := r.prepareHome(spec)
 		if err != nil {
@@ -1684,7 +1686,7 @@ func (r coordinatorRunner) Resume(ref keysclient.SessionRef, prompt string) (key
 	} else {
 		ref.Env = seatEnv(ref.CLI, ref.SessionID)
 	}
-	ref.Env = r.withAccountProxy(ref.CLI, ref.HomeDir, ref.Env)
+	ref.Env = r.withAccountProxy(ref.Carrier, ref.CLI, ref.HomeDir, ref.Env)
 	ctx, cancel := readyCtx()
 	defer cancel()
 	slog.Default().Log(ctx, wakeRoundLogLevel, "协调者回合开始", "cli", ref.CLI,
@@ -1692,7 +1694,7 @@ func (r coordinatorRunner) Resume(ref keysclient.SessionRef, prompt string) (key
 		"workdir", ref.Workdir, "resident", resident, "seat_env", len(ref.Env) > 0, "timeout", coordWakeTurnTimeout.String())
 	got, err := r.coord.Resume(ctx, executor.CoordSessionRef{
 		CLI: ref.CLI, SessionID: ref.SessionID, HomeDir: ref.HomeDir,
-		Workdir: ref.Workdir, Model: ref.Model, Env: ref.Env,
+		Workdir: ref.Workdir, Model: ref.Model, Carrier: ref.Carrier, Env: ref.Env,
 	}, prompt)
 	if err != nil {
 		slog.Default().Log(ctx, wakeRoundLogLevel, "协调者回合失败", "cli", ref.CLI,
@@ -1723,11 +1725,11 @@ func classifyRunnerErr(err error) error {
 // withAccountProxy 给协调者回合的追加环境套上载体所选账号的代理（B453 S4）：六个代理键以账号
 // 代理覆盖（hostapi.buildEnv 让 req.Env 的键覆盖进程环境），NO_PROXY 不覆盖、缺席时补本机回环。
 // 查询未装配或无代理 → env 原样。homeDir 是 prepareHome 之后的规范化 HOME。
-func (r coordinatorRunner) withAccountProxy(cli, homeDir string, env []string) []string {
+func (r coordinatorRunner) withAccountProxy(carrier, cli, homeDir string, env []string) []string {
 	if r.accountProxy == nil {
 		return env
 	}
-	proxy := r.accountProxy(cli, homeDir)
+	proxy := r.accountProxy(carrier, cli, homeDir)
 	if proxy == "" {
 		return env
 	}
@@ -1741,18 +1743,19 @@ func (r coordinatorRunner) withAccountProxy(cli, homeDir string, env []string) [
 // isPushResidentSession（B444 P2 返工四）：续接会话是否为 push 驻场者的账本事实读口（组装点从 collab 取）；
 // 为 nil 时 Resume 一律拒跑（Launch 不受影响）。
 //
-// accountProxy（B453 S4）：按（CLI, 规范化 HOME）查协调者载体所选账号代理；nil = 不套用。
+// accountProxy（B453 S4/B464 I2）：按（载体名, CLI, 规范化 HOME）查协调者载体所选登录代理；
+// 载体名为零值时回落旧反查；nil = 不套用。
 func NewCoordinatorRunner(coord executor.Coordinator, reg *executor.Registry,
 	prepareHome func(keysclient.SessionSpec) (string, error),
 	isPushResidentSession func(sessionID string) (bool, error),
-	accountProxy func(cli, homeDir string) string) keysclient.Runner {
+	accountProxy func(carrier, cli, homeDir string) string) keysclient.Runner {
 	return coordinatorRunner{coord: coord, reg: reg, prepareHome: prepareHome,
 		isPushResidentSession: isPushResidentSession, accountProxy: accountProxy}
 }
 
 // CoordinatorAccountProxy 是组装点注入 NewCoordinatorRunner 的账号代理查询（见 coordinatorAccountProxy）。
-func (s *Server) CoordinatorAccountProxy(cli, homeDir string) string {
-	return s.coordinatorAccountProxy(cli, homeDir)
+func (s *Server) CoordinatorAccountProxy(carrier, cli, homeDir string) string {
+	return s.coordinatorAccountProxy(carrier, cli, homeDir)
 }
 
 // seatEnv 拼 resume 回合注入子进程的 HANDOFF 席位对（B435.2 F-RM1，R plan Q2 甲；agentd 是

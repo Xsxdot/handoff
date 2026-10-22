@@ -1024,7 +1024,7 @@ func accountsRespSample(now time.Time) AccountsResp {
 		IntervalMinutes: 15, WarnPercent: 60, LowPercent: 80, Version: 3, State: "ok",
 		Reading: &AccountReadingView{Windows: []AccountWindowView{
 			{Key: "session", UsedPercent: 34, ResetsAt: at(2*time.Hour + 41*time.Minute)},
-			{Key: "weekly", UsedPercent: 58.4, ResetsAt: at(98 * time.Hour)},
+			{Key: "weekly", Group: "Go", UsedPercent: 58.4, ResetsAt: at(98 * time.Hour)},
 			{Key: "monthly", UsedPercent: 22, ResetsAt: at(17 * 24 * time.Hour)},
 		}, PlanType: "Go", Fingerprint: "sha256:3f9a1b2cc21e", ProbedAt: now.Add(-2 * time.Minute)},
 		LastAttemptAt: at(-2 * time.Minute), ProbeLogin: oauth.ID,

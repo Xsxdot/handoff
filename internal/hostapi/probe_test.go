@@ -100,6 +100,14 @@ func TestWakeHomeNeverCopiesCredential(t *testing.T) {
 	if !foundHome {
 		t.Fatalf("检测回合 HOME 应为登录 HOME，got %v", readLines(t, capture))
 	}
+	joined := strings.Join(readArgvLines(t, capture), "\n")
+	if strings.Contains(joined, "--version") {
+		t.Fatalf("检测不得跑 --version: %q", joined)
+	}
+	if !strings.Contains(joined, "run") || !strings.Contains(joined, "--format") ||
+		!strings.Contains(joined, "json") || !strings.Contains(joined, "ping") {
+		t.Fatalf("检测 argv 应走 RunTurn ping: %q", joined)
+	}
 }
 
 // snapshotTree 记录若干根下全部普通文件的 mtime（凭据不再复制的文件集合 + mtime 判据）。

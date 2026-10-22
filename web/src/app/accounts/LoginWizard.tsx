@@ -168,7 +168,7 @@ export function LoginWizard({ open, machines, account, preset, onClose, onDone, 
               <select id="lg-agent" aria-label="Agent" className={INPUT} value={agent} disabled={account !== null} onChange={(e) => { setAgent(e.target.value); setDir(defaultDir(e.target.value)) }}>
                 {AGENTS.map((a) => <option key={a} value={a}>{a} · {kindMeta(a === 'opencode' ? 'opencode-go' : a).name}</option>)}
               </select></div>
-            <div className="sm:col-span-2"><label htmlFor="lg-dir" className={LABEL}>HOME 目录名（目录名可改）</label>
+            <div className="sm:col-span-2"><label htmlFor="lg-dir" className={LABEL}>将新建的 HOME（目录名可改）</label>
               <div className="home-in"><span>~/.handoff/home/</span><input id="lg-dir" aria-label="HOME 目录名" className={`${INPUT} font-mono`} spellCheck={false} value={dir} onChange={(e) => setDir(e.target.value)} /></div>
               <p className="field-hint">将在 {machine || '…'} 上新建 <span className="mono">~/.handoff/home/{dir || '…'}</span>，登录只写进这个目录，不动该机主 HOME。</p></div>
           </div>
@@ -177,7 +177,7 @@ export function LoginWizard({ open, machines, account, preset, onClose, onDone, 
           {error && <p role="alert" className="break-words text-xs text-destructive">{error}</p>}
           <div className="flex justify-end gap-2">
             <button type="button" className="rounded-md border px-3 py-1.5 text-xs" onClick={close}>取消</button>
-            <button type="button" className="rounded-md bg-primary px-3 py-1.5 text-xs text-primary-foreground" disabled={makeDisabled} onClick={() => void make()}>{busy ? '建目录中…' : '建 HOME 并给出登录命令'}</button>
+            <button type="button" className="rounded-md bg-primary px-3 py-1.5 text-xs text-primary-foreground" disabled={makeDisabled} onClick={() => void make()}>{busy ? '建目录中…' : '建目录并给出登录命令'}</button>
           </div>
         </>}
 

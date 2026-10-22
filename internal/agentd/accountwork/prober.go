@@ -383,12 +383,14 @@ func (p *Prober) probeOnce(ctx context.Context, a accounts.Account, l accounts.L
 			LastError: outcome.Failure, FailureStreak: prevStreak + 1}))
 		p.log.Warn("账号探测失败", "account", a.ID, "name", a.Name, "kind", a.Kind, "login", l.ID,
 			"category", outcome.Failure.Category, "cause", outcome.Failure.Message,
+			"proxy", proxycfg.Mask(proxy), "login_proxy", l.Proxy != "",
 			"failure_streak", prevStreak+1, "next", next, "elapsed", elapsed)
 		return nil
 	}
 	next := outcome.FinishedAt.Add(time.Duration(a.IntervalMinutes) * time.Minute)
 	p.log.Info("账号探测成功", "account", a.ID, "name", a.Name, "kind", a.Kind, "login", l.ID,
 		"windows", len(outcome.Reading.Windows), "blocked", outcome.Reading.Blocked != nil,
+		"proxy", proxycfg.Mask(proxy), "login_proxy", l.Proxy != "",
 		"elapsed", elapsed, "next", next)
 	return nil
 }

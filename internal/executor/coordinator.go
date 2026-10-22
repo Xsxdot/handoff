@@ -32,6 +32,9 @@ type CoordSessionSpec struct {
 	HomeDir string
 	Model   string
 	Workdir string
+	// Carrier 是本次回合所用载体名（B464 I2），字段与 keysclient.SessionSpec 同形；
+	// 适配器原样透传（协调者回合的登录代理在 runner 侧按它解析）。
+	Carrier string
 	Env     []string
 }
 
@@ -43,6 +46,8 @@ type CoordSessionRef struct {
 	HomeDir   string `json:"home_dir,omitempty"`
 	Workdir   string `json:"workdir,omitempty"`
 	Model     string `json:"model,omitempty"`
+	// Carrier 是续接会话所用载体名（B464 I2），字段与 keysclient.SessionRef 同形。
+	Carrier string `json:"carrier,omitempty"`
 	// Env 是本回合追加给子进程的环境 KEY=VALUE（与 CoordSessionSpec.Env 对称；B435.2 R plan
 	// Q2 甲）。由 Runner 实现方（agentd coordinatorRunner）按回合填写，适配器原样透传；
 	// json:"-" 不落盘；值不得进日志。

@@ -73,6 +73,10 @@ func TestLoginsOpencodeTwoSourcesDoNotMerge(t *testing.T) {
 		if f.Source == "opencode.db" && f.ExpiresAt == nil {
 			t.Fatalf("opencode.db 登录应带 token 到期时刻：%+v", f)
 		}
+		// I1：OAuth 登录 label 取 account.email（自动起名用）；身份材料仍是账号 id/org。
+		if f.Source == "opencode.db" && f.Label != "u@example.com" {
+			t.Fatalf("opencode.db 登录 label 应取 account.email，得 %q", f.Label)
+		}
 	}
 	assertNoSecret(t, dump.String()+logs.String(), sentinelKey, "acc_SENTINEL_id", "org_SENTINEL")
 }

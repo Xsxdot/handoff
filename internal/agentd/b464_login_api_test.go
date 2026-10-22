@@ -46,7 +46,7 @@ func TestLoginProxyEndpointMergesAndFeedsConsumers(t *testing.T) {
 		return map[string]string{
 			"检测回合":  env.srv.hostWakeLogin(login).Proxy,
 			"派发快照":  env.srv.dispatchAccount("oc").Proxy,
-			"协调者回合": env.srv.coordinatorAccountProxy("opencode", home),
+			"协调者回合": env.srv.coordinatorAccountProxy("oc", "opencode", home),
 		}
 	}
 	for name, got := range consumers() {

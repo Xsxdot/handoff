@@ -441,3 +441,51 @@
 - **R3 新增登录：通过。** 用户在隔离控制台「新增登录」选 t464-mac + codex，建 HOME `cx-0jr3`，执行向导给出的 `HOME=/Users/df-zidong/.handoff/home/cx-0jr3 codex login`。`account list`：新账号 `codex:858e29a5d44e`，名字与 label 为邮箱，登录 `login-19d26058573c8aa4 t464-mac ~/.handoff/home/cx-0jr3 auth.json ok`——新身份新建账号、未与 linux 上的 errenyu02 归并（不同身份）。用户反馈「都好了，正常」。
 - **claude 纳入账号体系：通过（单机）。** 用户在 mac 主 HOME `claude auth login` 后立即发现：`claude:e2d13b9309d1`，label 为登录邮箱，state `na`（claude 不探额度，Q11），登录 `t464-mac ~ claude-auth ok`。向导选 claude 被拒（darwin 钥匙串只认主 HOME）用户确认正常。跨 Mac 归并（mbp）未验——记入 finish 残余或 R14 时补。
 - **用户反馈（纳入下一轮）**：向导第 2 步 codex 的 `--device-auth` 写在说明括号里无法复制。裁定：`LoginCommand` 增可选 `remote_run`（plan §11 A11 r5 增补），向导第 2 步对有远端变体的 kind 显示「远端登录（该机没有浏览器）」勾选项，勾选时显示与复制 `remote_run`；所选机器不是控制台本机（discovery self）时默认勾选；账号页登录行在有 `remote_run` 时多一个「复制远端登录命令」。
+## implement 段 6 收口 + 修复技术轮 findings（2026-10-22）
+
+- 执行者：主会话派出的 implement subagent。分支 `cards/B464-charter-4`，开工 `git fetch origin && git merge --ff-only origin/cards/B464-charter-1` → 快进到 `5b7fe433`（独立审查技术轮记录）。零真机动作、不读任何真实凭据；Go 测试一律 `env -u CLAUDE_CODE_SESSION_ID`。
+- 输入：审查原文（本文件「独立审查（技术轮）」节，diff 755c0aa5..680ef95c）逐条读；本轮 = plan §7「段 6 收口」+ A 修复 C1/I1–I6/M1–M5/M8 + B 文档收口 + C 全量读数。
+
+### 修复落地（按条目）
+
+- **C1 载体对话框三态**（`web/src/app/settings/SchedulingPage.tsx`）：新增哨兵 `NO_LOGIN='none'`（同原型 `accounts.js:83`），草稿 login 三态 = 登录 id / NO_LOGIN / 空串（存量未选）。新建缺省第一条兼容登录，没有才 NO_LOGIN（原型 settings.html:595）；编辑未选显示 disabled 占位「未选登录（请选择）」，保存前拦截并提示；换机器/执行器回落 NO_LOGIN 而非空串。`homeChanged` 改为比较上一份服务端回执 `home_dir` 与本次所选登录的镜像 HOME（空=主 HOME）。测试：编辑存量未选只改模型 → `putCarrier` 零调用 + 断言红字；选择后才发 `login`、断言无 `no_account`；HOME 变化触发 `detectCarrier`。
+- **I1 opencode-go OAuth label**（`internal/quota/opencode_login.go`、`logins.go`）：只读查询多取 `account.email` 作 `LoginFinding.Label`（身份 id 仍是 id/org）。`internal/scheduling/accounts/discover.go` 新增 `backfillLabel`：已存在账号只补 label、不改自动名，label 未变不写。测试：quota `TestLoginsOpencodeTwoSourcesDoNotMerge` 断言 label=u@example.com；accounts `TestReconcileBackfillsAccountLabelWithoutRenaming`（首建无 label → 补 label 版本 +1、名字不变 → 重扫不写）。日志/错误不输出 token/org 值（沿用既有泄密断言）。
+- **I2 协调者回合登录代理**（`internal/keysclient/keysclient.go`、`internal/keystone/keystone.go`、`internal/agentd/scheddrain.go`、`server.go`、`account_carrier.go`、`internal/executor/coordinator.go`）：`SessionSpec`/`SessionRef` 与镜像类型 `CoordSessionSpec`/`CoordSessionRef` 各增可选 `Carrier` 字段（Ref 带 `json:"carrier,omitempty"`，零值兼容旧引用）；keystone `overlayResumeRef`/`launchRound` 传递；两条协调者路径组 spec 时带载体名；`coordinatorAccountProxy(carrier, cli, home)` 优先按载体名取 `loginOfCarrier` 代理，零值才回落 (CLI,HOME) 反查；回落歧义时各登录代理相同仍套用、不同才放弃。测试：`TestB464CoordinatorProxyByCarrierDisambiguatesSameHome`（同 HOME 两载体两登录两代理 → 各取各的）；既有 `TestB453CoordinatorRoundsUseAccountProxy`/`TestB453CoordinatorAccountProxyResolves` 更新签名并补零值反查用例。
+- **I3 loginGOOS**（`internal/agentd/b464_seg3_login_test.go`）：`TestLoginHomeCreatesIsolatedHomeAndCommandTable` 开头钉 `loginGOOS="linux"` + Cleanup 还原；新增 `TestLoginHomeClaudeDarwinRejectsWithKeychainReason` 钉 darwin，断言 400 且文案含「钥匙串」。
+- **I4 检测 argv**（`internal/hostapi/probe_test.go`）：`TestWakeHomeNeverCopiesCredential` 补回「不跑 `--version`；argv 含 run/--format/json/ping」断言。
+- **I5 契约窗口 group**（`internal/proto/contract_fixture_test.go`）：og-main weekly 窗口加 `Group:"Go"`；`go test ./internal/proto/ -run TestContractFixtures -update` 重生成 `web/src/api/testdata/AccountsResp.json`（+1 行）；`web/src/api/contract.test.ts` 恢复 `windows.map(w=>w.group)` 断言。
+- **I6 补回仍成立断言**：`AccountsPage.test.tsx` 补「会话 5h」「显示的是」「.a-r3 完整原因（在该机执行 grok login）」「探测请求失败：<原因>」「点卡头展开」「登录行载体列/载体名」；`SchedulingPage.test.tsx` 补载体行账号名、行内 HOME、「无额度」；`contract.test.ts` 补 `plan_type`、`used_percent` 数值类型、`last_attempt_at`。
+- **M1**（`web/src/app/accounts/model.ts`）：`nextProbeText` 倒计时 ≤0 时整句改「失败后退避重试，即将进行」/「下次探测即将进行」；`model.test.ts` 新增断言。
+- **M2**（SchedulingPage）：空态「新增登录」链接本机别名时用 `discovery.self` 机器名补 `machine=`；测试 `空态链接本机别名…`。
+- **M3**（`LoginWizard.tsx`、SchedulingPage）：向导标签改「将新建的 HOME（目录名可改）」、按钮改「建目录并给出登录命令」；载体下拉末项去「（不参与额度判断）」；空态按 kind 补括注「（OpenCode Go / 第三方 API key）」。测试同步更新。
+- **M4**（`internal/agentd/accountwork/prober.go`）：探测成功/失败两行日志都加打码 `proxy` 与 `login_proxy` 布尔。
+- **M5**（`opencode_login.go`）：`loginDSN` 注释写明为何用 `mode=ro` 不用 `immutable=1`（WAL 未 checkpoint 的提交读不到、会误判 Q5 凭据变化；`-shm` 不是凭据）。
+- **M8**：新增 `internal/agentd/b464_dispatch_gone_test.go`——经 `POST /api/tasks`（`handleDispatch`）派发登录已失效的载体，断言 400 + 文案含「登录已失效」与载体名 + 零任务；`SchedulingPage.test.tsx` 补 gone 行「所用登录已失效/重新登录后自动恢复」页面层断言。
+
+### 文档收口（plan §7 段 6）
+
+- README 中英命令表：`account list` 描述补登录列、新增 `account discover` 行、新增 `squad list` 行（对照 `go run . account discover/list --help`、`squad list --help` 原文）；「账号与额度」节整段改写为 B464 模型（账号=身份、登录=机器×HOME×来源、发现、新增登录三步、载体选登录、代理挂登录、未选/无账号语义）。
+- CHANGELOG `[Unreleased]`：升级须知加 B464 条（载体键变化与自动迁移、混版本排除集）；新增节加 B464 条。
+- roadmap：`B453 残余` 两行按内容定位改写——原 `:1000`（CLI 登记账号）改「**永不做**（B464 拍板）」、原 `:1022`（opencode-go 同 HOME 自动条目查重）改「**作废**（B464）」；新增「B464 残余」节（Q6 同 Mac 多 claude 账号、Q12 oauth 类第三方条目、Q19 codex 仅 OPENAI_API_KEY 的 HOME、spec OOS 三条、card dispatch 新轮起点取上轮分支观察、B453 前 agy 任务 `tasks/<id>/agyhome` token 副本 `handoff gc` 不回收）。
+- `skills/handoff/SKILL.md`：账号段整段改写（账号=身份、登录=机器+HOME、载体选登录、新增登录三步、代理挂登录、未选/无账号/已失效语义），删「账号页登记名称/HOME/条目」旧模型；故障表补「登录已失效」「未选登录」两行。
+- agyhome 是否被 gc 回收：读 `internal/orchestration/internal/cacheplan/cacheplan.go`（`PlanTaskCacheLeaves` 只产 `tmp/<id8>` 与 legacy tmp 叶子）与 `internal/orchestration/gc.go`（缓存叶子 + reclaim 工作树），`tasks/<id>/agyhome` 不在删除集合——结论：**不回收**，已按此写入 roadmap。
+
+### 命令与读数（原文）
+
+- `env -u CLAUDE_CODE_SESSION_ID go build ./...` → 无输出（通过）。
+- `gofmt -l $(git ls-files '*.go') internal/agentd/b464_dispatch_gone_test.go` → 空。
+- `env -u CLAUDE_CODE_SESSION_ID go vet ./...` → 无输出（通过）。
+- `env -u CLAUDE_CODE_SESSION_ID go test ./...` → `exit=0`；`grep -c '^FAIL'` = `0`（输出全文在 `$TMPDIR/b464-full-go-test.txt`，尾行全 `ok`）。首轮曾红 `internal/executor TestCoordTypesMirrorKeysclientFields`（`CoordSessionSpec fields = 5, SessionSpec fields = 6`），补镜像字段后 `go test ./internal/executor/...` 全 ok；随后 agentd/keystone/orchestration/cmd 全 ok（agentd 296.8s、orchestration 84.9s、cmd 145.5s）。
+- 局部：quota `TestLoginsOpencodeTwoSourcesDoNotMerge` ok；accounts 三支 ok；agentd I2/I3/M8 六支 ok；hostapi `TestWakeHomeNeverCopiesCredential` ok；proto `-update` 重生成 fixture 后 `go test ./internal/proto/` ok。
+- web：`npx vitest run` → `Test Files 150 passed (150)`、`Tests 2022 passed (2022)`；`npm run typecheck`（tsc -b）无输出；`npm run lint` → `33 problems (0 errors, 33 warnings)`（warning 均为既有 react-refresh，非本卡）。worktree 无 node_modules，临时软链主仓 `web/node_modules`，收尾删除。
+
+### 偏离与自主决定（本节为过程记录；交回物正文另列同节）
+
+1. **镜像类型同步扩字段**：I2 要求「在 SessionSpec/SessionRef 上加可选字段，旧数据零值可解码」。`internal/executor.CoordSessionSpec/Ref` 是 keysclient 的逐字段镜像（`TestCoordTypesMirrorKeysclientFields` 硬锁），只加 keysclient 会让全量测试红；故一并加 `Carrier` 并透传。属 plan 决策权限内的实现选择，未改 wire 之外的对外格式（Ref 新键 omitempty，旧数据零值可解码）。
+2. **M8 测试入口选 `handleDispatch`（HTTP POST /api/tasks）**而非 card/squad 路径：本机点名载体直达统一准入，最小且真实；card/squad 路径复用同一 `routeOrdinaryDispatch`/准入单点。
+3. **roadmap「永不做」条落在「B453 残余」节**：仓库 roadmap 顶部写「『永不做』不落这里」，但 plan §7 段 6 明确要求把原 `:1000` 改写为永不做、`:1022` 作废（在原地关闭旧残余），以派发指令为准。
+4. **`putTestLogin` 之外的测试自建登录**：M8 用 `accounts.Reconcile` 直接造 codex 登录并二次 Reconcile 标 gone，未起发现器/探测器，符合本卡「零真机、夹具 HOME」纪律。
+
+### 提交（提交当时的命令与输出；末条随后 amend 收进本台账，hash 会变）
+
+- `git add -A && git commit -m "fix(B464): 段 6 收口——修复独立审查技术轮 findings 与文档收口"` → `d623cd99`，`31 files changed, 581 insertions(+), 171 deletions(-)`（含新增 `internal/agentd/b464_dispatch_gone_test.go`）。提交前删除临时 `web/node_modules` 软链。

@@ -116,11 +116,35 @@ func (s *Server) dispatchAccount(carrierName string) carrierAccount {
 }
 
 // coordinatorAccountProxy 是协调者回合（keystone 经 coordinatorRunner 拉起/续接）的登录代理查询
-// （B453 S4「该载体的任务回合」含协调者回合）。runner 只拿得到 SessionSpec（CLI + 规范化 HOME），
-// 故按物理身份找本机载体：CLI 同名、HOME 展开后相同。同一身份有多个载体且所选登录不一致时不套用
-// （无从判定），只 Warn；登录不在本机同样不套用（hostWakeLogin 同一判据）。
-func (s *Server) coordinatorAccountProxy(cli, homeDir string) string {
-	if s.scheduling == nil || s.accounts == nil || strings.TrimSpace(homeDir) == "" {
+// （B453 S4「该载体的任务回合」含协调者回合；B464 I2 优先按载体名取）。runner 拿得到 SessionSpec/
+// SessionRef 的载体名（新引用）时直接读该载体所选登录；零值（旧引用）才回落按物理身份（CLI +
+// 规范化 HOME）反查本机载体。回落时同一身份有多个载体且所选登录不一致：各登录代理相同仍套用，
+// 不同才无从判定、只 Warn；登录不在本机同样不套用（hostWakeLogin 同一判据）。
+func (s *Server) coordinatorAccountProxy(carrierName, cli, homeDir string) string {
+	if s.scheduling == nil || s.accounts == nil {
+		return ""
+	}
+	if name := strings.TrimSpace(carrierName); name != "" {
+		c, err := s.scheduling.Carrier(name)
+		if err != nil {
+			s.log.Warn("协调者回合按载体名查登录失败，沿用本机环境", "carrier", name, "cause", err)
+			return ""
+		}
+		if !s.IsSelfMachine(c.Machine) {
+			s.log.Warn("协调者回合的载体不在本机，不套用登录代理", "carrier", name, "machine", c.Machine)
+			return ""
+		}
+		login := strings.TrimSpace(c.Login)
+		if login == "" {
+			return ""
+		}
+		proxy := s.hostWakeLogin(login).Proxy
+		if proxy != "" {
+			s.log.Info("协调者回合使用登录代理", "carrier", name, "login", login, "proxy", proxycfg.Mask(proxy))
+		}
+		return proxy
+	}
+	if strings.TrimSpace(homeDir) == "" {
 		return ""
 	}
 	rows, err := s.scheduling.CarrierRows()
@@ -129,7 +153,7 @@ func (s *Server) coordinatorAccountProxy(cli, homeDir string) string {
 		return ""
 	}
 	want := filepath.Clean(homeDir)
-	login, matched := "", []string{}
+	matched, logins := []string{}, map[string]bool{}
 	for _, row := range rows {
 		c := row.Carrier
 		if filepath.Base(c.CLI) != filepath.Base(cli) || !s.IsSelfMachine(c.Machine) {
@@ -145,21 +169,26 @@ func (s *Server) coordinatorAccountProxy(cli, homeDir string) string {
 		}
 		matched = append(matched, c.Name)
 		if l := strings.TrimSpace(c.Login); l != "" {
-			if login != "" && login != l {
-				s.log.Warn("协调者回合的载体身份对应多个不同登录，不套用登录代理", "cli", cli,
-					"home_dir", homeDir, "carriers", matched)
-				return ""
-			}
-			login = l
+			logins[l] = true
 		}
 	}
-	if login == "" {
+	if len(logins) == 0 {
 		return ""
 	}
-	proxy := s.hostWakeLogin(login).Proxy
-	if proxy != "" {
-		s.log.Info("协调者回合使用登录代理", "cli", cli, "carriers", matched, "login", login,
-			"proxy", proxycfg.Mask(proxy))
+	proxies := make([]string, 0, len(logins))
+	for id := range logins {
+		proxies = append(proxies, s.hostWakeLogin(id).Proxy)
 	}
-	return proxy
+	for _, proxy := range proxies[1:] {
+		if proxy != proxies[0] {
+			s.log.Warn("协调者回合的载体身份对应多个不同登录代理，不套用", "cli", cli,
+				"home_dir", homeDir, "carriers", matched)
+			return ""
+		}
+	}
+	if proxies[0] != "" {
+		s.log.Info("协调者回合使用登录代理", "cli", cli, "carriers", matched,
+			"proxy", proxycfg.Mask(proxies[0]))
+	}
+	return proxies[0]
 }

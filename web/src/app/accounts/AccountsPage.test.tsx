@@ -64,12 +64,19 @@ describe('账号页（六组与登录子表）', () => {
     expect(card('og-mini').querySelector('.a-state')?.textContent).toBe('△ 代理连接失败')
     expect(card('og-main').textContent).toContain('dev@example.com')
     expect(card('og-main').textContent).toContain('1 条登录 · linux-01')
+    // 窗口名、失败时旧读数提示与完整原因（B453 仍成立断言，I6 补回）
+    expect(card('og-main').textContent).toContain('会话 5h')
+    expect(card('og-mini').textContent).toContain('显示的是')
+    expect(card('grok-mbp').querySelector('.a-r3')?.textContent).toContain('在该机执行 grok login')
     const main = loginRow('login-og-main')
     expect(main.textContent).toContain('linux-01')
     expect(main.textContent).toContain('~/.handoff/home/og-main')
     expect(main.textContent).toContain('auth.json')
     expect(main.textContent).toContain('sha256:000000000000')
     expect(main.textContent).toContain('正常')
+    // 登录子表有「载体」列，这一行列出使用它的载体
+    expect(main.closest('table')!.querySelector('thead')!.textContent).toContain('载体')
+    expect(main.textContent).toContain('mimo')
     // 已过期只提示、已失效给重新登录提示；两者都在登录行里红字标出
     expect(loginRow('login-grok-mbp').textContent).toContain('已过期')
     expect(loginRow('login-grok-mbp').textContent).toContain('CLI 运行时可能自行刷新')
@@ -82,6 +89,16 @@ describe('账号页（六组与登录子表）', () => {
     expect(loginRow('login-claude-main').textContent).toContain('~（主 HOME）')
     expect(card('deepseek-key').textContent).toContain('deepseek')
     expect(within(card('deepseek-key')).getAllByText(/登录/).length).toBeGreaterThan(0)
+  })
+
+  it('点卡头展开详情；折叠时不显示阈值（I6 补回点击展开）', async () => {
+    const user = userEvent.setup()
+    render(<AccountsPage />)
+    expect(card('og-main')).not.toHaveClass('open')
+    await user.click(within(card('og-main')).getByText('og-main'))
+    expect(card('og-main')).toHaveClass('open')
+    expect(card('og-main').textContent).toContain('预警 ≥ 60%')
+    expect(card('og-main').textContent).toContain('每 15 分钟')
   })
 
   it('顶部显示上次发现（取最新）、立即发现逐机报错；页头可开新增登录', async () => {
@@ -180,6 +197,14 @@ describe('账号管理', () => {
     expect(card('codex-spare').textContent).toContain('探测完成')
   })
 
+  it('立即探测请求失败：显示「探测请求失败：<原因>」（I6 补回）', async () => {
+    const user = userEvent.setup()
+    vi.mocked(probeAccount).mockRejectedValueOnce(new ApiError(502, '上游超时'))
+    render(<AccountsPage />)
+    await user.click(within(card('og-main')).getByRole('button', { name: '立即探测' }))
+    expect(await within(card('og-main')).findByRole('alert')).toHaveTextContent('探测请求失败：上游超时')
+  })
+
   it('删除：被载体引用时拦住并点名；无引用时确认框写明下次发现会重新出现', async () => {
     const user = userEvent.setup()
     vi.mocked(deleteAccount).mockResolvedValue({ name: 'og-mini', version: 2 })
@@ -226,7 +251,7 @@ describe('新增登录（三步）', () => {
     await user.selectOptions(within(dialog()).getByLabelText('Agent'), 'codex')
     const dir = within(dialog()).getByLabelText('HOME 目录名') as HTMLInputElement
     expect(dir.value).toMatch(/^cx-[a-z0-9]{4}$/)
-    await user.click(within(dialog()).getByRole('button', { name: '建 HOME 并给出登录命令' }))
+    await user.click(within(dialog()).getByRole('button', { name: '建目录并给出登录命令' }))
     expect(createLoginHome).toHaveBeenCalledWith('linux-01', 'codex', dir.value)
     expect(await within(dialog()).findByText(/等待登录… 每 5 秒检查一次/)).toBeInTheDocument()
     expect(dialog().textContent).toContain('ssh root@linux-01 后执行：HOME=/root/.handoff/home/cx-abcd codex login')
@@ -251,10 +276,10 @@ describe('新增登录（三步）', () => {
     await user.click(screen.getByRole('button', { name: '＋ 新增登录' }))
     await user.selectOptions(within(dialog()).getByLabelText('机器'), 'mac-mini')
     await user.selectOptions(within(dialog()).getByLabelText('Agent'), 'claude')
-    await user.click(within(dialog()).getByRole('button', { name: '建 HOME 并给出登录命令' }))
+    await user.click(within(dialog()).getByRole('button', { name: '建目录并给出登录命令' }))
     expect(await within(dialog()).findByRole('alert')).toHaveTextContent('claude 登录只认主 HOME')
     await user.selectOptions(within(dialog()).getByLabelText('Agent'), 'opencode')
-    await user.click(within(dialog()).getByRole('button', { name: '建 HOME 并给出登录命令' }))
+    await user.click(within(dialog()).getByRole('button', { name: '建目录并给出登录命令' }))
     await user.click(within(dialog()).getByRole('button', { name: '我已登录，立即检查' }))
     expect(await within(dialog()).findByText(/新账号/)).toBeInTheDocument()
     expect(dialog().textContent).toContain('opencode-go-abcd')
@@ -268,7 +293,7 @@ describe('新增登录（三步）', () => {
     fireEvent.click(screen.getByRole('button', { name: '＋ 新增登录' }))
     fireEvent.change(within(dialog()).getByLabelText('机器'), { target: { value: 'linux-01' } })
     fireEvent.change(within(dialog()).getByLabelText('Agent'), { target: { value: 'codex' } })
-    fireEvent.click(within(dialog()).getByRole('button', { name: '建 HOME 并给出登录命令' }))
+    fireEvent.click(within(dialog()).getByRole('button', { name: '建目录并给出登录命令' }))
     await act(async () => { await vi.advanceTimersByTimeAsync(0) })
     expect(checkLoginHome).not.toHaveBeenCalled()
     await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
