@@ -354,6 +354,20 @@ describe('SchedulingPage 编辑弹窗对齐原型（B287）', () => {
       expect(detectCarrier).toHaveBeenCalledWith('mimo')
     })
 
+    it('存量未选载体改选「无账号 · 主 HOME」→ 检测一次（I-1：未选不等于无账号）', async () => {
+      const user = userEvent.setup()
+      vi.mocked(getSquads).mockResolvedValue({
+        carriers: [{ name: 'legacy', machine: 'linux-01', cli: 'opencode', home_dir: '~/.handoff/home/x', status: 'online', version: 4 }],
+        squads: [], running: [],
+      })
+      render(<SchedulingPage />)
+      await user.click(await screen.findByRole('button', { name: '编辑 legacy' }))
+      await user.selectOptions(screen.getByLabelText('账号'), 'none')
+      await user.click(screen.getByRole('button', { name: '保存' }))
+      expect(vi.mocked(putCarrier).mock.lastCall?.[2]).toMatchObject({ no_account: true })
+      expect(detectCarrier).toHaveBeenCalledWith('legacy')
+    })
+
     it.each(['/root/.handoff/home/og-main', '~/.handoff/home/og-main'])(
       '登录未变不触发检测：存量 home_dir=%s 与登录 HOME 写法不同也不误判（m3）',
       async (storedHome) => {

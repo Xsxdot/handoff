@@ -235,6 +235,9 @@ func (s *Service) backfillLabel(id string, existing Account, f FoundLogin, machi
 	if err != nil {
 		return err
 	}
+	if cur.Label != "" { // 快照之后他机可能已补上 label：以重读为准，不覆写。
+		return nil
+	}
 	next := cur
 	next.Label = f.Label
 	body, err := json.Marshal(next)

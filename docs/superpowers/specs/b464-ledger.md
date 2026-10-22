@@ -632,3 +632,39 @@
 - **I-2（测试缺口）**：卡协调者链变异 A（`scheddrain.go:508` 首轮 Carrier→""）、C（`keystone.go:348` overlay 失效）、D（`scheddrain.go:702` 唤醒 Carrier→""）agentd/keystone 全 0 红；段 8 台账 N1 节「等价于 scheddrain:508」与事实不符，需更正。
 - Minor：m-a `backfillLabel` 重读 `cur` 后未再判 `cur.Label != ""`；m-b m5 Warn 匹配应收窄为 `no such column: email`；m-c m3 `~` 一例无牙（记录）。
 - 处置：I-1、I-2、m-a、m-b 派段 9。
+
+## implement 段 9（2026-10-22，修局部复审 I-1/I-2/m-a/m-b）
+
+### 偏离与自主决定
+
+- 无偏离。四条改动均按复审处置实现：I-1 改三态比较并收入正式前端用例；I-2 新增两支生产入口测试（清队首轮、冷唤醒）并做三处变异复验；m-a 重读后判 `cur.Label != ""`；m-b 容错匹配收窄为 `no such column: email`。
+- 自行拍板：I-2 的「清队首轮」夹具把协调小队成员顺序排成 coord-b、coord-a，使 LaunchAdmit 选中 coord-b；反查路径（同 HOME 两登录代理不同）返回空串，故载体名一丢即红。该选择只影响夹具确定性，不改变产品行为，落在 plan 决策权限内。
+- 自行拍板：m-b 测试用捕获 slog 输出断言「不走无 email 分支」（缺 token_expiry 时返回类别本身两版相同，只有日志能区分分支）。落在 plan 决策权限内。
+
+### 台账更正（不改历史行）
+
+- 更正段 8 N1 节「即该测试钉住 ref→Resume 这一段（等价于 scheddrain:508 / wakeResidentRound 的 Carrier 传递被抹掉）」：该表述与事实不符。该测试只覆盖 wakeResidentRound 的 spec/ref→Resume 一段，未覆盖 scheddrain:508 清队首轮；scheddrain:508 现由段 9 的 `TestB464QueuedFirstRoundCarriesSeatCarrierToLoginProxy` 覆盖。
+
+### 改动与红绿
+
+- I-1 `web/src/app/settings/SchedulingPage.tsx`：`prevLogin` 三态（no_account→NO_LOGIN、未选→''、其余→登录 id），`sameLogin = prevLogin !== '' && prevLogin === carrier.login`。正式用例收入 `SchedulingPage.test.tsx`「存量未选载体改选『无账号 · 主 HOME』→ 检测一次」；保留段 8 的 `it.each`（登录未变、存量绝对路径 home_dir → 不触发）。HEAD 版组件下该用例红：`AssertionError: expected "vi.fn()" to be called with arguments: [ 'legacy' ]`（detectCarrier 未调用）；改后绿。
+- I-2 新增 `internal/agentd/b464_coordinator_carrier_test.go`：`TestB464QueuedFirstRoundCarriesSeatCarrierToLoginProxy`（drainQueuesOnce → launch_queue → runOnCoordinatorCarrier → keystone.LaunchForCard → coordinatorRunner.Launch）与 `TestB464ColdWakeCarriesSeatCarrierToLoginProxy`（wakeCoordinatorRound，fresh keystone 无 sessions → overlayResumeRef → Resume）。夹具：同 HOME 两登录、coord-a/coord-b 各选其一、代理 2081/2082 不同。
+- m-a `internal/scheduling/accounts/discover.go` `backfillLabel` 重读 cur 后 `if cur.Label != "" { return nil }`；新增 `TestReconcileBackfillLabelRechecksCurrentRow`（快照无 label、重读已有 label → 不写）。HEAD 版实现下红：`重读已有 label 应保留且不写行，得 {… Label:u@example.com …}（版本 3）`；改后绿（保留他机 label、版本 2）。
+- m-b `internal/quota/opencode_login.go` 容错条件收窄为 `strings.Contains(err.Error(), "no such column: email")`；`loginRow` 加 `noExpiry` 构造缺 token_expiry 的库；新增 `TestOpencodeGoLoginMissingTokenExpiryStaysCredentialMissing`。HEAD 版实现下红：`缺 token_expiry 不得走无 email 容错分支，日志：{"level":"WARN","msg":"opencode.db 的 account 表无 email 列，登录照常认出但 label 留空"…}`；改后绿（按凭据缺失报原列错误）。
+
+### 变异复验（均不提交，跑完即还原）
+
+- A `scheddrain.go:508` 首轮 `Carrier: binding.Carrier` → `""`：`--- FAIL: TestB464QueuedFirstRoundCarriesSeatCarrierToLoginProxy`，`首轮应取席位载体 coord-b 那条登录的代理 "http://u:p@127.0.0.1:2082"，得 ""（ok=false）`。
+- D `scheddrain.go:702` 冷唤醒 `Carrier: binding.Carrier` → `""`：`--- FAIL: TestB464ColdWakeCarriesSeatCarrierToLoginProxy`，`冷唤醒应取席位载体 coord-b 那条登录的代理 "http://u:p@127.0.0.1:2082"，得 ""（ok=false）`。
+- C `keystone.go:348` overlay 覆盖短路（`if false && spec.Carrier != ""`）：`--- FAIL: TestB464ColdWakeCarriesSeatCarrierToLoginProxy`，同上红原文。
+
+### 收口读数
+
+- `env -u CLAUDE_CODE_SESSION_ID go test ./internal/agentd/... ./internal/keystone/... ./internal/scheduling/... ./internal/quota/...`：`ok github.com/Xsxdot/handoff/internal/agentd 260.640s`、`ok .../keystone 1.673s`、`ok .../scheduling 21.693s`、`ok .../scheduling/accounts 0.041s`、`ok .../scheduling/internal/logging 0.002s`、`ok .../quota 3.990s`。
+- `go build ./...`：BUILD_RC=0（空输出）。`go vet ./...`：VET_RC=0（空输出）。`gofmt -l .`（排除 web）：空。
+- `web`: `npx vitest run` → `Test Files 150 passed (150) / Tests 2027 passed (2027)`；`npm run typecheck` → TSC_RC=0；`npm run lint` → `33 problems (0 errors, 33 warnings)`，LINT_RC=0。
+- 本地 web 依赖：worktree 无 node_modules，执行 `npm ci --no-audit --no-fund` → `added 290 packages in 2s`（node_modules 为 gitignore，不入库）。
+
+### 提交事实
+
+- 命令：`git add -A && git commit -m "fix(B464): 段 9——homeChanged 三态比较、卡协调者载体名入口测试、label 重读保护、email 列容错收窄"`。输出：`[cards/B464-charter-7 7cabae94] fix(B464): 段 9——…`、`8 files changed, 265 insertions(+), 7 deletions(-)`、`create mode 100644 internal/agentd/b464_coordinator_carrier_test.go`。随后按台账纪律只 amend 一次把本行收进同一提交（amend 换 hash 属 git 事实）。
