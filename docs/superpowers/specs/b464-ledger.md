@@ -619,3 +619,8 @@
 ### 提交事实
 
 - 命令：`git add -A && git commit -m "fix(B464): 段 8——驻场续轮带载体名(N1)、远端命令复制含 ssh、homeChanged 先比登录、label 只补空、无 email 列容错、CLI/README 名称或 id"`。输出：`c8e8d5f6 fix(B464): 段 8——…`（19 文件 + 新增 `internal/agentd/b464_resident_carrier_test.go`；node_modules 为 gitignore，未入库）。随后按台账纪律只 amend 一次把本行收进同一提交（amend 换 hash 属 git 事实）。
+
+## 主会话审段 8 与 R9c（2026-10-22）
+
+- 段 8（e1219bf6，20 文件 +254/−24）：N1 `residentpush.go` `wakeResidentRound` spec/ref 带 Carrier、`keystone/resident.go` 缓存驻场 ref 带 Carrier，执行者全仓构造路径清单与生产入口测试 `TestB464ResidentRoundCarriesSeatCarrierToLoginProxy`（变异确认有牙）；m1–m7 各带测试与变异确认。偏离：无越权（m2 远端复制统一含 ssh 行；m5 以「no such column」退旧查询）。合并 2f72c64b（台账冲突两侧保留）。
+- **R9c 驻场续轮代理：通过。** 隔离实例换 2f72c64b（mac embedweb、linux bin-br5-linux，linux `HANDOFF_LOG_LEVEL=info`）。控制台接口 `POST /api/rooms/session:2/messages`（console_user 身份，CLI 身份非房间成员被拒「书写者与房间身份不符」）→ seq 5；linux 日志 12:44:31 `协调者供给目标即主 HOME，跳过全部写入`、`协调者回合使用登录代理 carrier=t464-oc-lnx login=login-2b5aa6d9f8a9c6ef proxy=http://127.0.0.1:1080`、`协调者回合开始 mode=resume resident=true`、`协调者回合完成 output_bytes=6`；无「不套用」。
