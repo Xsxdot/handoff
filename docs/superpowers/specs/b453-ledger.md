@@ -407,3 +407,26 @@
 - 修：`b453_quota_test.go` 新增 `(*b452Env).waitFailedEvent`（eventually ≤3s 等 failed 事件落库并返回它），三处「终态后读 failed 事件/原因」改经它；`b453_rerun_test.go` 改为 eventually 等 rq-1、rq-2 名额都归还。
 - 绿（临时 sleep 仍在）：`go test ./internal/orchestration/ -run TestB453 -count=1` ok；`go test ./internal/agentd/ -run TestB453QuotaRerunEndToEnd -v` PASS，输出无 `database is closed`。随后还原两处 sleep，`git diff --stat manager.go quota.go` 为空。
 - 收尾（产品代码为 HEAD 原样）：`go test -race -cpu 1,4,16 -count=20` 跑 orchestration 三条 → ok（51.6s）；`go test -race -cpu 1,4,16 -count=5 -run TestB453QuotaRerunEndToEnd ./internal/agentd/` → ok；`go test -count=5 ./internal/orchestration/` → ok（199s）；`go test -count=5 ./internal/agentd/` → ok（422s）；`go vet` 两包、`go build ./...` 过；gofmt 无差异。
+
+## implement 轮 5（opencode.db 登录账号来源）
+
+### 偏离与自主决定
+
+1. 服务端缺省条目改为「自动」：`accounts.DefaultEntry("opencode-go")` 由 `"opencode-go"` 改为空串（`account_api.go:accountFromInput` 键缺席时取它）。不改则 PUT 不带条目时被填成 `opencode-go`，按 F9 即「只用 auth.json 同名条目」，自动回落永远不发生。前端 `KINDS['opencode-go'].entry` 同步改为空，另加占位说明 `entryHint`。在 plan 决策权限内（是 plan §8 r3 F9「空 = 自动」的直接实现，不另立语义）。
+2. 已登记账号的条目不迁移：本轮之前经控制台或服务端缺省登记的 opencode-go 账号，定义里落的是 `entry: "opencode-go"`，按 F9 属「只用 auth.json 同名条目」，不会自动回落登录账号；要用登录账号须在账号页把条目清空（自动）或填 `opencode.db`。查重 `sameCredential` 按条目字面比，同 HOME 的 `""` 与 `"opencode-go"` 不判重。两项都不在本轮改（改就是改 F9 的字面语义），交回时列给主会话。
+3. 自动模式下 auth.json 的 `opencode-go` 条目存在但不是 API key（type≠api）也回落登录账号——spec「有 opencode-go API key 条目就用它，否则用登录账号」。两处都没有时合成一句 credential_missing；auth.json 那半句在「条目不是 API key」时保留具体原因，其余写「<auth.json 路径> 无 opencode-go 条目」。本平台无已知落点（unsupported_platform）不回落。在 plan 决策权限内。
+4. 403 判「读数明示不可用」（Blocked = no_subscription，状态无额度），与 API key 来源的 403/EntitlementError 同一处理；access 缺失/null 同此。401 判 credential_expired（协调者定）。`usedMicroCents` 缺失的窗口与 limit 为 0/缺同样不计。在 plan 决策权限内。
+5. 登录过期不影响 Identity：载体检测比对指纹时，过期登录仍返回「账号 id/org id」（同一账号）；只有 Probe 在出网前报 credential_expired。org 为空时 Identity 与 Probe 都报 credential_invalid（无法组成身份）。在 plan 决策权限内。
+6. opencode.db 路径取 `filepath.Dir(CredRelPath)/opencode.db`：与 auth.json 同在 opencode 的 data 目录，相对路径仍只由 toolchain 那张表维护（未新增表项）；平台无落点时随 CredRelPath 为空报 unsupported_platform。在 plan 决策权限内。
+7. 新代码分到 `internal/quota/opencode_login.go`（读库 + console 解析），来源选择与 Probe 留在 `opencodego.go`。在 plan 决策权限内（同包内部结构）。
+
+### 过程与证据
+
+- 事实：opencode.db 表形状只读 `.schema`（未读任何行值）取自本机 opencode 1.19.3：`account(id text PK, email, url, access_token, refresh_token, token_expiry integer, time_created, time_updated)`、`account_state(id integer PK, active_account_id text FK→account.id, active_org_id text)`；本机库旁有 `-wal`/`-shm`（opencode 正开着 WAL）。驱动 modernc.org/sqlite 以 `file:` 前缀的 DSN 走 `SQLITE_OPEN_URI`（`conn.go:100`），`mode=ro` 生效；仓内既有依赖，未改 go.mod。
+- 夹具：协调者脱敏样本拷为 `internal/quota/testdata/opencodego_console_status_200.real.json`。
+- 红（新缝先编译红）：`go test ./internal/quota/ -run 'Login|ConsoleStatus|SourceSelection|IdentityFollows'` → `undefined: ParseOpencodeGoConsoleStatus`、`undefined: opencodeGoStatusPath`。加桩后断言红：解析表 `真样本应解析成功: parse: 未实现`；来源选择 11 行里 10 行红（如「自动：无 auth.json 回落登录账号」得 `credential_missing: 凭据文件 …/auth.json 不存在`、「entry=opencode.db 强制」得 `auth.json 里没有条目 "opencode.db"`、「两处都没有」缺「无 opencode-go 条目」、过期/org 空都落成 credential_missing）；WAL 用例、Identity 用例红；泄密用例红在 `应有 INFO 日志点名所选来源 source=opencode.db`。
+- 绿：`go test ./internal/quota/ -count=1` ok（含旧 API key 路径全部用例）。
+- 缺省条目：`account_api_test.go:137` 断言改为期望 `Entry == ""` 先红（回执 `Entry:opencode-go`），改 `DefaultEntry` 后绿；同用例随后经自动来源读 auth.json 探测成功。
+- 前端：`model.test.ts` entryText 用例与 `AccountsPage.test.tsx` 登记 opencode-go 用例先红（`expected '/root（agy CLI 自己的登录态）' to be '/root › 自动（…）'`、条目值/占位不符）；改 `KINDS`、`entryText`、`inputOf`（条目判据由「该 kind 缺省条目非空」改为「kind 不是 agy」——否则 opencode-go 填的 `opencode.db` 会被丢掉）、条目标签与占位后 `vitest src/app/accounts` 43 passed。
+- 文档：README / README.zh-CN 登记与探测两段、SKILL.md 账号节、CHANGELOG「所在机定时探测额度」条目各补一句；`go test ./internal/skill/` ok。
+- 收尾：`go build ./... && go vet ./...` 过；`go test ./internal/quota/... ./internal/agentd/ ./cmd/ ./internal/scheduling/... -count=1` 全 ok；`npm run typecheck` 退出 0；`vitest src/app/accounts src/app/settings` 13 files / 123 passed；eslint 触及目录无输出；gofmt 无差异。

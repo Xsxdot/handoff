@@ -114,7 +114,7 @@ handoff wait <task> --notify --timeout 1h
 
 ## 账号与额度：派发看账号，不看载体自报
 
-载体背后是订阅账号（opencode-go / codex / grok / agy 四种）。账号在控制台「◔ 账号」页登记（名称、类型、所在机器、凭据 HOME、条目、可选代理、探测间隔、预警线、低额度线），载体在「设置 · 自动化」里选一个**同机**账号（可不选）。额度由账号所在机的 agentd 定时探测、写进共享账本，各机读同一份；密钥不离机，账本只存凭据位置与短指纹。
+载体背后是订阅账号（opencode-go / codex / grok / agy 四种）。账号在控制台「◔ 账号」页登记（名称、类型、所在机器、凭据 HOME、条目、可选代理、探测间隔、预警线、低额度线；opencode-go 条目留空 = 自动：`auth.json` 有 `opencode-go` API key 用它，否则用该 HOME 登录的 opencode 账号 `opencode.db`，填 `opencode.db` 只用登录账号），载体在「设置 · 自动化」里选一个**同机**账号（可不选）。额度由账号所在机的 agentd 定时探测、写进共享账本，各机读同一份；密钥不离机，账本只存凭据位置与短指纹。
 
     handoff account list            # 表格：名称/类型/机器/状态/窗口已用/最近重置/上次探测/说明
     handoff account list --json     # 一行一个账号对象（与 GET /api/accounts 元素同形）

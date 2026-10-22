@@ -135,3 +135,84 @@ func TestProxyFailureMessageMaskedLikeAPI(t *testing.T) {
 		t.Fatalf("代理打码应与 API 回显同形: %s", f.Message)
 	}
 }
+
+// TestOpencodeGoLoginSecretsNeverLeak 是轮 5 登录账号来源的「密钥不离机」：access_token 与
+// active_org_id 都用哨兵串，上游把 Authorization 与 x-org-id 原样回显进成功/401 正文，另加
+// 超时、断网与登录过期；错误文本、读数（含 JSON）、日志里零出现两个哨兵；指纹不是任一子串。
+func TestOpencodeGoLoginSecretsNeverLeak(t *testing.T) {
+	const tokenSentinel, orgSentinel = "oc-SENTINEL-token-b453", "org-SENTINEL-b453"
+	var logs bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	defer slog.SetDefault(prev)
+
+	home := t.TempDir()
+	writeOpencodeDB(t, home, loginRow{token: tokenSentinel, org: orgSentinel})
+	exp := time.Now().Add(-time.Minute).UnixMilli()
+	expiredHome := t.TempDir()
+	writeOpencodeDB(t, expiredHome, loginRow{token: tokenSentinel, org: orgSentinel, expiryMs: &exp})
+	echo := func(r *http.Request) string { return r.Header.Get("Authorization") + " " + r.Header.Get("x-org-id") }
+	paths := map[string]http.HandlerFunc{
+		"成功正文回显头": func(w http.ResponseWriter, r *http.Request) {
+			_, _ = fmt.Fprintf(w, `{"product":"go","echo":%q,"access":{"meters":{"week":{"limitMicroCents":"100","usedMicroCents":"1"}}}}`, echo(r))
+		},
+		"401 正文回显头": func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = fmt.Fprintf(w, `{"error":%q}`, echo(r))
+		},
+		"403 正文回显头": func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = fmt.Fprintf(w, `{"error":%q}`, echo(r))
+		},
+		"超时": func(w http.ResponseWriter, r *http.Request) {
+			select {
+			case <-r.Context().Done():
+			case <-time.After(2 * time.Second):
+			}
+		},
+	}
+	check := func(t *testing.T, snap Snapshot, err error) {
+		t.Helper()
+		raw, _ := json.Marshal(snap)
+		for _, s := range []string{tokenSentinel, orgSentinel} {
+			if err != nil && strings.Contains(err.Error(), s) {
+				t.Fatalf("错误文本泄露 %s: %s", s, err)
+			}
+			if strings.Contains(string(raw), s) || strings.Contains(fmt.Sprintf("%+v", snap), s) {
+				t.Fatalf("读数泄露 %s: %s", s, raw)
+			}
+		}
+	}
+	for name, h := range paths {
+		t.Run(name, func(t *testing.T) {
+			srv := httptest.NewServer(h)
+			defer srv.Close()
+			snap, err := (&OpencodeGo{BaseURL: srv.URL, CredRelPath: testCredRelPath, Timeout: 300 * time.Millisecond}).Probe(
+				context.Background(), Request{Kind: KindOpencodeGo, Home: home, Entry: "opencode.db"})
+			check(t, snap, err)
+		})
+	}
+	dead := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	deadURL := dead.URL
+	dead.Close()
+	for name, h := range map[string]string{"断网": home, "登录过期": expiredHome} {
+		snap, err := (&OpencodeGo{BaseURL: deadURL, CredRelPath: testCredRelPath, Timeout: time.Second}).Probe(
+			context.Background(), Request{Kind: KindOpencodeGo, Home: h})
+		if err == nil {
+			t.Fatalf("%s 应失败", name)
+		}
+		check(t, snap, err)
+	}
+	for _, s := range []string{tokenSentinel, orgSentinel} {
+		if strings.Contains(logs.String(), s) {
+			t.Fatalf("日志里出现了 %s", s)
+		}
+	}
+	fp := strings.TrimPrefix(Fingerprint("acc_test_1/"+orgSentinel), "sha256:")
+	if strings.Contains(tokenSentinel, fp) || strings.Contains(orgSentinel, fp) {
+		t.Fatal("指纹是凭据的子串")
+	}
+	if !strings.Contains(logs.String(), `"source":"opencode.db"`) {
+		t.Fatal("应有 INFO 日志点名所选来源 source=opencode.db")
+	}
+}

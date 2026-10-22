@@ -134,7 +134,8 @@ func TestAccountProbeForwardToHostMachineWhichWritesReading(t *testing.T) {
 		t.Fatalf("入口机登记: %d %s", code, body)
 	}
 	v := decodeAccountView(t, body)
-	if v.Version != 1 || v.State != "none" || v.Entry != "opencode-go" || v.IntervalMinutes != 15 ||
+	// opencode-go 缺省条目 = 自动（spec r1.3 / plan §8 r3 F9）：落空串，探测时选来源，不填 opencode-go
+	if v.Version != 1 || v.State != "none" || v.Entry != "" || v.IntervalMinutes != 15 ||
 		v.WarnPercent != 60 || v.LowPercent != 80 || v.Reading != nil || v.Carriers == nil {
 		t.Fatalf("登记回执缺省值/状态不符: %+v", v)
 	}

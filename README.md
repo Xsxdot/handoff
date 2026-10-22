@@ -446,15 +446,19 @@ account is out of quota instead of failing mid-task. Accounts live in the shared
 
 - **Register in the console**: dock ◔ → Accounts → "＋ 登记账号": name (unique,
   immutable), kind, the machine the credentials live on, credential HOME, entry
-  (pre-filled per kind: opencode-go = `auth.json › opencode-go`, codex = `auth.json ›
-  tokens`, grok = `auth.json › https://auth.x.ai`; agy uses the agy CLI's own login, no
-  entry), optional proxy, probe interval (5/10/15/30/60 min, default 15), warn line
+  (pre-filled per kind: opencode-go = automatic — the `opencode-go` API key in opencode's
+  `auth.json` if present, otherwise the account logged in to opencode on that HOME
+  (`opencode.db`); enter `opencode.db` to use only the login, or another name to use only
+  that `auth.json` entry; codex = `auth.json › tokens`, grok = `auth.json ›
+  https://auth.x.ai`; agy uses the agy CLI's own login, no entry), optional proxy, probe interval (5/10/15/30/60 min, default 15), warn line
   (default 60%, color only) and low line (default 80%, pauses dispatch). Deleting an
   account that a carrier still references is refused and names the carriers.
 - **Probing happens only on the account's own machine** (credentials never leave it; the
   ledger stores only the location and a short fingerprint). opencode-go, codex and grok
   read their HTTP usage endpoints with the stored key/token (read-only — tokens are never
-  refreshed); agy runs `agy -p /usage` and is skipped on agy < 1.1.11, where `/usage` would
+  refreshed; an opencode-go login is read from `opencode.db` read-only and calls the
+  console status endpoint with its token and org, so an expired login reports "re-login
+  to opencode on that machine"); agy runs `agy -p /usage` and is skipped on agy < 1.1.11, where `/usage` would
   itself burn quota. "Probe now" from any console or `handoff account probe` is forwarded
   to that machine.
 - **States**: ok / low (any window ≥ low line) / out (any window at 100%, the provider

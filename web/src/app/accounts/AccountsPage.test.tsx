@@ -95,6 +95,32 @@ describe('账号页', () => {
     expect(card('cx-new')).toBeInTheDocument()
   })
 
+  it('登记 opencode-go：条目缺省为自动（留空、占位说明两处来源），不填则请求体无 entry；可填 opencode.db 强制登录账号（轮 5）', async () => {
+    const user = userEvent.setup()
+    vi.mocked(putAccount).mockResolvedValue({ ...sampleAccounts()[0], name: 'og-new', entry: undefined, version: 1 })
+    vi.mocked(probeAccount).mockResolvedValue({ ...sampleAccounts()[0], name: 'og-new', version: 1 })
+    render(<AccountsPage />)
+    await user.click(within(screen.getByTestId('kgroup-opencode-go')).getByRole('button', { name: '＋ 登记账号' }))
+    const dlg = screen.getByRole('dialog', { name: '登记账号 · OpenCode Go' })
+    const entry = within(dlg).getByLabelText('凭据条目')
+    expect(entry).toHaveValue('')
+    expect(entry).toBeEnabled()
+    expect(entry).toHaveAttribute('placeholder', '自动：auth.json › opencode-go，否则 opencode.db 登录账号')
+    await user.type(within(dlg).getByLabelText('账号名'), 'og-new')
+    await user.type(within(dlg).getByLabelText('所在机器'), 'linux-01')
+    await user.click(within(dlg).getByRole('button', { name: '保存' }))
+    expect(vi.mocked(putAccount).mock.lastCall?.[2]).not.toHaveProperty('entry')
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+
+    await user.click(within(screen.getByTestId('kgroup-opencode-go')).getByRole('button', { name: '＋ 登记账号' }))
+    const dlg2 = screen.getByRole('dialog', { name: '登记账号 · OpenCode Go' })
+    await user.type(within(dlg2).getByLabelText('账号名'), 'og-db')
+    await user.type(within(dlg2).getByLabelText('所在机器'), 'linux-01')
+    await user.type(within(dlg2).getByLabelText('凭据条目'), 'opencode.db')
+    await user.click(within(dlg2).getByRole('button', { name: '保存' }))
+    expect(vi.mocked(putAccount).mock.lastCall?.[2]).toEqual(expect.objectContaining({ kind: 'opencode-go', entry: 'opencode.db' }))
+  })
+
   it('编辑：名称只读，带当前版本；代理回显打码，原样提交即保留；服务端 400 原文显示', async () => {
     const user = userEvent.setup()
     const masked: AccountView = { ...sampleAccounts()[3], proxy: 'socks5://u:***@127.0.0.1:7897' }

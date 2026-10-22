@@ -51,10 +51,11 @@ function draftOf(a: AccountView | null, kind: string): Draft {
   }
 }
 
-// inputOf 草稿 → F9 请求体。空条目/空代理以键缺席表达（agy 无条目；不填代理 = 沿用该机代理）。
+// inputOf 草稿 → F9 请求体。空条目/空代理以键缺席表达（agy 无条目；opencode-go 空 = 自动；
+// 不填代理 = 沿用该机代理）。
 function inputOf(d: Draft): AccountInput {
   const body: AccountInput = { kind: d.kind, machine: d.machine.trim(), home_dir: d.home.trim() }
-  if (d.entry.trim() && kindMeta(d.kind).entry !== '') body.entry = d.entry.trim()
+  if (d.entry.trim() && d.kind !== 'agy') body.entry = d.entry.trim()
   if (d.proxy.trim()) body.proxy = d.proxy.trim()
   body.interval_minutes = Number(d.interval)
   body.warn_percent = Number(d.warn)
@@ -125,8 +126,8 @@ function AccountDialog({ editing, kind, machines, onClose, onSaved }: {
             </select></div>
           <div className="sm:col-span-2"><label htmlFor="af-home" className={LABEL}>凭据 HOME（该机上的路径，绝对路径或 ~ 开头）</label>
             <input id="af-home" aria-label="凭据 HOME" className={`${INPUT} font-mono`} placeholder="/root/.handoff/home/…" value={d.home} onChange={(e) => { setHomeTouched(true); set({ home: e.target.value }) }} /></div>
-          <div className="sm:col-span-2"><label htmlFor="af-entry" className={LABEL}>凭据条目（HOME 下 auth.json 里的键）</label>
-            <input id="af-entry" aria-label="凭据条目" className={`${INPUT} font-mono`} disabled={managed} placeholder={managed ? '由 agy CLI 管理' : ''} value={managed ? '' : d.entry} onChange={(e) => set({ entry: e.target.value })} />
+          <div className="sm:col-span-2"><label htmlFor="af-entry" className={LABEL}>{d.kind === 'opencode-go' ? '凭据条目（留空 = 自动；opencode.db = 登录账号；其他 = auth.json 里的键）' : '凭据条目（HOME 下 auth.json 里的键）'}</label>
+            <input id="af-entry" aria-label="凭据条目" className={`${INPUT} font-mono`} disabled={managed} placeholder={managed ? '由 agy CLI 管理' : (kindMeta(d.kind).entryHint ?? '')} value={managed ? '' : d.entry} onChange={(e) => set({ entry: e.target.value })} />
             <p className="mt-1 text-[11px] leading-5 text-muted-foreground">{managed
               ? '由 agy CLI 管理（agy CLI 自己的登录态），无需登记条目。只登记 HOME，保存后所在机 agentd 读登录态、回填短指纹。'
               : '只登记位置。保存后所在机 agentd 读取凭据、回填短指纹，密钥不进账本。'}</p></div>

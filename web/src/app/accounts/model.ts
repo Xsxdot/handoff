@@ -21,8 +21,13 @@ export type { UsageMode }
 export interface KindMeta {
   name: string
   label: string
-  /** 缺省凭据条目（auth.json 里的键）；agy 为空：凭据是 agy CLI 自己的登录态。 */
+  /**
+   * 缺省凭据条目（auth.json 里的键）。空串两种含义：agy = 凭据是 agy CLI 自己的登录态（条目置灰）；
+   * opencode-go = 自动（spec r1.3：auth.json 有 opencode-go API key 条目用它，否则 opencode.db 登录账号）。
+   */
   entry: string
+  /** 条目输入框的占位说明（条目缺省为空、但可填时给人看两种来源）。 */
+  entryHint?: string
   blurb: string
 }
 
@@ -30,7 +35,8 @@ export interface KindMeta {
 export const KIND_ORDER = ['opencode-go', 'codex', 'grok', 'agy']
 
 export const KINDS: Record<string, KindMeta> = {
-  'opencode-go': { name: 'OpenCode Go', label: 'opencode-go 订阅', entry: 'opencode-go',
+  'opencode-go': { name: 'OpenCode Go', label: 'opencode-go 订阅', entry: '',
+    entryHint: '自动：auth.json › opencode-go，否则 opencode.db 登录账号',
     blurb: '登记在 handoff 机器上的 opencode-go 订阅；额度由所在机定时探测。' },
   codex: { name: 'Codex', label: 'codex（ChatGPT 订阅）', entry: 'tokens',
     blurb: 'ChatGPT 订阅下的 codex 登录；按会话 5h 与每周窗口计额度。' },
@@ -282,9 +288,15 @@ export function extraUsageText(a: AccountView): string {
   return ''
 }
 
-/** entryText 凭据位置（HOME › 条目；agy 为 CLI 自己的登录态）。 */
+/**
+ * entryText 凭据位置一句话（HOME › 来源）：agy 为 CLI 自己的登录态；opencode-go 条目空 = 自动、
+ * `opencode.db` = 登录账号（spec r1.3）；其余为 auth.json 里的同名条目。
+ */
 export function entryText(a: AccountView): string {
-  return a.entry ? `${a.home_dir} › auth.json › ${a.entry}` : `${a.home_dir}（agy CLI 自己的登录态）`
+  if (a.kind === 'agy') return `${a.home_dir}（agy CLI 自己的登录态）`
+  if (a.kind === 'opencode-go' && !a.entry) return `${a.home_dir} › 自动（auth.json › opencode-go，否则 opencode.db 登录账号）`
+  if (a.kind === 'opencode-go' && a.entry === 'opencode.db') return `${a.home_dir} › opencode.db 登录账号`
+  return `${a.home_dir} › auth.json › ${a.entry ?? ''}`
 }
 
 /**

@@ -35,11 +35,11 @@ const (
 // AllowedIntervals 是可选探测间隔（分钟），spec S1。
 var AllowedIntervals = []int{5, 10, 15, 30, 60}
 
-// DefaultEntry 返回该 kind 的缺省凭据条目（spec S1）；agy 由 CLI 自管登录态，条目留空。
+// DefaultEntry 返回该 kind 的缺省凭据条目（spec S1）。空串有两种含义：agy 由 CLI 自管登录态；
+// opencode-go 为「自动」（spec r1.3 / plan §8 r3 F9：auth.json 有 opencode-go API key 条目用它，
+// 否则用 opencode.db 当前登录账号）——由所在机探测时选来源，定义里不落具体条目。
 func DefaultEntry(kind string) string {
 	switch kind {
-	case KindOpencodeGo:
-		return "opencode-go"
 	case KindCodex:
 		return "tokens"
 	case KindGrok:

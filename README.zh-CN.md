@@ -258,13 +258,16 @@ handoff dispatch --target devbox --new-worktree plan.md
 共享账本里（需 `ledger.dsn`），各机控制台与 CLI 看到同一份。
 
 - **在控制台登记**：侧栏 dock「◔」→ 账号页 →「＋ 登记账号」：账号名（唯一、登记后不可改）、
-  类型、凭据所在机器、凭据 HOME、凭据条目（按类型预填：opencode-go = `auth.json ›
-  opencode-go`，codex = `auth.json › tokens`，grok = `auth.json › https://auth.x.ai`；agy
+  类型、凭据所在机器、凭据 HOME、凭据条目（按类型预填：opencode-go = 自动——该 HOME 的 opencode
+  `auth.json` 有 `opencode-go` API key 条目就用它，否则用该 HOME 登录的 opencode 账号
+  （`opencode.db`），填 `opencode.db` 则只用登录账号、填其他名字则只用 `auth.json` 同名条目；
+  codex = `auth.json › tokens`，grok = `auth.json › https://auth.x.ai`；agy
   用 agy CLI 自己的登录态，不填条目）、可选代理、探测间隔（5/10/15/30/60 分钟，缺省 15）、
   预警线（缺省 60%，只变色）、低额度线（缺省 80%，达到即暂停派发）。还有载体引用的账号拒删，
   并列出这些载体。
 - **只在账号所在机探测**（凭据不离机，账本只存位置与短指纹）。opencode-go、codex、grok
-  用凭据读各自的用量接口（只读，不刷新 token）；agy 执行 `agy -p /usage`，agy < 1.1.11 时跳过
+  用凭据读各自的用量接口（只读，不刷新 token；opencode-go 登录账号只读打开 `opencode.db`，以其
+  token 与组织调 console 状态端点，登录过期即报「在该机运行 opencode 重新登录」）；agy 执行 `agy -p /usage`，agy < 1.1.11 时跳过
   （旧版会把 `/usage` 当普通提示词白花一次额度）。任一控制台的「立即探测」与
   `handoff account probe` 都转发到所在机执行。
 - **状态五档**：正常 / 低额度（任一窗口 ≥ 低额度线）/ 无额度（任一窗口到 100%、接口明示

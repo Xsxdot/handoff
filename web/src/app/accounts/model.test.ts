@@ -4,7 +4,7 @@
 import { describe, expect, it } from 'vitest'
 import type { AccountInput, AccountView, AccountWindowView } from '../../api/accounts'
 import {
-  barWindows, byProblem, countdown, credentialMoved, failBrief, hotWindow, KIND_ORDER, recoverAt, sameMachine, statusPhrase, tightest,
+  barWindows, byProblem, countdown, credentialMoved, entryText, failBrief, hotWindow, KIND_ORDER, recoverAt, sameMachine, statusPhrase, tightest,
   toneClass, weeklyWindow, windowLabel, winTone,
 } from './model'
 
@@ -134,6 +134,15 @@ describe('账号展示规则', () => {
     ])('只改%s → 探测 %s', (_label, want, patch) => {
       expect(credentialMoved(editing, { ...same, ...patch })).toBe(want)
     })
+  })
+
+  it('凭据位置一句话：opencode-go 条目空 = 自动、opencode.db = 登录账号、其他 = auth.json 同名条目（轮 5，spec r1.3）', () => {
+    const og = (entry?: string) => acct('og', 'ok', undefined, { kind: 'opencode-go', home_dir: '/root', ...(entry === undefined ? {} : { entry }) })
+    expect(entryText(og())).toBe('/root › 自动（auth.json › opencode-go，否则 opencode.db 登录账号）')
+    expect(entryText(og('opencode.db'))).toBe('/root › opencode.db 登录账号')
+    expect(entryText(og('opencode-go'))).toBe('/root › auth.json › opencode-go')
+    expect(entryText(acct('cx', 'ok', undefined, { kind: 'codex', home_dir: '~/h', entry: 'tokens' }))).toBe('~/h › auth.json › tokens')
+    expect(entryText(acct('ag', 'ok', undefined, { kind: 'agy', home_dir: '/root' }))).toBe('/root（agy CLI 自己的登录态）')
   })
 
   it('窗口名：agy 带模型组；四种 kind 固定顺序', () => {

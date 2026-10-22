@@ -1,29 +1,53 @@
-// opencodego.go —— opencode-go 额度适配（B453 段 1 首故事）。
+// opencodego.go —— opencode-go 额度适配（B453 段 1 首故事；轮 5 增登录账号来源）。
 //
-// 职责：读账号 HOME 下 opencode 的 auth.json 指定条目（API key），以 Bearer 调
-// `GET <base>/zen/go/v1/usage`，把 rolling/weekly/monthly 解析成 session/weekly/monthly
-// 三窗口。R1（2026-10-22）真机证实接口存在、Bearer API key 鉴权形态成立，并取得 401
-// `api_key_expired` 错误体；**成功响应的字段形状仍未经真机**（percent 按 0–100 理解、
-// resetsAt 兼容秒/毫秒/RFC3339，来自 orca 转述）。
+// 职责：按条目选凭据来源并取三窗口读数——
+//   - API key 来源：读账号 HOME 下 opencode 的 auth.json 指定条目（type=api），以 Bearer 调
+//     `GET <base>/zen/go/v1/usage`，把 rolling/weekly/monthly 解析成 session/weekly/monthly。
+//     R1（2026-10-22）真机证实接口与鉴权形态，取得 401 `api_key_expired` 错误体；成功响应
+//     的字段形状仍未经真机（percent 按 0–100、resetsAt 兼容秒/毫秒/RFC3339，来自 orca 转述）。
+//   - 登录账号来源（spec r1.3 S2，用户 2026-10-22 批准读 opencode.db）：只读打开 opencode 的
+//     opencode.db，取当前登录账号的 access_token 与 org，以 Bearer + x-org-id 调
+//     `GET <base>/console/api/go/status`，解析 access.meters 三窗口（opencode_login.go）。
 //
-// 边界：只认 `auth.json › <条目>` 且条目 type=api 的形态；opencode 账号登录（OAuth，
-// 落 opencode.db）不在本适配范围（plan 拍板 Q2）。凭据文件只读打开，绝不改写。
+// 来源选择（plan §8 r3 F9）：条目空 = 自动（auth.json 有 API key 条目 `opencode-go` 用它，
+// 否则用登录账号）；`opencode.db` = 只用登录账号；其他值 = 只用 auth.json 同名条目。
+//
+// 边界：凭据文件与库一律只读打开，绝不改写；凭据值（key、token、org）不进日志、错误文案、
+// 读数与 API——出网时作为 secrets 交 getJSON 抹除。
 package quota
 
 import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"time"
 )
 
 const (
-	opencodeGoDefaultBase  = "https://opencode.ai"
-	opencodeGoUsagePath    = "/zen/go/v1/usage"
+	opencodeGoDefaultBase = "https://opencode.ai"
+	opencodeGoUsagePath   = "/zen/go/v1/usage"
+	// opencodeGoStatusPath 是登录账号来源的 console 状态端点（spec r1.3 实测 200）。
+	opencodeGoStatusPath   = "/console/api/go/status"
 	opencodeGoDefaultEntry = "opencode-go"
+	// opencodeGoLoginEntry 是「只用登录账号」的条目取值（plan §8 r3 F9）。
+	opencodeGoLoginEntry = "opencode.db"
+	// 日志里的来源名（不含任何凭据值）。
+	sourceAuthJSON = "auth.json"
+	sourceLoginDB  = "opencode.db"
 )
+
+// opencodeCred 是选定来源后的凭据：API key，或登录账号（token + org + 身份）。
+type opencodeCred struct {
+	source   string // sourceAuthJSON | sourceLoginDB
+	key      string // API key（auth.json 来源）
+	login    loginAccount
+	identity string // 指纹取材：API key 本身，或「账号 id/org id」
+}
 
 // OpencodeGo 是 opencode-go 适配器。零值字段取缺省。
 type OpencodeGo struct {
@@ -32,44 +56,135 @@ type OpencodeGo struct {
 	Timeout     time.Duration // 缺省 20s
 }
 
-// Probe 实现 Prober：读凭据 → 调用量接口 → 解析。指纹取 API key 的短哈希（只存前缀）。
+// Probe 实现 Prober：选来源 → 读凭据 → 调对应接口 → 解析。指纹取不随 token 刷新而变的身份
+// （API key 来源取 key，登录账号来源取「账号 id/org id」），只存短哈希。
 //
 // 返回：成功读数（可能 Blocked=无订阅）或 *Failure。失败原因保证不含凭据值。
 func (a *OpencodeGo) Probe(ctx context.Context, req Request) (Snapshot, error) {
-	entry := req.Entry
-	if entry == "" {
-		entry = opencodeGoDefaultEntry
-	}
-	key, err := a.readKey(req.Home, entry)
+	cred, err := a.resolve(req.Home, req.Entry)
 	if err != nil {
-		log().Warn("opencode-go 凭据读取失败", "home", req.Home, "entry", entry, "cause", err)
+		log().Warn("opencode-go 凭据读取失败", "home", req.Home, "entry", req.Entry, "cause", err)
 		return Snapshot{}, err
 	}
+	log().Info("opencode-go 凭据来源", "home", req.Home, "entry", req.Entry, "source", cred.source)
 	base := a.BaseURL
 	if base == "" {
 		base = opencodeGoDefaultBase
 	}
-	status, body, err := getJSON(ctx, KindOpencodeGo, strings.TrimRight(base, "/")+opencodeGoUsagePath,
-		map[string]string{"Authorization": "Bearer " + key, "Accept": "application/json"},
-		req.Proxy, a.Timeout, key)
-	if err != nil {
-		return Snapshot{}, err
+	base = strings.TrimRight(base, "/")
+	var snap Snapshot
+	if cred.source == sourceLoginDB {
+		if cred.login.expired(time.Now()) {
+			f := fail(CategoryCredentialExpired, "opencode 登录已过期，在该机运行 opencode 重新登录")
+			log().Warn("opencode-go 登录账号已过期，不出网", "home", req.Home, "cause", f)
+			return Snapshot{}, f
+		}
+		status, body, err := getJSON(ctx, KindOpencodeGo, base+opencodeGoStatusPath,
+			map[string]string{"Authorization": "Bearer " + cred.login.token, "x-org-id": cred.login.org,
+				"Accept": "application/json"},
+			req.Proxy, a.Timeout, cred.login.token, cred.login.org)
+		if err != nil {
+			return Snapshot{}, err
+		}
+		if snap, err = ParseOpencodeGoConsoleStatus(status, body); err != nil {
+			log().Warn("opencode-go console 状态结果为失败", "status", status, "cause", err)
+			return Snapshot{}, err
+		}
+	} else {
+		status, body, err := getJSON(ctx, KindOpencodeGo, base+opencodeGoUsagePath,
+			map[string]string{"Authorization": "Bearer " + cred.key, "Accept": "application/json"},
+			req.Proxy, a.Timeout, cred.key)
+		if err != nil {
+			return Snapshot{}, err
+		}
+		if snap, err = ParseOpencodeGoUsage(status, body); err != nil {
+			log().Warn("opencode-go 额度接口结果为失败", "status", status, "cause", err)
+			return Snapshot{}, err
+		}
 	}
-	snap, err := ParseOpencodeGoUsage(status, body)
-	if err != nil {
-		log().Warn("opencode-go 额度接口结果为失败", "status", status, "cause", err)
-		return Snapshot{}, err
-	}
-	snap.Fingerprint = Fingerprint(key)
+	snap.Fingerprint = Fingerprint(cred.identity)
 	return snap, nil
 }
 
-// Identity 实现 Identifier：条目的 API key 本身（只经 Fingerprint 出包，不外露）。
+// Identity 实现 Identifier：与 Probe 同一来源选择——API key 本身，或登录账号的「账号 id/org id」
+// （只经 Fingerprint 出包，不外露）。登录过期不影响身份：同一账号，只是探测会失败。
 func (a *OpencodeGo) Identity(home, entry string) (string, error) {
-	if entry == "" {
-		entry = opencodeGoDefaultEntry
+	cred, err := a.resolve(home, entry)
+	if err != nil {
+		return "", err
 	}
-	return a.readKey(home, entry)
+	return cred.identity, nil
+}
+
+// resolve 按条目选凭据来源（plan §8 r3 F9）并读出凭据。自动模式下 auth.json 不成立
+// （文件缺、条目缺或不是 API key）才回落登录账号；两处都没有时合成一句点名两处的
+// credential_missing。本平台无已知落点（unsupported_platform）不回落。
+func (a *OpencodeGo) resolve(home, entry string) (opencodeCred, error) {
+	switch entry {
+	case opencodeGoLoginEntry:
+		return a.loginCred(home)
+	case "":
+		key, authErr := a.readKey(home, opencodeGoDefaultEntry)
+		if authErr == nil {
+			return opencodeCred{source: sourceAuthJSON, key: key, identity: key}, nil
+		}
+		var af *Failure
+		if errors.As(authErr, &af) && af.Category == CategoryUnsupportedPlatform {
+			return opencodeCred{}, authErr
+		}
+		cred, loginErr := a.loginCred(home)
+		if loginErr == nil {
+			log().Info("opencode-go auth.json 无可用 API key 条目，改用登录账号", "home", home, "cause", authErr)
+			return cred, nil
+		}
+		var lf *Failure
+		if errors.As(loginErr, &lf) && lf.Category == CategoryCredentialMissing {
+			return opencodeCred{}, a.bothMissing(home, af)
+		}
+		return opencodeCred{}, loginErr
+	default:
+		key, err := a.readKey(home, entry)
+		if err != nil {
+			return opencodeCred{}, err
+		}
+		return opencodeCred{source: sourceAuthJSON, key: key, identity: key}, nil
+	}
+}
+
+// bothMissing 是自动模式两处都没有凭据的失败：点名两处路径与各自的处置。auth.json 条目在
+// 但不是 API key 时保留那句具体原因。
+func (a *OpencodeGo) bothMissing(home string, authErr *Failure) error {
+	authPath := filepath.Join(home, a.CredRelPath)
+	authPart := fmt.Sprintf("%s 无 opencode-go 条目", authPath)
+	if authErr != nil && authErr.Category == CategoryCredentialInvalid {
+		authPart = authErr.Message
+	}
+	return fail(CategoryCredentialMissing,
+		"%s，且 %s 无登录账号（在该机执行 opencode auth login 登记 opencode-go API key，或运行 opencode 登录账号）",
+		authPart, filepath.Join(home, a.dbRelPath()))
+}
+
+// loginCred 读登录账号并组装凭据；org 为空 = 凭据形态不成立（console 状态端点必须带组织）。
+func (a *OpencodeGo) loginCred(home string) (opencodeCred, error) {
+	acc, err := readLoginAccount(home, a.dbRelPath())
+	if err != nil {
+		return opencodeCred{}, err
+	}
+	if acc.org == "" {
+		return opencodeCred{}, fail(CategoryCredentialInvalid,
+			"%s 的当前登录账号没有组织（account_state.active_org_id 为空），在该机运行 opencode 选择组织后重试",
+			filepath.Join(home, a.dbRelPath()))
+	}
+	return opencodeCred{source: sourceLoginDB, login: acc, identity: acc.id + "/" + acc.org}, nil
+}
+
+// dbRelPath 是 opencode.db 相对 HOME 的路径：与 auth.json 同在 opencode 的 data 目录
+// （凭据相对路径仍只由 toolchain 那张表维护）；本平台无已知落点时为空。
+func (a *OpencodeGo) dbRelPath() string {
+	if a.CredRelPath == "" {
+		return ""
+	}
+	return filepath.Join(filepath.Dir(a.CredRelPath), opencodeGoLoginEntry)
 }
 
 // readKey 只读打开 auth.json 取条目的 API key。错误文案只带路径与条目名。
