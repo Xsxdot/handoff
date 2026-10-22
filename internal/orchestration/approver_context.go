@@ -86,7 +86,7 @@ func modeExplanation(mode string) string {
 	case proto.TaskModeReadonly:
 		return "（readonly = 只读调查：不改仓库、不提交，结论写成报告交回）"
 	case proto.TaskModeBranch:
-		return "（分支任务：可在任务工作树内改代码、提交到任务分支）"
+		return "（分支任务：可在任务工作树内改代码、git commit 到本地任务分支；push 等改变远端仓库的操作不在此列）"
 	}
 	return ""
 }

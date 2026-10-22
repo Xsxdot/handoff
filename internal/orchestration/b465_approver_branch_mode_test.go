@@ -19,7 +19,8 @@ func TestB465BranchContextHasNoReadonlyExplanation(t *testing.T) {
 				t.Fatalf("形态 %q 的提示词不得出现 %q：\n%s", mode, bad, got)
 			}
 		}
-		if !strings.Contains(got, "- 任务形态：branch（分支任务：可在任务工作树内改代码、提交到任务分支）") {
+		// 「提交到任务分支」会被读成推送远端：括注须写明本地 commit、并把 push 排除在外
+		if !strings.Contains(got, "- 任务形态：branch（分支任务：可在任务工作树内改代码、git commit 到本地任务分支；push 等改变远端仓库的操作不在此列）") {
 			t.Fatalf("形态 %q 的提示词缺分支形态说明：\n%s", mode, got)
 		}
 	}
