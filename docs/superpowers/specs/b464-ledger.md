@@ -280,3 +280,19 @@
 
 - `git commit`（全部段 3 改动 + 本台账）→ `cadcab14 feat(B464): 新增登录、单 HOME 检查、立即发现扇出与 CLI discover（段 3）`，`23 files changed, 1586 insertions(+), 50 deletions(-)`。
 - 提交前 `go build ./...`、`go vet`（六个触及包树）、`gofmt -l` 均无输出；`git status --porcelain` 仅本台账待 amend。
+
+## 真机 R2/R4/R5/R6/R8（2026-10-22，主会话；段 2 二进制 8cd3a9d670f0，隔离 t464-mac/t464-linux，测试账本 handoff_b464）
+
+- **发现全 kind（S1/S7）**：t464-linux 认出 codex（主 HOME ok + `~/.handoff/home/codex` 证据型 expired，label 邮箱）、agy（主 HOME，label 邮箱，Q7(a)）、opencode-go（主 HOME opencode.db，与 t464-mac 主 HOME 归并为一账号两登录）、muse 的 opencode-go API key、第三方 key ×5（deepseek 两登录：主 HOME 与 muse 归并；alibaba-token-plan-cn、kimi-for-coding、openrouter、self），全部 na。muse 的 opencode-go key 探测得 credential_expired 后下一轮登录转 expired、账号读作「没有可用登录」（no_login）。codex 首轮经 codex HOME 登录探测失败后换主 HOME 登录探测转 ok。
+- **R4 已失效**：`~/.handoff/home/t464-key` 放哨兵 key（provider t464prov，非真实凭据）→ 账号 `t464prov-key-739b`（na）；载体 t464-oc-key 选该登录（免费模型以便检测上线）→ online；删文件 → 下轮发现登录 gone、载体 login_state gone；`dispatch --receiver t464-oc-key` → 400「载体 t464-oc-key 的登录已失效：t464-linux ~/.handoff/home/t464-key」。（载体未上线时先报「载体未上线」——准入先查载体状态，符合预期。）
+- **R5 代理**：`PUT /api/logins/login-2b5aa…/proxy` 设 `http://127.0.0.1:1080`（socks5 形态下 opencode 检测 UnknownError，换 http 即 online——属 opencode 对代理形态的支持，不是本卡缺陷）；载体 t464-oc-lnx 选该登录 → 任务环境 `HTTPS_PROXY/HTTP_PROXY/ALL_PROXY=http://127.0.0.1:1080`、`NO_PROXY=localhost,127.0.0.1,…`、`HOME=/root`。探测：读面显示探测登录为该 linux 登录且成功，**探测器日志未带代理字段**（观测缺口，交审查）。
+- **R6 改名与换探测登录**：`PUT /api/accounts/opencode-go-1e5f?expect=1 {"name":"og-xsx"}` → 成功，载体 t464-oc/t464-oc-mac/t464-oc-lnx 的 account_name 同步；撞名 409 文案「账号名字 "og-xsx" 已被账号 opencode-go:1e5f72dfee52 占用」；`bad:name` 被拒。停 t464-linux（07:43:33Z）→ 07:46:08Z probe_login 由 linux 登录换到 mac 登录，`account probe og-xsx` 成功。重启 t464-linux。
+- **R8**：`no_account` 载体 t464-free（opencode 免费模型）home_dir `''` → detect online → 任务回报 `HOME=/Users/df-zidong`；第三方 key 载体 t464-ds（deepseek 主 HOME 登录，模型 `deepseek/deepseek-flash`）→ online。claude 部分未验（两台 Mac claude CLI 均未登录，需用户登录，并入用户批次）。
+- **R2 跨机归并**：opencode-go 已由 R1/R2 证实；claude 跨 Mac 归并并入用户批次。
+- **观察到的问题（交审查）**：F1 opencode-go 账号无 label、自动名用 `opencode-go-1e5f` 而非邮箱——`opencode.db` 的 `account.email` 列可作 label（R0-4）；F3 探测日志不含所用代理（打码）；F4 `-shm`（R1 ⑤）。
+
+## 主会话复核段 3（2026-10-22，runner 小队任务 41ffd5a0@linux-01，分支 cards/B464-charter 363a5485）
+
+- 文件清单 23 文件 +1591/−50，主体 `internal/agentd/login_api.go`、`b464_seg3_login_test.go`、`cmd/account.go`、`internal/proto/scheduling.go`——非空转。快进合回 cards/B464-charter-1。
+- 偏离 1（`seedAccount` 发现时刻改 `time.Now()`）：认可——段 1/2 夹具写死 2026-10-22 08:00Z，真实时钟越过 base+3min 后可探登录新鲜度把两例推成 no_login，是夹具时间炸弹，只改夹具不改断言。偏离 2–6 在 §9 权限内。偏离 7（未 push）：节点 pass 后执行机已推送 cards/B464-charter，无影响。
+- 审批：本任务工单 ~6 张全为工作树内 python/cat 改写，均因共享审批链把分支任务误读为只读而升级（根因 `approver_context.go:66` 无条件附 readonly 解释，已提修复会话），主会话用受限自动批准循环放行（仅本任务工作树内 python 改相对路径 + go 工具链 / docs 追加 + 只读 git），一张台账 amend 人工批准。
