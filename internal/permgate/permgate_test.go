@@ -221,9 +221,14 @@ func TestJudgeCompoundNotSilent(t *testing.T) {
 		`rg --pre 'sh -c x' pattern .`,
 		// B376 复审：cd 段改变后续段的实际工作目录，而写落点按 Workdir 解析，
 		// 相对写落点会被误判成范围内。cd 之后的参数位写段一律不静默。
+		// B466：B383 起落点按 cd 基准解析并判范围，`cd src && gofmt -w x.go`（cd 链
+		// 可信、落点可证明）改为静默（见 b466_cd_heredoc_test.go）；cd 链不可信时
+		// cd 失败写段照跑、cwd 未知，仍不静默。
 		"cd /etc && gofmt -w passwd",
 		"cd /tmp && git diff --output=x HEAD",
-		"cd src && gofmt -w x.go",
+		"cd src; gofmt -w x.go",
+		"cd src || gofmt -w x.go",
+		"cd src\ngofmt -w x.go",
 		// B376 复审 3：相对路径 w 落点不得因地址前缀绕过 cd 守卫。
 		`cd /etc && sed -n '1~2w passwd' f`,
 		`cd /etc && sed -n '/a/,/b/w passwd' f`,

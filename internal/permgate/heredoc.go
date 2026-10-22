@@ -7,6 +7,9 @@
 //     正文后的命令与写落点词元
 //   - heredocInScopeVerdict：命中形态的放行判定——cd 段经 cdWalkBase 逐项
 //     证明、落点经 cd 基准解析并证明落在任务范围内时，整条 AutoAllow
+//   - stripDataHeredocBodies（B466）：闭集之外的「数据型」heredoc（cat/tee/python/node
+//     消费、引用定界符、不接管道）只为落点解析剥离正文——正文不是 shell，其中的 `>`、
+//     `{` 不是写落点；其余判据面仍读原文
 //
 // 安全核心：定界符带引号时 shell 对正文不做任何展开（无变量替换、无命令
 // 替换），正文是写给 cat 的纯数据；cat 只把字节写进落点文件。因此命中闭集时
@@ -350,4 +353,243 @@ func heredocInScopeVerdict(cmd string, scope Scope) (Verdict, bool) {
 	}
 	return Verdict{Action: AutoAllow, Rule: RuleHeredocInScope,
 		Reason: "heredoc 正文按数据剔除，写入落点可证明落在任务范围内: " + abs}, true
+}
+
+// dataHeredocConsumers 是正文不被 shell 解释的 heredoc 消费者命令词（B466）。正文对它们
+// 是数据（cat/tee 写进文件）或另一种语言的源码（python/node），其中的 `>`、`{` 不是
+// shell 重定向。bash/sh/env/sudo 等会把正文当 shell 执行或转交执行的命令一律不在此列。
+var dataHeredocConsumers = map[string]bool{
+	"cat": true, "tee": true, "python": true, "python3": true, "node": true,
+}
+
+// pendingHeredoc 是一行命令里登记的 heredoc：正文从该行之后的下一行开始。
+type pendingHeredoc struct {
+	delim    string
+	dash     bool // <<- ：终止符行允许前导制表符
+	quoted   bool // 定界符整词被引号包裹（正文不做任何展开）
+	fdPrefix bool // `2<<'EOF'` 一类 fd 前缀
+	piped    bool // 所在段接管道（`cat <<'EOF' | sh`）
+	segStart int  // 所在段在命令里的起点（取消费者命令词）
+}
+
+// stripDataHeredocBodies 只供落点解析：剥掉「数据型」heredoc 的正文与终止符行（B466）。
+//
+// 数据型 = 定界符整词引号包裹 + 无 fd 前缀 + 所在段不接管道 + 所在行引号外无括号、
+// 反引号、`$(`、`[[` + 消费者命令词朴素且属 dataHeredocConsumers。其余 heredoc 的正文
+// 原样保留（照旧当 shell 文本参与落点解析）。
+//
+// 返回：剥离后的命令；没有可剥的正文、或任何一处解析不了（未终止正文、半引号或含
+// 展开字符的定界符、操作符在末行）时**原样返回整条命令**——现状判定，fail-closed。
+//
+// 注意：剥离结果只能喂落点提取与 cd 基准跟踪。黑名单、人工清单、自指令、凭据守卫
+// 必须继续看原文——python 正文是会执行的代码，只是不是 shell。
+func stripDataHeredocBodies(cmd string) string {
+	if !strings.Contains(cmd, "<<") {
+		return cmd
+	}
+	var out strings.Builder
+	stripped := false
+	for i := 0; i < len(cmd); {
+		eol, hds, ok := scanHeredocLine(cmd, i)
+		if !ok {
+			return cmd
+		}
+		if eol >= len(cmd) {
+			if len(hds) > 0 {
+				return cmd // 操作符在末行：正文缺失，解析不了
+			}
+			out.WriteString(cmd[i:])
+			break
+		}
+		out.WriteString(cmd[i : eol+1])
+		i = eol + 1
+		for _, h := range hds {
+			end, ok := heredocBodyEnd(cmd, i, h)
+			if !ok {
+				return cmd
+			}
+			if h.quoted && !h.fdPrefix && !h.piped && dataConsumer(cmd[h.segStart:eol]) {
+				stripped = true
+			} else {
+				out.WriteString(cmd[i:end])
+			}
+			i = end
+		}
+	}
+	if !stripped {
+		return cmd
+	}
+	return out.String()
+}
+
+// dataConsumer 判定段的命令词是否为数据型消费者（朴素且在白名单内）。
+func dataConsumer(seg string) bool {
+	w, plain, ok := commandWord(seg)
+	return ok && plain && dataHeredocConsumers[w]
+}
+
+// scanHeredocLine 从 start 起扫一个逻辑命令行（到引号外的换行为止，反斜杠续行不算
+// 行尾），登记其中的 heredoc 操作符。
+//
+// 返回：eol 为行尾换行的下标（无换行时为 len(cmd)）；hds 为本行的 heredoc（按出现序，
+// 正文按此序紧随其后）；ok=false 表示定界符形态解析不了，调用方整条放弃剥离。
+//
+// 引号外 `#` 在词首起注释，注释里的 `<<` 不是操作符。行内出现括号、反引号、`$(`、
+// `[[` 时本行全部 heredoc 视为非数据型（`<<` 可能是算术移位、正文可能进命令替换）。
+func scanHeredocLine(cmd string, start int) (eol int, hds []pendingHeredoc, ok bool) {
+	var quote byte
+	complexLine := false
+	segStart := start
+	wordStart := true
+	finish := func(at int) (int, []pendingHeredoc, bool) {
+		if complexLine {
+			for k := range hds {
+				hds[k].quoted = false // 保留正文
+			}
+		}
+		return at, hds, true
+	}
+	for j := start; j < len(cmd); {
+		c := cmd[j]
+		var next byte
+		if j+1 < len(cmd) {
+			next = cmd[j+1]
+		}
+		if quote == '\'' {
+			if c == '\'' {
+				quote = 0
+			}
+			j++
+			continue
+		}
+		if quote == '"' {
+			switch {
+			case c == '\\':
+				j += 2
+				continue
+			case c == '"':
+				quote = 0
+			case c == '`' || (c == '$' && next == '('):
+				complexLine = true
+			}
+			j++
+			continue
+		}
+		switch {
+		case c == '\n':
+			return finish(j)
+		case c == '\\':
+			j += 2 // 转义字符（含续行换行）
+			wordStart = false
+			continue
+		case c == '\'' || c == '"':
+			quote = c
+		case c == '#' && wordStart:
+			k := strings.IndexByte(cmd[j:], '\n')
+			if k < 0 {
+				return finish(len(cmd))
+			}
+			j += k
+			continue
+		case c == '(' || c == ')' || c == '`' || (c == '$' && next == '(') || (c == '[' && next == '['):
+			complexLine = true
+		case c == '&' && next == '&', c == '|' && next == '|':
+			j += 2
+			segStart, wordStart = j, true
+			continue
+		case c == '|':
+			for k := range hds {
+				if hds[k].segStart == segStart {
+					hds[k].piped = true
+				}
+			}
+			segStart = j + 1
+		case c == ';':
+			segStart = j + 1
+		case c == '&':
+			// `2>&1`、`&>f`、`>&2` 是重定向的一部分；其余单 & 是后台分隔符
+			if !(j > start && (cmd[j-1] == '>' || cmd[j-1] == '<')) && next != '>' {
+				segStart = j + 1
+			}
+		case c == '<' && next == '<':
+			if j+2 < len(cmd) && cmd[j+2] == '<' {
+				j += 3 // here-string，不是 heredoc
+				wordStart = false
+				continue
+			}
+			h, end, good := parseHeredocOp(cmd, j)
+			if !good {
+				return 0, nil, false
+			}
+			h.segStart = segStart
+			h.fdPrefix = j > start && cmd[j-1] >= '0' && cmd[j-1] <= '9'
+			hds = append(hds, h)
+			j = end
+			wordStart = false
+			continue
+		}
+		wordStart = c == ' ' || c == '\t' || c == ';' || c == '&' || c == '|' || c == '(' || c == ')'
+		j++
+	}
+	return finish(len(cmd))
+}
+
+// parseHeredocOp 解析 at 处的 `<<`/`<<-` 操作符与定界符词。
+//
+// 返回 end 为定界符词之后的下标。ok=false：定界符为空、引号未闭合、半引号
+// （`'E'OF`）、或含 `\` `$` 反引号——这些形态的终止行难以与 bash 逐字一致，整条放弃剥离。
+func parseHeredocOp(cmd string, at int) (h pendingHeredoc, end int, ok bool) {
+	k := at + 2
+	if k < len(cmd) && cmd[k] == '-' {
+		h.dash = true
+		k++
+	}
+	for k < len(cmd) && (cmd[k] == ' ' || cmd[k] == '\t') {
+		k++
+	}
+	if k >= len(cmd) {
+		return h, 0, false
+	}
+	wordEnd := func(p int) bool {
+		return p >= len(cmd) || strings.IndexByte(" \t\n;&|<>()", cmd[p]) >= 0
+	}
+	if q := cmd[k]; q == '\'' || q == '"' {
+		close := strings.IndexByte(cmd[k+1:], q)
+		if close <= 0 {
+			return h, 0, false // 未闭合或空定界符
+		}
+		h.delim = cmd[k+1 : k+1+close]
+		h.quoted = true
+		end = k + 1 + close + 1
+	} else {
+		p := k
+		for !wordEnd(p) {
+			p++
+		}
+		h.delim = cmd[k:p]
+		end = p
+	}
+	if h.delim == "" || strings.ContainsAny(h.delim, "\n\\$`'\"") || !wordEnd(end) {
+		return h, 0, false
+	}
+	return h, end, true
+}
+
+// heredocBodyEnd 从 start（正文首行）起找终止符行，返回终止符行之后的下标。
+// 找不到终止符（正文未终止）返回 ok=false。
+func heredocBodyEnd(cmd string, start int, h pendingHeredoc) (int, bool) {
+	for p := start; p < len(cmd); {
+		line, next := cmd[p:], len(cmd)
+		if nl := strings.IndexByte(cmd[p:], '\n'); nl >= 0 {
+			line, next = cmd[p:p+nl], p+nl+1
+		}
+		if h.dash {
+			line = strings.TrimLeft(line, "\t")
+		}
+		if line == h.delim {
+			return next, true
+		}
+		p = next
+	}
+	return 0, false
 }
