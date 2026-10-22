@@ -268,3 +268,41 @@ func TestWaitVersionIgnoresPullStateInPushMode(t *testing.T) {
 		t.Fatalf("推送模式不该被陈旧 pull 失败态中止，实得 %v", err)
 	}
 }
+
+// B462 S3：账本可读探针 GET /api/disciplines 的状态码映射。
+// 200 可读；503（withLedger 未挂载）不可读；404 对端过旧 → 专用哨兵；其余 → 错误。
+func TestLedgerReadableMapsStatusCodes(t *testing.T) {
+	for _, tc := range []struct {
+		code        int
+		readable    bool
+		wantErr     bool
+		unsupported bool
+	}{
+		{http.StatusOK, true, false, false},
+		{http.StatusServiceUnavailable, false, false, false},
+		{http.StatusNotFound, false, true, true},
+		{http.StatusInternalServerError, false, true, false},
+		{http.StatusUnauthorized, false, true, false},
+	} {
+		var gotPath, gotMethod string
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			gotPath, gotMethod = r.URL.Path, r.Method
+			w.WriteHeader(tc.code)
+			_, _ = io.WriteString(w, `{"names":[]}`)
+		}))
+		readable, err := client.New(srv.URL, "tk").LedgerReadable(context.Background())
+		srv.Close()
+		if gotPath != "/api/disciplines" || gotMethod != http.MethodGet {
+			t.Fatalf("探针必须是 GET /api/disciplines，得 %s %s", gotMethod, gotPath)
+		}
+		if readable != tc.readable || (err != nil) != tc.wantErr || errors.Is(err, client.ErrLedgerProbeUnsupported) != tc.unsupported {
+			t.Fatalf("code=%d：readable=%v err=%v，期望 readable=%v wantErr=%v unsupported=%v",
+				tc.code, readable, err, tc.readable, tc.wantErr, tc.unsupported)
+		}
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	srv.Close()
+	if readable, err := client.New(srv.URL, "tk").LedgerReadable(context.Background()); readable || err == nil {
+		t.Fatalf("连不上应报错，得 readable=%v err=%v", readable, err)
+	}
+}

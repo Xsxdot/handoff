@@ -234,3 +234,39 @@ func pullProgress(st *proto.StatusResp, want string) *proto.PullState {
 	}
 	return ps
 }
+
+// ErrLedgerProbeUnsupported 表示对端 agentd 没有 GET /api/disciplines（版本早于该端点）。
+var ErrLedgerProbeUnsupported = errors.New("对端 agentd 不支持账本可读探针（/api/disciplines）")
+
+// LedgerReadable 探对端账本是否已挂载且可读（B462 S3：换版前后账本可读判据的探针）。
+//
+// 端点是既有的 GET /api/disciplines：经 agentd 的 withLedger 守卫，未挂载回 503；
+// 挂载时只执行一条 SELECT DISTINCT——真读账本、只读、轻量。
+//
+// 返回：
+//   - (true, nil)：200，账本可读
+//   - (false, nil)：503，账本未挂载。**前提是调用方刚确认过 status 回 200**——启动闸
+//     放行前一切请求都回 503，那时的 503 不代表账本未挂载
+//   - (false, ErrLedgerProbeUnsupported)：404，对端过旧，调用方按「未知」处理
+//   - (false, 其他错误)：连不上、401、5xx 等，读不出结论
+func (c *Client) LedgerReadable(ctx context.Context) (bool, error) {
+	resp, err := c.do(ctx, http.MethodGet, "/api/disciplines", nil)
+	if err != nil {
+		c.log().Warn("账本可读探针请求失败", "cause", err)
+		return false, fmt.Errorf("账本可读探针请求: %w", err)
+	}
+	defer resp.Body.Close()
+	switch resp.StatusCode {
+	case http.StatusOK:
+		c.log().Debug("账本可读探针：可读")
+		return true, nil
+	case http.StatusServiceUnavailable:
+		c.log().Info("账本可读探针：对端账本未挂载（503）")
+		return false, nil
+	case http.StatusNotFound:
+		c.log().Debug("对端 agentd 不支持账本可读探针，按未知处理")
+		return false, ErrLedgerProbeUnsupported
+	default:
+		return false, c.httpError("账本可读探针", resp)
+	}
+}

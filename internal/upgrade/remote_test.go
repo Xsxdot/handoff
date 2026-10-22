@@ -18,6 +18,28 @@ type fakePeer struct {
 	waitCalls int
 	waitErr   error
 	pullErr   error
+	// B462 S3：换版后账本探针的脚本化回答（按序消费，耗尽后重复最后一个）与调用序列
+	probes     []probeAnswer
+	probeCalls int
+	seq        []string
+}
+
+type probeAnswer struct {
+	readable bool
+	err      error
+}
+
+func (p *fakePeer) LedgerReadable(context.Context) (bool, error) {
+	p.seq = append(p.seq, "probe")
+	p.probeCalls++
+	if len(p.probes) == 0 {
+		return false, errors.New("探针未脚本化")
+	}
+	a := p.probes[0]
+	if len(p.probes) > 1 {
+		p.probes = p.probes[1:]
+	}
+	return a.readable, a.err
 }
 
 func (p *fakePeer) PushUpdate(context.Context, string, string, []byte, bool) (*proto.UpdateResp, error) {
@@ -34,6 +56,7 @@ func (p *fakePeer) PullUpdate(context.Context, string, string, bool) (*proto.Upd
 }
 
 func (p *fakePeer) WaitVersion(context.Context, string, time.Duration, time.Duration, bool) error {
+	p.seq = append(p.seq, "wait")
 	p.waitCalls++
 	return p.waitErr
 }

@@ -956,3 +956,7 @@ handoff card rebind <id> --launch    # 新叫机器人接班
 - **协调者回路之外的子命令**（`frames` 结构化回合帧、`footprint` 进程足迹体检、
   `machines` / `project` 机器与项目登记、`console` / `sessions` Web 控制台、
   `upgrade` / `service` 换版与托管、`skill` 同步本 skill）：各命令 `--help`。
+- **把全队换到本机刚合并的版本**是一条命令，不再手工 `mv` / `launchctl kickstart` /
+  `systemctl restart`：`scripts/build-deploy.sh --pack <目录> <os/arch>...` 打包，
+  `handoff upgrade --from <目录>` 巡检，`handoff upgrade --now --from <目录>` 换版（远端
+  一律推送；换版前账本可读的机器换版后必须仍可读，否则判失败「新版已上线但账本未挂载」）。

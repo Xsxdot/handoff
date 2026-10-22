@@ -65,6 +65,58 @@ type Peer interface {
 	PushUpdate(ctx context.Context, tag, sum string, tgz []byte, force bool) (*proto.UpdateResp, error)
 	PullUpdate(ctx context.Context, tag, sum string, force bool) (*proto.UpdateResp, error)
 	WaitVersion(ctx context.Context, want string, timeout, interval time.Duration, checkPull bool) error
+	LedgerProber
+}
+
+// LedgerProber 是账本可读探针（B462 S3）：(true,nil) 可读；(false,nil) 未挂载（503）；
+// 错误 = 读不出结论。生产实现是 *client.Client 的 GET /api/disciplines。
+type LedgerProber interface {
+	LedgerReadable(ctx context.Context) (bool, error)
+}
+
+// ledgerProbeAttempts 是换版后探针出错时的总尝试次数（Q4：出错重试至多 3 次）。
+const ledgerProbeAttempts = 3
+
+// VerifyLedgerAfterUpgrade 在新版上线后施加 S3 判据：换版前账本可读，换版后必须仍可读。
+//
+// 参数：name 只进日志；before 是换版前探针三态（nil/false 直接 Skip，**不调探针**）；
+// interval 是探针出错时的重试间隔。
+// 返回：结论与最后一次探针错误（仅 Unconfirmed 时非空，供调用方写进原因原文）。
+// 注意：调用前必须已确认新版上线（WaitVersion 成功），否则启动闸的 503 会被误读成未挂载。
+// 远端（RemoteOne）与 CLI 本机路径共用本函数，判据只此一处。
+func VerifyLedgerAfterUpgrade(ctx context.Context, log *slog.Logger, name string, before *bool,
+	p LedgerProber, interval time.Duration) (LedgerCheck, error) {
+	if log == nil {
+		log = slog.Default()
+	}
+	if JudgeLedgerAfter(before, true, nil) == LedgerCheckSkip {
+		log.Info("换版前账本不可读或未知，换版后不检查账本", "name", name, "before_known", before != nil)
+		return LedgerCheckSkip, nil
+	}
+	var lastErr error
+	for attempt := 1; ; attempt++ {
+		readable, err := p.LedgerReadable(ctx)
+		check := JudgeLedgerAfter(before, readable, err)
+		switch check {
+		case LedgerCheckOK:
+			log.Info("换版后账本仍可读", "name", name, "attempts", attempt)
+			return check, nil
+		case LedgerCheckNotMounted:
+			log.Error("新版已上线但账本未挂载", "name", name, "attempts", attempt)
+			return check, nil
+		}
+		lastErr = err
+		if attempt >= ledgerProbeAttempts {
+			log.Error("换版后账本是否挂载未能确认", "name", name, "attempts", attempt, "cause", err)
+			return LedgerCheckUnconfirmed, lastErr
+		}
+		log.Warn("换版后账本探针出错，稍后重试", "name", name, "attempt", attempt, "next_retry", interval, "cause", err)
+		select {
+		case <-ctx.Done():
+			return LedgerCheckUnconfirmed, ctx.Err()
+		case <-time.After(interval):
+		}
+	}
 }
 
 // Fetcher 是远端资产与校验和的下载能力子集。
@@ -237,11 +289,24 @@ func RemoteOne(ctx context.Context, log *slog.Logger, m Machine, peer Peer, f Fe
 			result.Reason = err.Error()
 			result.Remedy = fmt.Sprintf("handoff status --target %s 看 pull_state 拿完整原因", m.Name)
 		} else {
-			result.Reason = fmt.Sprintf("已换版但新进程未在 %s 内上线", waitTimeout)
+			// Q9：追加 WaitVersion 原文——对端若还在重试账本挂载，原文正是
+			// 「agentd 未就绪（账本未挂载：自登记失败，第 N 次重试…）」
+			result.Reason = fmt.Sprintf("已换版但新进程未在 %s 内上线：%v", waitTimeout, err)
 			result.Remedy = fmt.Sprintf("prev: %s  回滚：handoff upgrade --rollback", resp.Prev)
 		}
 		return result
 	}
 	log.Info("新版本已上线", "name", m.Name, "version", rel.Tag)
+	// B462 S3：换版前账本可读，则换版后必须仍可读才判成功。控制台路径不填
+	// m.LedgerReadable（nil = 未知），判据直接 Skip，行为不变。
+	switch check, perr := VerifyLedgerAfterUpgrade(ctx, log, m.Name, m.LedgerReadable, peer, waitInterval); check {
+	case LedgerCheckNotMounted:
+		return Result{Verdict: v, Status: StatusFail, Reason: "新版已上线但账本未挂载",
+			Remedy: fmt.Sprintf("看该机 agentd 日志（自登记/账本挂载失败原因）；prev: %s", resp.Prev)}
+	case LedgerCheckUnconfirmed:
+		return Result{Verdict: v, Status: StatusFail,
+			Reason: fmt.Sprintf("新版已上线，但账本是否挂载未能确认：%v", perr),
+			Remedy: fmt.Sprintf("handoff status --target %s 与该机 agentd 日志；prev: %s", m.Name, resp.Prev)}
+	}
 	return Result{Verdict: v, Status: StatusOK, From: m.Agentd, To: rel.Tag}
 }

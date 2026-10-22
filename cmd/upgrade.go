@@ -72,6 +72,8 @@ type agentdPeer interface {
 	PullUpdate(ctx context.Context, tag, sum string, force bool) (*proto.UpdateResp, error)
 	RestartAgentd(ctx context.Context, force bool) (*proto.UpdateResp, error)
 	WaitVersion(ctx context.Context, want string, timeout, interval time.Duration, checkPull bool) error
+	// LedgerReadable 是账本可读探针（B462 S3，GET /api/disciplines）
+	LedgerReadable(ctx context.Context) (bool, error)
 }
 
 // upgradeDialErr 是构造 client 失败时的失败替身。
@@ -93,6 +95,7 @@ func (u upgradeDialErr) RestartAgentd(context.Context, bool) (*proto.UpdateResp,
 func (u upgradeDialErr) WaitVersion(context.Context, string, time.Duration, time.Duration, bool) error {
 	return u.err
 }
+func (u upgradeDialErr) LedgerReadable(context.Context) (bool, error) { return false, u.err }
 
 // 七个缝，测试替换它们以避免联网、动真实二进制与真实 agentd。
 var (
@@ -177,6 +180,7 @@ var (
 	upgradeRollback bool
 	upgradeForce    bool
 	upgradePush     bool
+	upgradeFrom     string
 )
 
 // machineState 是一台机器巡检后的状态。
@@ -207,8 +211,11 @@ type machineState struct {
 	// 就会干等到超时报一句误导性的「已换版但新进程未上线」。与同结构里的
 	// Managed *bool 同款纪律
 	Pull *bool
-	Busy int
-	Err  error
+	// LedgerReadable 是换版前账本可读探针（B462 S3），只在 --now 时探。三态同 Managed：
+	// nil = 未知（没探、探不到、对端过旧）→ 换版后不检查
+	LedgerReadable *bool
+	Busy           int
+	Err            error
 }
 
 // toUpgrade 投影 CLI 侧的探测载体，供结论判据包消费。
@@ -219,7 +226,7 @@ func (ms *machineState) toUpgrade() upgrade.Machine {
 	return upgrade.Machine{
 		Name: ms.Ep.Name, Local: ms.Ep.Local, Bin: ms.Bin, Agentd: ms.Agentd,
 		Revision: ms.Revision, Platform: ms.Platform, Managed: ms.Managed,
-		Pull: ms.Pull, Busy: ms.Busy, Err: ms.Err,
+		Pull: ms.Pull, Busy: ms.Busy, Err: ms.Err, LedgerReadable: ms.LedgerReadable,
 	}
 }
 
@@ -280,10 +287,15 @@ var upgradeCmd = &cobra.Command{
 	Long: "不带参数等同 --check：列出所有机器的版本与结论。\n" +
 		"--now 升级所有落后的机器（含本机）；--target 只升那一台；\n" +
 		"--force 越过活跃任务闸（**不越过非托管闸**）；--rollback 换回本机上一版（不支持 --target）。\n" +
+		"--from <目录> 用本机构建（scripts/build-deploy.sh --pack <目录> <os/arch>... 的产物）代替\n" +
+		"GitHub release，远端一律推送；与 --check/--now/--target/--force 正交，与 --rollback 互斥。\n" +
 		"二进制由本机下载后推送，执行机无需出网。",
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		if upgradeNow && upgradeRollback {
 			return fmt.Errorf("--now 与 --rollback 不能同时使用")
+		}
+		if upgradeFrom != "" && upgradeRollback {
+			return fmt.Errorf("--from 与 --rollback 不能同时使用（回滚换回本机 <二进制>.prev，不取任何来源）")
 		}
 		out := cmd.OutOrStdout()
 		ctx := cmd.Context()
@@ -308,9 +320,9 @@ var upgradeCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		rel, err := newReleaseChecker().Latest(ctx)
+		rel, latestLine, err := resolveUpgradeSource(ctx)
 		if err != nil {
-			return fmt.Errorf("检查最新版本失败: %w", err)
+			return err
 		}
 
 		states := make([]machineState, 0, len(eps))
@@ -318,7 +330,7 @@ var upgradeCmd = &cobra.Command{
 			states = append(states, probeMachine(ctx, ep))
 		}
 
-		fmt.Fprintf(out, "最新     %s\n", rel.Tag)
+		fmt.Fprintf(out, "最新     %s\n", latestLine)
 		if !upgradeNow {
 			for _, s := range states {
 				renderCheckRow(out, s, rel.Tag)
@@ -345,7 +357,7 @@ var upgradeCmd = &cobra.Command{
 			if s, ok := sumCache[key]; ok {
 				return s, nil
 			}
-			s, err := newReleaseFetcher().FetchChecksum(ctx, rel, goos, goarch)
+			s, err := upgradeFetcher().FetchChecksum(ctx, rel, goos, goarch)
 			if err != nil {
 				return "", err
 			}
@@ -373,6 +385,43 @@ var upgradeCmd = &cobra.Command{
 	},
 }
 
+// resolveUpgradeSource 定本次 upgrade 的来源：--from 给了就读本机构建目录，否则查
+// GitHub latest release。
+//
+// 返回：目标 Release、巡检首行「最新」之后的文案（--from 时带「本机构建 <绝对目录>」，
+// 让读表的人一眼分清来源；release 来源时逐字是 tag）、错误（已带人话前缀）。
+// 注意：--from 会被就地改写成绝对路径，后续 upgradeFetcher 读同一个目录。
+func resolveUpgradeSource(ctx context.Context) (release.Release, string, error) {
+	if upgradeFrom == "" {
+		rel, err := newReleaseChecker().Latest(ctx)
+		if err != nil {
+			return release.Release{}, "", fmt.Errorf("检查最新版本失败: %w", err)
+		}
+		return rel, rel.Tag, nil
+	}
+	abs, err := filepath.Abs(upgradeFrom)
+	if err != nil {
+		return release.Release{}, "", fmt.Errorf("解析 --from 路径 %s: %w", upgradeFrom, err)
+	}
+	upgradeFrom = abs
+	rel, err := release.LoadLocalDir(abs)
+	if err != nil {
+		slog.Default().Error("读本机构建目录失败", "dir", abs, "cause", err)
+		return release.Release{}, "", fmt.Errorf("读本机构建目录失败: %w", err)
+	}
+	slog.Default().Info("升级来源：本机构建目录", "dir", abs, "tag", rel.Tag, "assets", len(rel.Assets)-1)
+	return rel, fmt.Sprintf("%s（本机构建 %s）", rel.Tag, abs), nil
+}
+
+// upgradeFetcher 返回本次 upgrade 的资产下载器：--from 时读本机构建目录（只换传输层，
+// sha/checksums/解包/自检与 release 来源同一套），否则走 newReleaseFetcher 缝。
+func upgradeFetcher() releaseFetcher {
+	if upgradeFrom != "" {
+		return release.NewLocalDirInstaller(slog.Default(), upgradeFrom)
+	}
+	return newReleaseFetcher()
+}
+
 // probeMachine 对一台机器做只读探测，填 machineState。
 func probeMachine(ctx context.Context, ep Endpoint) machineState {
 	ms := machineState{Ep: ep}
@@ -388,7 +437,8 @@ func probeMachine(ctx context.Context, ep Endpoint) machineState {
 			return ms
 		}
 	}
-	st, err := newAgentdClient(ep).Status(ctx)
+	peer := newAgentdClient(ep)
+	st, err := peer.Status(ctx)
 	switch {
 	case errors.Is(err, client.ErrStatusUnsupported):
 		// 对端过旧：连 /api/status 都没有，平台视为空。这是结论不是失败
@@ -412,8 +462,25 @@ func probeMachine(ctx context.Context, ep Endpoint) machineState {
 				ms.Busy++
 			}
 		}
+		// B462 S3：换版前账本可读探针，紧跟 status 成功（启动闸已放行，503 才代表未挂载）。
+		// 只在 --now 时探：巡检表不用它，不为只读巡检多打一轮请求。探不到 = 未知，不拦升级
+		if upgradeNow {
+			ms.LedgerReadable = probeLedgerBefore(ctx, peer, ep.Name)
+		}
 	}
 	return ms
+}
+
+// probeLedgerBefore 探换版前账本是否可读，返回三态：可读/不可读/nil（未知）。
+// 出错（含对端过旧 404）一律记为未知——不为一次网络抖动拦住整次升级（Q4）。
+func probeLedgerBefore(ctx context.Context, peer agentdPeer, name string) *bool {
+	readable, err := peer.LedgerReadable(ctx)
+	if err != nil {
+		slog.Default().Warn("换版前账本探针读不出结论，按未知处理（换版后不检查账本）", "name", name, "cause", err)
+		return nil
+	}
+	slog.Default().Info("换版前账本探针", "name", name, "readable", readable)
+	return &readable
 }
 
 // renderCheckRow 渲染巡检表的一行（--check 默认行为）。
@@ -563,7 +630,7 @@ func (ms *machineState) localSwap(ctx context.Context, out io.Writer, rel releas
 		fmt.Fprintf(out, "%-8s 失败   取当前二进制路径: %s\n", name, err)
 		return outcomeFail
 	}
-	newPath, err := newReleaseFetcher().Fetch(ctx, rel, filepath.Dir(target))
+	newPath, err := upgradeFetcher().Fetch(ctx, rel, filepath.Dir(target))
 	if err != nil {
 		slog.Default().Error("下载本机资产失败", "name", name, "cause", err)
 		fmt.Fprintf(out, "%-8s 失败   %s\n", name, err)
@@ -586,7 +653,7 @@ func (ms *machineState) localUpgrade(ctx context.Context, out io.Writer, peer ag
 		fmt.Fprintf(out, "%-8s 失败   取当前二进制路径: %s\n", name, err)
 		return outcomeFail
 	}
-	newPath, err := newReleaseFetcher().Fetch(ctx, rel, filepath.Dir(target))
+	newPath, err := upgradeFetcher().Fetch(ctx, rel, filepath.Dir(target))
 	if err != nil {
 		slog.Default().Error("下载本机资产失败", "name", name, "cause", err)
 		fmt.Fprintf(out, "%-8s 失败   %s\n", name, err)
@@ -603,6 +670,30 @@ func (ms *machineState) localUpgrade(ctx context.Context, out io.Writer, peer ag
 		slog.Default().Error("触发本机 agentd 重启失败", "name", name, "cause", err)
 		fmt.Fprintf(out, "%-8s 失败   触发重启: %s\n", name, err)
 		return outcomeFail
+	}
+	// B462 S3：换版前账本可读时，本机也要等新版上线再确认账本仍可读（远端由 RemoteOne
+	// 同一判据施加）。换版前不可读或未知时保持原行为：触发重启即返回，不等待。
+	if ms.LedgerReadable != nil && *ms.LedgerReadable {
+		slog.Default().Info("等待本机 agentd 以新版上线以确认账本", "name", name, "version", rel.Tag,
+			"timeout", upgradeWaitTimeoutPush)
+		if err := peer.WaitVersion(ctx, rel.Tag, upgradeWaitTimeoutPush, upgradeWaitInterval, false); err != nil {
+			slog.Default().Error("本机 agentd 未以新版上线", "name", name, "version", rel.Tag, "cause", err)
+			fmt.Fprintf(out, "%-8s 失败   已换文件并触发重启，但 agentd 未在 %s 内以新版上线：%s\n",
+				name, upgradeWaitTimeoutPush, err)
+			fmt.Fprintf(out, "         prev: %s  回滚：handoff upgrade --rollback\n", prev)
+			return outcomeFail
+		}
+		check, perr := upgrade.VerifyLedgerAfterUpgrade(ctx, slog.Default(), name, ms.LedgerReadable, peer, upgradeWaitInterval)
+		switch check {
+		case upgrade.LedgerCheckNotMounted:
+			fmt.Fprintf(out, "%-8s 失败   新版已上线但账本未挂载\n", name)
+			fmt.Fprintf(out, "         看本机 agentd 日志（自登记/账本挂载失败原因）；prev: %s\n", prev)
+			return outcomeFail
+		case upgrade.LedgerCheckUnconfirmed:
+			fmt.Fprintf(out, "%-8s 失败   新版已上线，但账本是否挂载未能确认：%s\n", name, perr)
+			fmt.Fprintf(out, "         handoff status 与本机 agentd 日志；prev: %s\n", prev)
+			return outcomeFail
+		}
 	}
 	slog.Default().Info("本机升级完成", "name", name, "target", target, "prev", prev, "version", rel.Tag)
 	fmt.Fprintf(out, "%-8s 成功   已换到 %s，已触发 agentd 重启\n", name, rel.Tag)
@@ -642,9 +733,10 @@ func (ms *machineState) remoteUpgrade(ctx context.Context, out io.Writer, peer a
 	rel release.Release, sumFor func(context.Context, string, string) (string, error)) outcome {
 	name := ms.Ep.Name
 	result := upgrade.RemoteOne(ctx, slog.Default(), ms.toUpgrade(), peer,
-		cliRemoteFetcher{releaseFetcher: newReleaseFetcher(), sumFor: sumFor}, rel,
+		cliRemoteFetcher{releaseFetcher: upgradeFetcher(), sumFor: sumFor}, rel,
 		upgrade.Options{
-			Force: upgradeForce, PreferPush: upgradePush,
+			// --from：对端无法自拉本机目录，一律推送（B462 S2）
+			Force: upgradeForce, PreferPush: upgradePush || upgradeFrom != "",
 			WaitPull: upgradeWaitTimeoutPull, WaitPush: upgradeWaitTimeoutPush,
 			WaitInterval: upgradeWaitInterval,
 		}, nil)
@@ -685,5 +777,7 @@ func init() {
 	upgradeCmd.Flags().BoolVar(&upgradeForce, "force", false, "越过活跃任务闸（**不越过非托管闸**）")
 	upgradeCmd.Flags().BoolVar(&upgradePush, "push", false,
 		"强制由本机下载并推送二进制（默认让执行机自己下；执行机出不了网时用它）")
+	upgradeCmd.Flags().StringVar(&upgradeFrom, "from", "",
+		"用本机构建目录（scripts/build-deploy.sh --pack 的产物）代替 GitHub release；远端一律推送")
 	rootCmd.AddCommand(upgradeCmd)
 }
