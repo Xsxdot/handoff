@@ -87,7 +87,7 @@ func TestManagedTaskTmpEnvHome(t *testing.T) {
 func TestStopRestoresHooks(t *testing.T) {
 	workDir := t.TempDir()
 	taskDir := t.TempDir()
-	if _, _, err := WriteTaskEnv(workDir, taskDir, "T-stop", "# Plan", "/tmp/perm.sock", "/bin/handoff", ""); err != nil {
+	if _, _, err := WriteTaskEnv(workDir, taskDir, "T-stop", "# Plan", "/tmp/perm.sock", "/bin/handoff", "", ""); err != nil {
 		t.Fatalf("WriteTaskEnv 失败: %v", err)
 	}
 	hooksPath := filepath.Join(workDir, agentsDirName, hooksFileName)

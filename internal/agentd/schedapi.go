@@ -465,9 +465,10 @@ func (s *Server) schedDeleteErr(w http.ResponseWriter, name string, err error) {
 	}
 }
 
-// carrierView 把载体实体投影成 wire DTO。逐字段来源：九个业务字段（含所选账号）来自
-// 实体，Version 来自 registry 行版本，AccountMismatch 是唯一派生字段（载体指纹 vs 账号
-// 读数指纹，见 accountMismatch）。cred_fingerprint 本身不出 wire。
+// carrierView 把载体实体投影成 wire DTO。逐字段来源：业务字段（含所选登录）来自实体，
+// Version 来自 registry 行版本，account_id/account_name/login_state 由所选登录索引派生。
+// B464 已删载体指纹比对（载体就跑在登录 HOME 里），wire 上不再有 account_mismatch /
+// cred_fingerprint。
 // logins 为 nil（账号域未装配/读失败）时不带派生的账号名与登录状态；所选登录在索引里查不到
 // （已被删或尚未同步）同样只带 login 键本身。
 func carrierView(c scheduling.Carrier, version int, logins loginIndex) proto.CarrierView {

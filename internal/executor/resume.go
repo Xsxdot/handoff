@@ -29,9 +29,13 @@ package executor
 //   - Discipline: 按执行者裁出的执行纪律块正文；恢复路径也必须带上，避免
 //     codex 的常驻 developerInstructions 在恢复后消失
 type ResumeReq struct {
-	TaskID     string
-	TaskDir    string
-	RepoPath   string
+	TaskID   string
+	TaskDir  string
+	RepoPath string
+	// HomeDir 是任务行里的载体 HOME 快照（空 = 主 HOME）。恢复时的进程 HOME 仍由
+	// Env 的 HOME 行决定；本字段供需要在任务环境下定位登录 HOME 的 adapter（agy 的
+	// 单文件 token 软链，B464 Q8）使用，不得据此重写 Env。
+	HomeDir    string
 	SessionID  string
 	Env        []string
 	Discipline string

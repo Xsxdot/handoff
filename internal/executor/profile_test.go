@@ -21,15 +21,6 @@ func (fakeProfile) Verify(context.Context, executor.ProfileReq) (executor.Profil
 
 var _ executor.Profile = fakeProfile{}
 
-func TestCredentialPolicyLiterals(t *testing.T) {
-	if executor.CredentialStandalone != "standalone" {
-		t.Fatalf("standalone = %q", executor.CredentialStandalone)
-	}
-	if executor.CredentialMainHomeSync != "main_home_sync" {
-		t.Fatalf("main_home_sync = %q", executor.CredentialMainHomeSync)
-	}
-}
-
 func TestZeroProfileReportIsNotSuccess(t *testing.T) {
 	var r executor.ProfileReport
 	if r.Prepared || r.Verified || r.EngineOK {

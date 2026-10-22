@@ -18,7 +18,6 @@ import (
 
 	"github.com/Xsxdot/handoff/internal/hostapi"
 	"github.com/Xsxdot/handoff/internal/keysclient"
-	"github.com/Xsxdot/handoff/internal/toolchain"
 )
 
 // installSleepyCoordinatorCLI 装一个「长睡」的假 opencode：模拟 CLI 收尾挂死
@@ -47,7 +46,7 @@ func TestB393ResumeHangsBoundedByTimeout(t *testing.T) {
 	defer func() { coordWakeTurnTimeout = prev }()
 
 	installSleepyCoordinatorCLI(t, 30)
-	h := hostapi.NewWithCredentialPathFor(toolchain.CredRelPathFor)
+	h := hostapi.New()
 	runner := testCoordRunner(h, nil) // coordrunner_test.go 既有夹具
 
 	done := make(chan error, 1)

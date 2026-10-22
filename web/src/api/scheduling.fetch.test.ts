@@ -13,7 +13,6 @@ import {
   getCarrierRunCommand,
   getSquads,
   launchCoordinator,
-  probeHome,
   putCarrier,
   putSquad,
   releaseCoordinator,
@@ -105,16 +104,7 @@ describe('scheduling fetch seam', () => {
     expect(JSON.parse(String((releaseFetchMock.mock.calls[0][1] as RequestInit).body))).toEqual({ active: false })
   })
 
-  it('serializes B293 probe/detect/run-command without splicing commands', async () => {
-    const probeMock = mockFetchJSON({ kind: 'empty' })
-    await probeHome({ cli: 'codex', path: '~/.handoff/home/x', credential: 'standalone', machine: 'linux-01' })
-    const [probeURL, probeInit] = probeMock.mock.calls[0] as [string, RequestInit]
-    expect(probeURL).toBe('/api/host/probe?machine=linux-01')
-    expect(probeInit.method).toBe('POST')
-    expect(JSON.parse(String(probeInit.body))).toEqual({
-      cli: 'codex', path: '~/.handoff/home/x', credential: 'standalone',
-    })
-
+  it('serializes B293 detect/run-command without splicing commands', async () => {
     const detectMock = mockFetchJSON({ name: 'c a/特', status: 'pending', version: 1 })
     await detectCarrier('c a/特')
     expect(detectMock.mock.calls[0][0]).toBe('/api/squads/carriers/c%20a%2F%E7%89%B9/detect')

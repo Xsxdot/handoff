@@ -242,8 +242,6 @@ func TestContractFixtures(t *testing.T) {
 			},
 		}},
 		{"CoordinatorAttachReleaseResp", CoordinatorAttachReleaseResp{OK: true}},
-		{"HomeProbeReq", HomeProbeReq{CLI: "codex", Path: "~/.handoff/home/mbp-codex", Credential: "standalone"}},
-		{"HomeProbeResp", HomeProbeResp{Kind: "empty", Detail: "目录为空，保存后将自动创建并检测一次。"}},
 		// B464 W1：只带所选登录 id（目标机据此在本机账号域查 kind 与代理）；凭据模式与指纹键删除。
 		{"HomeWakeReq", HomeWakeReq{CLI: "codex", HomeDir: "~/.handoff/home/mbp-codex", Model: "",
 			Login: "login-0123456789abcdef"}},
@@ -286,9 +284,9 @@ func TestContractFixtures(t *testing.T) {
 	}
 }
 
-// TestHomeWakeReqOmitsEmptyCredential 锁定 standalone 的空 Credential 不进 wire；
-// 非空 main_home_sync 由 HomeWakeReq fixture 锁定必须出现。
-func TestHomeWakeReqOmitsEmptyCredential(t *testing.T) {
+// TestHomeWakeReqOmitsEmptyLogin 锁定未选登录时 login 键缺席；非空登录由
+// HomeWakeReq fixture 锁定必须出现。
+func TestHomeWakeReqOmitsEmptyLogin(t *testing.T) {
 	data, err := json.Marshal(HomeWakeReq{CLI: "codex", HomeDir: "/isolated/home/codex"})
 	if err != nil {
 		t.Fatalf("marshal HomeWakeReq: %v", err)
@@ -297,8 +295,8 @@ func TestHomeWakeReqOmitsEmptyCredential(t *testing.T) {
 	if err := json.Unmarshal(data, &got); err != nil {
 		t.Fatalf("unmarshal HomeWakeReq: %v", err)
 	}
-	if _, ok := got["credential"]; ok {
-		t.Fatalf("empty credential unexpectedly serialized: %s", data)
+	if _, ok := got["login"]; ok {
+		t.Fatalf("empty login unexpectedly serialized: %s", data)
 	}
 }
 

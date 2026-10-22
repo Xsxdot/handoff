@@ -26,7 +26,6 @@ export interface CarrierView {
 // B453：载体状态去掉 quota（限额中退役，额度改看所选账号）；检测结局 WakeOutcome 仍保留
 // quota（F16：机间 wire 值，语义「可达 + 撞额度」）。
 export type CarrierStatus = 'pending' | 'online' | 'unreachable'
-export type ProbeKind = 'empty' | 'logged_in' | 'occupied'
 export type WakeOutcome = 'ready' | 'need_login' | 'quota' | 'unreachable'
 
 export interface SquadView {
@@ -172,14 +171,6 @@ export const putSquad = (name: string, expect: number, input: SquadInput) =>
     omitZeroSquadConcurrency(input),
   )
 
-/** 探测目标机路径；machine 走 query，不进 body。本函数不改写 kind。 */
-export const probeHome = (input: HomeProbeReq) => {
-  const q = input.machine ? `?machine=${encodeURIComponent(input.machine)}` : ''
-  const body: HomeProbeReq = { cli: input.cli, path: input.path }
-  if (input.credential) body.credential = input.credential
-  return postJSON<HomeProbeResp>(`/api/host/probe${q}`, body)
-}
-
 /** 本机/目标机有时限唤起；machine 走 query。控制台不应直接调，检测编排才用。 */
 export const wakeHome = (input: HomeWakeReq) => {
   const q = input.machine ? `?machine=${encodeURIComponent(input.machine)}` : ''
@@ -213,18 +204,6 @@ export const CARRIER_STATUS_LABEL: Record<CarrierStatus, string> = {
 export function defaultHomeDir(name: string): string {
   const trimmed = name.trim()
   return trimmed ? `~/.handoff/home/${trimmed}` : ''
-}
-
-export interface HomeProbeReq {
-  cli: string
-  path: string
-  credential?: string
-  machine?: string
-}
-
-export interface HomeProbeResp {
-  kind: ProbeKind
-  detail?: string
 }
 
 export interface HomeWakeReq {

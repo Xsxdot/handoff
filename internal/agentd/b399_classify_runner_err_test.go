@@ -19,7 +19,6 @@ import (
 
 	"github.com/Xsxdot/handoff/internal/hostapi"
 	"github.com/Xsxdot/handoff/internal/keysclient"
-	"github.com/Xsxdot/handoff/internal/toolchain"
 )
 
 // installFailingCoordinatorCLI 装一个向 stderr 打印指定文本并 exit 1 的假 opencode：
@@ -46,7 +45,7 @@ func TestB399ClassifyRunnerErrTimeoutSentinel(t *testing.T) {
 	defer func() { coordWakeTurnTimeout = prev }()
 
 	installSleepyCoordinatorCLI(t, 30)
-	h := hostapi.NewWithCredentialPathFor(toolchain.CredRelPathFor)
+	h := hostapi.New()
 	runner := testCoordRunner(h, nil)
 
 	_, err := runner.Resume(keysclient.SessionRef{
@@ -71,7 +70,7 @@ func TestB399ClassifyRunnerErrTimeoutSentinel(t *testing.T) {
 // 变异（把 classifyRunnerErr 改成 identity / 两哨兵对调）→ 复红。
 func TestB399ClassifyRunnerErrSessionNotFoundSentinel(t *testing.T) {
 	installFailingCoordinatorCLI(t, "Session not found")
-	h := hostapi.NewWithCredentialPathFor(toolchain.CredRelPathFor)
+	h := hostapi.New()
 	runner := testCoordRunner(h, nil)
 
 	_, err := runner.Resume(keysclient.SessionRef{

@@ -795,9 +795,10 @@ func setupLedger(cfg *config.Config, srv *agentd.Server, taskStore *store.Store,
 	// R-K1 (a‴)：项目房间书写者集并入人本人（读活配置 console_user，改配置不必重启）。
 	rooms.SetProjectRoomHuman(srv.ConsoleMember)
 	srv.SetRooms(rooms)
-	// 凭据相对路径表仍由 toolchain 唯一维护；组装点注入给 hostapi，避免
-	// hostapi 反向 import maintenance 域或复制三家 CLI 的平台规则。
-	hostAPI := hostapi.NewWithCredentialPathFor(toolchain.CredRelPathFor)
+	// B464：hostapi 不再持有凭据路径表（只读探测与 main_home_sync 复制已删），
+	// 检测只按载体（登录）HOME 原样唤起。凭据相对路径表仍由 toolchain 唯一维护，
+	// 供 quota 离线取材消费。
+	hostAPI := hostapi.New()
 	// B453/B464：额度适配注册表组装一次，探测器（读数）与发现器（离线认身份）共用同一份
 	// 凭据取材，身份指纹口径不会分叉。检测链不再算载体凭据指纹（B464 删指纹比对）。
 	quotaReg := newQuotaRegistry()

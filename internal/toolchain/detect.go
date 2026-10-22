@@ -104,8 +104,8 @@ func credRelPathFor(name string) (string, bool) {
 	return rel, ok
 }
 
-// CredRelPathFor 暴露既有凭据表的只读包装，供组装点注入 hostapi。表本身仍只
-// 在本包维护，避免执行域复制 opencode/grok/codex 的相对路径或平台规则。
+// CredRelPathFor 暴露既有凭据表的只读包装，供组装点注入 quota 离线取材。表本身
+// 仍只在本包维护，避免执行域复制 opencode/grok/codex 的相对路径或平台规则。
 func CredRelPathFor(name string) (string, bool) {
 	return credRelPathFor(name)
 }

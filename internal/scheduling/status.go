@@ -4,7 +4,7 @@
 // 格式，以及检测结果写回载体状态的入站面。PutCarrier / admitInto 的四态接线与按位准入规则分别落在
 // scheduling.go，本文件集中维护状态迁移和用户可见的派生字符串。
 //
-// 边界：不探文件系统、不拉起 CLI——那是 hostapi.ProbeHome / WakeHome；本文件
+// 边界：不探文件系统、不拉起 CLI——那是 hostapi.WakeHome；本文件
 // 只拥有编制域数据（status / last_error）和由载体字段派生、对侧可见的字符串。
 package scheduling
 

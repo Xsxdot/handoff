@@ -82,7 +82,7 @@ func TestWriteTaskEnv(t *testing.T) {
 	workDir := t.TempDir()
 	taskDir := t.TempDir()
 
-	hooksPath, prompt, err := WriteTaskEnv(workDir, taskDir, "T1", "# Plan", "/tmp/perm.sock", "/bin/my handoff", "discipline")
+	hooksPath, prompt, err := WriteTaskEnv(workDir, taskDir, "T1", "# Plan", "/tmp/perm.sock", "/bin/my handoff", "discipline", "")
 	if err != nil {
 		t.Fatalf("WriteTaskEnv 失败: %v", err)
 	}
@@ -148,7 +148,7 @@ func TestWriteTaskEnvAgyHome(t *testing.T) {
 	}
 
 	sockPath := filepath.Join(taskDir, "perm.sock")
-	if _, _, err := WriteTaskEnv(workDir, taskDir, "T-agy-home", "# Plan", sockPath, "/bin/handoff", ""); err != nil {
+	if _, _, err := WriteTaskEnv(workDir, taskDir, "T-agy-home", "# Plan", sockPath, "/bin/handoff", "", ""); err != nil {
 		t.Fatalf("WriteTaskEnv 失败: %v", err)
 	}
 
@@ -227,6 +227,80 @@ func TestWriteTaskEnvAgyHome(t *testing.T) {
 	}
 }
 
+func writeAgyToken(t *testing.T, home, token string) string {
+	t.Helper()
+	dir := filepath.Join(home, ".gemini", "antigravity-cli")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatalf("创建 oauth 目录失败: %v", err)
+	}
+	path := filepath.Join(dir, "antigravity-oauth-token")
+	if err := os.WriteFile(path, []byte(token), 0600); err != nil {
+		t.Fatalf("写 oauth token 失败: %v", err)
+	}
+	return path
+}
+
+// TestWriteTaskEnvLinksTokenFromLoginHome 锁 B464 Q8：任务 HOME 的 token 是指向
+// 载体登录 HOME 的单文件软链，不再从进程主 HOME 拷贝；主 HOME 的 token 不参与。
+func TestWriteTaskEnvLinksTokenFromLoginHome(t *testing.T) {
+	mainHome := t.TempDir()
+	loginHome := t.TempDir()
+	mainToken := writeAgyToken(t, mainHome, "main-token")
+	loginToken := writeAgyToken(t, loginHome, "login-token")
+	t.Setenv("HOME", mainHome)
+
+	workDir := t.TempDir()
+	taskDir := t.TempDir()
+	if _, _, err := WriteTaskEnv(workDir, taskDir, "T-login-home", "# Plan", filepath.Join(taskDir, "perm.sock"), "/bin/handoff", "", loginHome); err != nil {
+		t.Fatalf("WriteTaskEnv 失败: %v", err)
+	}
+
+	taskToken := filepath.Join(taskDir, agyHomeDirName, ".gemini", "antigravity-cli", "antigravity-oauth-token")
+	info, err := os.Lstat(taskToken)
+	if err != nil {
+		t.Fatalf("读取任务 token 失败: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("任务 token 必须是软链，实际 mode=%v", info.Mode())
+	}
+	target, err := os.Readlink(taskToken)
+	if err != nil {
+		t.Fatalf("读取软链目标失败: %v", err)
+	}
+	if target != loginToken {
+		t.Fatalf("软链目标 = %q, want 登录 HOME token %q", target, loginToken)
+	}
+	data, err := os.ReadFile(taskToken)
+	if err != nil || string(data) != "login-token" {
+		t.Fatalf("任务 token 内容 = %q/%v, want login-token", data, err)
+	}
+	if data, err := os.ReadFile(mainToken); err != nil || string(data) != "main-token" {
+		t.Fatalf("主 HOME token 被改动: %q/%v", data, err)
+	}
+}
+
+// TestWriteTaskEnvMissingLoginTokenIsActionable 锁 Q8 的错误面：登录 HOME 没有 token
+// 时给可行动错误，绝不回退到主 HOME 拷贝。
+func TestWriteTaskEnvMissingLoginTokenIsActionable(t *testing.T) {
+	mainHome := t.TempDir()
+	writeAgyToken(t, mainHome, "main-token")
+	loginHome := t.TempDir()
+	t.Setenv("HOME", mainHome)
+
+	taskDir := t.TempDir()
+	_, _, err := WriteTaskEnv(t.TempDir(), taskDir, "T-missing-login-token", "# Plan", filepath.Join(taskDir, "perm.sock"), "/bin/handoff", "", loginHome)
+	if err == nil {
+		t.Fatal("登录 HOME 缺 token 时 WriteTaskEnv 应失败")
+	}
+	if !strings.Contains(err.Error(), loginHome) || !strings.Contains(err.Error(), "登录") {
+		t.Fatalf("错误应点名登录 HOME 并给可行动处置，实得: %v", err)
+	}
+	taskToken := filepath.Join(taskDir, agyHomeDirName, ".gemini", "antigravity-cli", "antigravity-oauth-token")
+	if _, statErr := os.Lstat(taskToken); !os.IsNotExist(statErr) {
+		t.Fatalf("缺 token 时不得回退拷贝/建链，stat err=%v", statErr)
+	}
+}
+
 func TestNativeCommandAllowIsNamespaceWildcard(t *testing.T) {
 	// command(*) 消 headless native soft-deny；PreToolUse deny 仍是否决门。
 	// 前缀清单会在新首词上再挂；command(.*) 在 1.1.24 上消不掉 soft-deny。
@@ -241,7 +315,7 @@ func TestWriteTaskEnvMissingOAuth(t *testing.T) {
 	emptyHome := t.TempDir()
 	t.Setenv("HOME", emptyHome)
 
-	_, _, err := WriteTaskEnv(workDir, taskDir, "T-missing-oauth", "# Plan", filepath.Join(taskDir, "perm.sock"), "/bin/handoff", "")
+	_, _, err := WriteTaskEnv(workDir, taskDir, "T-missing-oauth", "# Plan", filepath.Join(taskDir, "perm.sock"), "/bin/handoff", "", "")
 	if err == nil {
 		t.Fatal("缺少 oauth token 时 WriteTaskEnv 应失败")
 	}
@@ -260,7 +334,7 @@ func TestWriteTaskEnvMergesExistingHooks(t *testing.T) {
 	existingContent := `{"user-linter":{"PostToolUse":[{"matcher":"run_command","hooks":[{"command":"./lint.sh"}]}]}}`
 	_ = os.WriteFile(existingPath, []byte(existingContent), 0644)
 
-	homeHooks, _, err := WriteTaskEnv(workDir, taskDir, "T2", "# Plan", "/tmp/perm.sock", "/bin/handoff", "")
+	homeHooks, _, err := WriteTaskEnv(workDir, taskDir, "T2", "# Plan", "/tmp/perm.sock", "/bin/handoff", "", "")
 	if err != nil {
 		t.Fatalf("WriteTaskEnv 失败: %v", err)
 	}
@@ -303,7 +377,7 @@ func TestWriteTaskEnvGitExcludeCleanStatus(t *testing.T) {
 	}
 
 	// 执行 WriteTaskEnv
-	_, _, err = WriteTaskEnv(workDir, taskDir, "T-Clean", "# Plan", "/tmp/perm.sock", "/bin/handoff", "")
+	_, _, err = WriteTaskEnv(workDir, taskDir, "T-Clean", "# Plan", "/tmp/perm.sock", "/bin/handoff", "", "")
 	if err != nil {
 		t.Fatalf("WriteTaskEnv 失败: %v", err)
 	}
@@ -339,7 +413,7 @@ func TestRestoreTrackedHooks(t *testing.T) {
 		}
 	}
 
-	if _, _, err := WriteTaskEnv(workDir, taskDir, "T-tracked", "# Plan", "/tmp/perm.sock", "/bin/handoff", ""); err != nil {
+	if _, _, err := WriteTaskEnv(workDir, taskDir, "T-tracked", "# Plan", "/tmp/perm.sock", "/bin/handoff", "", ""); err != nil {
 		t.Fatalf("WriteTaskEnv 失败: %v", err)
 	}
 	data, err := os.ReadFile(hooksPath)
@@ -371,10 +445,10 @@ func TestWriteTaskEnvRepeatRestoresOriginalHooks(t *testing.T) {
 		}
 	}
 
-	if _, _, err := WriteTaskEnv(workDir, taskDir, "T-repeat-1", "# Plan", "/tmp/first-perm.sock", "/bin/handoff", ""); err != nil {
+	if _, _, err := WriteTaskEnv(workDir, taskDir, "T-repeat-1", "# Plan", "/tmp/first-perm.sock", "/bin/handoff", "", ""); err != nil {
 		t.Fatalf("第一次 WriteTaskEnv 失败: %v", err)
 	}
-	if _, _, err := WriteTaskEnv(workDir, taskDir, "T-repeat-2", "# Plan", "/tmp/second-perm.sock", "/bin/handoff", ""); err != nil {
+	if _, _, err := WriteTaskEnv(workDir, taskDir, "T-repeat-2", "# Plan", "/tmp/second-perm.sock", "/bin/handoff", "", ""); err != nil {
 		t.Fatalf("第二次 WriteTaskEnv 失败: %v", err)
 	}
 	data, err := os.ReadFile(hooksPath)
@@ -423,7 +497,7 @@ func TestWriteTaskEnvRecordsSkipWorktreeBeforeGit(t *testing.T) {
 		return updateHooksSkipWorktree(dir, skip)
 	}
 
-	if _, _, err := WriteTaskEnv(workDir, taskDir, "T-sidecar-skip", "# Plan", "/tmp/perm.sock", "/bin/handoff", ""); err != nil {
+	if _, _, err := WriteTaskEnv(workDir, taskDir, "T-sidecar-skip", "# Plan", "/tmp/perm.sock", "/bin/handoff", "", ""); err != nil {
 		t.Fatalf("WriteTaskEnv 失败: %v", err)
 	}
 	if called {
@@ -455,7 +529,7 @@ func TestWriteTaskEnvRecordsExcludeBeforeGit(t *testing.T) {
 		return ensureGitExclude(dir, pattern)
 	}
 
-	if _, _, err := WriteTaskEnv(workDir, taskDir, "T-sidecar-exclude", "# Plan", "/tmp/perm.sock", "/bin/handoff", ""); err != nil {
+	if _, _, err := WriteTaskEnv(workDir, taskDir, "T-sidecar-exclude", "# Plan", "/tmp/perm.sock", "/bin/handoff", "", ""); err != nil {
 		t.Fatalf("WriteTaskEnv 失败: %v", err)
 	}
 	if called {
@@ -468,7 +542,7 @@ func TestRestoreNewHooks(t *testing.T) {
 	taskDir := t.TempDir()
 	initTestGitRepo(t, workDir)
 
-	homeHooks, _, err := WriteTaskEnv(workDir, taskDir, "T-new", "# Plan", "/tmp/perm.sock", "/bin/handoff", "")
+	homeHooks, _, err := WriteTaskEnv(workDir, taskDir, "T-new", "# Plan", "/tmp/perm.sock", "/bin/handoff", "", "")
 	if err != nil {
 		t.Fatalf("WriteTaskEnv 失败: %v", err)
 	}
@@ -495,7 +569,7 @@ func TestRestorePreservesExistingHooksExclude(t *testing.T) {
 		t.Fatalf("写入既有 hooks exclude 失败: %v", err)
 	}
 
-	if _, _, err := WriteTaskEnv(workDir, taskDir, "T-existing-exclude", "# Plan", "/tmp/perm.sock", "/bin/handoff", ""); err != nil {
+	if _, _, err := WriteTaskEnv(workDir, taskDir, "T-existing-exclude", "# Plan", "/tmp/perm.sock", "/bin/handoff", "", ""); err != nil {
 		t.Fatalf("WriteTaskEnv 失败: %v", err)
 	}
 	if err := RestoreTaskEnv(taskDir); err != nil {

@@ -1,4 +1,4 @@
-// hostprobe_test.go —— host probe/wake 与 carrier detect 的真实 HTTP 入口回归。
+// hostprobe_test.go —— host wake 与 carrier detect 的真实 HTTP 入口回归。
 //
 // 职责：穿过 Server.Handler、JSON 编解码和 forwardJSON，锁定本机检测、远程只
 // 唤起后回协调机写 registry、unknown outcome fail closed 以及 login/model 透传（B464：载体 HOME
@@ -120,7 +120,7 @@ func newRemoteSchedEnv(t *testing.T, handler http.Handler) (*schedEnv, *httptest
 	cfg := &config.Config{Token: testToken, DataDir: t.TempDir(), Targets: map[string]config.Target{
 		"remote": {Addr: remote.URL, Token: "remote-token"},
 	}}
-	// Do not use the shared PTY-aware helper: remote probe tests only need the HTTP
+	// Do not use the shared PTY-aware helper: remote wake tests only need the HTTP
 	// server, scheduling ledger and hostapi assembly.
 	dataStore, err := store.Open(t.TempDir() + "/handoff.db")
 	if err != nil {
@@ -210,7 +210,7 @@ func TestCarrierRunCommandThroughDirectHandler(t *testing.T) {
 	}
 }
 
-func TestHostWakeAndProbeForwardPreserveLoginAndRejectUnknownMachine(t *testing.T) {
+func TestHostWakeForwardPreservesLoginAndRejectUnknownMachine(t *testing.T) {
 	var gotPath, gotBody string
 	env, _ := newRemoteSchedEnv(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
@@ -234,14 +234,10 @@ func TestHostWakeAndProbeForwardPreserveLoginAndRejectUnknownMachine(t *testing.
 	if wake.Login != "login-0123456789abcdef" || wake.Model != "fast" {
 		t.Fatalf("login/model 未 roundtrip: %+v", wake)
 	}
-	code, body = schedReq(t, env, http.MethodPost, "/api/host/probe?machine=remote",
-		`{"cli":"opencode","path":"~/.handoff/home/c1","credential":"standalone"}`)
-	if code != http.StatusOK || gotPath != "/api/host/probe" || !strings.Contains(body, "occupied") {
-		t.Fatalf("远程 probe: %d %s path=%s", code, body, gotPath)
-	}
+	// B464 段 4：只读探测端点已删，未知机器的转发门仍由 wake 承担。
 	unknown := newDirectSchedEnv(t, &config.Config{Token: testToken, DataDir: t.TempDir()})
-	code, body = schedReq(t, unknown, http.MethodPost, "/api/host/probe?machine=missing",
-		`{"cli":"opencode","path":"/tmp/c1"}`)
+	code, body = schedReq(t, unknown, http.MethodPost, "/api/host/wake?machine=missing",
+		`{"cli":"opencode","home_dir":"/tmp/c1"}`)
 	if code != http.StatusBadRequest || !strings.Contains(body, "missing 未登记") {
 		t.Fatalf("未知机器应 400: %d %s", code, body)
 	}
