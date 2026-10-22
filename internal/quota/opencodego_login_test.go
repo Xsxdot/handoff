@@ -347,3 +347,31 @@ func TestOpencodeGoIdentityFollowsSourceSelection(t *testing.T) {
 		t.Fatal("两处都没有时应返回凭据缺失")
 	}
 }
+
+// 审查第 3 轮 R3-m1：探测器打开 opencode.db 的 DSN（readLoginAccount 唯一用它）必须是只读
+// 连接——对同一 DSN 打开后执行写语句须被 SQLite 拒绝；库文件不存在时也不得被创建。
+func TestOpencodeGoLoginDSNIsReadOnly(t *testing.T) {
+	home := t.TempDir()
+	writeOpencodeDB(t, home, loginRow{})
+	path := filepath.Join(home, testDBRelPath)
+	db, err := sql.Open("sqlite", loginDSN(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var n int
+	if err := db.QueryRow("SELECT count(*) FROM account").Scan(&n); err != nil || n != 1 {
+		t.Fatalf("只读连接应能读: n=%d err=%v", n, err)
+	}
+	if _, err := db.Exec("UPDATE account SET time_updated = 9"); err == nil || !strings.Contains(strings.ToLower(err.Error()), "readonly") {
+		t.Fatalf("探测器的连接必须拒绝写入（SQLITE_READONLY），得 %v", err)
+	}
+	missing := filepath.Join(t.TempDir(), "opencode.db")
+	if m, err := sql.Open("sqlite", loginDSN(missing)); err == nil {
+		_ = m.Ping()
+		_ = m.Close()
+	}
+	if _, err := os.Stat(missing); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("只读 DSN 不得建库，得 %v", err)
+	}
+}

@@ -438,3 +438,21 @@
 - 泄密核查（脚本内读 token/org 原值只计数）：agentd.log、mac.out、`GET /api/accounts` 响应中 token 0 次、org 0 次。
 - 指纹：两次探测均 `sha256:1e5f72dfee52`（稳定，非 token 派生）。
 - 结论：opencode-go 欠交销账（S1/S2 opencode-go 真实账号成功读数）。
+
+## implement 修复轮 6（审查第 3 轮）
+
+### 偏离与自主决定
+
+1. R3-I1「API key 来源同形缺口」：`TestSecretsNeverLeakAcrossAdapters` 是三家 HTTP 适配器共用的表，新增的「500 正文回显头」「200 非 JSON 正文回显头」两条对 opencode-go（API key）、codex、grok 一并生效，没有只给 opencode-go 单开。在 plan 决策权限内（只加测试路径）。
+2. R3-m1：把 `readLoginAccount` 里内联的 DSN 构造提成 `loginDSN(path)`，生产路径唯一用它打开 opencode.db，测试对同一 DSN 打开后执行写语句。这不是仅为测试存在的缝——它就是生产打开库的那一行，只是起了名字；未加任何注入点或开关。在 plan 决策权限内（同包内部结构）。
+
+### 过程与证据
+
+- R3-I1 加路径：登录来源用例加「500 正文回显 Authorization 与 x-org-id」「200 非 JSON 正文回显二者」；三家适配器表加「500 正文回显头」「200 非 JSON 正文回显头」。现行代码 `go test ./internal/quota/ -run SecretsNeverLeak` ok。
+- 有牙（变异不提交，每次还原）：
+  - 去掉 `getJSON(…, cred.login.token, cred.login.org)` 的 token 参数 → `TestOpencodeGoLoginSecretsNeverLeak/500_正文回显头`、`/200_非_JSON_正文回显头` FAIL：`错误文本泄露 oc-SENTINEL-token-b453: upstream: opencode-go 额度接口返回 HTTP 500：upstream error: Bearer oc-SENTINEL-token-b453 ***`，另 `日志里出现了 oc-SENTINEL-token-b453`。
+  - 去掉 org 参数 → 同两条 FAIL：`错误文本泄露 org-SENTINEL-b453: … Bearer *** org-SENTINEL-b453`，另日志里出现 org 哨兵。
+  - 去掉 API key 来源的 `cred.key` 参数 → `TestSecretsNeverLeakAcrossAdapters/opencode-go/401_正文回显头`、`/500_正文回显头`、`/200_非_JSON_正文回显头` FAIL（API key 来源原有 401 回显已能抓到，本轮补上 5xx/非 JSON 两形）。
+  - 还原后 `git diff --stat internal/quota/opencodego.go` 为空，同命令 ok。
+- R3-m1：新用例 `TestOpencodeGoLoginDSNIsReadOnly`（只读连接能读、写语句报 readonly、库不存在不建库）先编译红 `undefined: loginDSN`；提取 `loginDSN` 后绿。变异 `mode=ro` → `mode=rwc`：`go test ./internal/quota/ -count=1` 只有新用例 FAIL `探测器的连接必须拒绝写入（SQLITE_READONLY），得 <nil>`（其余全绿，印证审查所说无锁）；还原后 `mode=ro&` 计数回 1。
+- 收尾：`go test ./internal/quota/ -count=1` ok；`go vet ./internal/quota/` 过；`go build ./...` 过；gofmt 无差异。

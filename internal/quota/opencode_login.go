@@ -55,9 +55,7 @@ func readLoginAccount(home, rel string) (loginAccount, error) {
 		}
 		return loginAccount{}, fail(CategoryCredentialMissing, "读取 %s 失败，无登录账号：%v", path, err)
 	}
-	// file: URI + mode=ro：驱动以 SQLITE_OPEN_URI 打开，只读、不建库；WAL 下照常读到最新提交。
-	dsn := (&url.URL{Scheme: "file", Path: filepath.ToSlash(path), RawQuery: "mode=ro&_pragma=busy_timeout(3000)"}).String()
-	db, err := sql.Open("sqlite", dsn)
+	db, err := sql.Open("sqlite", loginDSN(path))
 	if err != nil {
 		return loginAccount{}, fail(CategoryCredentialMissing, "只读打开 %s 失败，无登录账号：%v", path, err)
 	}
@@ -95,6 +93,13 @@ func readLoginAccount(home, rel string) (loginAccount, error) {
 		acc.expiry = &t
 	}
 	return acc, nil
+}
+
+// loginDSN 是探测器打开 opencode.db 的唯一 DSN：file: URI + mode=ro，驱动以 SQLITE_OPEN_URI
+// 打开——只读连接（写语句报 SQLITE_READONLY）、库不存在不建库；WAL 下照常读到最新提交。
+// handoff 不写 opencode.db（spec r1.3），这一条由 TestOpencodeGoLoginDSNIsReadOnly 锁住。
+func loginDSN(path string) string {
+	return (&url.URL{Scheme: "file", Path: filepath.ToSlash(path), RawQuery: "mode=ro&_pragma=busy_timeout(3000)"}).String()
 }
 
 // ParseOpencodeGoConsoleStatus 把 console 状态端点的状态码与响应体解析成读数（外部缝的解析入口）。

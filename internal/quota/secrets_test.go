@@ -76,6 +76,14 @@ func TestSecretsNeverLeakAcrossAdapters(t *testing.T) {
 				w.WriteHeader(http.StatusUnauthorized)
 				_, _ = w.Write([]byte(`{"error":"bad token ` + r.Header.Get("Authorization") + `"}`))
 			},
+			// 审查第 3 轮 R3-I1：5xx 与非 JSON 正文会进失败原因（snippet）
+			"500 正文回显头": func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusInternalServerError)
+				_, _ = w.Write([]byte(`upstream error: ` + r.Header.Get("Authorization")))
+			},
+			"200 非 JSON 正文回显头": func(w http.ResponseWriter, r *http.Request) {
+				_, _ = w.Write([]byte(`<html>` + r.Header.Get("Authorization") + `</html>`))
+			},
 			"超时": func(w http.ResponseWriter, r *http.Request) {
 				select {
 				case <-r.Context().Done():
@@ -163,6 +171,14 @@ func TestOpencodeGoLoginSecretsNeverLeak(t *testing.T) {
 		"403 正文回显头": func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusForbidden)
 			_, _ = fmt.Fprintf(w, `{"error":%q}`, echo(r))
+		},
+		// 审查第 3 轮 R3-I1：这两条的正文会进失败原因（snippet），抹除少一个参数即泄露
+		"500 正文回显头": func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = fmt.Fprintf(w, `upstream error: %s`, echo(r))
+		},
+		"200 非 JSON 正文回显头": func(w http.ResponseWriter, r *http.Request) {
+			_, _ = fmt.Fprintf(w, `<html>%s</html>`, echo(r))
 		},
 		"超时": func(w http.ResponseWriter, r *http.Request) {
 			select {
