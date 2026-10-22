@@ -78,7 +78,7 @@ func setupSquadEnv(t *testing.T, carrierMax int) (*ledgerEnv, *fakeTargetMachine
 	}
 	svc := mustScheduling(t, env.srv)
 	putOnlineCarrier(t, svc, scheduling.Carrier{Name: "c1", Machine: "ftm",
-		CLI: "opencode", Credential: scheduling.CredentialStandalone,
+		CLI:            "opencode",
 		MaxConcurrency: carrierMax, Status: scheduling.StatusOnline})
 	if err := svc.PutSquad(scheduling.Squad{Name: "sq1",
 		Role: scheduling.RoleExecutor, Members: []scheduling.SquadMember{{Carrier: "c1", MaxConcurrency: 8}},
@@ -436,8 +436,8 @@ func TestSquadAdmitBudgetExhaustedSurfacesOnExecutionSide(t *testing.T) {
 	env := newReceiverTestEnv(t)
 	putOnlineCarrier(t, mustScheduling(t, env.srv), scheduling.Carrier{
 		Name: "carrier-A", Machine: "local", CLI: "fake", HomeDir: "/home/carrier-A",
-		Credential: scheduling.CredentialStandalone, MaxConcurrency: 1,
-		Status: scheduling.StatusOnline})
+		MaxConcurrency: 1,
+		Status:         scheduling.StatusOnline})
 	// 整体替换编制域服务（既有测试缝 SetScheduling）：内层用生产适配器，
 	// 只有计数写恒冲突——载体登记已在替换前经真实服务落库。
 	env.srv.SetScheduling(scheduling.New(casConflictOnRunning{

@@ -4,7 +4,8 @@
 // 账号所在机执行，入口机负责转发；CLI 直连账本既拿不到推导口径的唯一实现，也触发
 // 不了他机探测。登记与编辑走控制台（spec Out of Scope：本期无 add/edit/rm）。
 //
-// stdout：list 缺省表格、--json 一行一个 AccountView（与 GET /api/accounts 元素同形）；
+// stdout：list 缺省表格（账号行 + 其下登录行，B464）、--json 一行一个 AccountView（与 GET
+// /api/accounts 元素同形，含 logins）；
 // probe 打表头 + 新读数行。人话与诊断走 stderr / 结构化日志。
 package cmd
 
@@ -110,23 +111,60 @@ var accountStateLabel = map[string]string{
 
 var accountWindowLabel = map[string]string{"session": "5h", "weekly": "周", "monthly": "月"}
 
-// renderAccountTable 打表格：名称/类型/机器/状态/窗口已用/最近重置/上次探测/说明。
+// loginStateLabel 是登录状态的人话（L7；expired 由段 3 起产生）。
+var loginStateLabel = map[string]string{"ok": "正常", "expired": "已过期", "gone": "已失效"}
+
+// renderAccountTable 打表格：每个账号一行（名称/类型/状态/窗口已用/最近重置/上次探测/说明），
+// 其下每条登录缩进一行（B464 C1 表格形）：所在机:HOME、来源、登录状态、代理（打码）、所用载体。
+// 可探登录（读数来源）以「*」标注。
 func renderAccountTable(out io.Writer, views []proto.AccountView, now time.Time) error {
 	w := tabwriter.NewWriter(out, 2, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "名称\t类型\t机器\t状态\t窗口已用\t最近重置\t上次探测\t说明")
+	fmt.Fprintln(w, "名称\t类型\t状态\t窗口已用\t最近重置\t上次探测\t说明")
 	for _, v := range views {
 		state := accountStateLabel[v.State]
 		if state == "" {
 			state = v.State
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", v.Name, v.Kind, v.Machine, state,
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", v.Name, v.Kind, state,
 			accountWindows(v), accountNextReset(v, now), accountLastProbe(v, now), accountNote(v))
+		for _, l := range v.Logins {
+			fmt.Fprintf(w, "  %s\t%s\t%s\t%s\t%s\t%s\t\n", accountLoginMark(v, l), l.Machine+":"+l.Home, l.Source,
+				accountLoginState(l), accountLoginProxy(l), accountLoginCarriers(l))
+		}
 	}
 	if err := w.Flush(); err != nil {
 		slog.Default().Error("account render failed", "cause", err)
 		return err
 	}
 	return nil
+}
+
+func accountLoginMark(v proto.AccountView, l proto.LoginView) string {
+	if l.ID == v.ProbeLogin {
+		return "└*登录"
+	}
+	return "└ 登录"
+}
+
+func accountLoginState(l proto.LoginView) string {
+	if s := loginStateLabel[l.State]; s != "" {
+		return s
+	}
+	return l.State
+}
+
+func accountLoginProxy(l proto.LoginView) string {
+	if l.Proxy == "" {
+		return "代理:-"
+	}
+	return "代理:" + l.Proxy // 服务端已打码
+}
+
+func accountLoginCarriers(l proto.LoginView) string {
+	if len(l.Carriers) == 0 {
+		return "载体:-"
+	}
+	return "载体:" + strings.Join(l.Carriers, ",")
 }
 
 func accountWindows(v proto.AccountView) string {

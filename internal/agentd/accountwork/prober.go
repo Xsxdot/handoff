@@ -1,19 +1,20 @@
-// account_prober.go —— 所在机账号额度探测器（B453 S2，plan Q3）。
+// prober.go —— 账号额度探测器（B453 S2，plan Q3；B464 段 1 迁入 accountwork 子包，plan Q21）。
 //
-// 职责：只探测「所在机 = 本机」的账号——周期扫描（到期 = 上次尝试 + 账号间隔）与
-// 立即探测（ProbeNow）共用同一实例与同一条写路径；同一账号单飞（不并发探测），
-// 立即探测写入的 last_attempt_at 自然顺延下一次周期探测。读本机凭据、调额度接口
-// 由 internal/quota 完成；结果映射成编制域值类型后经 AccountsClient.RecordProbe
-// 读-合并-CAS 写进共享账本的读数行。
+// 职责：只探测「可探登录在本机」的账号——每个账号取一条可探登录（plan Q10 段 1 最小形：
+// 第一条正常登录，accounts.ProbeLogin），只有那条登录的所在机探它；周期扫描（到期 = 上次
+// 尝试 + 账号间隔）与立即探测（ProbeNow）共用同一实例与同一条写路径；同一账号单飞，立即
+// 探测写入的 last_attempt_at 自然顺延下一次周期探测。读本机凭据、调额度接口由
+// internal/quota 完成；结果映射成编制域值类型后经 RecordProbe 读-合并-CAS 写进共享账本的
+// 读数行（带本次所用登录 id，plan L8）。
 //
 // 边界：
-//   - 不代探他机账号（凭据只在所在机）；不碰账号定义行；
+//   - 不代探他机登录（凭据只在所在机）；不碰账号定义行与登录行；
 //   - 调度状态全在账本读数行（last_attempt_at），进程内只有在飞集合——重启后按
 //     读数行重建节拍，不突发全量重探；
 //   - 失败按 30s×2ⁿ 退避、封顶为账号间隔（probeDue）；
 //   - 生命周期跟 cmd/agentd.go 既有周期任务同形：ticker + ctx，Stop() 取消并等
 //     扫描循环与在飞探测全部退出。
-package agentd
+package accountwork
 
 import (
 	"context"
@@ -39,37 +40,48 @@ const (
 	accountProbeBudget = 60 * time.Second
 )
 
-// ErrAccountNotLocal 表示要求本机探测的账号不在本机。
-var ErrAccountNotLocal = errors.New("账号不在本机")
+// ErrNotLocal 表示要求本机探测的账号，其可探登录不在本机。
+var ErrNotLocal = errors.New("账号的可探登录不在本机")
 
-// ErrAccountProberStopped 表示探测器未启动或已停止。
-var ErrAccountProberStopped = errors.New("账号探测器未运行")
+// ErrNoProbeLogin 表示账号没有可探登录（名下没有正常登录）。
+var ErrNoProbeLogin = errors.New("账号没有可用登录")
+
+// ErrStopped 表示探测器未启动或已停止。
+var ErrStopped = errors.New("账号探测器未运行")
 
 // QuotaProber 是探测器对额度适配子系统的使用方接口（实现：*quota.Registry）。
 type QuotaProber interface {
 	Probe(ctx context.Context, req quota.Request) (quota.Snapshot, error)
 }
 
-// AccountProberConfig 是探测器的装配参数，全部由组装点（cmd/agentd.go）注入。
-type AccountProberConfig struct {
-	Accounts   AccountsClient               // 读账号、写读数（共享账本）
+// ProberAccounts 是探测器对账号域的使用方接口（实现：*accounts.Service）。方法集 = 生产调用
+// 闭包：List（周期扫描）、Get（立即探测读账号与可探登录）、RecordProbe（写回读数行）。
+type ProberAccounts interface {
+	List() ([]accounts.View, error)
+	Get(ref string) (accounts.View, error)
+	RecordProbe(id string, o accounts.ProbeOutcome) error
+}
+
+// ProberConfig 是探测器的装配参数，全部由组装点（cmd/agentd.go）注入。
+type ProberConfig struct {
+	Accounts   ProberAccounts               // 读账号与登录、写读数（共享账本）
 	Quota      QuotaProber                  // 按 kind 分派的额度适配
-	IsSelf     func(machine string) bool    // 账号所在机是否本机（Server.IsSelfMachine）
+	IsSelf     func(machine string) bool    // 登录所在机是否本机（Server.IsSelfMachine）
 	Writer     string                       // 写者标识：本机自名
 	ExpandHome func(string) (string, error) // ~ 展开（hostapi.ExpandHomePath）
-	Proxy      func() string                // 账号未填代理时的回落：活配置 proxy:（plan Q5）
+	Proxy      func() string                // 登录未填代理时的回落：活配置 proxy:（plan Q5）
 	Logger     *slog.Logger
 }
 
-// AccountProber 是所在机探测器。零值不可用，经 NewAccountProber 构造。
-type AccountProber struct {
-	cfg       AccountProberConfig
+// Prober 是所在机探测器。零值不可用，经 NewProber 构造。
+type Prober struct {
+	cfg       ProberConfig
 	log       *slog.Logger
 	scanEvery time.Duration
 	now       func() time.Time
 
 	mu       sync.Mutex
-	inflight map[string]*probeFlight // 账号名 → 在飞探测（单飞）
+	inflight map[string]*probeFlight // 账号 id → 在飞探测（单飞）
 	sem      chan struct{}
 	ctx      context.Context // Start 后的生命周期 ctx；nil = 未运行
 	cancel   context.CancelFunc
@@ -77,13 +89,13 @@ type AccountProber struct {
 	wg       sync.WaitGroup
 }
 
-// NewAccountProber 构造探测器（不启动）。Start 之前 ProbeNow 返回 ErrAccountProberStopped。
-func NewAccountProber(cfg AccountProberConfig) *AccountProber {
+// NewProber 构造探测器（不启动）。Start 之前 ProbeNow 返回 ErrStopped。
+func NewProber(cfg ProberConfig) *Prober {
 	logger := cfg.Logger
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &AccountProber{
+	return &Prober{
 		cfg: cfg, log: logger.With("component", "account_prober"),
 		scanEvery: accountProbeScan, now: time.Now,
 		inflight: map[string]*probeFlight{}, sem: make(chan struct{}, accountProbeConcurrency),
@@ -91,7 +103,7 @@ func NewAccountProber(cfg AccountProberConfig) *AccountProber {
 }
 
 // Start 启动周期扫描（启动即扫一次）。ctx 取消或 Stop 后退出。重复调用只生效一次。
-func (p *AccountProber) Start(parent context.Context) {
+func (p *Prober) Start(parent context.Context) {
 	p.mu.Lock()
 	if p.ctx != nil || p.stopped {
 		p.mu.Unlock()
@@ -119,7 +131,7 @@ func (p *AccountProber) Start(parent context.Context) {
 }
 
 // Stop 取消生命周期并等扫描循环与在飞探测退出。未启动时无操作；可重复调用。
-func (p *AccountProber) Stop() {
+func (p *Prober) Stop() {
 	p.mu.Lock()
 	cancel := p.cancel
 	already := p.stopped
@@ -133,8 +145,8 @@ func (p *AccountProber) Stop() {
 	p.log.Info("账号探测器已停止", "writer", p.cfg.Writer)
 }
 
-// scan 扫一遍账号：本机、到期、不在飞、有空位的发起探测；其余等下一轮。
-func (p *AccountProber) scan(ctx context.Context) {
+// scan 扫一遍账号：可探登录在本机、到期、不在飞、有空位的发起探测；其余等下一轮。
+func (p *Prober) scan(ctx context.Context) {
 	views, err := p.cfg.Accounts.List()
 	if err != nil {
 		p.log.Warn("账号探测扫描：列账号失败", "cause", err)
@@ -146,31 +158,45 @@ func (p *AccountProber) scan(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		if !p.cfg.IsSelf(v.Account.Machine) || !probeDue(v, now) {
+		login, ok := probeLoginOf(v)
+		if !ok || !p.cfg.IsSelf(login.Machine) || !probeDue(v, now) {
 			continue
 		}
 		due++
 		select {
 		case p.sem <- struct{}{}:
 		default:
-			p.log.Debug("账号探测并发已满，留待下一轮", "account", v.Account.Name)
+			p.log.Debug("账号探测并发已满，留待下一轮", "account", v.Account.ID)
 			continue
 		}
-		flight, started := p.claim(v.Account.Name)
+		flight, started := p.claim(v.Account.ID)
 		if !started {
 			<-p.sem // 已在飞（立即探测正在跑），本轮不重复
 			continue
 		}
 		p.wg.Add(1)
-		go func(a accounts.Account, streak int) {
+		go func(a accounts.Account, l accounts.Login, streak int) {
 			defer p.wg.Done()
 			defer func() { <-p.sem }()
-			p.release(a.Name, flight, p.probeOnce(ctx, a, streak, "periodic"))
-		}(v.Account, v.Record.FailureStreak)
+			p.release(a.ID, flight, p.probeOnce(ctx, a, l, streak, "periodic"))
+		}(v.Account, login, v.Record.FailureStreak)
 	}
 	if due > 0 {
 		p.log.Debug("账号探测扫描完成", "accounts", len(views), "due", due)
 	}
+}
+
+// probeLoginOf 取读面上的可探登录（accounts 域已按 Q10 选好 id）。
+func probeLoginOf(v accounts.View) (accounts.Login, bool) {
+	if v.ProbeLogin == "" {
+		return accounts.Login{}, false
+	}
+	for _, lv := range v.Logins {
+		if lv.Login.ID == v.ProbeLogin {
+			return lv.Login, true
+		}
+	}
+	return accounts.Login{}, false
 }
 
 // probeDue：从未尝试 → 到期；否则上次尝试 + retryWait 已过。节拍全由读数行推出，
@@ -207,7 +233,7 @@ type probeFlight struct {
 }
 
 // claim 登记在飞：返回在飞记录与是否由本调用者负责执行（false = 已有人在探）。
-func (p *AccountProber) claim(name string) (*probeFlight, bool) {
+func (p *Prober) claim(name string) (*probeFlight, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if f, ok := p.inflight[name]; ok {
@@ -219,7 +245,7 @@ func (p *AccountProber) claim(name string) (*probeFlight, bool) {
 }
 
 // release 结束在飞：先写 err 再关 done（关闭建立 happens-before，等待者读 err 无竞争）。
-func (p *AccountProber) release(name string, f *probeFlight, err error) {
+func (p *Prober) release(name string, f *probeFlight, err error) {
 	p.mu.Lock()
 	delete(p.inflight, name)
 	p.mu.Unlock()
@@ -227,44 +253,50 @@ func (p *AccountProber) release(name string, f *probeFlight, err error) {
 	close(f.done)
 }
 
-// ProbeNow 立即探测一个本机账号并返回探测后的读面。同一账号已在飞时等它结束，
-// 不并发再探（单飞）。探测在探测器生命周期 ctx 下执行——调用方断开不会把半途
-// 取消记成一次「探测失败」；ctx 只约束调用方等待多久。
+// ProbeNow 立即探测一个账号（可探登录须在本机）并返回探测后的读面。同一账号已在飞时等它
+// 结束，不并发再探（单飞）。探测在探测器生命周期 ctx 下执行——调用方断开不会把半途
+// 取消记成一次「探测失败」；ctx 只约束调用方等待多久。ref 是账号 id 或名字。
 //
 // 返回：探测后的 View（失败也是正常返回，失败写在读数行里）；账号不存在包
-// accounts.ErrNotFound；不在本机 ErrAccountNotLocal；未运行 ErrAccountProberStopped。
-func (p *AccountProber) ProbeNow(ctx context.Context, name string) (accounts.View, error) {
+// accounts.ErrNotFound；没有可探登录 ErrNoProbeLogin；可探登录不在本机 ErrNotLocal；
+// 未运行 ErrStopped。
+func (p *Prober) ProbeNow(ctx context.Context, ref string) (accounts.View, error) {
 	if !p.running() {
-		return accounts.View{}, ErrAccountProberStopped
+		return accounts.View{}, ErrStopped
 	}
-	v, err := p.cfg.Accounts.Get(name)
+	v, err := p.cfg.Accounts.Get(ref)
 	if err != nil {
 		return accounts.View{}, err
 	}
-	if !p.cfg.IsSelf(v.Account.Machine) {
-		return accounts.View{}, fmt.Errorf("%w：账号 %s 的所在机是 %s", ErrAccountNotLocal, name, v.Account.Machine)
+	login, ok := probeLoginOf(v)
+	if !ok {
+		return accounts.View{}, fmt.Errorf("%w：账号 %s 名下没有状态正常的登录", ErrNoProbeLogin, v.Account.Name)
 	}
+	if !p.cfg.IsSelf(login.Machine) {
+		return accounts.View{}, fmt.Errorf("%w：账号 %s 的可探登录在 %s", ErrNotLocal, v.Account.Name, login.Machine)
+	}
+	id := v.Account.ID
 	// 在飞登记与 wg.Add 同在锁内、且只在未停止时发生：Stop 置 stopped 后才 Wait，
 	// 保证没有 Add 晚于 Wait（WaitGroup 的使用约束）。
 	p.mu.Lock()
 	if p.stopped {
 		p.mu.Unlock()
-		return accounts.View{}, ErrAccountProberStopped
+		return accounts.View{}, ErrStopped
 	}
 	life := p.ctx
-	flight, busy := p.inflight[name]
+	flight, busy := p.inflight[id]
 	if !busy {
 		flight = &probeFlight{done: make(chan struct{})}
-		p.inflight[name] = flight
+		p.inflight[id] = flight
 		p.wg.Add(1)
 	}
 	p.mu.Unlock()
 	if busy {
-		p.log.Info("立即探测：账号已在探测中，等待其结果", "account", name)
+		p.log.Info("立即探测：账号已在探测中，等待其结果", "account", id)
 	} else {
 		go func() {
 			defer p.wg.Done()
-			p.release(name, flight, p.probeOnce(life, v.Account, v.Record.FailureStreak, "now"))
+			p.release(id, flight, p.probeOnce(life, v.Account, login, v.Record.FailureStreak, "now"))
 		}()
 	}
 	select {
@@ -276,66 +308,82 @@ func (p *AccountProber) ProbeNow(ctx context.Context, name string) (accounts.Vie
 		// 结果没写进账本：如实报错，不把旧读数当「探测成功」交回。
 		return accounts.View{}, flight.err
 	}
-	return p.cfg.Accounts.Get(name)
+	return p.cfg.Accounts.Get(id)
 }
 
-func (p *AccountProber) running() bool {
+func (p *Prober) running() bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.ctx != nil && !p.stopped
 }
 
-// probeOnce 执行一次探测并写回读数行。凭据值只在 quota 包内存在；这里只见结果。
+// probeOnce 经登录 l 执行一次探测并写回读数行。凭据值只在 quota 包内存在；这里只见结果。
 //
-// 返回：nil = 结论（成功或失败）已写回；停机取消返回 ErrAccountProberStopped；
+// 返回：nil = 结论（成功或失败）已写回；停机取消返回 ErrStopped；
 // 写回失败返回该错误——两者都意味着读数行没有记下这次探测。
-func (p *AccountProber) probeOnce(ctx context.Context, a accounts.Account, prevStreak int, trigger string) error {
+func (p *Prober) probeOnce(ctx context.Context, a accounts.Account, l accounts.Login, prevStreak int, trigger string) error {
 	started := p.now()
 	ctx, cancel := context.WithTimeout(ctx, accountProbeBudget)
 	defer cancel()
-	proxy := a.Proxy
+	proxy := l.Proxy
 	if proxy == "" && p.cfg.Proxy != nil {
 		proxy = p.cfg.Proxy()
 	}
-	p.log.Info("账号探测开始", "account", a.Name, "kind", a.Kind, "machine", a.Machine,
-		"trigger", trigger, "proxy", proxycfg.Mask(proxy), "account_proxy", a.Proxy != "")
-	outcome := accounts.ProbeOutcome{StartedAt: started, Writer: p.cfg.Writer}
-	home, err := p.cfg.ExpandHome(a.HomeDir)
+	p.log.Info("账号探测开始", "account", a.ID, "name", a.Name, "kind", a.Kind, "login", l.ID,
+		"machine", l.Machine, "home", l.Home, "source", l.Source, "trigger", trigger,
+		"proxy", proxycfg.Mask(proxy), "login_proxy", l.Proxy != "")
+	outcome := accounts.ProbeOutcome{StartedAt: started, Writer: p.cfg.Writer, Login: l.ID}
+	home, err := p.cfg.ExpandHome(l.Home)
 	var snap quota.Snapshot
 	if err != nil {
-		err = &quota.Failure{Category: quota.CategoryCredentialMissing, Message: fmt.Sprintf("凭据 HOME %q 无法展开：%v", a.HomeDir, err)}
+		err = &quota.Failure{Category: quota.CategoryCredentialMissing, Message: fmt.Sprintf("登录 HOME %q 无法展开：%v", l.Home, err)}
 	} else {
-		snap, err = p.cfg.Quota.Probe(ctx, quota.Request{Kind: a.Kind, Home: home, Entry: a.Entry, Proxy: proxy})
+		snap, err = p.cfg.Quota.Probe(ctx, quota.Request{Kind: a.Kind, Home: home, Entry: SourceEntry(l.Kind, l.Source), Proxy: proxy})
 	}
 	outcome.FinishedAt = p.now()
 	elapsed := outcome.FinishedAt.Sub(started)
 	if ctx.Err() != nil && errors.Is(ctx.Err(), context.Canceled) {
 		// 停机途中被取消：不是账号的问题，不落一次失败。
-		p.log.Info("账号探测随停机取消，不写结果", "account", a.Name, "elapsed", elapsed)
-		return ErrAccountProberStopped
+		p.log.Info("账号探测随停机取消，不写结果", "account", a.ID, "elapsed", elapsed)
+		return ErrStopped
 	}
 	if err != nil {
 		outcome.Failure = problemOf(err)
 	} else {
 		outcome.Reading = readingOf(snap, outcome.FinishedAt)
 	}
-	if werr := p.cfg.Accounts.RecordProbe(a.Name, outcome); werr != nil {
-		p.log.Error("账号探测结果写回失败", "account", a.Name, "kind", a.Kind, "cause", werr)
+	if werr := p.cfg.Accounts.RecordProbe(a.ID, outcome); werr != nil {
+		p.log.Error("账号探测结果写回失败", "account", a.ID, "kind", a.Kind, "cause", werr)
 		return fmt.Errorf("账号 %s 的探测结果写回账本失败: %w", a.Name, werr)
 	}
 	if outcome.Failure != nil {
 		next := outcome.FinishedAt.Add(retryWait(a, accounts.ReadingRecord{
 			LastError: outcome.Failure, FailureStreak: prevStreak + 1}))
-		p.log.Warn("账号探测失败", "account", a.Name, "kind", a.Kind, "machine", a.Machine,
+		p.log.Warn("账号探测失败", "account", a.ID, "name", a.Name, "kind", a.Kind, "login", l.ID,
 			"category", outcome.Failure.Category, "cause", outcome.Failure.Message,
 			"failure_streak", prevStreak+1, "next", next, "elapsed", elapsed)
 		return nil
 	}
 	next := outcome.FinishedAt.Add(time.Duration(a.IntervalMinutes) * time.Minute)
-	p.log.Info("账号探测成功", "account", a.Name, "kind", a.Kind, "machine", a.Machine,
+	p.log.Info("账号探测成功", "account", a.ID, "name", a.Name, "kind", a.Kind, "login", l.ID,
 		"windows", len(outcome.Reading.Windows), "blocked", outcome.Reading.Blocked != nil,
 		"elapsed", elapsed, "next", next)
 	return nil
+}
+
+// SourceEntry 把登录的凭据来源名映射成额度适配的条目（plan V8：探测按登录 source 取凭据）。
+// opencode-go：auth.json → `opencode-go` 条目（API key），opencode.db → 登录账号。其余 kind
+// 的来源在 B464 段 2 接入，暂按适配器缺省条目。
+func SourceEntry(kind, source string) string {
+	if kind == accounts.KindOpencodeGo {
+		switch source {
+		case "auth.json":
+			return "opencode-go"
+		case "opencode.db":
+			return "opencode.db"
+		}
+	}
+	return ""
 }
 
 // problemOf 把适配器错误映射成编制域的失败原因（*quota.Failure 之外的归 internal）。

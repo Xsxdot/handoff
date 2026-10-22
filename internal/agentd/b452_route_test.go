@@ -115,7 +115,7 @@ func (p *b452Pair) addLocalCarrierA(t *testing.T, maxConc int) {
 	t.Helper()
 	putOnlineCarrier(t, p.b.sched, scheduling.Carrier{ // 经 B 登记：B 的 targets 认得 t452-mac
 		Name: b452CarrierA, Machine: b452MachineA, CLI: "fake", HomeDir: "",
-		Credential: scheduling.CredentialStandalone, MaxConcurrency: maxConc, Status: scheduling.StatusOnline,
+		MaxConcurrency: maxConc, Status: scheduling.StatusOnline,
 	})
 }
 

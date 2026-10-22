@@ -68,7 +68,7 @@ func seedQueueCoordinator(t *testing.T, env *ledgerEnv) *queueTraceRunner {
 	svc := mustScheduling(t, env.srv)
 	putOnlineCarrier(t, svc, scheduling.Carrier{
 		Name: "coord-carrier", Machine: "local", CLI: "opencode",
-		HomeDir: "/tmp/coord-home", Credential: scheduling.CredentialStandalone,
+		HomeDir:        "/tmp/coord-home",
 		MaxConcurrency: 1,
 		Status:         scheduling.StatusOnline,
 	})
@@ -121,8 +121,8 @@ func TestDrainQueuesDefersCoordinatorNoSlotAndContinues(t *testing.T) {
 	svc := mustScheduling(t, env.srv)
 	putOnlineCarrier(t, svc, scheduling.Carrier{
 		Name: "c2", Machine: "ftm", CLI: "opencode", HomeDir: "/tmp/c2-home",
-		Credential: scheduling.CredentialStandalone, MaxConcurrency: 1,
-		Status: scheduling.StatusOnline,
+		MaxConcurrency: 1,
+		Status:         scheduling.StatusOnline,
 	})
 	if err := svc.PutSquad(scheduling.Squad{
 		Name: "sq2", Role: scheduling.RoleExecutor,
@@ -195,8 +195,8 @@ func setupNoPTYSquadEnv(t *testing.T, carrierMax int) *ledgerEnv {
 	}
 	putOnlineCarrier(t, mustScheduling(t, env.srv), scheduling.Carrier{
 		Name: "c1", Machine: "ftm", CLI: "opencode",
-		Credential: scheduling.CredentialStandalone, MaxConcurrency: carrierMax,
-		Status: scheduling.StatusOnline,
+		MaxConcurrency: carrierMax,
+		Status:         scheduling.StatusOnline,
 	})
 	if err := mustScheduling(t, env.srv).PutSquad(scheduling.Squad{
 		Name: "sq1", Role: scheduling.RoleExecutor, Members: []scheduling.SquadMember{{Carrier: "c1", MaxConcurrency: 8}},
@@ -604,12 +604,12 @@ func TestB389WakeUsesFrozenCarrierNotLaunchAdmit(t *testing.T) {
 	svc := mustScheduling(t, env.srv)
 	putOnlineCarrier(t, svc, scheduling.Carrier{
 		Name: "coord-carrier", Machine: "local", CLI: "opencode",
-		HomeDir: "/tmp/coord-home", Credential: scheduling.CredentialStandalone,
+		HomeDir:        "/tmp/coord-home",
 		MaxConcurrency: 1, Status: scheduling.StatusOnline,
 	})
 	putOnlineCarrier(t, svc, scheduling.Carrier{
 		Name: "coord-carrier-2", Machine: "local", CLI: "opencode",
-		HomeDir: "/tmp/coord-home-2", Credential: scheduling.CredentialStandalone,
+		HomeDir:        "/tmp/coord-home-2",
 		MaxConcurrency: 1, Status: scheduling.StatusOnline,
 	})
 	if err := svc.PutSquad(scheduling.Squad{Name: "coord", Role: scheduling.RoleCoordinator,

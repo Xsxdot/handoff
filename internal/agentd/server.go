@@ -35,6 +35,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Xsxdot/handoff/internal/agentd/accountwork"
 	"github.com/Xsxdot/handoff/internal/client"
 	"github.com/Xsxdot/handoff/internal/collab"
 	"github.com/Xsxdot/handoff/internal/config"
@@ -189,11 +190,11 @@ type Server struct {
 	autoLedger *ledgerapi.Facade
 	ptyGate    *ptyapi.Host
 	hostAPI    *hostapi.Host
-	// B453 账号域：账号读写（使用方接口 AccountsClient）与所在机探测器，cmd 组装点
-	// 经 SetAccounts / SetAccountProber 注入。探测器只在挂共享账本的机器上装配；
+	// B453 账号域：账号读写（使用方接口 AccountsClient）与所在机探测器（B464 起在 accountwork
+	// 子包），cmd 组装点经 SetAccounts / SetAccountProber 注入。探测器只在挂共享账本的机器上装配；
 	// nil = 本机不执行探测（立即探测到本机账号回 503）。
 	accounts      AccountsClient
-	accountProber *AccountProber
+	accountProber *accountwork.Prober
 	// B432 iOS 推送扇出：「需要你」事件 → APNs。NewServer 构造（凭据未配齐时
 	// sender 为 nil，投递静默降级站内），装配点经 StartPush 起 worker；
 	// 两条事件旁路（合成钩子 + 自动化循环）与 badge 同源计数都接在它上面。
@@ -1591,7 +1592,7 @@ type coordinatorRunner struct {
 	// isPushResidentSession 判续接的 CLI 会话是不是 push 驻场者（B444 P2 返工四，review C2）：是 → 本轮不注入
 	// 卡席位对。事实在账本（经 collab），不在 SessionRef（B233.2 冻结镜像不加字段）。nil = 未装配，Resume 拒跑。
 	isPushResidentSession func(sessionID string) (bool, error)
-	// accountProxy 按（CLI, 规范化 HOME）查协调者载体所选账号的代理（B453 S4：协调者回合也套账号代理）；
+	// accountProxy 按（CLI, 规范化 HOME）查协调者载体所选登录的代理（B453 S4：协调者回合也套代理）；
 	// nil 或返回空串 = 沿用今天的环境。
 	accountProxy func(cli, homeDir string) string
 }

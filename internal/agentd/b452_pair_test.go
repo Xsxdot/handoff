@@ -62,7 +62,9 @@ func newB452Host(t *testing.T, st *ledger.Store, ledgerPath, name string, steps 
 	ads := map[string]executor.Adapter{}
 	if steps != nil {
 		fk = fake.New(steps)
-		ads["fake"] = fk
+		// B464：载体选登录要求 CLI 与登录 kind 兼容（fake 不兼容任何 kind）；要带账号的夹具用
+		// codex 名挂同一个 fake（namedFake）。
+		ads["fake"], ads["codex"] = fk, namedFake{fk, "codex"}
 	}
 	mgr := newManagerForServer(t, srv, ads)
 	srv.SetConfigPath(filepath.Join(t.TempDir(), "config.yaml"))
@@ -71,6 +73,22 @@ func newB452Host(t *testing.T, st *ledger.Store, ledgerPath, name string, steps 
 	env := &ledgerEnv{testAgentdEnv: &testAgentdEnv{srv: srv, ts: ts, st: backend, token: testToken},
 		ledger: st, ledgerPath: ledgerPath}
 	return &b452Host{ledgerEnv: env, name: name, mgr: mgr, fake: fk, sched: sched, logs: logs}
+}
+
+// namedFake 让同一个 fake 执行器以别的 CLI 名进执行器与能力注册表：B464 起载体选登录要求 CLI 与
+// 登录 kind 兼容（accounts.CompatibleKinds，fake 不兼容任何 kind），要带账号的夹具用它扮演 codex /
+// opencode 执行器。只改登记名，行为全是 fake。
+type namedFake struct {
+	*fake.Fake
+	name string
+}
+
+func (f namedFake) Name() string { return f.name }
+
+func (f namedFake) Report() executor.CapabilityReport {
+	r := f.Fake.Report()
+	r.Harness = f.name
+	return r
 }
 
 func (h *b452Host) addr() string { return strings.TrimPrefix(h.ts.URL, "http://") }
@@ -125,7 +143,7 @@ func newB452Pair(t *testing.T, steps []fake.Step) *b452Pair {
 	b.setTargets(t, map[string]string{b452MachineA: a.addr()})
 	putOnlineCarrier(t, a.sched, scheduling.Carrier{
 		Name: b452CarrierB, Machine: b452MachineB, CLI: "fake",
-		HomeDir: "", Credential: scheduling.CredentialStandalone,
+		HomeDir:        "",
 		MaxConcurrency: 1, Status: scheduling.StatusOnline,
 	})
 	repo := initTestRepo(t)

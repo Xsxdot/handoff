@@ -75,7 +75,7 @@ func TestB439S6FrozenDispatchRejectsLegacyCarrierMachine(t *testing.T) {
 	// 存量记录：注册时机器尚无自名，machine=local 合法落库。
 	putOnlineCarrier(t, svc, scheduling.Carrier{
 		Name: "stale-box", Machine: "local", CLI: "fake", HomeDir: "",
-		Credential: scheduling.CredentialStandalone, MaxConcurrency: 1,
+		MaxConcurrency: 1,
 	})
 	// 机器现在配了自名，组装点注入自名与旧别名判据（镜像 cmd/agentd.go）。
 	env.srv.conf().Name = "linux-01"

@@ -191,7 +191,7 @@ func TestB448R1RecoverOnStartupNoLongerReconciles(t *testing.T) {
 func TestB448R1SquadsRunningViewHidesHolders(t *testing.T) {
 	env := newSchedNoPTYEnv(t)
 	putOnlineCarrier(t, env.svc, scheduling.Carrier{Name: "c9", Machine: "m1", CLI: "opencode",
-		HomeDir: "/h", Credential: scheduling.CredentialStandalone, MaxConcurrency: 4,
+		HomeDir: "/h", MaxConcurrency: 4,
 		Status: scheduling.StatusOnline})
 	for i := 0; i < 2; i++ {
 		if _, err := env.svc.AdmitCarrier("c9"); err != nil {

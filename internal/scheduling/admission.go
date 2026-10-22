@@ -1,6 +1,7 @@
 // admission.go —— 统一准入判据（B453 段 3，spec S5 / plan V10）。
 //
-// 职责：「载体可用 = 载体已上线 且 所选账号不在低额度/无额度」只在这里判一次；五个准入
+// 职责：「载体可用 = 载体已上线 且 所选登录所属账号不在低额度/无额度」只在这里判一次（B464 起
+// 载体 → 登录 → 账号）；五个准入
 // 入口（AdmitCarrier、SelectWhere、AdmitFrozen、AdmitSeatCarrier、admitInto）与 gateway
 // 的他机点名派发预检（CheckUsable）都经 usability，不得在入口另写一份（结构断言见
 // b453_admission_test.go）。不可用时给点名说明：载体、账号、状态、预计恢复（spec S5 文案）。
@@ -20,15 +21,16 @@ import (
 )
 
 // SetAccounts 注入账号领域服务（组装点与 accounts API 同一实例，同一 registry 端口）。
-// 准入据此读载体所选账号的状态；载体登记据此校验账号引用；检测撞额度据此打标记。
-// 与 SetSelfName 一样只在组装点调用一次；nil = 不看账号（载体 account 引用登记被拒）。
+// 准入据此读载体所选登录所属账号的状态；载体登记据此校验登录引用并镜像 HOME；检测撞额度据此
+// 打标记；存量载体迁移据此读本机登录。与 SetSelfName 一样只在组装点调用一次；nil = 不看账号
+// （载体选登录被拒）。
 func (s *Service) SetAccounts(a *accounts.Service) { s.accounts = a }
 
 // Unusable 是一个载体在准入中视同不可用的点名说明（spec S5）。
 type Unusable struct {
 	Carrier   string
 	Status    CarrierStatus  // 载体本身未上线时的状态
-	Account   string         // 因账号被挡时为账号名；空 = 因载体状态被挡
+	Account   string         // 因账号被挡时为账号名（展示用）；空 = 因载体状态被挡
 	State     accounts.State // 账号状态（低额度/无额度）
 	RecoverAt *time.Time     // 预计恢复时刻；nil = 未知
 	now       time.Time
@@ -79,34 +81,45 @@ func HumanDuration(d time.Duration) string {
 }
 
 // usability 是统一准入判据。返回 nil = 可用；非 nil = 不可用及点名说明；error 只表示读取
-// 故障（账号定义/读数行读不出），调用方按准入失败上浮，与载体读取失败同等处理。
+// 故障（登录/账号定义/读数行读不出），调用方按准入失败上浮，与载体读取失败同等处理。
 //
-// 所选账号已被删除（删除与载体选该账号并发，plan §7 门禁绕过族）按「未选账号」放行并 Warn：
-// 账号删了就不再有可挡的读数，拦住它只会让载体莫名不可用。
+// 所选登录或其账号已被删除（删除与载体选择并发，plan §10 门禁绕过族）按「未选账号登录」放行
+// 并 Warn：账号删了就不再有可挡的读数，拦住它只会让载体莫名不可用。登录「已失效」的准入跳过
+// 在 B464 段 2。
 func (s *Service) usability(c Carrier) (*Unusable, error) {
 	if c.Status != StatusOnline {
 		return &Unusable{Carrier: c.Name, Status: c.Status}, nil
 	}
-	name := strings.TrimSpace(c.Account)
-	if name == "" || s.accounts == nil {
+	loginID := strings.TrimSpace(c.Login)
+	if loginID == "" || s.accounts == nil {
 		return nil, nil
 	}
-	now := time.Now()
-	a, err := s.accounts.Assess(name, now)
+	login, err := s.accounts.Login(loginID)
 	if err != nil {
 		if errors.Is(err, accounts.ErrNotFound) {
-			statusLog().Warn("载体所选账号不存在，按未选账号准入", "carrier", c.Name, "account", name)
+			statusLog().Warn("载体所选登录不存在，按未选账号登录准入", "carrier", c.Name, "login", loginID)
 			return nil, nil
 		}
-		statusLog().Error("准入读取载体账号失败", "carrier", c.Name, "account", name, "cause", err)
-		return nil, fmt.Errorf("载体 %s 的账号 %s 读取失败: %w", c.Name, name, err)
+		statusLog().Error("准入读取载体登录失败", "carrier", c.Name, "login", loginID, "cause", err)
+		return nil, fmt.Errorf("载体 %s 的账号登录 %s 读取失败: %w", c.Name, loginID, err)
+	}
+	now := time.Now()
+	a, err := s.accounts.Assess(login.Account, now)
+	if err != nil {
+		if errors.Is(err, accounts.ErrNotFound) {
+			statusLog().Warn("载体所选登录的账号不存在，按未选账号登录准入", "carrier", c.Name, "login", loginID,
+				"account", login.Account)
+			return nil, nil
+		}
+		statusLog().Error("准入读取载体账号失败", "carrier", c.Name, "login", loginID, "account", login.Account, "cause", err)
+		return nil, fmt.Errorf("载体 %s 的账号 %s 读取失败: %w", c.Name, login.Account, err)
 	}
 	if !a.State.Blocks() {
 		return nil, nil
 	}
-	u := &Unusable{Carrier: c.Name, Status: c.Status, Account: name, State: a.State, RecoverAt: a.RecoverAt, now: now}
-	statusLog().Info("准入因账号跳过载体", "carrier", c.Name, "account", name, "state", a.State,
-		"recover_at", a.RecoverAt)
+	u := &Unusable{Carrier: c.Name, Status: c.Status, Account: a.Account.Name, State: a.State, RecoverAt: a.RecoverAt, now: now}
+	statusLog().Info("准入因账号跳过载体", "carrier", c.Name, "login", loginID, "account", login.Account,
+		"state", a.State, "recover_at", a.RecoverAt)
 	return u, nil
 }
 
@@ -135,20 +148,21 @@ func noUsableMember(squad string, skipped []string) error {
 	return &unusableError{msg: "小队 " + squad + " 没有可用载体——" + strings.Join(skipped, "；")}
 }
 
-// CarriersUsingAccount 列出所选账号为 account 的载体名（排序）。组装点把它注入账号域的
-// 引用查询（accounts.SetReferrers）：删除被引用账号拒删并点名载体（spec S1）、账号读面
-// carriers 列。
-func (s *Service) CarriersUsingAccount(account string) ([]string, error) {
+// LoginReferrers 返回「登录 id → 选了它的载体名（排序）」。组装点把它注入账号域的引用查询
+// （accounts.SetReferrers）：账号读面 carriers 列、删除被引用账号拒删并点名载体（spec S5）。
+func (s *Service) LoginReferrers() (map[string][]string, error) {
 	carriers, err := s.Carriers()
 	if err != nil {
-		return nil, fmt.Errorf("列载体以查账号 %s 的引用: %w", account, err)
+		return nil, fmt.Errorf("列载体以查登录引用: %w", err)
 	}
-	var out []string
+	out := map[string][]string{}
 	for _, c := range carriers {
-		if c.Account == account {
-			out = append(out, c.Name)
+		if id := strings.TrimSpace(c.Login); id != "" {
+			out[id] = append(out[id], c.Name)
 		}
 	}
-	sort.Strings(out)
+	for id := range out {
+		sort.Strings(out[id])
+	}
 	return out, nil
 }

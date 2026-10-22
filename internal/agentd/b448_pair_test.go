@@ -230,7 +230,7 @@ func newB448Pair(t *testing.T, opts b448PairOpts) *b448Pair {
 	}
 	putOnlineCarrier(t, a.sched, scheduling.Carrier{
 		Name: b448Carrier, Machine: b448MachineB, CLI: "opencode",
-		HomeDir: "/home/t448", Credential: scheduling.CredentialStandalone,
+		HomeDir:        "/home/t448",
 		MaxConcurrency: maxConc, Status: scheduling.StatusOnline,
 	})
 	if err := a.sched.PutSquad(scheduling.Squad{

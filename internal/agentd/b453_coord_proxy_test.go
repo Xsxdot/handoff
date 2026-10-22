@@ -77,7 +77,7 @@ func TestB453CoordinatorRoundsUseAccountProxy(t *testing.T) {
 	}
 }
 
-// 门面解析：按（CLI, 展开后的 HOME）找本机协调者载体，取其账号代理；账号不在本机不套用。
+// 门面解析：按（CLI, 展开后的 HOME）找本机协调者载体，取其所选登录的代理；登录不在本机不套用。
 func TestB453CoordinatorAccountProxyResolves(t *testing.T) {
 	env := newSchedEnv(t)
 	acc := wireAccounts(t, env)
@@ -85,10 +85,12 @@ func TestB453CoordinatorAccountProxyResolves(t *testing.T) {
 	if self == "" {
 		self = "local"
 	}
-	putTestAccount(t, acc, "cx-self", self, "http://u:p@127.0.0.1:1080")
 	home := t.TempDir()
-	putOnlineCarrier(t, env.svc, scheduling.Carrier{Name: "coord-c", Machine: self, CLI: "opencode", HomeDir: home,
-		Credential: scheduling.CredentialStandalone, MaxConcurrency: 1, Account: "cx-self"})
+	// 登录 HOME 就是协调者载体的 HOME（载体 home_dir 由服务端镜像为登录 home）。
+	login := putOpencodeLogin(t, acc, self, home)
+	setLoginProxy(t, env.srv.SchedulingRegistry(), login, "http://u:p@127.0.0.1:1080")
+	putOnlineCarrier(t, env.svc, scheduling.Carrier{Name: "coord-c", Machine: self, CLI: "opencode",
+		MaxConcurrency: 1, Login: login})
 	if got := env.srv.coordinatorAccountProxy("opencode", home); got != "http://u:p@127.0.0.1:1080" {
 		t.Fatalf("应解析到载体账号代理，得 %q", got)
 	}

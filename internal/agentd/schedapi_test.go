@@ -126,7 +126,7 @@ func TestSquadsGetEmptyIsLegalState(t *testing.T) {
 func TestSquadsGetReportsRunning(t *testing.T) {
 	env := newSchedEnv(t)
 	if err := env.svc.PutCarrier(scheduling.Carrier{Name: "cmd", Machine: "m1",
-		CLI: "opencode", HomeDir: "/h", Credential: scheduling.CredentialStandalone}, 0); err != nil {
+		CLI: "opencode", HomeDir: "/h"}, 0); err != nil {
 		t.Fatalf("登记载体: %v", err)
 	}
 	if err := env.svc.PutSquad(scheduling.Squad{Name: "pro", Role: scheduling.RoleCoordinator,
@@ -164,7 +164,8 @@ func TestSquadsGetReportsRunning(t *testing.T) {
 // 适配器的 CAS 翻译在场（K2 已落地）——它翻红时先查 translateRegistryErr。
 func TestCarrierPutRoundtripThroughWire(t *testing.T) {
 	env := newSchedEnv(t)
-	body := `{"machine":"m1","cli":"opencode","home_dir":"/h","credential":"standalone","max_concurrency":2}`
+	// B464：请求体残留的 home_dir/credential 键被忽略；「无账号 · 主 HOME」镜像为空 HOME。
+	body := `{"machine":"m1","cli":"opencode","home_dir":"/h","credential":"standalone","no_account":true,"max_concurrency":2}`
 	code, respBody := schedReq(t, env, http.MethodPut, "/api/squads/carriers/c1?expect=0", body)
 	if code != http.StatusOK {
 		t.Fatalf("新建应 200，得 %d：%s", code, respBody)
@@ -189,7 +190,7 @@ func TestCarrierPutRoundtripThroughWire(t *testing.T) {
 	}
 	c := view.Carriers[0]
 	want := proto.CarrierView{Name: "c1", Machine: "m1", CLI: "opencode",
-		HomeDir: "/h", Credential: "standalone", MaxConcurrency: 2,
+		HomeDir: "", NoAccount: true, MaxConcurrency: 2,
 		Status: "pending", Version: 1}
 	if c != want {
 		t.Fatalf("往返不等:\n got=%+v\nwant=%+v", c, want)
@@ -199,7 +200,8 @@ func TestCarrierPutRoundtripThroughWire(t *testing.T) {
 // B293：运行命令由服务端按已存 HOME×CLI 生成，客户端不得拼接。
 func TestCarrierRunCommandThroughWire(t *testing.T) {
 	env := newSchedEnv(t)
-	body := `{"machine":"m1","cli":"codex","home_dir":"~/.handoff/home/c1","credential":"standalone"}`
+	login := putTestLogin(t, env.srv.SchedulingRegistry(), wireAccounts(t, env), "c1", "m1", "", "")
+	body := `{"machine":"m1","cli":"codex","login":"` + login + `"}`
 	code, respBody := schedReq(t, env, http.MethodPut, "/api/squads/carriers/c1?expect=0", body)
 	if code != http.StatusOK {
 		t.Fatalf("新建应 200，得 %d：%s", code, respBody)
@@ -221,32 +223,28 @@ func TestCarrierRunCommandThroughWire(t *testing.T) {
 	}
 	// 更新：expect=1 → version=2。
 	code, _ = schedReq(t, env, http.MethodPut, "/api/squads/carriers/c1?expect=1",
-		`{"machine":"m1","cli":"opencode","home_dir":"/h2","credential":"standalone"}`)
+		`{"machine":"m1","cli":"opencode","no_account":true,"max_concurrency":3}`)
 	if code != http.StatusOK {
 		t.Fatalf("expect=1 更新应 200，得 %d", code)
 	}
 	// 过期 expect → 409（正文来自 schedclient 哨兵经组装点翻译后的文案）。
 	code, rb := schedReq(t, env, http.MethodPut, "/api/squads/carriers/c1?expect=99",
-		`{"machine":"m1","cli":"opencode","credential":"standalone"}`)
+		`{"machine":"m1","cli":"opencode","no_account":true}`)
 	if code != http.StatusConflict ||
 		(!strings.Contains(rb, "版本冲突") && !strings.Contains(rb, "冲突")) {
 		t.Fatalf("过期 expect 应 409 带冲突文案，得 %d：%s", code, rb)
 	}
 	// 缺 expect → 400 且点名参数（不许「没带就当 0」的静默语义）。
 	code, rb = schedReq(t, env, http.MethodPut, "/api/squads/carriers/c1",
-		`{"machine":"m1","cli":"opencode","credential":"standalone"}`)
+		`{"machine":"m1","cli":"opencode","no_account":true}`)
 	if code != http.StatusBadRequest || !strings.Contains(rb, "expect") {
 		t.Fatalf("缺 expect 应 400 点名参数，得 %d：%s", code, rb)
 	}
-	// 非法凭据来源：400 且文案点名两个合法词（400 报文可行动的门禁半边）。
-	// 报文必须带「登记校验未过」前缀——证明拒因来自域内 PutCarrier 的
-	// ErrInvalid 臂，而不是网关的词表预检（Major-2 收敛后网关无词表校验）。
+	// B464 A14：login 与 no_account 须恰一个（凭据来源词表已删）：400 且文案可行动。
 	code, rb = schedReq(t, env, http.MethodPut, "/api/squads/carriers/c2?expect=0",
 		`{"machine":"m","cli":"cli","credential":"boss"}`)
-	if code != http.StatusBadRequest ||
-		!strings.Contains(rb, "登记校验未过") ||
-		!strings.Contains(rb, "standalone") || !strings.Contains(rb, "main_home_sync") {
-		t.Fatalf("非法 credential 应 400 点名词表且源自域校验，得 %d：%s", code, rb)
+	if code != http.StatusBadRequest || !strings.Contains(rb, "二选一") {
+		t.Fatalf("未选登录也未选无账号应 400 点名二选一，得 %d：%s", code, rb)
 	}
 }
 
@@ -266,7 +264,7 @@ func TestSquadPutValidatesMembersAndRole(t *testing.T) {
 		t.Fatalf("非法角色应 400 点名词表且源自域校验，得 %d：%s", code, rb)
 	}
 	code, _ = schedReq(t, env, http.MethodPut, "/api/squads/carriers/c1?expect=0",
-		`{"machine":"m1","cli":"opencode","credential":"standalone"}`)
+		`{"machine":"m1","cli":"opencode","no_account":true}`)
 	if code != http.StatusOK {
 		t.Fatalf("前置载体登记失败 %d", code)
 	}
@@ -296,7 +294,7 @@ func TestSquadPutMemberPolicyRoundtripThroughWire(t *testing.T) {
 	env.srv.log = slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	for _, name := range []string{"c1", "c2"} {
 		code, body := schedReq(t, env, http.MethodPut, "/api/squads/carriers/"+name+"?expect=0",
-			`{"machine":"m1","cli":"opencode","credential":"standalone"}`)
+			`{"machine":"m1","cli":"opencode","no_account":true}`)
 		if code != http.StatusOK {
 			t.Fatalf("登记载体 %s 失败 %d: %s", name, code, body)
 		}
@@ -434,7 +432,7 @@ func TestSchedulingEndpointsRequireAuth(t *testing.T) {
 func TestCarrierPutBlankNameIs400(t *testing.T) {
 	env := newSchedEnv(t)
 	code, rb := schedReq(t, env, http.MethodPut, "/api/squads/carriers/%20?expect=0",
-		`{"machine":"m1","cli":"opencode","credential":"standalone"}`)
+		`{"machine":"m1","cli":"opencode","no_account":true}`)
 	if code != http.StatusBadRequest {
 		t.Fatalf("空白载体名应 400，得 %d：%s", code, rb)
 	}
@@ -455,8 +453,8 @@ func TestSquadPutBlankNameIs400(t *testing.T) {
 func TestCarrierPutMissingRequiredFieldsIs400(t *testing.T) {
 	env := newSchedEnv(t)
 	for name, body := range map[string]string{
-		"缺 machine": `{"cli":"opencode","credential":"standalone"}`,
-		"缺 cli":     `{"machine":"m1","credential":"standalone"}`,
+		"缺 machine": `{"cli":"opencode","no_account":true}`,
+		"缺 cli":     `{"machine":"m1","no_account":true}`,
 	} {
 		code, rb := schedReq(t, env, http.MethodPut, "/api/squads/carriers/cx?expect=0", body)
 		if code != http.StatusBadRequest || !strings.Contains(rb, "登记校验未过") {
@@ -468,23 +466,26 @@ func TestCarrierPutMissingRequiredFieldsIs400(t *testing.T) {
 func TestCarrierPutUnknownMachineIs400(t *testing.T) {
 	env := newSchedEnv(t)
 	code, rb := schedReq(t, env, http.MethodPut, "/api/squads/carriers/ghost?expect=0",
-		`{"machine":"ghost-box","cli":"opencode","credential":"standalone"}`)
+		`{"machine":"ghost-box","cli":"opencode","no_account":true}`)
 	if code != http.StatusBadRequest || !strings.Contains(rb, "登记校验未过") ||
 		!strings.Contains(rb, "ghost-box") || !strings.Contains(rb, "targets") {
 		t.Fatalf("未知机器应 400 点名机器与 targets，得 %d：%s", code, rb)
 	}
 }
 
-func TestCarrierPutEmptyCredentialDefaultsStandalone(t *testing.T) {
+// B464：凭据来源缺省 standalone 的语义随 credential 删除；本机「无账号」载体照常登记且读面
+// 不再出现 credential 键。
+func TestCarrierPutNoAccountLocalHasNoCredentialKey(t *testing.T) {
 	env := newSchedEnv(t)
 	code, rb := schedReq(t, env, http.MethodPut, "/api/squads/carriers/plain?expect=0",
-		`{"machine":"本机","cli":"grok"}`)
+		`{"machine":"本机","cli":"grok","no_account":true}`)
 	if code != http.StatusOK {
-		t.Fatalf("空凭据本机载体应 200，得 %d：%s", code, rb)
+		t.Fatalf("无账号本机载体应 200，得 %d：%s", code, rb)
 	}
 	_, body := schedReq(t, env, http.MethodGet, "/api/squads", "")
-	if !strings.Contains(body, `"name":"plain"`) || !strings.Contains(body, `"credential":"standalone"`) {
-		t.Fatalf("空凭据应落 standalone：%s", body)
+	if !strings.Contains(body, `"name":"plain"`) || strings.Contains(body, `"credential"`) ||
+		!strings.Contains(body, `"no_account":true`) {
+		t.Fatalf("读面应带 no_account 而无 credential：%s", body)
 	}
 }
 
@@ -509,7 +510,7 @@ func TestCarrierDeleteSeam(t *testing.T) {
 
 	// 先建载体 c1 和小队 s1（c1 属于 s1）
 	code, _ := schedReq(t, env, http.MethodPut, "/api/squads/carriers/c1?expect=0",
-		`{"machine":"m1","cli":"opencode","credential":"standalone"}`)
+		`{"machine":"m1","cli":"opencode","no_account":true}`)
 	if code != http.StatusOK {
 		t.Fatalf("登记 c1 失败")
 	}
@@ -521,7 +522,7 @@ func TestCarrierDeleteSeam(t *testing.T) {
 
 	// 建不在任何小队的未入队载体 c2
 	code, _ = schedReq(t, env, http.MethodPut, "/api/squads/carriers/c2?expect=0",
-		`{"machine":"m1","cli":"opencode","credential":"standalone"}`)
+		`{"machine":"m1","cli":"opencode","no_account":true}`)
 	if code != http.StatusOK {
 		t.Fatalf("登记 c2 失败")
 	}

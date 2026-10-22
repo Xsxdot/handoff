@@ -1,5 +1,7 @@
 // b453_admission_test.go —— B453 段 3 编制域回归：「限额中」退役与读时归一（Q12/Q19）、
-// 载体账号引用（V7）、统一准入判据与 S5 点名文案（V10）。
+// 统一准入判据与 S5 点名文案（V10）。B464 段 1 起载体经所选登录引用账号：夹具账号由发现
+// 归并建出（label = 账号名），载体选它在同机的登录；载体账号引用的登记校验改在
+// b464_carrier_login_test.go。
 //
 // 职责：经真实账本门面（facadeRegistry）把载体、小队、账号定义与读数行落盘，锁五个准入
 // 入口（AdmitCarrier、SelectWhere、AdmitFrozen、AdmitSeatCarrier、admitInto 经 Admit/
@@ -8,6 +10,8 @@
 package scheduling_test
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"os"
 	"path/filepath"
@@ -38,12 +42,24 @@ func newAccountFixture(t *testing.T) (*scheduling.Service, *accounts.Service, *l
 	return svc, acc, facade
 }
 
-func putAccount(t *testing.T, acc *accounts.Service, name, machine string) {
+// putAccount 以一次发现归并在 machine 的 `~/.handoff/home/<name>` 里建出一个 codex 账号（label =
+// name，自动名即 name），返回账号 id。B464：账号只由发现建。
+func putAccount(t *testing.T, acc *accounts.Service, name, machine string) string {
 	t.Helper()
-	if _, err := acc.Put(accounts.Account{Name: name, Kind: accounts.KindCodex, Machine: machine,
-		HomeDir: "/home/" + name, IntervalMinutes: 15, WarnPercent: 60, LowPercent: 80}, 0); err != nil {
-		t.Fatalf("登记账号 %s: %v", name, err)
+	sum := sha256.Sum256([]byte(name))
+	fp := "sha256:" + hex.EncodeToString(sum[:])[:12]
+	if _, err := acc.Reconcile(accounts.Discovery{Machine: machine, At: time.Now(), Homes: []accounts.ScannedHome{{
+		Home: "~/.handoff/home/" + name, HomeAbs: "/home/" + name,
+		Logins: []accounts.FoundLogin{{Kind: accounts.KindCodex, Source: "auth.json", Fingerprint: fp, Label: name}},
+	}}}); err != nil {
+		t.Fatalf("发现建账号 %s: %v", name, err)
 	}
+	return accounts.AccountID(accounts.KindCodex, "", fp)
+}
+
+// loginOf 是 putAccount 建出的那条登录的 id。
+func loginOf(name, machine string) string {
+	return accounts.LoginID(machine, "~/.handoff/home/"+name, accounts.KindCodex, "", "auth.json")
 }
 
 // setUsage 写一次成功读数：一个窗口已用 used%，resetIn 后重置（0 = 不给重置时刻）。
@@ -70,11 +86,11 @@ func setProbeFailed(t *testing.T, acc *accounts.Service, name string) {
 	}
 }
 
-// boundCarrier 登记一个绑定账号的在线载体（同机账号）。
+// boundCarrier 登记一个选了账号同机登录的在线载体（HOME 由服务端按登录镜像）。
 func boundCarrier(t *testing.T, svc *scheduling.Service, name, machine, account string) {
 	t.Helper()
 	putOnlineCarrier(t, svc, scheduling.Carrier{Name: name, Machine: machine, CLI: "codex",
-		HomeDir: "/home/" + name, Credential: scheduling.CredentialStandalone, Account: account})
+		Login: loginOf(account, machine)})
 }
 
 var recoverRE = regexp.MustCompile(`预计 \d+h\d+m 后恢复`)
@@ -105,16 +121,14 @@ func TestLegacyDetectQuotaWritesOnlineAndMarksAccount(t *testing.T) {
 	svc, acc, facade := newAccountFixture(t)
 	putAccount(t, acc, "cx", "m1")
 	boundCarrier(t, svc, "bound", "m1", "cx")
-	putOnlineCarrier(t, svc, scheduling.Carrier{Name: "free", Machine: "m1", CLI: "codex",
-		Credential: scheduling.CredentialStandalone})
+	putOnlineCarrier(t, svc, scheduling.Carrier{Name: "free", Machine: "m1", CLI: "codex", NoAccount: true})
 
-	got, err := svc.ApplyDetect("bound", scheduling.DetectEvidence{Reachable: true, Quota: true,
-		Fingerprint: "sha256:aaaaaaaaaaaa"}, "You've hit your usage limit")
+	got, err := svc.ApplyDetect("bound", scheduling.DetectEvidence{Reachable: true, Quota: true}, "You've hit your usage limit")
 	if err != nil {
 		t.Fatalf("绑定账号的载体检测撞额度: %v", err)
 	}
-	if got.Status != scheduling.StatusOnline || got.LastError != "" || got.CredFingerprint != "sha256:aaaaaaaaaaaa" {
-		t.Fatalf("绑定账号：载体 = %q/%q/%q，want online/空/指纹写回", got.Status, got.LastError, got.CredFingerprint)
+	if got.Status != scheduling.StatusOnline || got.LastError != "" {
+		t.Fatalf("绑定账号：载体 = %q/%q，want online/空", got.Status, got.LastError)
 	}
 	a, err := acc.Assess("cx", time.Now())
 	if err != nil || a.State != accounts.StateOut {
@@ -130,56 +144,6 @@ func TestLegacyDetectQuotaWritesOnlineAndMarksAccount(t *testing.T) {
 	}
 	if got.Status != scheduling.StatusOnline || got.LastError != "insufficient_quota" {
 		t.Fatalf("未绑定账号：载体 = %q/%q，want online/额度原因进最近错误", got.Status, got.LastError)
-	}
-}
-
-func TestAdmitPutCarrierAccountReference(t *testing.T) {
-	svc, acc, facade := newAccountFixture(t)
-	putAccount(t, acc, "cx-m1", "m1")
-	base := scheduling.Carrier{Name: "c1", Machine: "m2", CLI: "codex", HomeDir: "/h/c1",
-		Credential: scheduling.CredentialStandalone}
-
-	other := base
-	other.Account = "cx-m1"
-	if err := svc.PutCarrier(other, 0); !errors.Is(err, scheduling.ErrInvalid) || !strings.Contains(err.Error(), "cx-m1") {
-		t.Fatalf("选他机账号应 ErrInvalid 且点名账号，得 %v", err)
-	}
-	missing := base
-	missing.Account = "ghost"
-	if err := svc.PutCarrier(missing, 0); !errors.Is(err, scheduling.ErrInvalid) || !strings.Contains(err.Error(), "ghost") {
-		t.Fatalf("选不存在账号应 ErrInvalid 且点名账号，得 %v", err)
-	}
-	if err := svc.PutCarrier(base, 0); err != nil {
-		t.Fatalf("不选账号合法: %v", err)
-	}
-
-	same := base
-	same.Machine, same.Account = "m1", "cx-m1"
-	if err := svc.PutCarrier(same, 1); err != nil {
-		t.Fatalf("选同机账号: %v", err)
-	}
-	if _, err := svc.ApplyDetect("c1", scheduling.DetectEvidence{Reachable: true, Fingerprint: "sha256:111111111111"}, ""); err != nil {
-		t.Fatalf("检测写指纹: %v", err)
-	}
-	edit := same
-	edit.MaxConcurrency, edit.CredFingerprint = 3, "caller-must-not-set"
-	if err := svc.PutCarrier(edit, 3); err != nil {
-		t.Fatalf("改并发位: %v", err)
-	}
-	c, _ := svc.Carrier("c1")
-	if c.Account != "cx-m1" || c.CredFingerprint != "sha256:111111111111" {
-		t.Fatalf("编辑无关字段后 account/指纹 = %q/%q，want 保留", c.Account, c.CredFingerprint)
-	}
-	edit.Account = ""
-	if err := svc.PutCarrier(edit, 4); err != nil {
-		t.Fatalf("取消账号: %v", err)
-	}
-	c, _ = svc.Carrier("c1")
-	if c.Account != "" || c.CredFingerprint != "" {
-		t.Fatalf("换账号后 account/指纹 = %q/%q，want 空（旧指纹不再对应所选账号）", c.Account, c.CredFingerprint)
-	}
-	if raw := string(mustBody(t, facade, "carrier", "c1")); strings.Contains(raw, `"account"`) || strings.Contains(raw, `"cred_fingerprint"`) {
-		t.Fatalf("空 account/指纹应以键缺席表达：%s", raw)
 	}
 }
 
@@ -277,7 +241,7 @@ func TestAdmitFrozenRejectsBlockedAccount(t *testing.T) {
 	svc, acc, _ := newAccountFixture(t)
 	putAccount(t, acc, "cx", "m1")
 	boundCarrier(t, svc, "c1", "m1", "cx")
-	frozen := scheduling.Binding{Carrier: "c1", Target: "m1", Executor: "codex", HomeDir: "/home/c1"}
+	frozen := scheduling.Binding{Carrier: "c1", Target: "m1", Executor: "codex", HomeDir: "~/.handoff/home/cx"}
 	if _, err := svc.AdmitFrozen(frozen); err != nil {
 		t.Fatalf("未探测账号应放行: %v", err)
 	}
@@ -317,13 +281,13 @@ func TestAdmitSeatCarrierAndLaunchAdmitRejectBlockedAccount(t *testing.T) {
 
 func TestAdmitUnknownAccountTreatedAsUnbound(t *testing.T) {
 	svc, acc, facade := newAccountFixture(t)
-	putAccount(t, acc, "cx", "m1")
+	id := putAccount(t, acc, "cx", "m1")
 	boundCarrier(t, svc, "c1", "m1", "cx")
-	e, err := facade.Get("account", "cx")
+	e, err := facade.Get("account", id)
 	if err != nil {
 		t.Fatalf("读账号行: %v", err)
 	}
-	if err := facade.Delete("account", "cx", e.Version, "test"); err != nil {
+	if err := facade.Delete("account", id, e.Version, "test"); err != nil {
 		t.Fatalf("直删账号行（模拟删除与载体选该账号并发）: %v", err)
 	}
 	if _, err := svc.AdmitCarrier("c1"); err != nil {

@@ -79,19 +79,19 @@ func (s *Server) handleHomeWake(w http.ResponseWriter, r *http.Request) {
 			"error": "cli 必填"})
 		return
 	}
-	s.log.Info("唤起载体 HOME", "cli", in.CLI, "home_dir", in.HomeDir,
-		"account", in.Account, "fingerprint_kind", in.FingerprintKind)
+	// B464：账号 kind 与代理只认本机登录（凭据不过机间 wire、不复制，spec「凭据不复制」）
+	login := s.hostWakeLogin(in.Login)
+	s.log.Info("唤起载体 HOME", "cli", in.CLI, "home_dir", in.HomeDir, "login", in.Login,
+		"account_kind", login.Kind, "proxy_set", login.Proxy != "")
 	reply, err := s.hostAPI.WakeHome(r.Context(), hostapi.WakeRequest{
-		CLI: in.CLI, HomeDir: in.HomeDir, Credential: in.Credential, Model: in.Model,
-		AccountKind: in.FingerprintKind, AccountEntry: in.FingerprintEntry,
-		Proxy: s.hostWakeProxy(in.Account),
+		CLI: in.CLI, HomeDir: in.HomeDir, Model: in.Model,
+		AccountKind: login.Kind, Proxy: login.Proxy,
 	})
 	if err != nil {
 		s.hostProbeErr(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, proto.HomeWakeResp{Outcome: string(reply.Outcome), Detail: reply.Detail,
-		Fingerprint: reply.Fingerprint})
+	writeJSON(w, http.StatusOK, proto.HomeWakeResp{Outcome: string(reply.Outcome), Detail: reply.Detail})
 }
 
 func (s *Server) hostProbeErr(w http.ResponseWriter, err error) {

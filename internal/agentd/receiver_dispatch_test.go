@@ -38,7 +38,9 @@ func newReceiverTestEnv(t *testing.T) *receiverTestEnv {
 	cfg.Executor.Default = "opencode"
 	// B233.26：直接组装真实编排实现（ManagerFactory 桥退役）；工作区能力由
 	// newManagerForTest 按组装点语义注入。
-	mgr := newManagerForServer(t, env.srv, map[string]executor.Adapter{"fake": fake.New(nil)})
+	// B464：要带账号的用例用 codex 名挂同一个 fake（namedFake，见 b452_pair_test.go）。
+	fk := fake.New(nil)
+	mgr := newManagerForServer(t, env.srv, map[string]executor.Adapter{"fake": fk, "codex": namedFake{fk, "codex"}})
 	repo := initTestRepo(t)
 	return &receiverTestEnv{ledgerEnv: env, mgr: mgr, projectID: registerTestProject(t, mgr, repo)}
 }
@@ -51,7 +53,7 @@ func seedDefaultFakeCarrier(t *testing.T, srv *Server, cli string) {
 	}
 	putOnlineCarrier(t, svc, scheduling.Carrier{
 		Name: "muse", Machine: "local", CLI: cli,
-		HomeDir: "~/.handoff/home/muse", Credential: scheduling.CredentialStandalone,
+		HomeDir:        "~/.handoff/home/muse",
 		MaxConcurrency: 8, Status: scheduling.StatusOnline,
 	})
 	if err := svc.SetDefaultCarrier("muse"); err != nil {
@@ -144,8 +146,8 @@ func TestB23327FrozenRemoteTargetRejectedWithoutDispatch(t *testing.T) {
 	putTarget(t, env.srv, "linux-01", "192.0.2.9:7777")
 	putOnlineCarrier(t, mustScheduling(t, env.srv), scheduling.Carrier{
 		Name: "remote-box", Machine: "linux-01", CLI: "fake", HomeDir: "",
-		Credential: scheduling.CredentialStandalone, MaxConcurrency: 1,
-		Status: scheduling.StatusOnline,
+		MaxConcurrency: 1,
+		Status:         scheduling.StatusOnline,
 	})
 	rr := postDispatch(t, env.srv, dispatchBody(env.projectID,
 		`,"carrier":"remote-box","target":"linux-01","executor":"fake","home_dir":""`))
@@ -172,7 +174,7 @@ func TestB452OrdinaryRemoteBindingForwardsWithoutLocalDispatch(t *testing.T) {
 	putTarget(t, env.srv, "linux-01", deadPeerAddr(t))
 	putOnlineCarrier(t, mustScheduling(t, env.srv), scheduling.Carrier{
 		Name: "muse", Machine: "linux-01", CLI: "fake",
-		HomeDir: "~/.handoff/home/muse", Credential: scheduling.CredentialStandalone,
+		HomeDir:        "~/.handoff/home/muse",
 		MaxConcurrency: 8, Status: scheduling.StatusOnline,
 	})
 	if err := mustScheduling(t, env.srv).SetDefaultCarrier("muse"); err != nil {
@@ -195,8 +197,8 @@ func TestB23327SelfTargetNameStillDispatches(t *testing.T) {
 	putTarget(t, env.srv, "linux-01", env.srv.conf().Listen)
 	putOnlineCarrier(t, mustScheduling(t, env.srv), scheduling.Carrier{
 		Name: "self-box", Machine: "linux-01", CLI: "fake", HomeDir: "",
-		Credential: scheduling.CredentialStandalone, MaxConcurrency: 1,
-		Status: scheduling.StatusOnline,
+		MaxConcurrency: 1,
+		Status:         scheduling.StatusOnline,
 	})
 	rr := postDispatch(t, env.srv, dispatchBody(env.projectID,
 		`,"carrier":"self-box","target":"linux-01","executor":"fake","home_dir":""`))
@@ -236,8 +238,8 @@ func TestB23310FrozenEmptyHomeDirReachesTaskAsExplicitEmpty(t *testing.T) {
 	env := newReceiverTestEnv(t)
 	putOnlineCarrier(t, mustScheduling(t, env.srv), scheduling.Carrier{
 		Name: "empty-home", Machine: "local", CLI: "fake", HomeDir: "",
-		Credential: scheduling.CredentialStandalone, MaxConcurrency: 1,
-		Status: scheduling.StatusOnline,
+		MaxConcurrency: 1,
+		Status:         scheduling.StatusOnline,
 	})
 
 	var logs bytes.Buffer
@@ -280,8 +282,8 @@ func TestB23310FrozenMissingHomeDirIsRejectedForEmptyHomeCarrier(t *testing.T) {
 	env := newReceiverTestEnv(t)
 	putOnlineCarrier(t, mustScheduling(t, env.srv), scheduling.Carrier{
 		Name: "empty-home-missing", Machine: "local", CLI: "fake", HomeDir: "",
-		Credential: scheduling.CredentialStandalone, MaxConcurrency: 1,
-		Status: scheduling.StatusOnline,
+		MaxConcurrency: 1,
+		Status:         scheduling.StatusOnline,
 	})
 
 	rr := postDispatch(t, env.srv, dispatchBody(env.projectID,
@@ -324,7 +326,7 @@ func TestHandleDispatchExplicitReceiver(t *testing.T) {
 func TestHandleDispatchNameConflict(t *testing.T) {
 	env := newReceiverTestEnv(t)
 	facade := ledgerapi.New(env.ledger)
-	carrierBody, err := json.Marshal(scheduling.Carrier{Name: "muse", Machine: "local", CLI: "fake", Credential: scheduling.CredentialStandalone, Status: scheduling.StatusOnline})
+	carrierBody, err := json.Marshal(scheduling.Carrier{Name: "muse", Machine: "local", CLI: "fake", Status: scheduling.StatusOnline})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -378,10 +380,10 @@ func TestB23310ClientDispatchUsesFrozenIdentity(t *testing.T) {
 	env := newReceiverTestEnv(t)
 	svc := mustScheduling(t, env.srv)
 	putOnlineCarrier(t, svc, scheduling.Carrier{Name: "carrier-A", Machine: "local", CLI: "fake",
-		HomeDir: "/home/carrier-A", Credential: scheduling.CredentialStandalone,
+		HomeDir:        "/home/carrier-A",
 		MaxConcurrency: 1, Status: scheduling.StatusOnline})
 	putOnlineCarrier(t, svc, scheduling.Carrier{Name: "carrier-B", Machine: "local", CLI: "fake",
-		HomeDir: "/home/carrier-B", Credential: scheduling.CredentialStandalone,
+		HomeDir:        "/home/carrier-B",
 		MaxConcurrency: 1, Status: scheduling.StatusOnline})
 	if err := svc.PutSquad(scheduling.Squad{Name: "squad-A", Role: scheduling.RoleExecutor,
 		Members: []scheduling.SquadMember{{Carrier: "carrier-A", MaxConcurrency: 1}}}, 0); err != nil {
@@ -450,7 +452,7 @@ func TestHandleDispatchModelOverlay(t *testing.T) {
 func TestHandleDispatchNoSlotBusy(t *testing.T) {
 	env := newReceiverTestEnv(t)
 	putOnlineCarrier(t, mustScheduling(t, env.srv), scheduling.Carrier{Name: "muse", Machine: "local", CLI: "fake",
-		HomeDir: "~/.handoff/home/muse", Credential: scheduling.CredentialStandalone, MaxConcurrency: 1})
+		HomeDir: "~/.handoff/home/muse", MaxConcurrency: 1})
 	if err := mustScheduling(t, env.srv).SetDefaultCarrier("muse"); err != nil {
 		t.Fatal(err)
 	}
@@ -481,7 +483,7 @@ func setupSquadEnvWithHome(t *testing.T, home string) (*ledgerEnv, *fakeTargetMa
 		t.Fatalf("纪律块版本异常: %d", ver)
 	}
 	putOnlineCarrier(t, mustScheduling(t, env.srv), scheduling.Carrier{Name: "c1", Machine: "ftm", CLI: "opencode",
-		HomeDir: home, Credential: scheduling.CredentialStandalone, MaxConcurrency: 2})
+		HomeDir: home, MaxConcurrency: 2})
 	if err := mustScheduling(t, env.srv).PutSquad(scheduling.Squad{Name: "sq1", Role: scheduling.RoleExecutor,
 		Members: []scheduling.SquadMember{{Carrier: "c1", MaxConcurrency: 8}}}, 0); err != nil {
 		t.Fatalf("登记小队: %v", err)

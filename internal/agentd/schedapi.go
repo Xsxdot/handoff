@@ -27,10 +27,10 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
+	"strings"
 
 	"github.com/Xsxdot/handoff/internal/hostapi"
 	"github.com/Xsxdot/handoff/internal/proto"
-	"github.com/Xsxdot/handoff/internal/proxycfg"
 	"github.com/Xsxdot/handoff/internal/schedclient"
 	"github.com/Xsxdot/handoff/internal/scheduling"
 )
@@ -79,9 +79,9 @@ func (s *Server) handleSquadsGet(w http.ResponseWriter, r *http.Request) {
 		Carriers: make([]proto.CarrierView, 0, len(carrierRows)),
 		Squads:   make([]proto.SquadView, 0, len(squadRows)),
 	}
-	fingerprints := s.accountFingerprints()
+	logins := s.accountLoginIndex()
 	for _, row := range carrierRows {
-		resp.Carriers = append(resp.Carriers, carrierView(row.Carrier, row.Version, accountMismatch(row.Carrier, fingerprints)))
+		resp.Carriers = append(resp.Carriers, carrierView(row.Carrier, row.Version, logins))
 	}
 	for _, row := range squadRows {
 		resp.Squads = append(resp.Squads, squadView(row.Squad, row.Version))
@@ -126,13 +126,21 @@ func (s *Server) handleCarrierPut(w http.ResponseWriter, r *http.Request) {
 			"error": fmt.Sprintf("请求体 name %q 与路径 %q 不一致", in.Name, name)})
 		return
 	}
+	// B464 A14：载体只经「选登录」或「无账号 · 主 HOME」二选一表达 HOME；home_dir 由服务端按
+	// 所选登录镜像（请求体里残留的 home_dir/credential/account 键按未知键忽略，plan V10）。
+	in.Login = strings.TrimSpace(in.Login)
+	if (in.Login == "") == !in.NoAccount {
+		err := fmt.Errorf("载体 %s 须在「选账号登录（login）」与「无账号 · 主 HOME（no_account）」中二选一", name)
+		s.log.Warn("登记载体请求体校验未过", "name", name, "login", in.Login, "no_account", in.NoAccount, "cause", err)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
 	carrier := scheduling.Carrier{
-		Name: name, Machine: in.Machine, CLI: in.CLI, HomeDir: in.HomeDir,
-		Model: in.Model, Credential: scheduling.CredentialSource(in.Credential),
-		MaxConcurrency: in.MaxConcurrency, Account: in.Account,
+		Name: name, Machine: in.Machine, CLI: in.CLI, Model: in.Model,
+		MaxConcurrency: in.MaxConcurrency, Login: in.Login, NoAccount: in.NoAccount,
 	}
 	s.log.Info("登记载体", "name", name, "expect", expect,
-		"machine", in.Machine, "cli", in.CLI, "account", in.Account)
+		"machine", in.Machine, "cli", in.CLI, "login", in.Login, "no_account", in.NoAccount)
 	if err := s.scheduling.PutCarrier(carrier, expect); err != nil {
 		s.schedPutErr(w, "载体", name, err)
 		return
@@ -254,24 +262,23 @@ func (s *Server) handleCarrierDetect(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
 		return
 	}
-	acct := s.accountOfCarrier(carrier)
+	acct := s.loginOfCarrier(carrier)
 	s.log.Info("检测载体开始", "name", name, "machine", carrier.Machine, "path", r.URL.Path,
-		"account", acct.Name, "account_kind", acct.Kind)
+		"login", carrier.Login, "account", acct.Account, "account_kind", acct.Kind)
 	var wake proto.HomeWakeResp
 	if s.IsSelfMachine(carrier.Machine) {
-		if acct.Proxy != "" {
-			s.log.Info("检测回合使用账号代理", "name", name, "account", acct.Name, "proxy", proxycfg.Mask(acct.Proxy))
-		}
+		// 本机：kind 与代理取本机登录（hostWakeLogin 同一判据：登录不在本机不套代理）
+		local := s.hostWakeLogin(carrier.Login)
 		reply, wakeErr := s.hostAPI.WakeHome(r.Context(), hostapi.WakeRequest{
-			CLI: carrier.CLI, HomeDir: carrier.HomeDir, Credential: string(carrier.Credential), Model: carrier.Model,
-			AccountKind: acct.Kind, AccountEntry: acct.Entry, Proxy: acct.Proxy,
+			CLI: carrier.CLI, HomeDir: carrier.HomeDir, Model: carrier.Model,
+			AccountKind: local.Kind, Proxy: local.Proxy,
 		})
 		if wakeErr != nil {
 			s.log.Error("本机载体唤起失败", "name", name, "machine", carrier.Machine, "cause", wakeErr)
 			s.hostProbeErr(w, wakeErr)
 			return
 		}
-		wake = proto.HomeWakeResp{Outcome: string(reply.Outcome), Detail: reply.Detail, Fingerprint: reply.Fingerprint}
+		wake = proto.HomeWakeResp{Outcome: string(reply.Outcome), Detail: reply.Detail}
 	} else {
 		target, ok := s.remoteTarget(carrier.Machine)
 		if !ok {
@@ -286,10 +293,9 @@ func (s *Server) handleCarrierDetect(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadGateway, poolErr)
 			return
 		}
-		// 代理串不过机间 wire：只发账号名，目标机在本机账号域查（F15 + 本卡增键 account）。
+		// 代理串不过机间 wire：只发登录 id，目标机在本机账号域查 kind 与代理（B464 W1）。
 		body, marshalErr := json.Marshal(proto.HomeWakeReq{
-			CLI: carrier.CLI, HomeDir: carrier.HomeDir, Credential: string(carrier.Credential), Model: carrier.Model,
-			FingerprintKind: acct.Kind, FingerprintEntry: acct.Entry, Account: acct.Name,
+			CLI: carrier.CLI, HomeDir: carrier.HomeDir, Model: carrier.Model, Login: carrier.Login,
 		})
 		if marshalErr != nil {
 			s.log.Error("远程载体检测失败：编码唤起请求", "name", name, "machine", carrier.Machine, "cause", marshalErr)
@@ -330,7 +336,6 @@ func (s *Server) handleCarrierDetect(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadGateway, err)
 		return
 	}
-	ev.Fingerprint = wake.Fingerprint
 	c, err := s.scheduling.ApplyDetect(name, ev, wake.Detail)
 	if err != nil {
 		if errors.Is(err, scheduling.ErrDetectUnwired) {
@@ -364,7 +369,7 @@ func (s *Server) handleCarrierDetect(w http.ResponseWriter, r *http.Request) {
 	}
 	s.log.Info("载体检测完成", "name", name, "machine", carrier.Machine,
 		"outcome", wake.Outcome, "status", c.Status, "version", version,
-		"account", acct.Name, "fingerprint_set", c.CredFingerprint != "")
+		"login", carrier.Login, "account", acct.Account)
 	writeJSON(w, http.StatusOK, proto.CarrierDetectResp{
 		Name: c.Name, Status: string(c.Status), LastError: c.LastError,
 		Version: version,
@@ -463,14 +468,19 @@ func (s *Server) schedDeleteErr(w http.ResponseWriter, name string, err error) {
 // carrierView 把载体实体投影成 wire DTO。逐字段来源：九个业务字段（含所选账号）来自
 // 实体，Version 来自 registry 行版本，AccountMismatch 是唯一派生字段（载体指纹 vs 账号
 // 读数指纹，见 accountMismatch）。cred_fingerprint 本身不出 wire。
-func carrierView(c scheduling.Carrier, version int, mismatch bool) proto.CarrierView {
-	return proto.CarrierView{
+// logins 为 nil（账号域未装配/读失败）时不带派生的账号名与登录状态；所选登录在索引里查不到
+// （已被删或尚未同步）同样只带 login 键本身。
+func carrierView(c scheduling.Carrier, version int, logins loginIndex) proto.CarrierView {
+	v := proto.CarrierView{
 		Name: c.Name, Machine: c.Machine, CLI: c.CLI, HomeDir: c.HomeDir,
-		Model: c.Model, Credential: string(c.Credential),
-		MaxConcurrency: c.MaxConcurrency,
-		Status:         string(c.Status), LastError: c.LastError, Version: version,
-		Account: c.Account, AccountMismatch: mismatch,
+		Model: c.Model, MaxConcurrency: c.MaxConcurrency,
+		Status: string(c.Status), LastError: c.LastError, Version: version,
+		Login: c.Login, NoAccount: c.NoAccount,
 	}
+	if hit, ok := logins[c.Login]; ok && c.Login != "" {
+		v.AccountID, v.AccountName, v.LoginState = hit.accountID, hit.accountName, string(hit.state)
+	}
+	return v
 }
 
 // squadView 把小队实体投影成 wire DTO（来源同上）。

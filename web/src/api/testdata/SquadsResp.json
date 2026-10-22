@@ -5,7 +5,6 @@
       "machine": "mac-01",
       "cli": "opencode",
       "home_dir": "/Users/dev/.handoff/homes/opencode",
-      "credential": "standalone",
       "max_concurrency": 2,
       "version": 1
     },
@@ -13,13 +12,22 @@
       "name": "mac-01-opencode-flash",
       "machine": "mac-01",
       "cli": "opencode",
-      "home_dir": "/Users/dev/.handoff/homes/opencode-flash",
+      "home_dir": "",
       "model": "flash",
-      "credential": "standalone",
       "max_concurrency": 1,
       "version": 2,
-      "account": "og-mac",
-      "account_mismatch": true
+      "login": "login-0123456789abcdef",
+      "account_id": "opencode-go:3f9a1b2cc21e",
+      "account_name": "opencode-go-3f9a",
+      "login_state": "ok"
+    },
+    {
+      "name": "mac-01-agy",
+      "machine": "mac-01",
+      "cli": "agy",
+      "home_dir": "",
+      "version": 1,
+      "no_account": true
     }
   ],
   "squads": [

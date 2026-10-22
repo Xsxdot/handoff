@@ -25,11 +25,11 @@ func newEmptySvc(t *testing.T) (*scheduling.Service, *ledgerapi.Facade) {
 
 func TestPutCarrierRejectsSquadName(t *testing.T) {
 	svc, _ := newEmptySvc(t)
-	putOnlineCarrier(t, svc, scheduling.Carrier{Name: "muse", Machine: "local", CLI: "opencode", Credential: scheduling.CredentialStandalone})
+	putOnlineCarrier(t, svc, scheduling.Carrier{Name: "muse", Machine: "local", CLI: "opencode"})
 	if err := svc.PutSquad(scheduling.Squad{Name: "rd", Role: scheduling.RoleExecutor}, 0); err != nil {
 		t.Fatalf("先登记小队: %v", err)
 	}
-	err := svc.PutCarrier(scheduling.Carrier{Name: "rd", Machine: "local", CLI: "grok", Credential: scheduling.CredentialStandalone}, 0)
+	err := svc.PutCarrier(scheduling.Carrier{Name: "rd", Machine: "local", CLI: "grok"}, 0)
 	if !errors.Is(err, scheduling.ErrNameConflict) {
 		t.Fatalf("同名小队已在，PutCarrier 必须 ErrNameConflict，实得 %v", err)
 	}
@@ -37,7 +37,7 @@ func TestPutCarrierRejectsSquadName(t *testing.T) {
 
 func TestPutSquadRejectsCarrierName(t *testing.T) {
 	svc, _ := newEmptySvc(t)
-	putOnlineCarrier(t, svc, scheduling.Carrier{Name: "muse", Machine: "local", CLI: "opencode", Credential: scheduling.CredentialStandalone})
+	putOnlineCarrier(t, svc, scheduling.Carrier{Name: "muse", Machine: "local", CLI: "opencode"})
 	err := svc.PutSquad(scheduling.Squad{Name: "muse", Role: scheduling.RoleExecutor}, 0)
 	if !errors.Is(err, scheduling.ErrNameConflict) {
 		t.Fatalf("同名载体已在，PutSquad 必须 ErrNameConflict，实得 %v", err)
@@ -48,7 +48,7 @@ func TestAdmitCarrierOccupiesCarrierKeyOnly(t *testing.T) {
 	svc, facade := newEmptySvc(t)
 	putOnlineCarrier(t, svc, scheduling.Carrier{
 		Name: "muse", Machine: "linux-01", CLI: "opencode",
-		HomeDir: "~/.handoff/home/muse", Credential: scheduling.CredentialStandalone,
+		HomeDir:        "~/.handoff/home/muse",
 		MaxConcurrency: 2, Status: scheduling.StatusOnline,
 	})
 	b, err := svc.AdmitCarrier("muse")
@@ -95,7 +95,7 @@ func TestAdmitNoLongerOverridesPhysical(t *testing.T) {
 
 func TestAdmitCarrierOfflineIsNoHealthy(t *testing.T) {
 	svc, facade := newEmptySvc(t)
-	if err := svc.PutCarrier(scheduling.Carrier{Name: "muse", Machine: "local", CLI: "opencode", Credential: scheduling.CredentialStandalone}, 0); err != nil {
+	if err := svc.PutCarrier(scheduling.Carrier{Name: "muse", Machine: "local", CLI: "opencode"}, 0); err != nil {
 		t.Fatal(err)
 	}
 	_, err := svc.AdmitCarrier("muse")
@@ -110,7 +110,7 @@ func TestAdmitCarrierOfflineIsNoHealthy(t *testing.T) {
 func TestAdmitCarrierFullIsNoSlot(t *testing.T) {
 	svc, facade := newEmptySvc(t)
 	putOnlineCarrier(t, svc, scheduling.Carrier{
-		Name: "muse", Machine: "local", CLI: "opencode", Credential: scheduling.CredentialStandalone,
+		Name: "muse", Machine: "local", CLI: "opencode",
 		MaxConcurrency: 1,
 	})
 	if _, err := svc.AdmitCarrier("muse"); err != nil {

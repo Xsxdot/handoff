@@ -70,7 +70,7 @@ func newHoldersPair(t *testing.T) (a, b *scheduling.Service, f *ledgerapi.Facade
 	b = scheduling.New(facadeRegistry{f: f})
 	b.SetSelfName("B")
 	putOnlineCarrier(t, a, scheduling.Carrier{Name: "c1", Machine: "linux-01", CLI: "opencode",
-		Credential: scheduling.CredentialStandalone, MaxConcurrency: 8, Status: scheduling.StatusOnline})
+		MaxConcurrency: 8, Status: scheduling.StatusOnline})
 	if err := a.PutSquad(scheduling.Squad{Name: "sq", Role: scheduling.RoleExecutor,
 		Members: []scheduling.SquadMember{{Carrier: "c1", MaxConcurrency: 8}}}, 0); err != nil {
 		t.Fatalf("登记小队: %v", err)

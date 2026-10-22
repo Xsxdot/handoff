@@ -34,7 +34,7 @@ func newS6FrozenAliasFixture(t *testing.T, machine string) (*scheduling.Service,
 	svc, facade := newS6SchedulingService(t)
 	putOnlineCarrier(t, svc, scheduling.Carrier{
 		Name: "carrier-x", Machine: machine, CLI: "opencode", HomeDir: "/home/x",
-		Credential: scheduling.CredentialStandalone, MaxConcurrency: 1,
+		MaxConcurrency: 1,
 	})
 	svc.SetSelfName("linux-01")
 	svc.SetLegacyAlias(config.IsLegacyLocalAlias)
@@ -68,7 +68,6 @@ func TestB439S6CarrierRegistrationLegacyAliasGate(t *testing.T) {
 			}
 			err := svc.PutCarrier(scheduling.Carrier{
 				Name: "carrier-x", Machine: c.machine, CLI: "opencode",
-				Credential: scheduling.CredentialStandalone,
 			}, 0)
 			if !c.wantErr {
 				if err != nil {
@@ -169,7 +168,7 @@ func TestB439S6AdmitFrozenNoSelfNameKeepsToday(t *testing.T) {
 	svc, _ := newS6SchedulingService(t)
 	putOnlineCarrier(t, svc, scheduling.Carrier{
 		Name: "carrier-x", Machine: "local", CLI: "opencode", HomeDir: "/home/x",
-		Credential: scheduling.CredentialStandalone, MaxConcurrency: 1,
+		MaxConcurrency: 1,
 	})
 	svc.SetLegacyAlias(config.IsLegacyLocalAlias)
 	if _, err := svc.AdmitFrozen(scheduling.Binding{

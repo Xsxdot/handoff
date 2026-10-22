@@ -71,27 +71,24 @@ const (
 	WakeUnreachable WakeOutcome = "unreachable"
 )
 
-// WakeRequest 描述一次有时限的本机唤起。Credential 取载体词表（standalone /
-// main_home_sync）；空 = standalone。Timeout=0 使用 DefaultDetectTimeout。
+// WakeRequest 描述一次有时限的本机唤起。HomeDir 是载体 HOME（= 所选登录的 HOME，B464；空 =
+// 主 HOME）。Timeout=0 使用 DefaultDetectTimeout。B464 起检测不再供给任何凭据（main_home_sync
+// 复制删除）：HOME 里有什么凭据就用什么，没有就是需要登录。
 type WakeRequest struct {
-	CLI        string
-	HomeDir    string
-	Credential string
-	Model      string
-	Timeout    time.Duration
-	// AccountKind / AccountEntry 是载体所选账号的 kind 与凭据条目（wire fingerprint_kind /
-	// fingerprint_entry）：据此在载体 HOME 里算凭据指纹、缩小撞额度签名集合；空 = 未选账号。
-	AccountKind  string
-	AccountEntry string
-	// Proxy 是载体所选账号的代理（组装侧在所在机查得，不过机间 wire）；空 = 沿用今天的环境。
+	CLI     string
+	HomeDir string
+	Model   string
+	Timeout time.Duration
+	// AccountKind 是载体所选登录的 kind：据此缩小撞额度签名集合；空 = 未选账号登录。
+	AccountKind string
+	// Proxy 是载体所选登录的代理（组装侧在所在机查得，不过机间 wire）；空 = 沿用今天的环境。
 	Proxy string
 }
 
 // WakeReply 是唤起结局。Detail 给人看，原样交给 ApplyDetect 的 last_error。
 type WakeReply struct {
-	Outcome     WakeOutcome
-	Detail      string
-	Fingerprint string // 载体 HOME 凭据短指纹；空 = 未算或算不出（不比对）
+	Outcome WakeOutcome
+	Detail  string
 }
 
 // ProbeHome 只读探测目标机路径，先在目标 Host 进程展开 ~。它不创建、删除或
@@ -112,10 +109,11 @@ func (h *Host) ProbeHome(ctx context.Context, req ProbeRequest) (ProbeReply, err
 	return state.reply, nil
 }
 
-// WakeHome 用目标机展开后的隔离 HOME 跑一次检测。只在目标目录本身 empty
-// 且 Credential 为 main_home_sync 时先拷表内凭据。名单内再经 RunTurn 发
-// DetectPrompt；名单外只查命令（B342）。Timeout=0 使用 DefaultDetectTimeout。
-// 不进控制台登录 TUI。
+// WakeHome 用目标机展开后的载体 HOME 跑一次检测。名单内经 RunTurn 发 DetectPrompt；名单外
+// 只查命令（B342）。Timeout=0 使用 DefaultDetectTimeout。不进控制台登录 TUI。
+//
+// B464：凭据只读、永不复制——不再从主 HOME 拷凭据；HOME 不存在时不 mkdir 造空 HOME（那会把
+// 「登录已失效」伪装成「需要登录」），直接报需要登录并点名路径。
 func (h *Host) WakeHome(ctx context.Context, req WakeRequest) (WakeReply, error) {
 	started := time.Now()
 	timeout := req.Timeout
@@ -123,26 +121,18 @@ func (h *Host) WakeHome(ctx context.Context, req WakeRequest) (WakeReply, error)
 		timeout = DefaultDetectTimeout
 	}
 	req.Timeout = timeout
-	log().Info("开始检测载体 HOME", "cli", req.CLI,
-		"main_home_sync", req.Credential == "main_home_sync", "timeout", timeout.String())
-	state, err := h.inspectHome(ctx, ProbeRequest{
-		Path: req.HomeDir, CLI: req.CLI, Credential: req.Credential,
-	})
+	log().Info("开始检测载体 HOME", "cli", req.CLI, "home_dir", req.HomeDir,
+		"account_kind", req.AccountKind, "timeout", timeout.String())
+	state, err := h.inspectHome(ctx, ProbeRequest{Path: req.HomeDir, CLI: req.CLI})
 	if err != nil {
 		log().Error("检测前探测失败", "cli", req.CLI, "path", req.HomeDir,
 			"elapsed", time.Since(started).String(), "cause", err)
 		return WakeReply{}, err
 	}
-	if state.targetEmpty && req.Credential == "main_home_sync" {
-		if _, err := h.copyMainCredential(ctx, state.path, req.CLI); err != nil {
-			log().Error("主 HOME 凭据供给失败", "cli", req.CLI, "path", state.path,
-				"elapsed", time.Since(started).String(), "cause", err)
-			return WakeReply{}, err
-		}
-	}
-	if err := os.MkdirAll(state.path, 0o700); err != nil {
-		log().Error("创建载体 HOME 失败", "cli", req.CLI, "path", state.path, "cause", err)
-		return WakeReply{}, fmt.Errorf("hostapi: 创建目标 HOME %q: %w", state.path, err)
+	if _, statErr := os.Stat(state.path); errors.Is(statErr, os.ErrNotExist) {
+		detail := fmt.Sprintf("载体 HOME %s 不存在：该登录已失效或尚未在这里登录（在该机该 HOME 登录对应 CLI 后重新检测）", state.path)
+		log().Warn("检测载体 HOME：目录不存在，不创建", "cli", req.CLI, "path", state.path)
+		return WakeReply{Outcome: WakeNeedLogin, Detail: detail}, nil
 	}
 
 	reply, err := h.runWake(ctx, req, state.path)
@@ -151,32 +141,13 @@ func (h *Host) WakeHome(ctx context.Context, req WakeRequest) (WakeReply, error)
 			"elapsed", time.Since(started).String(), "cause", err)
 		return WakeReply{}, err
 	}
-	reply.Fingerprint = h.credentialFingerprint(req, state.path)
 	log().Info("检测载体 HOME 完成", "cli", req.CLI, "path", state.path,
-		"outcome", reply.Outcome, "fingerprint_set", reply.Fingerprint != "",
-		"elapsed", time.Since(started).String())
+		"outcome", reply.Outcome, "elapsed", time.Since(started).String())
 	return reply, nil
 }
 
-// credentialFingerprint 在载体 HOME（已展开）里按所选账号 kind/条目算凭据短指纹（spec S4、
-// plan F15）。未选账号、未注入取材函数、或凭据读不出 → 空串（投影不比对，不影响检测结局）。
-// 错误只记类别级说明：取材函数的错误文案按约定不含凭据值。
-func (h *Host) credentialFingerprint(req WakeRequest, home string) string {
-	if strings.TrimSpace(req.AccountKind) == "" || h.fingerprint == nil {
-		return ""
-	}
-	fp, err := h.fingerprint(req.AccountKind, home, req.AccountEntry)
-	if err != nil {
-		log().Warn("载体 HOME 凭据指纹算不出，本次不比对", "cli", req.CLI, "path", home,
-			"account_kind", req.AccountKind, "cause", err)
-		return ""
-	}
-	return fp
-}
-
-// homeProbeState 同时保留「目标目录本身是否为空」与对外三态。两者不能合并：
-// main_home_sync 的空目标在主 HOME 有凭据时对外是 logged_in，但 WakeHome 仍须
-// 依据目标目录为空决定是否执行一次性供给。
+// homeProbeState 同时保留「目标目录本身是否为空」与对外三态（ProbeHome 的 main_home_sync
+// 对照归 B464 段 4 随 /api/host/probe 一并删除）。
 type homeProbeState struct {
 	path        string
 	targetEmpty bool
@@ -312,46 +283,6 @@ func (h *Host) mainHomeHasCredential(ctx context.Context, cli string) (bool, err
 	} else {
 		return false, fmt.Errorf("hostapi: stat 主 HOME 凭据 %q: %w", filepath.Join(home, rel), err)
 	}
-}
-
-// copyMainCredential 把单个表内凭据从主 HOME 复制到目标 HOME；调用者已证明目标
-// 目录为空。权限沿用源文件，且只创建该文件需要的父目录，不搬运技能/规则树。
-func (h *Host) copyMainCredential(ctx context.Context, targetHome, cli string) (bool, error) {
-	if err := ctx.Err(); err != nil {
-		return false, fmt.Errorf("hostapi: 供给凭据被取消: %w", err)
-	}
-	rel, ok := h.resolveCredentialPath(cli)
-	if !ok {
-		return false, nil
-	}
-	mainHome, err := userHomeDir()
-	if err != nil {
-		return false, fmt.Errorf("hostapi: 获取主 HOME: %w", err)
-	}
-	source := filepath.Join(mainHome, rel)
-	info, err := os.Stat(source)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return false, nil
-		}
-		return false, fmt.Errorf("hostapi: stat 主 HOME 凭据 %q: %w", source, err)
-	}
-	data, err := os.ReadFile(source)
-	if err != nil {
-		return false, fmt.Errorf("hostapi: 读取主 HOME 凭据 %q: %w", source, err)
-	}
-	destination := filepath.Join(targetHome, rel)
-	if err := os.MkdirAll(filepath.Dir(destination), 0o700); err != nil {
-		return false, fmt.Errorf("hostapi: 创建凭据父目录 %q: %w", filepath.Dir(destination), err)
-	}
-	if err := os.WriteFile(destination, data, info.Mode().Perm()); err != nil {
-		return false, fmt.Errorf("hostapi: 写入隔离凭据 %q: %w", destination, err)
-	}
-	if err := os.Chmod(destination, info.Mode().Perm()); err != nil {
-		return false, fmt.Errorf("hostapi: 设置隔离凭据权限 %q: %w", destination, err)
-	}
-	log().Info("主 HOME 凭据供给完成", "cli", cli, "target", targetHome)
-	return true, nil
 }
 
 // runWake 用隔离 HOME 走检测。名单内 CLI 发 DetectPrompt；名单外只查同名

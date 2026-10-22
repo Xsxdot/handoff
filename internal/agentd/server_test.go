@@ -941,7 +941,7 @@ func TestDispatchEnvFailureReturns500WithCause(t *testing.T) {
 	t.Cleanup(func() { _ = ledgerStore.Close() })
 	env.srv.SetLedger(ledgerStore)
 	svc := agentd.SetupAutomationForTest(t, env.srv, ledgerStore)
-	if err := svc.PutCarrier(scheduling.Carrier{Name: "muse", Machine: "local", CLI: "fake", HomeDir: "", Credential: scheduling.CredentialStandalone}, 0); err != nil {
+	if err := svc.PutCarrier(scheduling.Carrier{Name: "muse", Machine: "local", CLI: "fake", HomeDir: ""}, 0); err != nil {
 		t.Fatalf("预置默认载体: %v", err)
 	}
 	if _, err := svc.ApplyDetect("muse", scheduling.DetectEvidence{Reachable: true}, ""); err != nil {

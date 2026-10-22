@@ -17,12 +17,12 @@ func TestCoordinatorSessionRefResolverEmptyHomeOnlineCarrier(t *testing.T) {
 	svc := mustScheduling(t, env.srv)
 
 	putOnlineCarrier(t, svc, scheduling.Carrier{
-		Name:       "c1",
-		Machine:    "本机",
-		CLI:        "opencode",
-		HomeDir:    "",
-		Credential: scheduling.CredentialStandalone,
-		Status:     scheduling.StatusOnline,
+		Name:    "c1",
+		Machine: "本机",
+		CLI:     "opencode",
+		HomeDir: "",
+
+		Status: scheduling.StatusOnline,
 	})
 	if err := svc.PutSquad(scheduling.Squad{
 		Name:    "coord",

@@ -45,20 +45,23 @@ var rerunStripKeys = []string{"carrier", "squad", "home_dir", "frozen_target", "
 // 编译期断言：门面实现编排的撞额度回调接口。
 var _ orchestration.QuotaHandler = (*Server)(nil)
 
-// MarkTaskQuota 实现 orchestration.QuotaHandler：标任务所用账号无额度。未选账号、账号已删或
-// 账号域未装配 → 不标（零值 Account），编排把原因写进任务失败原因。
+// MarkTaskQuota 实现 orchestration.QuotaHandler：标任务所用账号无额度。task.Account 是派发时
+// 快照的账号 id（B464 起，plan Q23）。未选账号登录、账号已删或账号域未装配 → 不标（零值 Account），
+// 编排把原因写进任务失败原因。QuotaHit.Account 给人看，取账号名。
 func (s *Server) MarkTaskQuota(task *proto.Task, f orchestration.QuotaFailure) orchestration.QuotaHit {
-	name := strings.TrimSpace(task.Account)
-	if name == "" || s.accounts == nil {
-		s.log.Info("任务撞额度：载体未选账号（或账号域未装配），不标账号", "task", task.ID,
+	id := strings.TrimSpace(task.Account)
+	if id == "" || s.accounts == nil {
+		s.log.Info("任务撞额度：载体未选账号登录（或账号域未装配），不标账号", "task", task.ID,
 			"carrier", task.Carrier, "signature", f.Signature)
 		return orchestration.QuotaHit{}
 	}
 	now := time.Now()
 	var hit orchestration.QuotaHit
-	if v, err := s.accounts.Get(name); err != nil {
-		s.log.Warn("任务撞额度：读账号失败，窗口与预计恢复按未知", "task", task.ID, "account", name, "cause", err)
+	name := id
+	if v, err := s.accounts.Get(id); err != nil {
+		s.log.Warn("任务撞额度：读账号失败，窗口与预计恢复按未知", "task", task.ID, "account", id, "cause", err)
 	} else {
+		name = v.Account.Name
 		ws, recoverAt := accounts.QuotaHitWindows(v.Account, v.Record, now)
 		for _, w := range ws {
 			hit.Windows = append(hit.Windows, accounts.WindowLabel(w)+" 已用 "+
@@ -70,13 +73,13 @@ func (s *Server) MarkTaskQuota(task *proto.Task, f orchestration.QuotaFailure) o
 	if r := []rune(msg); len(r) > 300 {
 		msg = string(r[:300]) + "…"
 	}
-	if err := s.accounts.MarkQuota(name, accounts.QuotaMark{At: now, Task: task.ID, Carrier: task.Carrier,
+	if err := s.accounts.MarkQuota(id, accounts.QuotaMark{At: now, Task: task.ID, Carrier: task.Carrier,
 		Machine: s.conf().Name, Category: quotaMarkCategory, Message: msg}); err != nil {
-		s.log.Error("任务撞额度：标记账号失败（账号状态待下次探测纠正）", "task", task.ID, "account", name, "cause", err)
+		s.log.Error("任务撞额度：标记账号失败（账号状态待下次探测纠正）", "task", task.ID, "account", id, "cause", err)
 		return hit
 	}
 	hit.Account = name
-	s.log.Info("任务撞额度已标账号无额度", "task", task.ID, "account", name, "carrier", task.Carrier,
+	s.log.Info("任务撞额度已标账号无额度", "task", task.ID, "account", id, "name", name, "carrier", task.Carrier,
 		"category", quotaMarkCategory, "signature", f.Signature, "windows", len(hit.Windows))
 	return hit
 }
@@ -227,15 +230,17 @@ func (s *Server) dispatchInProcess(ctx context.Context, body []byte) (int, []byt
 	return w.status, w.body.Bytes()
 }
 
-// rerunExcl 是重跑链排除集：账号名，及无账号成员的载体名。
+// rerunExcl 是重跑链排除集：账号 id（B464 起，plan Q23/W3），及无账号成员的载体名。account 把
+// 载体解析成其所选登录的账号 id（空 = 未选/读不到，按载体名计）。
 type rerunExcl struct {
-	set    map[string]bool
-	list   []string
-	accept func(scheduling.Carrier) bool // nil = 不排除
+	set     map[string]bool
+	list    []string
+	account func(scheduling.Carrier) string
+	accept  func(scheduling.Carrier) bool // nil = 不排除
 }
 
-func rerunExclusion(list []string) rerunExcl {
-	e := rerunExcl{set: map[string]bool{}}
+func (s *Server) rerunExclusion(list []string) rerunExcl {
+	e := rerunExcl{set: map[string]bool{}, account: func(c scheduling.Carrier) string { return s.loginOfCarrier(c).Account }}
 	for _, v := range list {
 		if v = strings.TrimSpace(v); v != "" && !e.set[v] {
 			e.set[v] = true
@@ -250,9 +255,10 @@ func rerunExclusion(list []string) rerunExcl {
 
 func (e rerunExcl) active() bool { return len(e.list) > 0 }
 
-// excludes：选了账号的按账号判，未选账号的按载体名判。
+// excludes：选了账号登录的按账号 id 判，未选的按载体名判。混版本期旧机存的是账号名，与 id 对不上
+// → 最多多换回同一账号一次（plan §11 W3，接受）。
 func (e rerunExcl) excludes(c scheduling.Carrier) bool {
-	if a := strings.TrimSpace(c.Account); a != "" {
+	if a := e.account(c); a != "" {
 		return e.set[a]
 	}
 	return e.set[c.Name]
@@ -291,8 +297,12 @@ func (s *Server) rerunNoMemberError(err error, squad string, e rerunExcl) error 
 				remaining++
 				continue
 			}
-			if c.Account != "" {
-				names = append(names, c.Name+"（账号 "+c.Account+"）")
+			if a := s.loginOfCarrier(c); a.Account != "" {
+				label := a.Account
+				if v, err := s.accounts.Get(a.Account); err == nil {
+					label = v.Account.Name
+				}
+				names = append(names, c.Name+"（账号 "+label+"）")
 			} else {
 				names = append(names, c.Name+"（未选账号）")
 			}

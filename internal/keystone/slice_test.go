@@ -135,7 +135,7 @@ func TestIgnitionVerticalSlice(t *testing.T) {
 	//    一个协调者小队。载体与小队经账本持久化——重启后仍在。
 	carrier := scheduling.Carrier{
 		Name: "opencode-1", Machine: "linux-01", CLI: "opencode",
-		HomeDir: "/home/coordinator/.opencode-home", Credential: scheduling.CredentialStandalone,
+		HomeDir:        "/home/coordinator/.opencode-home",
 		MaxConcurrency: 1,
 	}
 	if err := svc.PutCarrier(carrier, 0); err != nil {

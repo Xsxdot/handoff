@@ -282,7 +282,7 @@ func TestB444SessionCreateSquadValidationZeroWrites(t *testing.T) {
 	}
 	svc := mustScheduling(t, env.srv)
 	putOnlineCarrier(t, svc, scheduling.Carrier{Name: "exec-carrier", Machine: "local", CLI: "opencode",
-		HomeDir: "/tmp/exec-home", Credential: scheduling.CredentialStandalone, MaxConcurrency: 1})
+		HomeDir: "/tmp/exec-home", MaxConcurrency: 1})
 	if err := svc.PutSquad(scheduling.Squad{Name: "exec", Role: scheduling.RoleExecutor,
 		Members: []scheduling.SquadMember{{Carrier: "exec-carrier", MaxConcurrency: 1}}}, 0); err != nil {
 		t.Fatal(err)
@@ -453,7 +453,7 @@ func TestB444ResidentCarrierMachineKeepsRegisteredName(t *testing.T) {
 	allowCarrierMachines(t, env.srv, host)
 	svc := mustScheduling(t, env.srv)
 	putOnlineCarrier(t, svc, scheduling.Carrier{Name: "host-carrier", Machine: host, CLI: "opencode",
-		HomeDir: "/tmp/host-home", Credential: scheduling.CredentialStandalone, MaxConcurrency: 1})
+		HomeDir: "/tmp/host-home", MaxConcurrency: 1})
 	if err := svc.PutSquad(scheduling.Squad{Name: "hostq", Role: scheduling.RoleCoordinator,
 		Members: []scheduling.SquadMember{{Carrier: "host-carrier", MaxConcurrency: 1}}}, 0); err != nil {
 		t.Fatal(err)

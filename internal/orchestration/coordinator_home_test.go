@@ -11,7 +11,6 @@ import (
 	"github.com/Xsxdot/handoff/internal/executor/opencode"
 	"github.com/Xsxdot/handoff/internal/hostapi"
 	"github.com/Xsxdot/handoff/internal/keysclient"
-	"github.com/Xsxdot/handoff/internal/toolchain"
 )
 
 func testLoadRules(mainHome, cli string) ([]executor.ProfileFile, []executor.ProfileFile, error) {
@@ -41,8 +40,8 @@ func testLoadRules(mainHome, cli string) ([]executor.ProfileFile, []executor.Pro
 }
 
 // TestCoordinatorHomeSupplyOnLaunchAndResume 锁协调者隔离 HOME 的供给行为：
-// Launch/Resume 前按白名单写入 config.yaml（活配置投影）、AGENTS.md、skills 与
-// 缺失凭据。B233.26 归域后本包直驱 supplier.Prepare 断言供给结果；runner 把
+// Launch/Resume 前按白名单写入 config.yaml（活配置投影）、AGENTS.md、skills；B464 起
+// 不再供给缺失凭据（S8）。B233.26 归域后本包直驱 supplier.Prepare 断言供给结果；runner 把
 // prepareHome 返回值作为子进程 HOME 传递的集成断言留 gateway（coordrunner_test.go）。
 func TestCoordinatorHomeSupplyOnLaunchAndResume(t *testing.T) {
 	mainHome := t.TempDir()
@@ -58,7 +57,12 @@ func TestCoordinatorHomeSupplyOnLaunchAndResume(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(mainHome, ".local", "share", "opencode"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(mainHome, ".local", "share", "opencode", "auth.json"), []byte("main-auth-token"), 0o600); err != nil {
+	mainAuth := filepath.Join(mainHome, ".local", "share", "opencode", "auth.json")
+	if err := os.WriteFile(mainAuth, []byte("main-auth-token"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	mainAuthMtime := time.Now().Add(-time.Hour).Truncate(time.Second)
+	if err := os.Chtimes(mainAuth, mainAuthMtime, mainAuthMtime); err != nil {
 		t.Fatal(err)
 	}
 
@@ -79,10 +83,9 @@ func TestCoordinatorHomeSupplyOnLaunchAndResume(t *testing.T) {
 	}
 
 	supplier := coordinatorHomeSupplier{
-		currentConfig:  func() *config.Config { return liveCfg },
-		userHomeDir:    func() (string, error) { return mainHome, nil },
-		expandHomeDir:  expandHome,
-		credentialPath: toolchain.CredRelPathFor,
+		currentConfig: func() *config.Config { return liveCfg },
+		userHomeDir:   func() (string, error) { return mainHome, nil },
+		expandHomeDir: expandHome,
 		profileFor: func(cli string) (executor.Profile, error) {
 			return opencode.New(nil).Profile(), nil
 		},
@@ -126,8 +129,12 @@ func TestCoordinatorHomeSupplyOnLaunchAndResume(t *testing.T) {
 	if b, err := os.ReadFile(filepath.Join(targetDir, ".config", "opencode", "skills", "plan", "SKILL.md")); err != nil || string(b) != "skill-plan" {
 		t.Fatalf("SKILL.md = %q/%v, want skill-plan", b, err)
 	}
-	if b, err := os.ReadFile(filepath.Join(targetDir, ".local", "share", "opencode", "auth.json")); err != nil || string(b) != "main-auth-token" {
-		t.Fatalf("auth.json = %q/%v, want main-auth-token", b, err)
+	// B464 S8：供给绝不复制凭据——载体 HOME 里不出现主 HOME 的 auth.json，主 HOME 凭据 mtime 不变。
+	if _, err := os.Stat(filepath.Join(targetDir, ".local", "share", "opencode", "auth.json")); !os.IsNotExist(err) {
+		t.Fatalf("协调者供给不得复制凭据，stat err=%v", err)
+	}
+	if info, err := os.Stat(mainAuth); err != nil || !info.ModTime().Equal(mainAuthMtime) {
+		t.Fatalf("主 HOME 凭据 mtime 变了：%v/%v", info, err)
 	}
 
 	t.Run("OccupiedTargetOverwritesConfigPreservesSessionAndAuth", func(t *testing.T) {
@@ -162,7 +169,6 @@ func TestCoordinatorHomeSupplyOnLaunchAndResume(t *testing.T) {
 				}
 				return hostapi.ExpandHomePath(p)
 			},
-			credentialPath: toolchain.CredRelPathFor,
 			profileFor: func(cli string) (executor.Profile, error) {
 				return opencode.New(nil).Profile(), nil
 			},
@@ -216,7 +222,6 @@ func TestCoordinatorHomeSupplyOnLaunchAndResume(t *testing.T) {
 				}
 				return hostapi.ExpandHomePath(p)
 			},
-			credentialPath: toolchain.CredRelPathFor,
 			profileFor: func(cli string) (executor.Profile, error) {
 				return opencode.New(nil).Profile(), nil
 			},

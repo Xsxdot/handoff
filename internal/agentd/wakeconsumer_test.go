@@ -848,8 +848,8 @@ func TestAutomationFallbackResumeRebuildFailure(t *testing.T) {
 	allowCarrierMachines(t, env.srv, "ftm")
 	putOnlineCarrier(t, mustScheduling(t, env.srv), scheduling.Carrier{
 		Name: "coord-carrier", Machine: "ftm", CLI: "opencode",
-		HomeDir: "/tmp/coord-home", Credential: scheduling.CredentialStandalone,
-		Status: scheduling.StatusOnline,
+		HomeDir: "/tmp/coord-home",
+		Status:  scheduling.StatusOnline,
 	})
 	if err := mustScheduling(t, env.srv).PutSquad(scheduling.Squad{
 		Name: "coord", Role: scheduling.RoleCoordinator, Members: []scheduling.SquadMember{{Carrier: "coord-carrier", MaxConcurrency: 1}},
@@ -905,8 +905,8 @@ func TestAutomationWakeFailureAdvancesCursor(t *testing.T) {
 	allowCarrierMachines(t, env.srv, "ftm")
 	putOnlineCarrier(t, mustScheduling(t, env.srv), scheduling.Carrier{
 		Name: "coord-carrier", Machine: "ftm", CLI: "opencode",
-		HomeDir: "/tmp/coord-home", Credential: scheduling.CredentialStandalone,
-		Status: scheduling.StatusOnline,
+		HomeDir: "/tmp/coord-home",
+		Status:  scheduling.StatusOnline,
 	})
 	if err := mustScheduling(t, env.srv).PutSquad(scheduling.Squad{
 		Name: "coord", Role: scheduling.RoleCoordinator, Members: []scheduling.SquadMember{{Carrier: "coord-carrier", MaxConcurrency: 1}},

@@ -195,15 +195,19 @@ func TestContractFixtures(t *testing.T) {
 		// QueueEntry 的 Ready=false 显式在场（「字段缺失 vs 值为零」可分辨）。
 		{"SquadsResp", SquadsResp{
 			Carriers: []CarrierView{{
+				// B464 A13：存量未迁移载体——login/no_account/account_*/login_state 全缺席。
 				Name: "mac-01-opencode", Machine: "mac-01", CLI: "opencode",
 				HomeDir: "/Users/dev/.handoff/homes/opencode", Model: "",
-				Credential: "standalone", MaxConcurrency: 2, Version: 1,
+				MaxConcurrency: 2, Version: 1,
 			}, {
-				// B453 F13：所选账号名 + 指纹不符标记（仅 true 时出现）；首个载体两键缺席。
+				// B464 A13：选了登录——派生账号 id/名与登录状态；no_account 缺席（仅 true 时出现）。
 				Name: "mac-01-opencode-flash", Machine: "mac-01", CLI: "opencode",
-				HomeDir: "/Users/dev/.handoff/homes/opencode-flash", Model: "flash",
-				Credential: "standalone", MaxConcurrency: 1, Version: 2,
-				Account: "og-mac", AccountMismatch: true,
+				HomeDir: "", Model: "flash", MaxConcurrency: 1, Version: 2,
+				Login: "login-0123456789abcdef", AccountID: "opencode-go:3f9a1b2cc21e",
+				AccountName: "opencode-go-3f9a", LoginState: "ok",
+			}, {
+				// B464 A13：「无账号 · 主 HOME」——no_account=true，其余账号键缺席。
+				Name: "mac-01-agy", Machine: "mac-01", CLI: "agy", HomeDir: "", Version: 1, NoAccount: true,
 			}},
 			Squads: []SquadView{{
 				Name: "coord", Role: "coordinator",
@@ -235,10 +239,10 @@ func TestContractFixtures(t *testing.T) {
 		{"CoordinatorAttachReleaseResp", CoordinatorAttachReleaseResp{OK: true}},
 		{"HomeProbeReq", HomeProbeReq{CLI: "codex", Path: "~/.handoff/home/mbp-codex", Credential: "standalone"}},
 		{"HomeProbeResp", HomeProbeResp{Kind: "empty", Detail: "目录为空，保存后将自动创建并检测一次。"}},
-		// B453 F15：所选账号的 kind/条目（目标机据此算指纹）与账号名（目标机据此在本机查代理）。
-		{"HomeWakeReq", HomeWakeReq{CLI: "codex", HomeDir: "~/.handoff/home/mbp-codex", Credential: "main_home_sync", Model: "",
-			FingerprintKind: "codex", FingerprintEntry: "tokens", Account: "cx-mbp"}},
-		{"HomeWakeResp", HomeWakeResp{Outcome: "need_login", Detail: "需要登录。", Fingerprint: "sha256:3f9a1b2cc21e"}},
+		// B464 W1：只带所选登录 id（目标机据此在本机账号域查 kind 与代理）；凭据模式与指纹键删除。
+		{"HomeWakeReq", HomeWakeReq{CLI: "codex", HomeDir: "~/.handoff/home/mbp-codex", Model: "",
+			Login: "login-0123456789abcdef"}},
+		{"HomeWakeResp", HomeWakeResp{Outcome: "need_login", Detail: "需要登录。"}},
 		{"CarrierDetectResp", CarrierDetectResp{Name: "mbp-codex", Status: "pending", LastError: "需要登录。", Version: 2}},
 		{"CarrierRunCommandResp", CarrierRunCommandResp{Command: "HOME=~/.handoff/home/mbp-codex codex"}},
 		// B434 拉起器五个 Desktop* case 已随 B435 契约 §7 退役删除（W plan Q3 甲）；
@@ -990,62 +994,76 @@ func ticketNoticeSample(now time.Time) Ticket {
 	return Ticket{ID: "tk-notice", TaskID: "b453-branch", Kind: TicketKindNotice, Request: body, CreatedAt: now}
 }
 
-// accountsRespSample 是 B453 F1/F5–F8 账号读面：四种 kind、五档 state 各一行，刻意踩可缺席键
-// （agy 无 entry；未探测无 reading/last_attempt_at/last_error；探测失败无旧读数；窗口无 resets_at）。
+// accountsRespSample 是 B464 A1–A5 账号读面：六种 kind 里的四种、五档 state 各一行，刻意踩可缺席键
+// （无 provider/label；未探测无 reading/last_attempt_at/last_error；探测失败无旧读数；窗口无
+// resets_at；登录无 expires_at/proxy；无可探登录时 probe_login 缺席）；discovery 一台有 at、
+// 一台从未发现（at 缺席）且带 error。
 func accountsRespSample(now time.Time) AccountsResp {
 	at := func(d time.Duration) *time.Time { t := now.Add(d); return &t }
 	f := func(v float64) *float64 { return &v }
+	login := func(id, machine, home, source, fp, state string, carriers ...string) LoginView {
+		return LoginView{ID: id, Machine: machine, Home: home, Source: source, Fingerprint: fp, State: state,
+			ChangedAt: now.Add(-time.Hour), Carriers: append([]string{}, carriers...)}
+	}
+	oauth := login("login-aa00000000000001", "linux-01", "~/.handoff/home/mimo", "opencode.db", "sha256:3f9a1b2cc21e", "ok", "mimo")
+	oauth.ExpiresAt = at(30 * 24 * time.Hour)
+	proxied := login("login-cc00000000000001", "macbook-pro", "~/.handoff/home/mbp-codex", "auth.json", "sha256:e7a033d5c0aa", "ok",
+		"mbp-codex", "mbp-oc-codex")
+	proxied.Proxy = "socks5://u:***@127.0.0.1:7897"
 	return AccountsResp{Accounts: []AccountView{{
-		Name: "og-main", Kind: "opencode-go", Machine: "linux-01", HomeDir: "/root/.handoff/home/mimo", Entry: "opencode-go",
+		ID: "opencode-go:3f9a1b2cc21e", Name: "og-main", Kind: "opencode-go", Label: "dev@example.com",
+		Fingerprint:     "sha256:3f9a1b2cc21e",
 		IntervalMinutes: 15, WarnPercent: 60, LowPercent: 80, Version: 3, State: "ok",
 		Reading: &AccountReadingView{Windows: []AccountWindowView{
 			{Key: "session", UsedPercent: 34, ResetsAt: at(2*time.Hour + 41*time.Minute)},
 			{Key: "weekly", UsedPercent: 58.4, ResetsAt: at(98 * time.Hour)},
 			{Key: "monthly", UsedPercent: 22, ResetsAt: at(17 * 24 * time.Hour)},
 		}, PlanType: "Go", Fingerprint: "sha256:3f9a1b2cc21e", ProbedAt: now.Add(-2 * time.Minute)},
-		LastAttemptAt: at(-2 * time.Minute), Carriers: []string{"mimo"},
+		LastAttemptAt: at(-2 * time.Minute), ProbeLogin: oauth.ID,
+		Logins:   []LoginView{oauth, login("login-aa00000000000002", "mac-mini", "~", "opencode.db", "sha256:3f9a1b2cc21e", "gone")},
+		Carriers: []string{"mimo"},
 	}, {
-		Name: "og-team", Kind: "opencode-go", Machine: "linux-01", HomeDir: "/root/.handoff/home/dp", Entry: "opencode-go",
-		IntervalMinutes: 15, WarnPercent: 60, LowPercent: 80, Version: 1, State: "out", Stale: true,
+		ID: "apikey:opencode-go:77d0c1e2a3b4", Name: "opencode-go-key-77d0", Kind: "apikey", Provider: "opencode-go",
+		Fingerprint: "sha256:77d0c1e2a3b4", Version: 1, State: "out", Stale: true,
 		Reading: &AccountReadingView{Windows: []AccountWindowView{
 			{Key: "session", UsedPercent: 100, ResetsAt: at(3*time.Hour + 12*time.Minute)},
 			{Key: "weekly", UsedPercent: 71, ResetsAt: at(33 * time.Hour)},
 		}, ProbedAt: now.Add(-40 * time.Minute)},
-		LastAttemptAt: at(-40 * time.Minute), RecoverAt: at(3*time.Hour + 12*time.Minute), Carriers: []string{"dp"},
+		LastAttemptAt: at(-40 * time.Minute), RecoverAt: at(3*time.Hour + 12*time.Minute), ProbeLogin: "login-bb00000000000001",
+		Logins:   []LoginView{login("login-bb00000000000001", "linux-01", "~/.handoff/home/dp", "auth.json", "sha256:77d0c1e2a3b4", "ok", "dp")},
+		Carriers: []string{"dp"},
 	}, {
-		Name: "codex-plus", Kind: "codex", Machine: "macbook-pro", HomeDir: "~/.handoff/home/mbp-codex", Entry: "tokens",
-		Proxy: "socks5://u:***@127.0.0.1:7897", IntervalMinutes: 15, WarnPercent: 60, LowPercent: 80, Version: 2, State: "low",
+		ID: "codex:e7a033d5c0aa", Name: "codex-plus", Kind: "codex", Fingerprint: "sha256:e7a033d5c0aa",
+		IntervalMinutes: 15, WarnPercent: 60, LowPercent: 80, Version: 2, State: "low",
 		Reading: &AccountReadingView{Windows: []AccountWindowView{
 			{Key: "session", UsedPercent: 82, ResetsAt: at(time.Hour + 48*time.Minute)},
 			{Key: "weekly", UsedPercent: 41},
 		}, PlanType: "Plus", ExtraUsage: &AccountExtraUsageView{Unit: "credits", Balance: f(4.2)},
 			Fingerprint: "sha256:e7a033d5c0aa", ProbedAt: now.Add(-time.Minute)},
-		LastAttemptAt: at(-time.Minute), RecoverAt: at(time.Hour + 48*time.Minute), Carriers: []string{"mbp-codex", "mbp-oc-codex"},
+		LastAttemptAt: at(-time.Minute), RecoverAt: at(time.Hour + 48*time.Minute), ProbeLogin: proxied.ID,
+		Logins: []LoginView{proxied}, Carriers: []string{"mbp-codex", "mbp-oc-codex"},
 	}, {
-		Name: "codex-spare", Kind: "codex", Machine: "linux-01", HomeDir: "/root/.handoff/home/codex-spare", Entry: "tokens",
-		IntervalMinutes: 30, WarnPercent: 50, LowPercent: 90, Version: 1, State: "none", Carriers: []string{},
+		ID: "codex:0b1c2d3e4f50", Name: "codex-0b1c", Kind: "codex", Fingerprint: "sha256:0b1c2d3e4f50",
+		IntervalMinutes: 30, WarnPercent: 50, LowPercent: 90, Version: 1, State: "none",
+		Logins: []LoginView{login("login-dd00000000000001", "linux-01", "~/.handoff/home/codex-spare", "auth.json",
+			"sha256:0b1c2d3e4f50", "gone")},
+		Carriers: []string{},
 	}, {
-		Name: "grok-mbp", Kind: "grok", Machine: "macbook-pro", HomeDir: "~/.handoff/home/mbp-grok", Entry: "https://auth.x.ai",
-		IntervalMinutes: 15, WarnPercent: 60, LowPercent: 80, Version: 1, State: "fail",
+		ID: "grok:5e6f70819a2b", Name: "grok-mbp", Kind: "grok", Fingerprint: "sha256:5e6f70819a2b", Version: 1, State: "fail",
 		LastAttemptAt: at(-3 * time.Minute),
 		LastError:     &AccountProblemView{Category: "credential_expired", Message: "凭据已过期，等待 grok CLI 刷新"},
-		Carriers:      []string{},
-	}, {
-		Name: "agy-main", Kind: "agy", Machine: "linux-01", HomeDir: "/root/.handoff/home/agy",
-		IntervalMinutes: 15, WarnPercent: 60, LowPercent: 80, Version: 1, State: "ok",
-		Reading: &AccountReadingView{Windows: []AccountWindowView{
-			{Key: "session", Group: "Gemini", UsedPercent: 22, ResetsAt: at(3*time.Hour + 20*time.Minute)},
-			{Key: "weekly", Group: "Gemini", UsedPercent: 35, ResetsAt: at(126 * time.Hour)},
-			{Key: "session", Group: "Claude/GPT", UsedPercent: 61, ResetsAt: at(2*time.Hour + 5*time.Minute)},
-			{Key: "weekly", Group: "Claude/GPT", UsedPercent: 48, ResetsAt: at(126 * time.Hour)},
-		}, PlanType: "Pro", Fingerprint: "sha256:a91c6e04b2a8", ProbedAt: now.Add(-4 * time.Minute)},
-		LastAttemptAt: at(-4 * time.Minute), Carriers: []string{"agy"},
-	}}}
+		ProbeLogin:    "login-ee00000000000001",
+		Logins: []LoginView{login("login-ee00000000000001", "macbook-pro", "~/.handoff/home/mbp-grok", "auth.json",
+			"sha256:5e6f70819a2b", "ok")},
+		Carriers: []string{},
+	}}, Discovery: []DiscoveryView{
+		{Machine: "linux-01", Self: true, At: at(-30 * time.Second)},
+		{Machine: "macbook-pro", Self: false, Error: "列不出 ~/.handoff/home：permission denied"},
+	}}
 }
 
-// accountInputSample 是 B453 F9 登记体：三项数值给值（指针在场），不含 name/state/reading/version。
+// accountInputSample 是 B464 A6 编辑体：三项数值给值（指针在场），name 缺席（改名属段 2）。
 func accountInputSample() AccountInput {
 	iv, warn, low := 15, 60, 80
-	return AccountInput{Kind: "codex", Machine: "macbook-pro", HomeDir: "~/.handoff/home/mbp-codex", Entry: "tokens",
-		IntervalMinutes: &iv, WarnPercent: &warn, LowPercent: &low}
+	return AccountInput{IntervalMinutes: &iv, WarnPercent: &warn, LowPercent: &low}
 }

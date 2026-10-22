@@ -23,7 +23,7 @@ func TestDeriveFiveStatesWithPriority(t *testing.T) {
 	}
 	fail := &accounts.Problem{Category: "network", Message: "断网"}
 	mark := &accounts.QuotaMark{At: now, Carrier: "mini"}
-	a := newAccount() // 预警 60 / 低额度 80
+	a := deriveAccount() // 预警 60 / 低额度 80
 	cases := []struct {
 		name    string
 		rec     accounts.ReadingRecord
@@ -81,7 +81,7 @@ func TestDeriveUsesAccountLowPercent(t *testing.T) {
 	now := at(1000)
 	rec := accounts.ReadingRecord{Reading: &accounts.Reading{ProbedAt: now, Windows: []accounts.Window{
 		{Key: "weekly", UsedPercent: 50, ResetsAt: ptrTime(now.Add(time.Hour))}}}}
-	a := newAccount()
+	a := deriveAccount()
 	if got := accounts.Derive(a, rec, now); got != accounts.StateOK {
 		t.Fatalf("低额度线 80、已用 50 → %q，want ok", got)
 	}
@@ -112,21 +112,19 @@ func TestAssessReadsDefinitionAndReading(t *testing.T) {
 	if _, err := svc.Assess("nope", at(0)); !errors.Is(err, accounts.ErrNotFound) {
 		t.Fatalf("不存在的账号应 ErrNotFound，得 %v", err)
 	}
-	if _, err := svc.Put(newAccount(), 0); err != nil {
-		t.Fatalf("登记: %v", err)
-	}
+	seedAccount(t, svc)
 	reset := at(0).Add(3 * time.Hour)
 	o := successAt(10, 20, 100)
 	o.Reading.Windows[0].ResetsAt = &reset
-	if err := svc.RecordProbe("og-linux", o); err != nil {
+	if err := svc.RecordProbe(ogID, o); err != nil {
 		t.Fatalf("写读数: %v", err)
 	}
-	got, err := svc.Assess("og-linux", at(30))
+	got, err := svc.Assess(ogID, at(30))
 	if err != nil {
 		t.Fatalf("Assess: %v", err)
 	}
-	if got.Account.Name != "og-linux" || got.State != accounts.StateOut || got.RecoverAt == nil || !got.RecoverAt.Equal(reset) {
-		t.Fatalf("Assess = %+v，want og-linux/out/恢复 %v", got, reset)
+	if got.Account.Name != "opencode-go-aaaa" || got.State != accounts.StateOut || got.RecoverAt == nil || !got.RecoverAt.Equal(reset) {
+		t.Fatalf("Assess = %+v，want opencode-go-aaaa/out/恢复 %v", got, reset)
 	}
 }
 
@@ -153,4 +151,10 @@ func TestQuotaHitWindows(t *testing.T) {
 	if hit, at := accounts.QuotaHitWindows(a, low, now); hit != nil || at != nil {
 		t.Fatalf("读数未越线应皆空（读数滞后）")
 	}
+}
+
+// deriveAccount 是推导用的账号值（预警 60 / 低额度 80），不落库。
+func deriveAccount() accounts.Account {
+	return accounts.Account{ID: ogID, Name: "og-linux", Kind: accounts.KindOpencodeGo,
+		Fingerprint: "sha256:aaaa11112222", IntervalMinutes: 15, WarnPercent: 60, LowPercent: 80}
 }

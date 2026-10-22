@@ -1,11 +1,11 @@
 package accounts_test
 
-// validate_test.go —— 账号登记校验、删除与代理打码（B453 段 2，plan V1/V2 + 段 1 裁决 7）。
+// validate_test.go —— 账号编辑校验、删除与代理打码（B453 段 2；B464 段 1 改为发现建账号）。
 //
-// 职责：锁 S1 全部校验（阈值次序、HOME 形态、kind 词表、名称、代理形态、同机同 HOME 同
-// 条目查重点名冲突账号）；删除（被载体引用拒删并列出、无引用连带删读数行、读数行删除
-// 失败只告警、CAS 冲突、不存在）；代理 userinfo 密码段打码与「PUT 收到打码值保留原值」。
-// 边界：载体引用由组装点经 SetReferrers 注入（段 3 接编制域），这里用桩函数。
+// 职责：锁人写面（手填新建拒、段 1 改名未开放、阈值/间隔校验、发现字段不可由请求改）；
+// 删除（名下登录被载体引用拒删并列出、无引用连带删读数行、读数行删除失败只告警、CAS
+// 冲突、不存在、按名字或 id 引用）；代理 userinfo 密码段打码。
+// 边界：载体引用由组装点经 SetReferrers 注入（编制域按登录 id 给出），这里用桩函数。
 
 import (
 	"errors"
@@ -17,44 +17,36 @@ import (
 	"github.com/Xsxdot/handoff/internal/scheduling/accounts"
 )
 
-func TestValidateRegistrationTable(t *testing.T) {
+// TestPutEditValidation 锁 B464 的人写面：expect=0（手填新建）一律拒；段 1 改名未开放；
+// 阈值/间隔校验同 B453；请求里的发现字段（kind/指纹）被忽略、以现值为准。
+func TestPutEditValidation(t *testing.T) {
 	svc := accounts.New(newMem())
-	if _, err := svc.Put(newAccount(), 0); err != nil {
-		t.Fatal(err)
+	acct := seedAccount(t, svc)
+	if acct.IntervalMinutes != 15 || acct.WarnPercent != 60 || acct.LowPercent != 80 || acct.CreatedBy != "linux-01" {
+		t.Fatalf("发现建出的账号应带缺省阈值与建者：%+v", acct)
 	}
 	mod := func(f func(*accounts.Account)) accounts.Account {
-		a := newAccount()
-		a.Name = "other"
+		a := acct
 		f(&a)
 		return a
 	}
 	cases := []struct {
 		name    string
 		a       accounts.Account
+		expect  int
 		wantErr string // 空 = 应通过
 	}{
-		{"预警线等于低额度线", mod(func(a *accounts.Account) { a.WarnPercent, a.LowPercent = 80, 80 }), "阈值"},
-		{"低额度线超过 100", mod(func(a *accounts.Account) { a.LowPercent = 101 }), "阈值"},
-		{"预警线为 0", mod(func(a *accounts.Account) { a.WarnPercent = 0 }), "阈值"},
-		{"HOME 相对路径", mod(func(a *accounts.Account) { a.HomeDir = "root/x" }), "HOME"},
-		{"HOME ~user 形态", mod(func(a *accounts.Account) { a.HomeDir = "~bob" }), "HOME"},
-		{"未知 kind", mod(func(a *accounts.Account) { a.Kind = "claude" }), "claude"},
-		{"空名称", mod(func(a *accounts.Account) { a.Name = "" }), "账号名"},
-		{"代理无 scheme", mod(func(a *accounts.Account) { a.Proxy = "127.0.0.1:1080" }), "代理"},
-		{"同机同 HOME 同条目（尾斜杠归一）", mod(func(a *accounts.Account) { a.HomeDir = "/root/" }), "og-linux"},
-		{"HOME ~ 合法", mod(func(a *accounts.Account) { a.HomeDir = "~" }), ""},
-		{"HOME ~/x 合法", mod(func(a *accounts.Account) { a.HomeDir = "~/x" }), ""},
-		{"他机同 HOME 合法", mod(func(a *accounts.Account) { a.Machine = "mac-mini" }), ""},
-		{"同 HOME 不同 kind 合法", mod(func(a *accounts.Account) { a.Kind, a.Entry = accounts.KindCodex, "tokens" }), ""},
-		{"合法代理", mod(func(a *accounts.Account) { a.HomeDir, a.Proxy = "/srv/x", "socks5://u:p@127.0.0.1:1080" }), ""},
+		{"手填新建", acct, 0, "由发现产生"},
+		{"改名（段 2）", mod(func(a *accounts.Account) { a.Name = "other" }), 1, "改名"},
+		{"预警线等于低额度线", mod(func(a *accounts.Account) { a.WarnPercent, a.LowPercent = 80, 80 }), 1, "阈值"},
+		{"低额度线超过 100", mod(func(a *accounts.Account) { a.LowPercent = 101 }), 1, "阈值"},
+		{"预警线为 0", mod(func(a *accounts.Account) { a.WarnPercent = 0 }), 1, "阈值"},
+		{"间隔不在可选值", mod(func(a *accounts.Account) { a.IntervalMinutes = 7 }), 1, "间隔"},
+		{"改间隔且请求带别的 kind", mod(func(a *accounts.Account) { a.IntervalMinutes, a.Kind = 30, "codex" }), 1, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			s := accounts.New(newMem())
-			if _, err := s.Put(newAccount(), 0); err != nil {
-				t.Fatal(err)
-			}
-			_, err := s.Put(tc.a, 0)
+			_, err := svc.Put(tc.a, tc.expect)
 			if tc.wantErr == "" {
 				if err != nil {
 					t.Fatalf("应通过: %v", err)
@@ -66,11 +58,9 @@ func TestValidateRegistrationTable(t *testing.T) {
 			}
 		})
 	}
-	// 编辑自身（同名）不算重复。
-	self := newAccount()
-	self.IntervalMinutes = 30
-	if _, err := svc.Put(self, 1); err != nil {
-		t.Fatalf("编辑自身不应被查重拦下: %v", err)
+	v, _ := svc.Get(acct.Name) // 名字与 id 都能解析
+	if v.Account.IntervalMinutes != 30 || v.Account.Kind != accounts.KindOpencodeGo || v.Account.Fingerprint != acct.Fingerprint {
+		t.Fatalf("人写只改阈值/间隔，发现字段以现值为准：%+v", v.Account)
 	}
 }
 
@@ -87,55 +77,53 @@ func (f failingReadingDelete) Delete(kind, id string, expect int, actor string) 
 func TestDeleteRefusesReferencedAndCascadesReading(t *testing.T) {
 	mem := newMem()
 	svc := accounts.New(mem)
-	if _, err := svc.Put(newAccount(), 0); err != nil {
+	seedAccount(t, svc)
+	if err := svc.RecordProbe(ogID, successAt(0, 1, 10)); err != nil {
 		t.Fatal(err)
 	}
-	if err := svc.RecordProbe("og-linux", successAt(0, 1, 10)); err != nil {
-		t.Fatal(err)
+	logins, err := svc.Logins()
+	if err != nil || len(logins) != 1 {
+		t.Fatalf("播种应有一条登录：%+v %v", logins, err)
 	}
 	refs := []string{"c2", "c1"}
-	svc.SetReferrers(func(name string) ([]string, error) {
-		if name == "og-linux" {
-			return refs, nil
-		}
-		return nil, nil
+	svc.SetReferrers(func() (map[string][]string, error) {
+		return map[string][]string{logins[0].ID: refs, "login-unrelated": {"c9"}}, nil
 	})
-	view, err := svc.Get("og-linux")
-	if err != nil || !reflect.DeepEqual(view.Carriers, []string{"c1", "c2"}) {
-		t.Fatalf("读面应列出引用载体（排序）: %+v %v", view.Carriers, err)
+	view, err := svc.Get(ogID)
+	if err != nil || !reflect.DeepEqual(view.Carriers, []string{"c1", "c2"}) ||
+		len(view.Logins) != 1 || !reflect.DeepEqual(view.Logins[0].Carriers, []string{"c1", "c2"}) {
+		t.Fatalf("读面应在账号与登录上列出引用载体（排序）: %+v %v", view, err)
 	}
-	err = svc.Delete("og-linux", 1)
+	err = svc.Delete(ogID, 1)
 	var ref *accounts.ReferencedError
 	if !errors.Is(err, accounts.ErrReferenced) || !errors.As(err, &ref) || !reflect.DeepEqual(ref.Carriers, []string{"c1", "c2"}) {
 		t.Fatalf("被引用应拒删并列出载体: %v", err)
 	}
 	refs = nil
-	if err := svc.Delete("og-linux", 99); !errors.Is(err, schedclient.ErrCASConflict) {
+	if err := svc.Delete(ogID, 99); !errors.Is(err, schedclient.ErrCASConflict) {
 		t.Fatalf("版本不符应 CAS 冲突: %v", err)
 	}
-	if err := svc.Delete("og-linux", 1); err != nil {
-		t.Fatalf("无引用应删除: %v", err)
+	if err := svc.Delete("opencode-go-aaaa", 1); err != nil {
+		t.Fatalf("无引用应删除（按名字引用）: %v", err)
 	}
-	if _, err := svc.Get("og-linux"); !errors.Is(err, accounts.ErrNotFound) {
+	if _, err := svc.Get(ogID); !errors.Is(err, accounts.ErrNotFound) {
 		t.Fatalf("定义行应已删: %v", err)
 	}
-	if _, err := mem.Get(accounts.KindReading, "og-linux"); !errors.Is(err, schedclient.ErrNotFound) {
+	if _, err := mem.Get(accounts.KindReading, ogID); !errors.Is(err, schedclient.ErrNotFound) {
 		t.Fatalf("读数行应连带删除: %v", err)
 	}
-	if err := svc.Delete("og-linux", 1); !errors.Is(err, accounts.ErrNotFound) {
+	if err := svc.Delete(ogID, 1); !errors.Is(err, accounts.ErrNotFound) {
 		t.Fatalf("不存在应 ErrNotFound: %v", err)
 	}
 
 	// 读数行删除失败只告警：定义行照删，返回成功；孤儿读数行不出现在列表。
 	fmem := failingReadingDelete{newMem()}
 	fsvc := accounts.New(fmem)
-	if _, err := fsvc.Put(newAccount(), 0); err != nil {
+	seedAccount(t, fsvc)
+	if err := fsvc.RecordProbe(ogID, successAt(0, 1, 10)); err != nil {
 		t.Fatal(err)
 	}
-	if err := fsvc.RecordProbe("og-linux", successAt(0, 1, 10)); err != nil {
-		t.Fatal(err)
-	}
-	if err := fsvc.Delete("og-linux", 1); err != nil {
+	if err := fsvc.Delete(ogID, 1); err != nil {
 		t.Fatalf("读数行删除失败不应让删除失败: %v", err)
 	}
 	if list, err := fsvc.List(); err != nil || len(list) != 0 {
@@ -143,7 +131,9 @@ func TestDeleteRefusesReferencedAndCascadesReading(t *testing.T) {
 	}
 }
 
-func TestProxyMaskAndMaskedRoundTripKeepsStored(t *testing.T) {
+// TestProxyMask 锁代理 userinfo 密码段打码（读面口径唯一定义在 proxycfg.Mask）。账号上的代理
+// 已退役（B464：代理挂登录，编辑与打码回填在段 2 的登录代理端点）。
+func TestProxyMask(t *testing.T) {
 	cases := map[string]string{
 		"socks5://user:secret@127.0.0.1:1080": "socks5://user:***@127.0.0.1:1080",
 		"http://127.0.0.1:8080":               "http://127.0.0.1:8080",
@@ -154,35 +144,5 @@ func TestProxyMaskAndMaskedRoundTripKeepsStored(t *testing.T) {
 		if got := accounts.MaskProxy(in); got != want {
 			t.Fatalf("MaskProxy(%q) = %q, want %q", in, got, want)
 		}
-	}
-	mem := newMem()
-	svc := accounts.New(mem)
-	a := newAccount()
-	a.Proxy = "socks5://user:secret@127.0.0.1:1080"
-	if _, err := svc.Put(a, 0); err != nil {
-		t.Fatal(err)
-	}
-	// 控制台回填打码值并改间隔：原代理保留。
-	edit := a
-	edit.Proxy, edit.IntervalMinutes = "socks5://user:***@127.0.0.1:1080", 30
-	if _, err := svc.Put(edit, 1); err != nil {
-		t.Fatal(err)
-	}
-	v, _ := svc.Get("og-linux")
-	if v.Account.Proxy != "socks5://user:secret@127.0.0.1:1080" || v.Account.IntervalMinutes != 30 {
-		t.Fatalf("打码回填应保留原代理: %+v", v.Account)
-	}
-	// 明确改成新代理 / 清空：照写。
-	edit.Proxy = "http://127.0.0.1:9"
-	if _, err := svc.Put(edit, 2); err != nil {
-		t.Fatal(err)
-	}
-	edit.Proxy = ""
-	if _, err := svc.Put(edit, 3); err != nil {
-		t.Fatal(err)
-	}
-	v, _ = svc.Get("og-linux")
-	if v.Account.Proxy != "" {
-		t.Fatalf("清空代理应生效: %q", v.Account.Proxy)
 	}
 }

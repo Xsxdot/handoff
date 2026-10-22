@@ -84,8 +84,8 @@ func newCASFixture(t *testing.T) (*scheduling.Service, *ledgerapi.Facade) {
 	facade := ledgerapi.New(st)
 	svc := scheduling.New(facadeRegistry{f: facade})
 	for _, c := range []scheduling.Carrier{
-		{Name: "c1", Machine: "m1", CLI: "opencode", Credential: scheduling.CredentialStandalone, MaxConcurrency: 2},
-		{Name: "c2", Machine: "m2", CLI: "opencode", Credential: scheduling.CredentialStandalone, MaxConcurrency: 2},
+		{Name: "c1", Machine: "m1", CLI: "opencode", MaxConcurrency: 2},
+		{Name: "c2", Machine: "m2", CLI: "opencode", MaxConcurrency: 2},
 	} {
 		putOnlineCarrier(t, svc, c)
 	}
@@ -200,7 +200,7 @@ func TestAdmitAcrossSquadsRespectsSharedCarrierCap(t *testing.T) {
 	facade := ledgerapi.New(st)
 	svc := scheduling.New(facadeRegistry{f: facade})
 	putOnlineCarrier(t, svc, scheduling.Carrier{
-		Name: "c1", Machine: "m1", CLI: "opencode", Credential: scheduling.CredentialStandalone,
+		Name: "c1", Machine: "m1", CLI: "opencode",
 		MaxConcurrency: 2,
 	})
 	for _, squad := range []string{"s1", "s2"} {
@@ -334,8 +334,8 @@ func TestAdmissionAndReleaseLogsCarryCapacityContext(t *testing.T) {
 func TestMemberPolicyChoosesLaterMemberAndReleaseIsIdempotent(t *testing.T) {
 	svc, facade := newCASFixture(t)
 	for _, carrier := range []scheduling.Carrier{
-		{Name: "c1", Machine: "m1", CLI: "opencode", Credential: scheduling.CredentialStandalone, MaxConcurrency: 1},
-		{Name: "c2", Machine: "m2", CLI: "opencode", Credential: scheduling.CredentialStandalone, MaxConcurrency: 3},
+		{Name: "c1", Machine: "m1", CLI: "opencode", MaxConcurrency: 1},
+		{Name: "c2", Machine: "m2", CLI: "opencode", MaxConcurrency: 3},
 	} {
 		if err := svc.PutCarrier(carrier, currentRegistryVersion(t, facade, "carrier", carrier.Name)); err != nil {
 			t.Fatalf("更新载体 %s 物理位: %v", carrier.Name, err)
@@ -459,7 +459,7 @@ func TestIgnitionRequestRoundtripThroughRegistry(t *testing.T) {
 func TestDeleteCarrier(t *testing.T) {
 	svc, facade := newCASFixture(t)
 	// 准备一个不在任何小队的未入队载体 c3
-	c3 := scheduling.Carrier{Name: "c3", Machine: "m3", CLI: "opencode", Credential: scheduling.CredentialStandalone}
+	c3 := scheduling.Carrier{Name: "c3", Machine: "m3", CLI: "opencode"}
 	if err := svc.PutCarrier(c3, 0); err != nil {
 		t.Fatalf("登记 c3: %v", err)
 	}
@@ -529,9 +529,9 @@ func newFrozenFixture(t *testing.T) (*scheduling.Service, *ledgerapi.Facade) {
 	svc := scheduling.New(facadeRegistry{f: facade})
 	for _, c := range []scheduling.Carrier{
 		{Name: "A", Machine: "machine-A", CLI: "cli-A", HomeDir: "/home/A", Model: "model-A",
-			Credential: scheduling.CredentialStandalone, MaxConcurrency: 1},
+			MaxConcurrency: 1},
 		{Name: "B", Machine: "machine-B", CLI: "cli-B", HomeDir: "/home/B", Model: "model-B",
-			Credential: scheduling.CredentialStandalone, MaxConcurrency: 1},
+			MaxConcurrency: 1},
 	} {
 		putOnlineCarrier(t, svc, c)
 	}
@@ -675,7 +675,7 @@ func TestB23310AdmitFrozenNormalizesLocalAliases(t *testing.T) {
 	svc, facade := newRowsFixture(t)
 	putOnlineCarrier(t, svc, scheduling.Carrier{
 		Name: "local-carrier", Machine: "local", CLI: "fake",
-		Credential: scheduling.CredentialStandalone, MaxConcurrency: 1,
+		MaxConcurrency: 1,
 	})
 	if err := svc.PutSquad(scheduling.Squad{Name: "local-squad", Role: scheduling.RoleExecutor,
 		Members: []scheduling.SquadMember{{Carrier: "local-carrier", MaxConcurrency: 1}},

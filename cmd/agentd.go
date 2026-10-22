@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/Xsxdot/handoff/internal/agentd"
+	"github.com/Xsxdot/handoff/internal/agentd/accountwork"
 	"github.com/Xsxdot/handoff/internal/collab"
 	"github.com/Xsxdot/handoff/internal/collab/cursor"
 	"github.com/Xsxdot/handoff/internal/config"
@@ -793,10 +794,9 @@ func setupLedger(cfg *config.Config, srv *agentd.Server, taskStore *store.Store,
 	// 凭据相对路径表仍由 toolchain 唯一维护；组装点注入给 hostapi，避免
 	// hostapi 反向 import maintenance 域或复制三家 CLI 的平台规则。
 	hostAPI := hostapi.NewWithCredentialPathFor(toolchain.CredRelPathFor)
-	// B453：额度适配注册表组装一次，探测器（读数）与检测链（载体 HOME 凭据指纹）共用
-	// 同一份凭据取材，指纹口径不会分叉。
+	// B453/B464：额度适配注册表组装一次，探测器（读数）与发现器（离线认身份）共用同一份
+	// 凭据取材，身份指纹口径不会分叉。检测链不再算载体凭据指纹（B464 删指纹比对）。
 	quotaReg := newQuotaRegistry()
-	hostAPI.SetCredentialFingerprint(quotaReg.CredentialFingerprint)
 	srv.SetHostAPI(hostAPI)
 	// keystone 域（B156.3）：协调者会话承载 + 隔离 HOME 供给 + ref 解析 +
 	// 叙事/attach 适配，经 SetKeystone 注入。
@@ -845,12 +845,14 @@ func setupLedger(cfg *config.Config, srv *agentd.Server, taskStore *store.Store,
 	// 编制域读账号做统一准入/载体引用校验/检测撞额度标记；账号域经编制域查「哪些载体选了
 	// 我」做删除拒删（S1）。两向都是同一子系统内的导出调用，接线只在这里。
 	sched.SetAccounts(acc)
-	acc.SetReferrers(sched.CarriersUsingAccount)
-	// 所在机探测器只在挂共享账本的机器上运行（plan Q3）：读数由所在机直写共享账本，
-	// 单机 SQLite 账本没有设备表、也没有「他机」可言。账号未填代理时回落活配置 proxy:（Q5）。
-	var prober *agentd.AccountProber
+	acc.SetReferrers(sched.LoginReferrers)
+	// 所在机发现器与探测器只在挂共享账本的机器上运行（B453 plan Q3）：登录与读数由所在机直写
+	// 共享账本，单机 SQLite 账本没有设备表、也没有「他机」可言。登录未填代理时回落活配置
+	// proxy:（Q5）。发现器每轮写回后对本机存量载体做 §5 迁移（只填空选择，从不覆盖人的选择）。
+	var prober *accountwork.Prober
+	var discoverer *accountwork.Discoverer
 	if shared {
-		prober = agentd.NewAccountProber(agentd.AccountProberConfig{
+		prober = accountwork.NewProber(accountwork.ProberConfig{
 			Accounts:   acc,
 			Quota:      quotaReg,
 			IsSelf:     srv.IsSelfMachine,
@@ -865,9 +867,23 @@ func setupLedger(cfg *config.Config, srv *agentd.Server, taskStore *store.Store,
 			Logger: logger,
 		})
 		srv.SetAccountProber(prober)
+		discoverer = accountwork.NewDiscoverer(accountwork.DiscovererConfig{
+			Accounts: acc,
+			Quota:    quotaReg,
+			Machine:  cfg.Name,
+			MainHome: os.UserHomeDir,
+			AfterRound: func(res accounts.ReconcileResult) {
+				if _, err := sched.MigrateCarrierLogins(res.Logins, srv.IsSelfMachine, hostapi.ExpandHomePath); err != nil {
+					logger.Warn("存量载体迁移本轮失败，下轮发现后重试", "cause", err)
+				}
+			},
+			Logger: logger,
+		})
+		discoverer.Start(ctx)
 		prober.Start(ctx)
 	}
-	logger.Info("账号域已挂载", "dsn_configured", shared, "account_prober", prober != nil, "writer", cfg.Name)
+	logger.Info("账号域已挂载", "dsn_configured", shared, "account_prober", prober != nil,
+		"account_discoverer", discoverer != nil, "writer", cfg.Name)
 	// B156.3 K5：账本打开后才能启动自动化事件流。
 	// ctx 随 agentd 停机取消；首轮先重放事件与队列，再进入轮询。
 	// B448 r1：StartAutomation 先同步做启动调度占用对账（归还本机遗留名额）再起循环；
@@ -904,7 +920,10 @@ func setupLedger(cfg *config.Config, srv *agentd.Server, taskStore *store.Store,
 	logger.Info("账本镜像子系统已挂载", "holder", holder, "self_name", cfg.Name,
 		"machines", len(srv.Pool().Names()), "dsn_configured", shared)
 	return func() {
-		// 次序硬约束：先停探测器与镜像（不再写库）再关账本库。
+		// 次序硬约束：先停发现器、探测器与镜像（不再写库）再关账本库。
+		if discoverer != nil {
+			discoverer.Stop()
+		}
 		if prober != nil {
 			prober.Stop()
 		}

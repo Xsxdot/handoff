@@ -43,12 +43,6 @@ type TurnReply struct {
 // hostapi 不直接依赖 toolchain；测试和 New 使用无凭据解析器。
 type Host struct {
 	resolveCredential func(string) (string, bool)
-	fingerprint       func(kind, home, entry string) (string, error)
-}
-
-// SetCredentialFingerprint 段 3 桩。
-func (h *Host) SetCredentialFingerprint(fn func(kind, home, entry string) (string, error)) {
-	h.fingerprint = fn
 }
 
 // New 构造承载门面。默认不提供凭据文件判据，因此只适合不需要探测凭据的
