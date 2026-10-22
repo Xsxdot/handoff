@@ -1,6 +1,6 @@
 # B453 实现计划：账号与额度（手工登记、所在机定时探测、派发看账号额度）
 
-- 状态：**已拍板（2026-10-22，主会话协调者；用户外出，按 2026-10-22 自主授权裁决）**。裁决见下方「拍板」节；与下方各 Q 的「荐」不一致处以「拍板」节为准。 **§8 修订 r1**（2026-10-22，审查第 1 轮 I1 回写）。 **§8 修订 r2**（2026-10-22，审查第 1 轮 I2：F5 增 `recover_at`）。
+- 状态：**已拍板（2026-10-22，主会话协调者；用户外出，按 2026-10-22 自主授权裁决）**。裁决见下方「拍板」节；与下方各 Q 的「荐」不一致处以「拍板」节为准。 **§8 修订 r1**（2026-10-22，审查第 1 轮 I1 回写）。 **§8 修订 r2**（2026-10-22，审查第 1 轮 I2：F5 增 `recover_at`）。 **§8 修订 r3**（2026-10-22，Q2 用户裁决：opencode-go 登录账号来源）。
 - 输入：`docs/superpowers/specs/b453.md` **r1.1**（r1 2026-10-22 用户批准；r1.1 同日增第四种 kind `agy`，提交 `9043ba71`）。L3，形态甲（本地盯），**不扇出**：一张卡、单分支 `cards/B453-charter-1`、按段串行。
 - 事实：`b453-facts-code.md`（基线 fad1aadf，本稿复核过的行号见 §10）、`b453-facts-orca.md`（三家 HTTP + agy CLI 的外部形状）、`b453-facts-providers.md`。台账 `docs/superpowers/specs/b453-ledger.md`「plan」节是本稿全部读数、命令与判断的原始记录。
 - 基线：分支 `cards/B453-charter-1` @ `9043ba71`（已含 main/B460；代码与 `a4e206d8` 相同，之后只有文档提交）。
@@ -12,7 +12,7 @@
 ## 拍板（2026-10-22 主会话）
 
 - **Q1 采纳**：`account`（人写，CAS）与 `account_reading`（机写，读-合并-CAS 重试）两 kind 同 id；不改表、不升 `ledgerSchemaVersion`。
-- **Q2 采纳 (a)/(b) 路径；`opencode.db › account` 备选不做，留给用户**。理由：spec 只授权 `auth.json › opencode-go` 条目，读 opencode 的 SQLite 取 OAuth token 是新的凭据位置，按自主授权边界（凭据类）须用户点头。R1 先在 linux-01 root HOME 跑；(a) 成则首故事换机到 linux-01（机器替换、不改语义，批）；(b) 则首故事改 codex@linux-01，opencode-go 记欠交。mini 上的 opencode-go 账号给明确失败文案。卡 note 记待问。
+- **Q2 用户裁决（2026-10-22，原话「用 opencode.db 的 OAuth 吧，你直接做」）：备选 `opencode.db › account` 做**，形态见 spec r1.3 S2「opencode-go 登录账号来源」与 §8 修订 r3；原 (a)/(b) 路径结论保留（auth.json API key 路径照旧，muse key 过期仍报凭据过期）。以下为原拍板记录：**Q2 采纳 (a)/(b) 路径；`opencode.db › account` 备选不做，留给用户**。理由：spec 只授权 `auth.json › opencode-go` 条目，读 opencode 的 SQLite 取 OAuth token 是新的凭据位置，按自主授权边界（凭据类）须用户点头。R1 先在 linux-01 root HOME 跑；(a) 成则首故事换机到 linux-01（机器替换、不改语义，批）；(b) 则首故事改 codex@linux-01，opencode-go 记欠交。mini 上的 opencode-go 账号给明确失败文案。卡 note 记待问。
 - **Q3 采纳**。
 - **Q4 采纳**（撞额度标记 > 探测失败 > 未探测 > 读数推导；已过重置时刻的窗口按 0% 计）。
 - **Q5 采纳**；`config.proxy` 注释的故障域声明同步改（不再只影响升级）。
@@ -401,6 +401,11 @@
 
 **§8 修订 r2（2026-10-22，主会话据审查第 1 轮 I2 与修复轮 2 回写）**
 - **F5 增补**：AccountView 新增可选键 `recover_at`（RFC3339，omitempty）。有值时等于全部越线窗口里最晚的那个重置时刻（与 spec r1.2 D1 同义，由服务端在推导 `state` 的同一时刻算出）。以下情况缺席：不阻挡；撞了额度标记；接口明示不可用；任一越线窗口缺重置时刻。控制台只读此键，不再用窗口重置时刻自行推算，缺席显示「未知」。Go/TS 契约 fixture 同批更新（`internal/proto/contract_fixture_test.go`、`web/src/api/testdata/AccountsResp.json`）。被否方案：前端照 D1 自算（审查 I2 发现前端取了最早而非最晚的重置——同一规则两处实现，正是漂移的成因）。
+
+**§8 修订 r3（2026-10-22，Q2 用户裁决回写）**
+- **F9 增补**：opencode-go 的 `entry` 取值语义——空 = 自动（`auth.json` 有 `opencode-go` 条目用 API key，否则用 `opencode.db` 当前登录账号）；`opencode.db` = 只用登录账号；其他值 = 只用 `auth.json` 同名条目。其余 kind 不变。
+- **F8 增补**：opencode-go 登录账号来源的 `fingerprint` 取「账号 id + org id」的短哈希（与 API key 来源不可比：同一人换来源即视为不同凭据，载体指纹比对按此标不一致）；`plan_type` 取 console 状态的 `product`（如 `go-plus`）。
+- 外部 wire（对接，非本侧冻结）：`GET https://opencode.ai/console/api/go/status`，Bearer `account.access_token` + `x-org-id: account_state.active_org_id`；`access.meters.{fiveHour,week,month}.{usedMicroCents,limitMicroCents,resetsAt}`。样本 `scratchpad/t453/samples/opencode-go-console-status.json`（已脱敏，实现时入仓 testdata）。
 
 **拍板记录**（难逆转、无上下文会惊讶、真取舍）：
 - **定义与读数分两行**（F18，Q1）。被否方案：同行分字段。反过来写不会有任何单测变红（单线程下两种都对），只有 V3 并发负载与 R1 人侧编辑体验能看出差别。
