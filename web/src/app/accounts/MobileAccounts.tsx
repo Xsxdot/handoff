@@ -8,7 +8,7 @@
 import { useState } from 'react'
 import type { AccountView } from '../../api/accounts'
 import { errorMessage } from '../lib/format'
-import { byProblem, KIND_ORDER, kindMeta, updatedText } from './model'
+import { accountPlace, byProblem, KIND_ORDER, kindMeta, updatedText } from './model'
 import { DetailNote, KindIcon, WinsCompact, WinsInline } from './QuotaBits'
 import { useAccounts, useNow } from './store'
 import './accounts.css'
@@ -26,7 +26,7 @@ function Row({ a, open, now, onToggle }: { a: AccountView; open: boolean; now: n
   return (
     <div className={`m-acct-row${open ? ' open' : ''}`} data-testid={`m-acct-${a.name}`}>
       <button type="button" className="l1" aria-expanded={open} onClick={onToggle}>
-        <span className="r1"><span className="nm">{a.name}</span><span className="mc">{a.machine}</span><span className="val"><DetailNote a={a} now={now} /></span><span className="chev">›</span></span>
+        <span className="r1"><span className="nm">{a.name}</span><span className="mc">{accountPlace(a).machine}</span><span className="val"><DetailNote a={a} now={now} /></span><span className="chev">›</span></span>
         {hasWins && <span className="r2"><WinsInline a={a} /></span>}
       </button>
       {open && (
@@ -51,7 +51,7 @@ export function MobileAccountsSection({ sectionClass }: { sectionClass: string }
   const now = useNow()
   const [openRows, setOpenRows] = useState<Set<string>>(() => new Set())
   if (accounts === null) return null
-  const machines = new Set(accounts.map((a) => a.machine)).size
+  const machines = new Set(accounts.map((a) => accountPlace(a).machine)).size
   const kinds = [...KIND_ORDER, ...new Set(accounts.map((a) => a.kind).filter((k) => !KIND_ORDER.includes(k)))]
   const toggle = (name: string) => setOpenRows((cur) => {
     const next = new Set(cur)

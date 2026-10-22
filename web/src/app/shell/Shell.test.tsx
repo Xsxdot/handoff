@@ -3577,12 +3577,12 @@ describe('B444 新建会话入口在项目上', () => {
 
 describe('B453 账号与额度入口（S8/S9）', () => {
   afterEach(() => {
-    vi.mocked(getAccounts).mockResolvedValue({ accounts: [] })
+    vi.mocked(getAccounts).mockResolvedValue({ discovery: [], accounts: [] })
     __resetAccountsStoreForTest()
   })
 
   it('桌面：所有页面底部挂额度底栏；dock「账号与额度」进 /accounts 整页', async () => {
-    vi.mocked(getAccounts).mockResolvedValue({ accounts: sampleAccounts() })
+    vi.mocked(getAccounts).mockResolvedValue({ discovery: [], accounts: sampleAccounts() })
     const user = userEvent.setup()
     renderShell('/')
     // 底栏先以空快照渲染，样本经首轮轮询回来后才有段：等段出现，不同步查（审查第 2 轮 N1）
@@ -3595,7 +3595,7 @@ describe('B453 账号与额度入口（S8/S9）', () => {
   })
 
   it('底栏弹层「管理账号…」落到 /accounts?account= 并展开高亮该账号', async () => {
-    vi.mocked(getAccounts).mockResolvedValue({ accounts: sampleAccounts() })
+    vi.mocked(getAccounts).mockResolvedValue({ discovery: [], accounts: sampleAccounts() })
     const user = userEvent.setup()
     renderShell('/settings')
     await user.click(await screen.findByTestId('sb-seg-codex-plus'))
@@ -3605,7 +3605,7 @@ describe('B453 账号与额度入口（S8/S9）', () => {
   })
 
   it('紧凑档不渲染底栏（S10：移动端额度在设置页）', async () => {
-    vi.mocked(getAccounts).mockResolvedValue({ accounts: sampleAccounts() })
+    vi.mocked(getAccounts).mockResolvedValue({ discovery: [], accounts: sampleAccounts() })
     Object.defineProperty(window, 'innerWidth', { value: 375, configurable: true, writable: true })
     renderShell('/')
     await waitFor(() => expect(getAccounts).toHaveBeenCalled())

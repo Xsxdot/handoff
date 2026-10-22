@@ -40,7 +40,7 @@ describe('SchedulingPage', () => {
   it('compact 载体和小队采用可展开分段列表，说明折叠且详情按行展开', async () => {
     const user = userEvent.setup()
     vi.mocked(getSquads).mockResolvedValue({
-      carriers: [{ name: 'mbp', machine: '本机', cli: 'opencode', home_dir: '/Users/dev', model: 'sonnet', credential: 'standalone', status: 'online', max_concurrency: 2, version: 3 }],
+      carriers: [{ name: 'mbp', machine: '本机', cli: 'opencode', home_dir: '/Users/dev', model: 'sonnet', status: 'online', max_concurrency: 2, version: 3 }],
       squads: [{ name: '执行队', role: 'executor', members: [{ carrier: 'mbp', max_concurrency: 1 }], version: 4 }],
       running: [],
     })
@@ -80,7 +80,7 @@ describe('SchedulingPage', () => {
 
   it('renders carrier and squad fields and empty-state guidance', async () => {
     vi.mocked(getSquads).mockResolvedValue({
-      carriers: [{ name: 'mbp', machine: 'local', cli: 'opencode', home_dir: '/h', credential: 'standalone', status: 'online', version: 3 }],
+      carriers: [{ name: 'mbp', machine: 'local', cli: 'opencode', home_dir: '/h', status: 'online', version: 3 }],
       squads: [{ name: 'coord', role: 'coordinator', members: [{ carrier: 'mbp' }], version: 2 }],
       running: [],
     })
@@ -94,8 +94,8 @@ describe('SchedulingPage', () => {
   it('renders missing and unknown carrier statuses as 未上线', async () => {
     vi.mocked(getSquads).mockResolvedValue({
       carriers: [
-        { name: 'missing', machine: 'local', cli: 'opencode', home_dir: '/missing', credential: 'standalone', version: 1 },
-        { name: 'unknown', machine: 'local', cli: 'opencode', home_dir: '/unknown', credential: 'standalone', status: 'mystery' as never, version: 2 },
+        { name: 'missing', machine: 'local', cli: 'opencode', home_dir: '/missing', version: 1 },
+        { name: 'unknown', machine: 'local', cli: 'opencode', home_dir: '/unknown', status: 'mystery' as never, version: 2 },
       ],
       squads: [],
       running: [],
@@ -122,7 +122,7 @@ describe('SchedulingPage', () => {
   it('lists 主 HOME and skips probe when HOME is empty', async () => {
     const user = userEvent.setup()
     vi.mocked(getSquads).mockResolvedValue({
-      carriers: [{ name: 'plain', machine: '本机', cli: 'grok', home_dir: '', credential: 'standalone', status: 'online', version: 1 }],
+      carriers: [{ name: 'plain', machine: '本机', cli: 'grok', home_dir: '', status: 'online', version: 1 }],
       squads: [],
       running: [],
     })
@@ -142,7 +142,7 @@ describe('SchedulingPage', () => {
     await user.click(screen.getByRole('button', { name: '登记载体' }))
     await user.type(screen.getByLabelText('HOME 档案'), '~/.handoff/home/mbp')
     await waitFor(() => expect(probeHome).toHaveBeenCalledWith({
-      cli: 'opencode', path: '~/.handoff/home/mbp', credential: 'standalone', machine: '本机',
+      cli: 'opencode', path: '~/.handoff/home/mbp', machine: '本机',
     }))
     expect(await screen.findByText(/已发现该 CLI 凭据。 credential found/)).toBeVisible()
   })
@@ -151,8 +151,8 @@ describe('SchedulingPage', () => {
     const user = userEvent.setup()
     vi.mocked(getSquads).mockResolvedValueOnce({
       carriers: [
-        { name: 'c1', machine: 'local', cli: 'opencode', home_dir: '/h1', model: '', credential: 'standalone', status: 'online', version: 1 },
-        { name: 'c2', machine: 'local', cli: 'opencode', home_dir: '/h2', model: 'flash', credential: 'standalone', status: 'online', version: 1 },
+        { name: 'c1', machine: 'local', cli: 'opencode', home_dir: '/h1', model: '', status: 'online', version: 1 },
+        { name: 'c2', machine: 'local', cli: 'opencode', home_dir: '/h2', model: 'flash', status: 'online', version: 1 },
       ],
       squads: [],
       running: [],
@@ -178,7 +178,7 @@ describe('SchedulingPage', () => {
   it.each(['0', '-1', '1.5', 'abc', '9007199254740992'])('非法成员政策 %s 在保存前阻断并显示合法示例', async (raw) => {
     const user = userEvent.setup()
     vi.mocked(getSquads).mockResolvedValueOnce({
-      carriers: [{ name: 'c1', machine: 'local', cli: 'opencode', home_dir: '/h', model: '', credential: 'standalone', status: 'online', version: 1 }],
+      carriers: [{ name: 'c1', machine: 'local', cli: 'opencode', home_dir: '/h', model: '', status: 'online', version: 1 }],
       squads: [],
       running: [],
     })
@@ -221,7 +221,7 @@ describe('SchedulingPage', () => {
 
   it('shows an actionable CAS conflict and retains the modal', async () => {
     const user = userEvent.setup()
-    vi.mocked(getSquads).mockResolvedValue({ carriers: [{ name: 'mbp', machine: 'local', cli: 'opencode', home_dir: '/h', credential: 'standalone', status: 'online', version: 3 }], squads: [], running: [] })
+    vi.mocked(getSquads).mockResolvedValue({ carriers: [{ name: 'mbp', machine: 'local', cli: 'opencode', home_dir: '/h', status: 'online', version: 3 }], squads: [], running: [] })
     vi.mocked(putCarrier).mockRejectedValue(new Error('409: 版本冲突，请刷新后重试'))
     render(<SchedulingPage />)
     await user.click(await screen.findByRole('button', { name: '编辑 mbp' }))
@@ -235,7 +235,7 @@ describe('SchedulingPage', () => {
     const user = userEvent.setup()
     vi.mocked(getSquads)
       .mockResolvedValueOnce({
-        carriers: [{ name: 'b334-probe', machine: '本机', cli: 'opencode', home_dir: '', credential: 'standalone', status: 'pending', version: 1 }],
+        carriers: [{ name: 'b334-probe', machine: '本机', cli: 'opencode', home_dir: '', status: 'pending', version: 1 }],
         squads: [],
         running: [],
       })
@@ -255,7 +255,7 @@ describe('SchedulingPage', () => {
   it('carrier deletion failure displays server error on that row', async () => {
     const user = userEvent.setup()
     vi.mocked(getSquads).mockResolvedValue({
-      carriers: [{ name: 'grok', machine: '本机', cli: 'opencode', home_dir: '', credential: 'standalone', status: 'online', version: 2 }],
+      carriers: [{ name: 'grok', machine: '本机', cli: 'opencode', home_dir: '', status: 'online', version: 2 }],
       squads: [{ name: 'runner', role: 'executor', members: [{ carrier: 'grok' }], version: 1 }],
       running: [],
     })
@@ -273,7 +273,7 @@ describe('SchedulingPage 编辑弹窗对齐原型（B287）', () => {
   it('label 语义后缀、角色中文选项、政策位与 role hint、弹窗宽度逐项对齐 settings.html', async () => {
     const user = userEvent.setup()
     vi.mocked(getSquads).mockResolvedValue({
-      carriers: [{ name: 'mbp', machine: 'local', cli: 'opencode', home_dir: '/h', credential: 'standalone', status: 'online', version: 3 }],
+      carriers: [{ name: 'mbp', machine: 'local', cli: 'opencode', home_dir: '/h', status: 'online', version: 3 }],
       squads: [{ name: 'coord', role: 'coordinator', members: [], version: 1 }],
       running: [],
     })
@@ -321,7 +321,7 @@ describe('SchedulingPage 编辑弹窗对齐原型（B287）', () => {
     it('编辑带账号的载体：预选当前账号，保存回传 account；改成不选则键缺席（W2）', async () => {
       const user = userEvent.setup()
       vi.mocked(getSquads).mockResolvedValue({
-        carriers: [{ name: 'mimo', machine: 'linux-01', cli: 'opencode', home_dir: '/root/.handoff/home/mimo', credential: 'standalone', status: 'online', version: 7, account: 'og-main' }],
+        carriers: [{ name: 'mimo', machine: 'linux-01', cli: 'opencode', home_dir: '/root/.handoff/home/mimo', status: 'online', version: 7, login: 'login-og-main', account_id: 'opencode-go:og-main', account_name: 'og-main' }],
         squads: [], running: [],
       })
       render(<SchedulingPage />)
@@ -329,7 +329,7 @@ describe('SchedulingPage 编辑弹窗对齐原型（B287）', () => {
       const dlg = screen.getByRole('dialog')
       expect(within(dlg).getByLabelText('账号')).toHaveValue('og-main')
       await user.click(within(dlg).getByRole('button', { name: '保存' }))
-      expect(putCarrier).toHaveBeenLastCalledWith('mimo', 7, expect.objectContaining({ account: 'og-main' }))
+      expect(putCarrier).toHaveBeenLastCalledWith('mimo', 7, expect.objectContaining({ login: 'login-og-main', account_id: 'opencode-go:og-main', account_name: 'og-main' }))
       await user.click(await screen.findByRole('button', { name: '编辑 mimo' }))
       await user.selectOptions(within(screen.getByRole('dialog')).getByLabelText('账号'), '')
       await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: '保存' }))
@@ -339,7 +339,7 @@ describe('SchedulingPage 编辑弹窗对齐原型（B287）', () => {
     it('指纹不一致：载体行与编辑对话框一行红字；载体行带账号与状态短语（W2）', async () => {
       const user = userEvent.setup()
       vi.mocked(getSquads).mockResolvedValue({
-        carriers: [{ name: 'dp', machine: 'linux-01', cli: 'opencode', home_dir: '/root/.handoff/home/dp', credential: 'standalone', status: 'online', version: 4, account: 'og-team', account_mismatch: true }],
+        carriers: [{ name: 'dp', machine: 'linux-01', cli: 'opencode', home_dir: '/root/.handoff/home/dp', status: 'online', version: 4, login: 'login-og-team', account_id: 'opencode-go:og-team', account_name: 'og-team' }],
         squads: [], running: [],
       })
       render(<SchedulingPage />)
@@ -355,9 +355,9 @@ describe('SchedulingPage 编辑弹窗对齐原型（B287）', () => {
     it('载体行显示所选账号的当前状态：正常报每周「已用% 倒计时」，问题报状态短语（R8 修 2）', async () => {
       vi.mocked(getSquads).mockResolvedValue({
         carriers: [
-          { name: 'mimo', machine: 'linux-01', cli: 'opencode', home_dir: '/root/.handoff/home/mimo', credential: 'standalone', status: 'online', version: 7, account: 'og-main' },
-          { name: 'gk', machine: 'macbook-pro', cli: 'grok', home_dir: '/h/gk', credential: 'standalone', status: 'online', version: 2, account: 'grok-mbp' },
-          { name: 'ag', machine: 'linux-01', cli: 'agy', home_dir: '/h/ag', credential: 'standalone', status: 'online', version: 3, account: 'agy-main' },
+          { name: 'mimo', machine: 'linux-01', cli: 'opencode', home_dir: '/root/.handoff/home/mimo', status: 'online', version: 7, login: 'login-og-main', account_id: 'opencode-go:og-main', account_name: 'og-main' },
+          { name: 'gk', machine: 'macbook-pro', cli: 'grok', home_dir: '/h/gk', status: 'online', version: 2, login: 'login-grok-mbp', account_id: 'grok:grok-mbp', account_name: 'grok-mbp' },
+          { name: 'ag', machine: 'linux-01', cli: 'agy', home_dir: '/h/ag', status: 'online', version: 3, login: 'login-agy-main', account_id: 'agy:agy-main', account_name: 'agy-main' },
         ],
         squads: [], running: [],
       })

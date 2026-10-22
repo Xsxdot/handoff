@@ -12,7 +12,7 @@ vi.mock('../../api/accounts', async () => {
 })
 
 const view = (name: string, state: string): AccountView => ({
-  name, kind: 'codex', machine: 'm', home_dir: '~/h', interval_minutes: 15, warn_percent: 60, low_percent: 80,
+  id: `codex:${name}`, name, kind: 'codex', fingerprint: 'sha256:000000000000', logins: [], interval_minutes: 15, warn_percent: 60, low_percent: 80,
   version: 1, state, stale: false, carriers: [],
 })
 
@@ -26,7 +26,7 @@ function Prober() { probeFn = useAccounts().probe; return null }
 
 beforeEach(() => {
   __resetAccountsStoreForTest()
-  vi.mocked(getAccounts).mockResolvedValue({ accounts: [view('a', 'none'), view('b', 'ok')] })
+  vi.mocked(getAccounts).mockResolvedValue({ accounts: [view('a', 'none'), view('b', 'ok')], discovery: [] })
 })
 afterEach(() => { vi.clearAllMocks(); probeFn = null })
 

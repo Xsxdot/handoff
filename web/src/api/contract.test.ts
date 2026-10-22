@@ -660,21 +660,30 @@ describe('scheduling wire', () => {
     expect(s.members[1].max_concurrency).toBeUndefined() // omitempty：0 以键缺席表达
     expect(squadsFixture.squads[1].members).toEqual([])
   })
-  it('SquadsResp 载体行带所选账号与指纹不符标记（B453 F13，键缺席 ≠ false）', () => {
+  it('SquadsResp 载体行带所选登录与派生账号（B464 A13，键缺席 ≠ false/空串）', () => {
     const plain: CarrierView = squadsFixture.carriers[0]
-    expect(Object.prototype.hasOwnProperty.call(plain, 'account')).toBe(false)
-    expect(Object.prototype.hasOwnProperty.call(plain, 'account_mismatch')).toBe(false)
+    for (const key of ['login', 'no_account', 'account_id', 'account_name', 'login_state', 'credential', 'account', 'account_mismatch']) {
+      expect(Object.prototype.hasOwnProperty.call(plain, key)).toBe(false)
+    }
     const bound: CarrierView = squadsFixture.carriers[1]
-    expect(bound.account).toBe('og-mac')
-    expect(bound.account_mismatch).toBe(true)
+    expect(bound.login).toBe('login-0123456789abcdef')
+    expect(bound.account_id).toBe('opencode-go:3f9a1b2cc21e')
+    expect(bound.account_name).toBe('opencode-go-3f9a')
+    expect(bound.login_state).toBe('ok')
+    expect(bound.home_dir).toBe('')
+    expect(Object.prototype.hasOwnProperty.call(bound, 'no_account')).toBe(false)
+    const none: CarrierView = squadsFixture.carriers[2]
+    expect(none.no_account).toBe(true)
+    expect(Object.prototype.hasOwnProperty.call(none, 'login')).toBe(false)
   })
-  it('HomeWake 携带指纹键（B453 F15）', () => {
+  it('HomeWake 只带登录 id（B464 W1），无凭据模式/指纹键', () => {
     const wakeReq: HomeWakeReq = homeWakeReqFixture
-    expect(wakeReq.fingerprint_kind).toBe('codex')
-    expect(wakeReq.fingerprint_entry).toBe('tokens')
-    expect(wakeReq.account).toBe('cx-mbp')
+    expect(wakeReq.login).toBe('login-0123456789abcdef')
+    for (const key of ['credential', 'fingerprint_kind', 'fingerprint_entry', 'account']) {
+      expect(Object.prototype.hasOwnProperty.call(wakeReq, key)).toBe(false)
+    }
     const wakeResp = homeWakeRespFixture as HomeWakeResp
-    expect(wakeResp.fingerprint).toBe('sha256:3f9a1b2cc21e')
+    expect(Object.prototype.hasOwnProperty.call(wakeResp, 'fingerprint')).toBe(false)
   })
   it('SquadsResp 携带 sched_running 占用行（B390 运行位）', () => {
     const r: RegistryRunningView = squadsFixture.running[0]
@@ -706,7 +715,6 @@ describe('scheduling wire', () => {
     expect(probeResp.kind).toBe('empty')
     const wakeReq: HomeWakeReq = homeWakeReqFixture
     expect(wakeReq.home_dir).toBe('~/.handoff/home/mbp-codex')
-    expect(wakeReq.credential).toBe('main_home_sync')
     expect(wakeReq.model).toBeUndefined()
     const wakeResp = homeWakeRespFixture as HomeWakeResp
     expect(wakeResp.outcome).toBe('need_login')
@@ -923,56 +931,69 @@ describe('B444 TS 镜像', () => {
   })
 })
 
-// B453 F1–F9：账号读面与登记体。样本刻意踩可缺席键（entry/proxy/reading/last_attempt_at/
-// last_error）与窗口 group/resets_at 的缺席边界——键缺席 ≠ 空串/零值。
-describe('账号 wire（B453 F1–F9）', () => {
-  it('AccountsResp 四种 kind、五档 state 与可缺席键', () => {
+// B453 F1–F9 / B464 A1–A6：账号读面（账号 = 身份、登录 = 落点）与编辑体。样本刻意踩可缺席键
+// （provider/label/reading/last_attempt_at/last_error/probe_login、登录 expires_at/proxy）与窗口
+// group/resets_at 的缺席边界——键缺席 ≠ 空串/零值。
+describe('账号 wire（B453 F1–F9 / B464 A1–A6）', () => {
+  it('AccountsResp 账号带登录与上次发现，可缺席键缺席', () => {
     const resp: AccountsResp = accountsRespFixture as AccountsResp
     const byName = new Map(resp.accounts.map((a: AccountView) => [a.name, a]))
     const ok = byName.get('og-main')!
+    expect(ok.id).toBe('opencode-go:3f9a1b2cc21e')
     expect(ok.kind).toBe('opencode-go')
     expect(ok.state).toBe('ok')
-    expect(ok.entry).toBe('opencode-go')
+    expect(ok.label).toBe('dev@example.com')
+    expect(ok.fingerprint).toMatch(/^sha256:/)
+    for (const key of ['machine', 'home_dir', 'entry', 'proxy', 'provider']) {
+      expect(Object.prototype.hasOwnProperty.call(ok, key)).toBe(false)
+    }
     expect(ok.reading!.windows.map((w) => w.key)).toEqual(['session', 'weekly', 'monthly'])
-    expect(typeof ok.reading!.windows[0].used_percent).toBe('number')
     expect(ok.reading!.windows[0].resets_at).toMatch(/^2026-/)
-    expect(ok.reading!.fingerprint).toMatch(/^sha256:/)
     expect(ok.carriers).toEqual(['mimo'])
-    const agy = byName.get('agy-main')!
-    expect(agy.kind).toBe('agy')
-    expect(Object.prototype.hasOwnProperty.call(agy, 'entry')).toBe(false)
-    expect(agy.reading!.windows.map((w) => w.group)).toEqual(['Gemini', 'Gemini', 'Claude/GPT', 'Claude/GPT'])
+    expect(ok.logins.map((l) => l.state)).toEqual(['ok', 'gone'])
+    expect(ok.probe_login).toBe(ok.logins[0].id)
+    expect(ok.logins[0].source).toBe('opencode.db')
+    expect(ok.logins[0].expires_at).toMatch(/^2026-/)
+    expect(Object.prototype.hasOwnProperty.call(ok.logins[1], 'expires_at')).toBe(false)
+    expect(Object.prototype.hasOwnProperty.call(ok.logins[0], 'proxy')).toBe(false)
+    const key = byName.get('opencode-go-key-77d0')!
+    expect(key.kind).toBe('apikey')
+    expect(key.provider).toBe('opencode-go')
+    expect(key.state).toBe('out')
+    expect(key.stale).toBe(true)
+    for (const k of ['interval_minutes', 'warn_percent', 'low_percent']) {
+      expect(Object.prototype.hasOwnProperty.call(key, k)).toBe(false)
+    }
+    const low = byName.get('codex-plus')!
+    expect(low.state).toBe('low')
+    expect(low.logins[0].proxy).toBe('socks5://u:***@127.0.0.1:7897')
+    expect(low.reading!.extra_usage).toEqual({ unit: 'credits', balance: 4.2 })
+    expect(Object.prototype.hasOwnProperty.call(low.reading!.windows[1], 'resets_at')).toBe(false)
+    const none = byName.get('codex-0b1c')!
+    expect(none.state).toBe('none')
+    for (const k of ['reading', 'last_attempt_at', 'last_error', 'probe_login']) {
+      expect(Object.prototype.hasOwnProperty.call(none, k)).toBe(false)
+    }
     const fail = byName.get('grok-mbp')!
     expect(fail.state).toBe('fail')
     expect(Object.prototype.hasOwnProperty.call(fail, 'reading')).toBe(false)
     expect(fail.last_error).toEqual({ category: 'credential_expired', message: '凭据已过期，等待 grok CLI 刷新' })
-    expect(fail.last_attempt_at).toMatch(/^2026-/)
-    expect(fail.carriers).toEqual([])
-    const none = byName.get('codex-spare')!
-    expect(none.state).toBe('none')
-    for (const key of ['reading', 'last_attempt_at', 'last_error', 'proxy']) {
-      expect(Object.prototype.hasOwnProperty.call(none, key)).toBe(false)
-    }
-    const low = byName.get('codex-plus')!
-    expect(low.state).toBe('low')
-    expect(low.proxy).toBe('socks5://u:***@127.0.0.1:7897')
-    expect(low.reading!.plan_type).toBe('Plus')
-    expect(low.reading!.extra_usage).toEqual({ unit: 'credits', balance: 4.2 })
-    expect(Object.prototype.hasOwnProperty.call(low.reading!.windows[1], 'resets_at')).toBe(false)
-    expect(byName.get('og-team')!.state).toBe('out')
-    expect(byName.get('og-team')!.stale).toBe(true)
-    // 审查第 1 轮 I2 增补：recover_at 可选，服务端推导（越线窗口最晚重置）；不阻挡/未知时键缺席
-    const team = byName.get('og-team')!
-    expect(team.recover_at).toBe(team.reading!.windows[0].resets_at)
+    // recover_at 可选，服务端推导（越线窗口最晚重置）；不阻挡/未知时键缺席
+    expect(key.recover_at).toBe(key.reading!.windows[0].resets_at)
     expect(low.recover_at).toBe(low.reading!.windows[0].resets_at)
-    for (const name of ['og-main', 'grok-mbp', 'codex-spare', 'agy-main']) {
+    for (const name of ['og-main', 'grok-mbp', 'codex-0b1c']) {
       expect(Object.prototype.hasOwnProperty.call(byName.get(name)!, 'recover_at')).toBe(false)
     }
+    expect(resp.discovery).toEqual([
+      { machine: 'linux-01', self: true, at: resp.discovery[0].at },
+      { machine: 'macbook-pro', self: false, error: '列不出 ~/.handoff/home：permission denied' },
+    ])
+    expect(resp.discovery[0].at).toMatch(/^2026-/)
   })
-  it('AccountInput 不含 state/reading/version，数值键可缺席', () => {
+  it('AccountInput 只含间隔与阈值，数值键可缺席（B464 A6）', () => {
     const input: AccountInput = accountInputFixture
-    expect(input).toEqual({ kind: 'codex', machine: 'macbook-pro', home_dir: '~/.handoff/home/mbp-codex', entry: 'tokens', interval_minutes: 15, warn_percent: 60, low_percent: 80 })
-    for (const key of ['state', 'reading', 'version', 'name']) {
+    expect(input).toEqual({ interval_minutes: 15, warn_percent: 60, low_percent: 80 })
+    for (const key of ['state', 'reading', 'version', 'name', 'kind', 'machine', 'home_dir', 'entry', 'proxy']) {
       expect(Object.prototype.hasOwnProperty.call(input, key)).toBe(false)
     }
   })

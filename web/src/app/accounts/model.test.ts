@@ -16,7 +16,7 @@ const win = (key: string, used: number, resetIn?: number, group?: string): Accou
 })
 function acct(name: string, state: string, windows?: AccountWindowView[], extra: Partial<AccountView> = {}): AccountView {
   return {
-    name, kind: 'codex', machine: 'm', home_dir: '~/h', interval_minutes: 15, warn_percent: 60, low_percent: 80,
+    id: `codex:${name}`, name, kind: 'codex', fingerprint: 'sha256:000000000000', logins: [], interval_minutes: 15, warn_percent: 60, low_percent: 80,
     version: 1, state, stale: false, carriers: [],
     ...(windows ? { reading: { windows, probed_at: iso(-60_000) } } : {}),
     ...extra,
@@ -112,37 +112,21 @@ describe('账号展示规则', () => {
     expect(recoverAt(acct('bad', 'out', undefined, { recover_at: 'not-a-time' }))).toBeNull()
   })
 
-  describe('保存后是否自动探测 credentialMoved（审查 m2 / 第 2 轮 N2）', () => {
-    // 编辑前：codex 账号，代理回显为打码值
-    const editing = acct('cx', 'ok', undefined, { kind: 'codex', machine: 'linux-01', home_dir: '~/h/cx', entry: 'tokens',
-      proxy: 'socks5://u:***@127.0.0.1:7897' })
-    // 原样回提交（对话框把回显值原样放进请求体）
-    const same: AccountInput = { kind: 'codex', machine: 'linux-01', home_dir: '~/h/cx', entry: 'tokens',
-      proxy: 'socks5://u:***@127.0.0.1:7897', interval_minutes: 15, warn_percent: 60, low_percent: 80 }
-    it('新建一律探测', () => expect(credentialMoved(null, same)).toBe(true))
-    it('原样回提交（代理仍是打码回显值）不探测', () => expect(credentialMoved(editing, same)).toBe(false))
-    it.each<[string, boolean, Partial<AccountInput>]>([
-      ['kind', true, { kind: 'grok' }],
-      ['所在机器', true, { machine: 'mac-mini' }],
-      ['HOME', true, { home_dir: '~/h/cx2' }],
-      ['条目', true, { entry: 'tokens2' }],
-      ['代理换成新值', true, { proxy: 'socks5://u:new@127.0.0.1:7897' }],
-      ['代理清空（改回沿用该机代理）', true, { proxy: undefined }],
-      ['探测间隔', false, { interval_minutes: 30 }],
-      ['预警线', false, { warn_percent: 50 }],
-      ['低额度线', false, { low_percent: 90 }],
-    ])('只改%s → 探测 %s', (_label, want, patch) => {
-      expect(credentialMoved(editing, { ...same, ...patch })).toBe(want)
-    })
+  describe('保存后是否自动探测 credentialMoved（B464：账号只由发现建，编辑只改间隔/阈值）', () => {
+    const editing = acct('cx', 'ok')
+    const body: AccountInput = { interval_minutes: 30, warn_percent: 50, low_percent: 90 }
+    it('新建（已不可达）探测', () => expect(credentialMoved(null, body)).toBe(true))
+    it('编辑间隔/阈值不探测', () => expect(credentialMoved(editing, body)).toBe(false))
   })
 
-  it('凭据位置一句话：opencode-go 条目空 = 自动、opencode.db = 登录账号、其他 = auth.json 同名条目（轮 5，spec r1.3）', () => {
-    const og = (entry?: string) => acct('og', 'ok', undefined, { kind: 'opencode-go', home_dir: '/root', ...(entry === undefined ? {} : { entry }) })
-    expect(entryText(og())).toBe('/root › 自动（auth.json › opencode-go，否则 opencode.db 登录账号）')
-    expect(entryText(og('opencode.db'))).toBe('/root › opencode.db 登录账号')
-    expect(entryText(og('opencode-go'))).toBe('/root › auth.json › opencode-go')
-    expect(entryText(acct('cx', 'ok', undefined, { kind: 'codex', home_dir: '~/h', entry: 'tokens' }))).toBe('~/h › auth.json › tokens')
-    expect(entryText(acct('ag', 'ok', undefined, { kind: 'agy', home_dir: '/root' }))).toBe('/root（agy CLI 自己的登录态）')
+  it('凭据位置一句话取可探登录：opencode.db = 登录账号、其他 = HOME › 来源、agy = CLI 登录态、无登录（B464）', () => {
+    const login = (home: string, source: string) => ({ id: 'login-x', machine: 'm', home, source, fingerprint: 'sha256:000000000000',
+      state: 'ok', changed_at: iso(-60_000), carriers: [] })
+    const withLogin = (kind: string, home: string, source: string) => acct('a', 'ok', undefined, { kind, logins: [login(home, source)], probe_login: 'login-x' })
+    expect(entryText(withLogin('opencode-go', '/root', 'opencode.db'))).toBe('/root › opencode.db 登录账号')
+    expect(entryText(withLogin('opencode-go', '/root', 'auth.json'))).toBe('/root › auth.json')
+    expect(entryText(withLogin('agy', '/root', 'agy'))).toBe('/root（agy CLI 自己的登录态）')
+    expect(entryText(acct('none', 'ok'))).toBe('没有登录')
   })
 
   it('窗口名：agy 带模型组；四种 kind 固定顺序', () => {

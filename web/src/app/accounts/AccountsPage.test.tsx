@@ -65,7 +65,7 @@ describe('账号页', () => {
 
   it('登记：缺省值随 kind 预填；agy 条目置灰「由 agy CLI 管理」；保存发 expect=0 并合入列表（W1）', async () => {
     const user = userEvent.setup()
-    const saved: AccountView = { ...sampleAccounts()[4], name: 'cx-new', machine: 'linux-01', version: 1 }
+    const saved: AccountView = { ...sampleAccounts()[4], name: 'cx-new', version: 1 }
     vi.mocked(putAccount).mockResolvedValue(saved)
     render(<AccountsPage />)
     await user.click(within(screen.getByTestId('kgroup-codex')).getByRole('button', { name: '＋ 登记账号' }))
@@ -97,7 +97,7 @@ describe('账号页', () => {
 
   it('登记 opencode-go：条目缺省为自动（留空、占位说明两处来源），不填则请求体无 entry；可填 opencode.db 强制登录账号（轮 5）', async () => {
     const user = userEvent.setup()
-    vi.mocked(putAccount).mockResolvedValue({ ...sampleAccounts()[0], name: 'og-new', entry: undefined, version: 1 })
+    vi.mocked(putAccount).mockResolvedValue({ ...sampleAccounts()[0], name: 'og-new', version: 1 })
     vi.mocked(probeAccount).mockResolvedValue({ ...sampleAccounts()[0], name: 'og-new', version: 1 })
     render(<AccountsPage />)
     await user.click(within(screen.getByTestId('kgroup-opencode-go')).getByRole('button', { name: '＋ 登记账号' }))
@@ -123,7 +123,7 @@ describe('账号页', () => {
 
   it('编辑：名称只读，带当前版本；代理回显打码，原样提交即保留；服务端 400 原文显示', async () => {
     const user = userEvent.setup()
-    const masked: AccountView = { ...sampleAccounts()[3], proxy: 'socks5://u:***@127.0.0.1:7897' }
+    const masked: AccountView = { ...sampleAccounts()[3], logins: [{ ...sampleAccounts()[3].logins[0], proxy: 'socks5://u:***@127.0.0.1:7897' }] }
     __setAccountsForTest([masked])
     vi.mocked(putAccount).mockRejectedValueOnce(new ApiError(400, '账号登记校验失败：预警线 70 必须小于低额度线 60'))
     render(<AccountsPage />)
@@ -138,7 +138,7 @@ describe('账号页', () => {
 
   it('保存后自动探测一次：新建触发、只改间隔不触发、改 HOME 触发；探测失败只显示在卡片上（审查 m2；触发项全表见 model.test 的 credentialMoved）', async () => {
     const user = userEvent.setup()
-    const saved: AccountView = { ...sampleAccounts()[4], name: 'cx-new', machine: 'linux-01', version: 1 }
+    const saved: AccountView = { ...sampleAccounts()[4], name: 'cx-new', version: 1 }
     vi.mocked(putAccount).mockResolvedValue(saved)
     vi.mocked(probeAccount).mockRejectedValueOnce(new ApiError(502, '转发到 linux-01 失败: 连接被拒绝'))
     render(<AccountsPage />)
@@ -162,8 +162,8 @@ describe('账号页', () => {
     expect(probeAccount).not.toHaveBeenCalled()
 
     // 编辑改了 HOME：触发探测，成功就地刷新
-    vi.mocked(putAccount).mockResolvedValue({ ...sampleAccounts()[3], home_dir: '~/.handoff/home/cx2', version: 4 })
-    vi.mocked(probeAccount).mockResolvedValue({ ...sampleAccounts()[3], home_dir: '~/.handoff/home/cx2', version: 4 })
+    vi.mocked(putAccount).mockResolvedValue({ ...sampleAccounts()[3], logins: [{ ...sampleAccounts()[3].logins[0], home: '~/.handoff/home/cx2' }], version: 4 })
+    vi.mocked(probeAccount).mockResolvedValue({ ...sampleAccounts()[3], logins: [{ ...sampleAccounts()[3].logins[0], home: '~/.handoff/home/cx2' }], version: 4 })
     await user.click(within(card('codex-plus')).getByRole('button', { name: '编辑' }))
     const home = within(screen.getByRole('dialog')).getByLabelText('凭据 HOME')
     await user.clear(home)

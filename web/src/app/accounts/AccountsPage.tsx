@@ -16,7 +16,7 @@ import { ApiError, fetchMachines } from '../../api/client'
 import { deleteAccount, putAccount, type AccountDeleteRefusal, type AccountInput, type AccountView } from '../../api/accounts'
 import { errorMessage } from '../lib/format'
 import {
-  ago, byProblem, clock, credentialMoved, DEFAULT_INTERVAL, DEFAULT_LOW, DEFAULT_WARN, entryText, extraUsageText, INTERVALS,
+  accountPlace, ago, byProblem, clock, credentialMoved, DEFAULT_INTERVAL, DEFAULT_LOW, DEFAULT_WARN, entryText, extraUsageText, INTERVALS,
   KIND_ORDER, kindMeta, KINDS, nextProbeText,
 } from './model'
 import { KindIcon, StatusText, WinsCompact } from './QuotaBits'
@@ -41,8 +41,9 @@ interface Draft {
 function draftOf(a: AccountView | null, kind: string): Draft {
   if (a) {
     return {
-      name: a.name, kind: a.kind, machine: a.machine, interval: String(a.interval_minutes), home: a.home_dir,
-      entry: a.entry ?? '', proxy: a.proxy ?? '', warn: String(a.warn_percent), low: String(a.low_percent),
+      name: a.name, kind: a.kind, machine: accountPlace(a).machine, interval: String(a.interval_minutes ?? DEFAULT_INTERVAL),
+      home: accountPlace(a).home, entry: accountPlace(a).source, proxy: accountPlace(a).proxy ?? '',
+      warn: String(a.warn_percent ?? DEFAULT_WARN), low: String(a.low_percent ?? DEFAULT_LOW),
     }
   }
   return {
@@ -51,12 +52,9 @@ function draftOf(a: AccountView | null, kind: string): Draft {
   }
 }
 
-// inputOf 草稿 → F9 请求体。空条目/空代理以键缺席表达（agy 无条目；opencode-go 空 = 自动；
-// 不填代理 = 沿用该机代理）。
+// inputOf 草稿 → B464 A6 编辑体：只有间隔与阈值（机器/HOME/来源/代理在登录上，不经此对话框改）。
 function inputOf(d: Draft): AccountInput {
-  const body: AccountInput = { kind: d.kind, machine: d.machine.trim(), home_dir: d.home.trim() }
-  if (d.entry.trim() && d.kind !== 'agy') body.entry = d.entry.trim()
-  if (d.proxy.trim()) body.proxy = d.proxy.trim()
+  const body: AccountInput = {}
   body.interval_minutes = Number(d.interval)
   body.warn_percent = Number(d.warn)
   body.low_percent = Number(d.low)
@@ -90,7 +88,7 @@ function AccountDialog({ editing, kind, machines, onClose, onSaved }: {
     const body = inputOf(d)
     setSaving(true)
     setError('')
-    console.info('accounts.save.start', { name, expect, kind: body.kind, machine: body.machine })
+    console.info('accounts.save.start', { name, expect, kind: d.kind, machine: d.machine })
     try {
       const view = await putAccount(name, expect, body)
       console.info('accounts.save.success', { name, version: view.version, state: view.state })
@@ -133,7 +131,7 @@ function AccountDialog({ editing, kind, machines, onClose, onSaved }: {
               : '只登记位置。保存后所在机 agentd 读取凭据、回填短指纹，密钥不进账本。'}</p></div>
           <div className="sm:col-span-2"><label htmlFor="af-proxy" className={LABEL}>代理（可选，只用于这个账号的探测与派发）</label>
             <input id="af-proxy" aria-label="代理" className={`${INPUT} font-mono`} placeholder="留空 = 沿用该机代理，如 socks5://127.0.0.1:7897" value={d.proxy} onChange={(e) => set({ proxy: e.target.value })} />
-            {editing?.proxy?.includes('***') && <p className="mt-1 text-[11px] leading-5 text-muted-foreground">密码已打码显示；不改就原样保留。</p>}</div>
+            {editing && accountPlace(editing).proxy?.includes('***') && <p className="mt-1 text-[11px] leading-5 text-muted-foreground">密码已打码显示；不改就原样保留。</p>}</div>
           <div><label htmlFor="af-warn" className={LABEL}>预警线（只变色，不影响派发）</label>
             <div className="flex items-center gap-1.5"><input id="af-warn" aria-label="预警线" className={`${INPUT} w-[90px]`} type="number" min={0} max={100} value={d.warn} onChange={(e) => set({ warn: e.target.value })} /><span className="text-xs text-muted-foreground">%</span></div></div>
           <div><label htmlFor="af-low" className={LABEL}>低额度线（达到即暂停派发）</label>
@@ -186,7 +184,7 @@ function DeleteDialog({ a, onClose }: { a: AccountView; onClose: () => void }) {
         <h3 className="mb-2 text-sm font-semibold">{title}</h3>
         <p className="text-xs leading-6 text-muted-foreground">{blocked
           ? <>仍有 {refs.length} 个载体引用这个账号：{refs.map((c, i) => <span key={c}>{i > 0 && '、'}<b className="font-mono text-foreground">{c}</b></span>)}。先在「设置 · 自动化」把它们换到别的账号，或清空账号选择。</>
-          : `只删除账本里的登记，${a.machine} 上的凭据文件不动。删除后各机控制台同时看不到它。`}</p>
+          : `只删除账本里的登记，${accountPlace(a).machine} 上的凭据文件不动。删除后各机控制台同时看不到它。`}</p>
         {error && <p role="alert" className="mt-2 break-words text-xs text-destructive">{error}</p>}
         <div className="mt-4 flex justify-end gap-2">
           <button type="button" className="rounded-md border px-3 py-1.5 text-xs" onClick={onClose}>{blocked ? '关闭' : '取消'}</button>
@@ -213,10 +211,10 @@ function AccountCard({ a, open, flash, now, autoProbe, onToggle, onEdit, onDelet
   }, [flash])
   const runProbe = async () => {
     setProbing(true)
-    setNote(`已请求 ${a.machine} 的 agentd 探测…`)
+    setNote(`已请求 ${accountPlace(a).machine} 的 agentd 探测…`)
     try {
       const v = await probe(a.name)
-      setNote(v.state === 'fail' ? `探测完成：仍失败（${v.last_error?.message ?? '原因未知'}）。检查 ${a.machine} 上的代理或登录。` : '探测完成，已写回账本。')
+      setNote(v.state === 'fail' ? `探测完成：仍失败（${v.last_error?.message ?? '原因未知'}）。检查 ${accountPlace(a).machine} 上的代理或登录。` : '探测完成，已写回账本。')
     } catch (cause) {
       setNote(`探测请求失败：${errorMessage(cause)}`)
     } finally {
@@ -246,7 +244,7 @@ function AccountCard({ a, open, flash, now, autoProbe, onToggle, onEdit, onDelet
           <button type="button" className="tbtn" onClick={onDelete}>删除</button>
         </span>
       </div>
-      <div className="a-r2">{a.machine} · {entryText(a)} · {a.reading?.fingerprint || '指纹待首次探测回填'}</div>
+      <div className="a-r2">{accountPlace(a).machine} · {entryText(a)} · {a.reading?.fingerprint || '指纹待首次探测回填'}</div>
       <div className="a-r3">
         {hasWins
           ? <><WinsCompact a={a} now={now} />{a.state === 'fail' && <div className="a-note mt-1.5">显示的是 {ago(a.reading?.probed_at, now)}的读数</div>}</>
@@ -256,7 +254,7 @@ function AccountCard({ a, open, flash, now, autoProbe, onToggle, onEdit, onDelet
         <div className="a-detail">
           <dl className="a-kv">
             <dt>类型</dt><dd>{kindMeta(a.kind).label}</dd>
-            <dt>代理</dt><dd>{a.proxy ? <code>{a.proxy}</code> : <span className="q-mute">沿用该机代理</span>}</dd>
+            <dt>代理</dt><dd>{accountPlace(a).proxy ? <code>{accountPlace(a).proxy}</code> : <span className="q-mute">沿用该机代理</span>}</dd>
             <dt>阈值</dt><dd>预警 ≥ {a.warn_percent}%（只变色） · 低额度 ≥ {a.low_percent}%（暂停派发）</dd>
             <dt>探测</dt><dd>每 {a.interval_minutes} 分钟 · 上次 {lastAttempt} · {nextProbeText(a, now)}{a.reading && a.state === 'fail' ? ` · 最后成功读数 ${ago(a.reading.probed_at, now)}` : ''}{a.stale ? ' · 读数已过期' : ''}</dd>
             {a.last_error && <><dt>上次错误</dt><dd>△ {a.last_error.message}</dd></>}
@@ -299,7 +297,7 @@ export function AccountsPage({ highlight = '' }: { highlight?: string }) {
   }, [])
 
   const list = accounts ?? []
-  const machineOptions = [...new Set([...machines, ...list.map((a) => a.machine)])]
+  const machineOptions = [...new Set([...machines, ...list.map((a) => accountPlace(a).machine)])]
   const toggle = (name: string) => setOpened((cur) => {
     const next = new Set(cur)
     if (next.has(name)) next.delete(name)

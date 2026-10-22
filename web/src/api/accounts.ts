@@ -10,10 +10,10 @@
 //   - 凭据值永不出现在这里（F10）；proxy 是服务端打码后的回显，原样回传即「保留原值」
 import { putJSON, request } from './client'
 
-/** F7：账号 kind。 */
-export type AccountKind = 'opencode-go' | 'codex' | 'grok' | 'agy'
-/** F6：ok 正常 / low 低额度 / out 无额度 / fail 探测失败 / none 未探测。 */
-export type AccountState = 'ok' | 'low' | 'out' | 'fail' | 'none'
+/** F7 / B464 A3：账号 kind。 */
+export type AccountKind = 'opencode-go' | 'codex' | 'grok' | 'agy' | 'claude' | 'apikey'
+/** F6 / B464 A3：ok 正常 / low 低额度 / out 无额度 / fail 探测失败 / none 未探测 / na 不支持额度。 */
+export type AccountState = 'ok' | 'low' | 'out' | 'fail' | 'none' | 'na'
 /** F8：窗口键。 */
 export type WindowKey = 'session' | 'weekly' | 'monthly'
 
@@ -49,17 +49,39 @@ export interface AccountProblemView {
   message: string
 }
 
-/** F5：账号读面。可缺席键：entry（agy）、proxy、reading、last_attempt_at、last_error、recover_at。 */
+/** B464 A4：账号的一条登录（机器 × HOME × 来源）。proxy 已打码；expires_at 可缺席。 */
+export interface LoginView {
+  id: string
+  machine: string
+  home: string
+  source: string
+  fingerprint: string
+  state: 'ok' | 'expired' | 'gone' | string
+  changed_at: string
+  expires_at?: string
+  proxy?: string
+  carriers: string[]
+}
+
+/** B464 A5：一台机器的「上次发现」；at 缺席 = 从未发现。 */
+export interface DiscoveryView {
+  machine: string
+  self: boolean
+  at?: string
+  error?: string
+}
+
+/** B464 A2：账号读面（账号 = 身份；machine/home_dir/entry/proxy 移到登录上）。 */
 export interface AccountView {
+  id: string
   name: string
   kind: AccountKind | string
-  machine: string
-  home_dir: string
-  entry?: string
-  proxy?: string
-  interval_minutes: number
-  warn_percent: number
-  low_percent: number
+  provider?: string
+  label?: string
+  fingerprint: string
+  interval_minutes?: number
+  warn_percent?: number
+  low_percent?: number
   version: number
   state: AccountState | string
   stale: boolean
@@ -68,21 +90,21 @@ export interface AccountView {
   last_error?: AccountProblemView
   /** 预计离开低额度/无额度的时刻（审查第 1 轮 I2 增补）：服务端推导，越线窗口全部重置即最晚那个；不阻挡或未知时缺席。 */
   recover_at?: string
+  /** B464：读数来源的可探登录 id；无正常登录时缺席。 */
+  probe_login?: string
+  logins: LoginView[]
   carriers: string[]
 }
 
-/** F1：GET /api/accounts 响应。 */
+/** F1 / B464 A1：GET /api/accounts 响应。 */
 export interface AccountsResp {
   accounts: AccountView[]
+  discovery: DiscoveryView[]
 }
 
-/** F9：PUT 请求体；名称取路径；数值键缺席 = 服务端取缺省。 */
+/** B464 A6：PUT 编辑体（账号只由发现建，expect=0 → 400）；键缺席 = 保留现值。 */
 export interface AccountInput {
-  kind: string
-  machine: string
-  home_dir: string
-  entry?: string
-  proxy?: string
+  name?: string
   interval_minutes?: number
   warn_percent?: number
   low_percent?: number

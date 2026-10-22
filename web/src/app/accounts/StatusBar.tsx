@@ -18,7 +18,7 @@ import { errorMessage } from '../lib/format'
 import { useWebPrefs } from '../settings/useWebPrefs'
 import { usageModeOf } from '../settings/webPrefs'
 import {
-  barWindows, byProblem, extraUsageText, failBrief, KIND_ORDER, kindMeta, resetAt, tightest, updatedText, type UsageMode,
+  accountPlace, barWindows, byProblem, extraUsageText, failBrief, KIND_ORDER, kindMeta, resetAt, tightest, updatedText, type UsageMode,
 } from './model'
 import { DetailNote, KindIcon, Pct, QBar, REFRESH_ICON, Reset, Summary, WinsFull, WinsInline } from './QuotaBits'
 import { useAccounts, useNow } from './store'
@@ -70,7 +70,7 @@ function SidePanel({ a, now, onBack, onManage }: { a: AccountView; now: number; 
       {extra && <div className="sp-line"><span>额外额度</span><span className="q-mono">{extra}</span></div>}
       {a.state === 'none' && <div className="sp-note">尚未探测。保存后由所在机 agentd 探测一次。</div>}
       {a.last_error && a.state !== 'none' && <div className="sp-note">△ {a.last_error.message}{a.state === 'fail' && a.reading && <><br />显示的是旧读数</>}</div>}
-      <div className="sp-line"><span>所在机器</span><span>{a.machine}</span></div>
+      <div className="sp-line"><span>所在机器</span><span>{accountPlace(a).machine}</span></div>
       <div className="sp-sec"><div className="sp-sec-t">使用此账号的载体</div><div className="q-mono">{a.carriers.length ? a.carriers.join('、') : <span className="q-mute">无</span>}</div></div>
       <button type="button" className="sp-act" disabled={probing} onClick={() => void run()}>{probing ? '探测中…' : '立即探测'}</button>
       {error && <p role="alert" className="sp-err">探测失败：{error}</p>}
@@ -190,12 +190,12 @@ export function UsageStatusBar({ onManage }: { onManage: (name?: string) => void
     }
     if (mode === 'compact') {
       return <button key={a.name} className={`up-row${on}`} {...common}>
-        <span className="up-r1"><span className="up-name">{a.name}</span><span className="up-mach">{a.machine}</span><span className="up-val"><Summary a={a} now={now} order="tail" /></span><span className="up-chev">›</span></span>
+        <span className="up-r1"><span className="up-name">{a.name}</span><span className="up-mach">{accountPlace(a).machine}</span><span className="up-val"><Summary a={a} now={now} order="tail" /></span><span className="up-chev">›</span></span>
       </button>
     }
     const hasWins = (a.reading?.windows.length ?? 0) > 0
     return <button key={a.name} className={`up-row d${on}`} {...common}>
-      <span className="up-r1"><span className="up-name">{a.name}</span><span className="up-mach">{a.machine}</span><span className="up-note"><DetailNote a={a} now={now} /></span><span className="up-chev">›</span></span>
+      <span className="up-r1"><span className="up-name">{a.name}</span><span className="up-mach">{accountPlace(a).machine}</span><span className="up-note"><DetailNote a={a} now={now} /></span><span className="up-chev">›</span></span>
       {hasWins && <span className="up-r2"><WinsInline a={a} /></span>}
     </button>
   }

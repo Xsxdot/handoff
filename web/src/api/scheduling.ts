@@ -9,15 +9,18 @@ export interface CarrierView {
   cli: string
   home_dir: string
   model?: string
-  credential: string
   max_concurrency?: number
   status?: CarrierStatus
   last_error?: string
   version: number
-  /** B453 F13：所选账号名；不选即缺席。 */
-  account?: string
-  /** B453 F13：载体 HOME 凭据指纹与账号读数指纹不一致时为 true（仅 true 时出现）。 */
-  account_mismatch?: boolean
+  /** B464 A13：所选登录 id；未选（存量未迁移）或无账号时缺席。home_dir 是服务端按登录写的镜像。 */
+  login?: string
+  /** B464 A13：「无账号 · 主 HOME」，仅 true 时出现。 */
+  no_account?: boolean
+  /** B464 A13：派生只读——所选登录的账号 id / 名与登录状态。 */
+  account_id?: string
+  account_name?: string
+  login_state?: string
 }
 
 // B453：载体状态去掉 quota（限额中退役，额度改看所选账号）；检测结局 WakeOutcome 仍保留
@@ -50,16 +53,15 @@ export interface RegistryRunningView {
   count: number
 }
 
+/** B464 A14：login 与 no_account 恰给一个，否则 400；HOME 由服务端按所选登录镜像。 */
 export interface CarrierInput {
   name?: string
   machine: string
   cli: string
-  home_dir: string
   model?: string
-  credential: string
   max_concurrency?: number
-  /** B453 F13：所选账号名；空/缺席 = 不选（只能选同机账号）。 */
-  account?: string
+  login?: string
+  no_account?: boolean
 }
 
 export interface SquadInput {
@@ -182,8 +184,8 @@ export const probeHome = (input: HomeProbeReq) => {
 export const wakeHome = (input: HomeWakeReq) => {
   const q = input.machine ? `?machine=${encodeURIComponent(input.machine)}` : ''
   const body: HomeWakeReq = { cli: input.cli, home_dir: input.home_dir }
-  if (input.credential) body.credential = input.credential
   if (input.model) body.model = input.model
+  if (input.login) body.login = input.login
   return postJSON<HomeWakeResp>(`/api/host/wake${q}`, body)
 }
 
@@ -228,21 +230,15 @@ export interface HomeProbeResp {
 export interface HomeWakeReq {
   cli: string
   home_dir: string
-  credential?: string
   model?: string
   machine?: string
-  /** B453 F15：所选账号的 kind / 凭据条目（目标机据此算凭据指纹）。 */
-  fingerprint_kind?: string
-  fingerprint_entry?: string
-  /** B453：所选账号名（目标机在本机查代理，代理串不过 wire）。 */
-  account?: string
+  /** B464 W1：所选登录 id（目标机在本机查 kind 与代理，代理串不过 wire）。 */
+  login?: string
 }
 
 export interface HomeWakeResp {
   outcome: WakeOutcome
   detail?: string
-  /** B453 F15：载体 HOME 凭据短指纹；缺席 = 未算或算不出。 */
-  fingerprint?: string
 }
 
 export interface CarrierDetectResp {

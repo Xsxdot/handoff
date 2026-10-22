@@ -49,14 +49,13 @@ describe('scheduling fetch seam', () => {
   it('serializes CAS writes and preserves zero/omitted optional fields', async () => {
     const fetchMock = mockFetchJSON({ name: 'carrier-a', version: 4 })
     await putCarrier('carrier a/特殊', 3, {
-      name: 'carrier a', machine: 'local', cli: 'opencode', home_dir: '/h',
-      credential: 'standalone', max_concurrency: 0,
+      name: 'carrier a', machine: 'local', cli: 'opencode', login: 'login-0123456789abcdef', max_concurrency: 0,
     })
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
     expect(url).toBe('/api/squads/carriers/carrier%20a%2F%E7%89%B9%E6%AE%8A?expect=3')
     expect(init.method).toBe('PUT')
     expect(JSON.parse(String(init.body))).toEqual({
-      name: 'carrier a', machine: 'local', cli: 'opencode', home_dir: '/h', credential: 'standalone',
+      name: 'carrier a', machine: 'local', cli: 'opencode', login: 'login-0123456789abcdef',
     })
 
     const squadFetchMock = mockFetchJSON({ name: 'squad-a', version: 1 })

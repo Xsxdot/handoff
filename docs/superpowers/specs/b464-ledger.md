@@ -41,3 +41,58 @@
 - **已过期判据**：倾向「证据型」（探测/检测经该登录得到凭据失效，或离线到期已过且无 refresh token），放弃「离线到期即过期」——codex/claude/opencode OAuth 都是 CLI 运行时用 refresh token 自刷新，闲置 HOME 会长期误报。交主会话裁决（plan Q5）。
 - **agy 任务 token**：倾向「源改为登录 HOME + 单文件软链」，真机核 agy 刷新时是原地写还是换目录项；放弃「保持拷贝」（与 spec「凭据永不复制」字面冲突，且源头是主 HOME 时 agy 载体根本用不上隔离登录）。
 - **不扇出**：账号/登录模型是其余各段的契约硬依赖，且各段共享 `internal/scheduling/accounts`、`internal/agentd/account_*`、`web/src/app/accounts` 同一批文件；扇出只会制造施工冲突。
+
+## implement 段 1（2026-10-22）
+
+- 执行者：主会话派出的 implement subagent（charter:implement / architecture-law 已加载）。工作树 `.claude/worktrees/b464`，分支 `cards/B464-charter-1` 起点 `92fecd0c`（plan 已拍板）。本节边干边落：提交、命令与原始输出摘要、放弃的尝试、判断。
+- 硬约束照办：零真机动作（不起/不重启任何 agentd、不读本机真实凭据、不连生产账本）；claude/agy 取材、登录命令表、Q5 已过期判据不写；Go 测试一律 `env -u CLAUDE_CODE_SESSION_ID`。
+
+### 读数（实现前，基线 92fecd0c）
+
+- 段 1 删 `Carrier.Account` 后，按账号名消费载体账号的生产点：`agentd/account_carrier.go`（accountOfCarrier/hostWakeProxy/dispatchAccount/coordinatorAccountProxy）、`agentd/quota_rerun.go`（任务撞额度标记、重跑排除集 excludes/rerunNoMemberError）、`scheduling/status.go markDetectQuota`、`scheduling/admission.go usability/CarriersUsingAccount`、`scheduling/scheduling.go checkCarrierAccount` 及三处日志字段。它们在段 1 失去编译基础，必须一并改成 载体 → 登录 → 账号 id。
+- 账号 id 化后 `MarkQuota`/任务行 `account` 列/`exclude_accounts` 只能存账号 id（名字不再是主键）——plan 把 Q23 排在段 2，段 1 因数据模型被迫提前（见交回物偏离节）。
+
+### 实现记录（按落地顺序）
+
+- **accounts 新模型**（`internal/scheduling/accounts`）：`types.go` 重写（Account = 身份：id `<kind>:<hex12>` / apikey `apikey:<provider>:<hex12>`；Login 行 kind `account_login`，id `login-<sha256(machine\0home\0kind\0provider\0source)[:16]>`；`discovery_run` 行；`ok/expired/gone` 词表，段 1 只产生 ok/gone）；新 `naming.go`（AccountID/LoginID/自动起名/CompatibleKinds）、`login.go`（读登录、合并 CAS 写）、`discover.go`（Reconcile：expect=0 建账号、CAS 冲突回读即归并；登录只在内容变化时写；未扫清的 HOME 不下「已失效」）；`delete.go` 改按「名下登录被载体引用」拒删（`SetReferrers(func() (map[登录 id][]载体, error))`）。B453 旧账号行（无 fingerprint 或未知 kind）解码时跳过并 Warn 一次（plan Q20 的最小形，完整处理在段 2）。
+- **quota 离线取材**（`internal/quota/logins.go`）：`Registry.Logins(home)`；`OpencodeGo.Logins`：auth.json › opencode-go key → source `auth.json`；opencode.db 当前登录 → source `opencode.db`（带到期）；只回来源名/短指纹/到期，原始身份不出包；看不清的凭据记 problem（带路径、不带值）。
+- **编制域**（`internal/scheduling`）：删 `CredentialSource`/`Carrier.Credential`/`Carrier.Account`/`CredFingerprint`；载体 `Login`/`NoAccount`；`PutCarrier` 校验（二者不得同给、登录存在、同机、kind 与 CLI 兼容）+ `mirrorHome`；统一准入 `usability` 改读 载体 → 登录 → 账号（Assess 按账号 id）；`LoginReferrers` 取代 `CarriersUsingAccount`；新 `migrate.go`（§5 规则 1–4 + Q14 模型前缀判决，CAS 于读到的版本、从不覆盖人的选择，每载体一条 Info）。
+- **HOME 供给去复制**：`hostapi.WakeHome` 删 main_home_sync 复制与建目录（HOME 不存在 → need_login + 可行动文案）、删凭据指纹；`orchestration/coordinator_home.go` 删 `copyMissingCoordinatorCredential` 及凭据路径白名单；任务启动未改（经 `home_dir` 镜像），由竖切断言锁住。
+- **accountwork 子包**：`git mv internal/agentd/account_prober.go internal/agentd/accountwork/prober.go`；探测改走「可探登录」（Q10 最小形：最小 id 的正常登录，只由其所在机探），代理取登录代理、回落活配置 proxy；新 `discoverer.go`（启动一轮 + 60s 节拍、单飞；只扫主 HOME 与 `~/.handoff/home/*` 一层真实目录，跳过软链/文件；每轮 Info 观测点；AfterRound 接迁移）。子包不 import agentd（Q21）。
+- **agentd/proto/cmd**：`account_api.go`（`{ref}` = id 或名；expect=0 → 400；GET 带 logins + discovery；立即探测路由到可探登录所在机）；`account_carrier.go` 改 载体 → 登录（检测本机套登录代理、远程只发 `login` id、派发快照存账号 id、协调者按 CLI+HOME 反查所选登录代理）；`schedapi.go`（PUT 二选一 400、残留 `home_dir`/`credential`/`account` 键按未知键忽略、投影派生 account_id/name/login_state、删指纹）；`hostprobe.go`（wake 只认本机登录）；`quota_rerun.go`（任务行 account = 账号 id，告知用账号名，排除集按账号 id）；`cmd/agentd.go` 组装发现器 + 迁移；`account list` 表格账号行下逐条登录行；`squad list` 账号格删「凭据指纹不符」、增「登录已失效」「无账号」。
+- **web 最小对齐**：`api/scheduling.ts`、`api/accounts.ts` 类型按 A2/A4/A5/A6/A13/A14/W1；账号页/状态栏/移动页取 `accountPlace(a)`（可探登录）；载体对话框账号下拉改为「同机登录 / 无账号 · 主 HOME」二选一、HOME 只读回显；测试样本类型随改。
+
+### 命令与读数
+
+- `go build ./...` → 无输出（通过）。
+- `go vet ./internal/scheduling/... ./internal/quota/... ./internal/hostapi/... ./internal/orchestration/... ./internal/proto/... ./internal/agentd/... ./cmd/... ./internal/keystone/...` → 无输出（通过）。
+- `env -u CLAUDE_CODE_SESSION_ID go test -count=1 <上列触及包>` → 全 ok：scheduling 1.1s、accounts 0.5s、quota 5.1s、hostapi 6.1s、orchestration 45.5s、proto 0.4s、agentd 76.7s、accountwork 0.6s、cmd 79.3s、keystone 0.5s。本段未遇到 CLAUDE_CODE_SESSION_ID / 嵌套 worktree 两个环境敏感测试变红（一律 `env -u` 跑）。
+- `gofmt -l <改动的 .go>` → 首次报 3 个测试文件（字段对齐），`gofmt -w` 后为空。
+- `go test ./internal/proto/ -run TestContractFixtures` → 先红：AccountsResp/AccountInput/SquadsResp/HomeWakeReq/HomeWakeResp「序列化结果与 fixture 不一致」；`-update` 刷新 `web/src/api/testdata/` 5 个 json 后绿。
+- `cd web && npm run typecheck`（worktree 无 node_modules，临时软链主仓 `web/node_modules`，收尾删除）→ 通过。`npx vitest run` → 150 文件 148 过、2004 例 12 红：`AccountsPage.test.tsx` 5 例（B453 手工登记/编辑凭据位置的交互）与 `SchedulingPage.test.tsx` 7 例（凭据来源枚举、HOME 手填探测、按名选账号、指纹不符红字）——它们断言的 UI 行为随 wire 删除，按派发指令只做类型对齐、不重做 UI（交回物偏离节）。
+- 竖切 `env -u CLAUDE_CODE_SESSION_ID go test ./internal/agentd/ -run 'Discovery.*Vertical' -v` → `--- PASS: TestDiscoveryCarrierLoginDispatchVertical`。
+
+### 红证据（先红后绿；部分实现先于测试落地，红以「临时注入缺陷 → 断言红 → 还原」补证，还原后 grep 注入标记计数 0）
+
+- 竖切：① `WakeHome` 临时注入写 `auth.json` → `检测：HOME 里已有文件 .local/share/opencode/auth.json 被改动或删除`；② `mirrorHome` 临时让主 HOME 登录返回 `~` → `新载体投影：HOME 镜像应为空…`。还原后 PASS。
+- 迁移（`TestMigrateCarrierLogins*`）：`decideMigration` 临时恒回规则 4 → 断言红；HOME 镜像/登录校验（`TestCarrierLogin*`）：`mirrorHome`/`checkCarrierLogin` 临时桩 → 断言红；`TestWakeHomeNeverCopiesCredential`：换回 HEAD 版 `probe.go`/`hostapi.go` → 断言红；发现器扫描范围（V3）：放宽软链过滤 → 断言红。均已还原（备份在 scratchpad）。
+- 账号域（本回合补证）：`ensureAccount` 临时让 CAS 冲突不归并 → `TestReconcileDedupeTwoMachinesConcurrent`：`mac-mini 第 0 轮: 新建账号 opencode-go:aaaa11112222 失败: … 注册表版本冲突`；还原后 `ok`。
+- quota（本回合补证）：`OpencodeGo.Logins` 临时不认 opencode.db 来源 → `TestLoginsOpencodeTwoSourcesDoNotMerge` 红（「没登录不是问题」与 problems 断言）；还原后 `ok`。
+- 上面几条（迁移、镜像/校验、WakeHome、扫描范围）的实现先于测试写成，红是事后注入补证；账号域与 quota 两处「先红」没有留下原始输出，本回合同样以注入补证。违反「先红后绿」顺序的事实如实记录，交回物偏离节同列。
+
+### 放弃的尝试与判断
+
+- **放弃**：rerun/派发快照用例给 fake 执行器直接再挂一个 `"codex"` 键 → `未知 harness "codex"`（能力注册表按 `Provider.Name()` 登记，fake 自报 `fake`）。改为测试内 `namedFake{*fake.Fake, name}`（只改登记名与报告 harness 名）。
+- **判断：兼容 kind 对未知 CLI 仍严格**（fake/自定义 CLI 不能选任何登录）——不为测试放宽生产规则；带账号的夹具改用 `namedFake` 扮 codex/opencode。
+- **判断：HTTP 层强制二选一、域层放行「两者都缺」**：域 `PutCarrier` 两者都缺 = 存量未迁移形态（迁移与 35 个既有域测试夹具依赖它），HTTP（A14）新建/编辑必须二选一 → 400「二选一」。
+- **判断：V10 残留键忽略**（不 400）：`json.Decoder` 未知键忽略，`home_dir` 由服务端镜像覆盖；测试锁「带了也不生效」。
+- **判断：Q23 提前**：段 1 删 `Carrier.Account` 后撞额度标记、任务行 `account`、`exclude_accounts` 只能存账号 id，混版本期按 W3 接受最多多换一次。
+- **判断：`interval_minutes/warn_percent/low_percent` 在 TS 里改为可缺席**（A2 原文），前端用缺省值兜底。
+- **事故披露**：`TestAccountProbeForwardToHostMachineWhichWritesReading` 首次重写后的第一次运行，探测器按进程 HOME 展开登录 HOME `~`，尝试打开本机真实主 HOME 的 `~/.local/share/opencode/auth.json`——该文件不存在（结果 `credential_missing`），**未读到任何凭据内容**。修正：`newAccountMachine` 一律先把进程 HOME 钉到空临时目录，要探测成功的用例再钉到自己的夹具；之后全量运行无此路径访问。
+- **既有测试断言改写清单**（plan §9 允许的四类，逐文件）：(1) 凭据模式/复制：`internal/hostapi/probe_test.go`、`b453_wake_test.go`、`internal/orchestration/coordinator_home_test.go`、`b393_provider_config_test.go`、`internal/agentd/hostprobe_test.go`、`schedapi_test.go`（`credential` 键与「空凭据落 standalone」→「无账号读面无 credential 键」）、`internal/scheduling/registry_read_test.go`、`status_test.go` 及约 30 个只删 `Credential: CredentialStandalone` 字段的域/agentd 测试文件；(2) 指纹比对/`account_mismatch`：`internal/agentd/b453_carrier_account_test.go`、`cmd/squad_test.go`；(3) B453 手工登记/按名引用：`internal/agentd/account_api_test.go`、`account_api_b453s2_test.go`（`probeDue` 退避表随探测器迁入 accountwork）、`b453_recover_at_test.go`、`b453_rerun_test.go`、`b453_coord_proxy_test.go`、`internal/scheduling/b453_admission_test.go`、`accounts/*_test.go`、`cmd/account_test.go`；(4) 契约 fixture：`internal/proto/contract_fixture_test.go` + `web/src/api/testdata/*.json` + `web/src/api/contract.test.ts`。另：`b452_pair_test.go`/`receiver_dispatch_test.go` 增 `namedFake` 别名登记（夹具，不改断言）；web 组件测试只改类型字面量。
+
+### 提交（提交当时的命令与输出；末条随后 amend 收进本台账，hash 会变）
+
+- `git commit`（Go 全部改动 + 契约 fixture）→ `cb24bb62 feat(B464): 账号登录发现、载体选登录与 HOME 供给去复制（段 1）`，`83 files changed, 4026 insertions(+), 1724 deletions(-)`。
+- `git commit`（竖切测试）→ `de2c0237 test(B464): 首故事竖切——发现 → 存量迁移 → 选登录建载体 → 检测 → 派发，零凭据写入`。
+- `git commit`（web 类型对齐 + 本台账）→ `ea4958a1 feat(B464): 控制台类型对齐段 1 wire；台账记 implement 段 1`；提交前删除临时 `web/node_modules` 软链；`git status --porcelain` 空。

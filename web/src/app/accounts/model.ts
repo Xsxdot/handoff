@@ -71,11 +71,20 @@ export function stateLabel(state: string): string {
 
 const windows = (a: AccountView): AccountWindowView[] => a.reading?.windows ?? []
 
+/**
+ * accountPlace 账号读面的「所在位置」（B464：机器/HOME/来源/代理在登录上）：取可探登录，缺席时
+ * 取第一条登录；名下无登录时各字段为空串。B464 段 1 的最小对齐，按登录逐条展示属后续段。
+ */
+export function accountPlace(a: AccountView): { machine: string; home: string; source: string; proxy?: string } {
+  const l = a.logins.find((x) => x.id === a.probe_login) ?? a.logins[0]
+  return { machine: l?.machine ?? '', home: l?.home ?? '', source: l?.source ?? '', proxy: l?.proxy }
+}
+
 /** winTone 窗口分档：100% 无额度；≥ 低额度线 低额度；≥ 预警线 只变色；其余正常。 */
 export function winTone(a: AccountView, w: AccountWindowView): Tone {
   if (w.used_percent >= 100) return 'out'
-  if (w.used_percent >= a.low_percent) return 'low'
-  if (w.used_percent >= a.warn_percent) return 'warn'
+  if (w.used_percent >= (a.low_percent ?? DEFAULT_LOW)) return 'low'
+  if (w.used_percent >= (a.warn_percent ?? DEFAULT_WARN)) return 'warn'
   return 'ok'
 }
 
@@ -272,7 +281,7 @@ export function nextProbeText(a: AccountView, now: number): string {
   if (!a.last_attempt_at) return '所在机随即探测'
   const t = Date.parse(a.last_attempt_at)
   if (Number.isNaN(t)) return '所在机随即探测'
-  const next = t + a.interval_minutes * M
+  const next = t + (a.interval_minutes ?? DEFAULT_INTERVAL) * M
   return a.state === 'fail' ? `失败后退避重试，不晚于 ${countdown(next - now)} 后` : `下次 ${countdown(next - now)} 后`
 }
 
@@ -289,25 +298,23 @@ export function extraUsageText(a: AccountView): string {
 }
 
 /**
- * entryText 凭据位置一句话（HOME › 来源）：agy 为 CLI 自己的登录态；opencode-go 条目空 = 自动、
- * `opencode.db` = 登录账号（spec r1.3）；其余为 auth.json 里的同名条目。
+ * entryText 凭据位置一句话（HOME › 来源，B464：取 accountPlace 的登录）：agy 为 CLI 自己的登录态；
+ * opencode.db = 登录账号；其余为该 HOME 下的凭据文件。
  */
 export function entryText(a: AccountView): string {
-  if (a.kind === 'agy') return `${a.home_dir}（agy CLI 自己的登录态）`
-  if (a.kind === 'opencode-go' && !a.entry) return `${a.home_dir} › 自动（auth.json › opencode-go，否则 opencode.db 登录账号）`
-  if (a.kind === 'opencode-go' && a.entry === 'opencode.db') return `${a.home_dir} › opencode.db 登录账号`
-  return `${a.home_dir} › auth.json › ${a.entry ?? ''}`
+  const p = accountPlace(a)
+  if (!p.home) return '没有登录'
+  if (a.kind === 'agy') return `${p.home}（agy CLI 自己的登录态）`
+  if (p.source === 'opencode.db') return `${p.home} › opencode.db 登录账号`
+  return `${p.home} › ${p.source}`
 }
 
 /**
- * credentialMoved 账号对话框保存后是否要立即探测一次（审查第 1 轮 m2）：新建，或编辑改了凭据位置——
- * kind、所在机器、HOME、条目、代理。代理比对的是回显打码值：原样提交（保留原值）不算改。
- * 只改间隔/阈值不探测，等所在机按节拍来。
+ * credentialMoved 账号对话框保存后是否要立即探测一次（审查第 1 轮 m2）：B464 起账号只由发现建、
+ * 编辑只改间隔/阈值，凭据位置在登录上不可编辑——只有（已不可达的）新建才探测。
  */
-export function credentialMoved(editing: AccountView | null, body: AccountInput): boolean {
-  if (!editing) return true
-  return body.kind !== editing.kind || body.machine !== editing.machine || body.home_dir !== editing.home_dir ||
-    (body.entry ?? '') !== (editing.entry ?? '') || (body.proxy ?? '') !== (editing.proxy ?? '')
+export function credentialMoved(editing: AccountView | null, _body: AccountInput): boolean {
+  return !editing
 }
 
 const LOCAL_ALIASES = new Set(['', '本机', 'local'])
