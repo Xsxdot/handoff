@@ -211,3 +211,10 @@
 
 - 先按三个自然步骤提交（quota / 账号域+编制域 / accountwork+gateway+cmd+契约），自检 `git checkout 0579d9f4 && go build ./...` → `cmd/agentd.go:872:14: cannot use quotaReg … does not implement accountwork.LoginReader (wrong type for method Logins)`——中间提交单独编译不过（取材接口签名与使用方接口同批变）。判断：不留编译不过的中间提交，`git reset --soft e5c79704` 合为一个提交。
 - `git commit`（全部段 2 改动 + 本台账）→ `7318d7fb feat(B464): 其余 kind 取材、证据型已过期、登录代理、可探登录完整形、na、账号管理（段 2）`，`35 files changed, 2736 insertions(+), 120 deletions(-)`；`go build ./...` 通过。
+
+## 主会话复核段 2（2026-10-22）
+
+- 更正 R0-6：grok `::<uuid>` 前缀 B453 已支持（`5c4c17ba` 起），不是缺陷；段 2 以变异补证锁住。
+- 「没有可用登录」只在读面推导、不进准入：维持（额度未知照常派发，与 B453 语义一致）。
+- `opencode.db` `mode=ro` 碰 `-shm` 与 `immutable=1` 取舍：交独立审查裁决。
+- 执行形态改丙（用户 2026-10-22）：段 3 起经 `card dispatch --step implement` 派 runner 小队，本会话只审与验。
