@@ -624,3 +624,11 @@
 
 - 段 8（e1219bf6，20 文件 +254/−24）：N1 `residentpush.go` `wakeResidentRound` spec/ref 带 Carrier、`keystone/resident.go` 缓存驻场 ref 带 Carrier，执行者全仓构造路径清单与生产入口测试 `TestB464ResidentRoundCarriesSeatCarrierToLoginProxy`（变异确认有牙）；m1–m7 各带测试与变异确认。偏离：无越权（m2 远端复制统一含 ssh 行；m5 以「no such column」退旧查询）。合并 2f72c64b（台账冲突两侧保留）。
 - **R9c 驻场续轮代理：通过。** 隔离实例换 2f72c64b（mac embedweb、linux bin-br5-linux，linux `HANDOFF_LOG_LEVEL=info`）。控制台接口 `POST /api/rooms/session:2/messages`（console_user 身份，CLI 身份非房间成员被拒「书写者与房间身份不符」）→ seq 5；linux 日志 12:44:31 `协调者供给目标即主 HOME，跳过全部写入`、`协调者回合使用登录代理 carrier=t464-oc-lnx login=login-2b5aa6d9f8a9c6ef proxy=http://127.0.0.1:1080`、`协调者回合开始 mode=resume resident=true`、`协调者回合完成 output_bytes=6`；无「不套用」。
+
+## 局部复审（段 8 增量，2026-10-22，本地 subagent，dd5729d7..2f72c64b）
+
+- 裁决：**暂不进 finish**（2 条 Important）。N1 闭合（全仓生产构造点 grep 齐全，驻场链变异 B 转红，R9c 真机）；m1/m2/m4–m7 正确；复跑 agentd/keystone/scheduling/quota/cmd ok、vet/gofmt 空、vitest 2026 全过、tsc 0。
+- **I-1（回归）**：`web/src/app/settings/SchedulingPage.tsx:341` `sameLogin` 把「未选」与「无账号」都折成 `''`——存量未选载体（隔离 home_dir）改选「无账号 · 主 HOME」被判登录未变、不触发检测，服务端 `scheduling.go:283-289` 已置 pending。探针用例 HEAD 红、换回 dd5729d7 版绿。
+- **I-2（测试缺口）**：卡协调者链变异 A（`scheddrain.go:508` 首轮 Carrier→""）、C（`keystone.go:348` overlay 失效）、D（`scheddrain.go:702` 唤醒 Carrier→""）agentd/keystone 全 0 红；段 8 台账 N1 节「等价于 scheddrain:508」与事实不符，需更正。
+- Minor：m-a `backfillLabel` 重读 `cur` 后未再判 `cur.Label != ""`；m-b m5 Warn 匹配应收窄为 `no such column: email`；m-c m3 `~` 一例无牙（记录）。
+- 处置：I-1、I-2、m-a、m-b 派段 9。
