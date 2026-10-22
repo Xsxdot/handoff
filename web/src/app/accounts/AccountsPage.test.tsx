@@ -10,6 +10,7 @@ import {
   type AccountView,
 } from '../../api/accounts'
 import { AccountsPage } from './AccountsPage'
+import { copyToClipboard } from '../lib/clipboard'
 import { __resetAccountsStoreForTest, __setAccountsForTest } from './store'
 import { sampleAccounts } from './testAccounts'
 
@@ -30,6 +31,7 @@ vi.mock('../../api/accounts', async () => {
     putLoginProxy: vi.fn(),
   }
 })
+vi.mock('../lib/clipboard', () => ({ copyToClipboard: vi.fn(async () => true) }))
 
 const machines = () => vi.mocked(fetchMachines).mockResolvedValue({ machines: [
   { name: '', addr: '', reachable: true, version: 't', executors: [], default_executor: '', probe_ms: 0, active_tasks: 0, error: '' },
@@ -197,6 +199,15 @@ describe('账号管理', () => {
     expect(card('codex-spare').textContent).toContain('探测完成')
   })
 
+  it('登录行：有 remote_run 时给「复制远端登录命令」，复制内容是远端变体；没有时不出该按钮', async () => {
+    const user = userEvent.setup()
+    render(<AccountsPage />)
+    await user.click(within(loginRow('login-codex-spare')).getByRole('button', { name: '复制远端登录命令' }))
+    expect(copyToClipboard).toHaveBeenLastCalledWith('HOME=~/.handoff/home/codex-spare codex login --device-auth')
+    expect(card('codex-spare').textContent).toContain('已复制远端登录命令')
+    expect(within(loginRow('login-og-main')).queryByRole('button', { name: '复制远端登录命令' })).toBeNull()
+  })
+
   it('立即探测请求失败：显示「探测请求失败：<原因>」（I6 补回）', async () => {
     const user = userEvent.setup()
     vi.mocked(probeAccount).mockRejectedValueOnce(new ApiError(502, '上游超时'))
@@ -263,6 +274,44 @@ describe('新增登录（三步）', () => {
     expect(dialog().textContent).toContain('已有 2 条登录')
     await user.click(within(dialog()).getByRole('button', { name: '完成' }))
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+  })
+
+  it('远端登录勾选框：非本机默认勾选并复制 remote_run；本机默认不勾，勾上后展示与复制切换', async () => {
+    const user = userEvent.setup()
+    const command = (machine: string) => ({
+      ssh: `ssh root@${machine}`,
+      run: `HOME=/root/.handoff/home/cx-abcd codex login`,
+      remote_run: 'HOME=/root/.handoff/home/cx-abcd codex login --device-auth',
+    })
+    vi.mocked(createLoginHome).mockImplementation(async (machine: string) => ({ home: '~/.handoff/home/cx-abcd', command: command(machine) }))
+    render(<AccountsPage />)
+
+    // 本机（discovery self=true 的 linux-01）默认不勾，展示/复制 run。
+    await user.click(screen.getByRole('button', { name: '＋ 新增登录' }))
+    await user.selectOptions(within(dialog()).getByLabelText('机器'), 'linux-01')
+    await user.selectOptions(within(dialog()).getByLabelText('Agent'), 'codex')
+    await user.click(within(dialog()).getByRole('button', { name: '建目录并给出登录命令' }))
+    const localBox = await within(dialog()).findByLabelText('远端登录（该机没有浏览器）')
+    expect(localBox).not.toBeChecked()
+    expect(dialog().querySelector('pre')?.textContent).not.toContain('--device-auth')
+    await user.click(within(dialog()).getByRole('button', { name: '复制' }))
+    expect(copyToClipboard).toHaveBeenLastCalledWith('ssh root@linux-01 后执行：HOME=/root/.handoff/home/cx-abcd codex login')
+    await user.click(localBox)
+    expect(dialog().querySelector('pre')?.textContent).toContain('--device-auth')
+    await user.click(within(dialog()).getByRole('button', { name: '复制' }))
+    expect(copyToClipboard).toHaveBeenLastCalledWith('HOME=/root/.handoff/home/cx-abcd codex login --device-auth')
+    await user.click(within(dialog()).getByRole('button', { name: '关闭' }))
+
+    // 非本机（mac-mini）默认勾选，展示/复制 remote_run。
+    await user.click(screen.getByRole('button', { name: '＋ 新增登录' }))
+    await user.selectOptions(within(dialog()).getByLabelText('机器'), 'mac-mini')
+    await user.selectOptions(within(dialog()).getByLabelText('Agent'), 'codex')
+    await user.click(within(dialog()).getByRole('button', { name: '建目录并给出登录命令' }))
+    const remoteBox = await within(dialog()).findByLabelText('远端登录（该机没有浏览器）')
+    expect(remoteBox).toBeChecked()
+    expect(dialog().querySelector('pre')?.textContent).toContain('--device-auth')
+    await user.click(within(dialog()).getByRole('button', { name: '复制' }))
+    expect(copyToClipboard).toHaveBeenLastCalledWith('HOME=/root/.handoff/home/cx-abcd codex login --device-auth')
   })
 
   it('新身份识别结果文案是「新账号」；darwin claude 的 400 原文照显', async () => {

@@ -29,6 +29,8 @@ function defaultDir(agent: string): string {
 interface Props {
   open: boolean
   machines: string[]
+  /** 本机（GET /api/accounts discovery 里 self=true 的机器名）：新增登录时默认不选远端变体。 */
+  selfMachines: string[]
   /** 从账号卡「在其他机器登录」进来时的目标账号（agent 预选、机器避开已有登录）。 */
   account: AccountView | null
   /** ?login=new&machine=&agent= 或载体对话框空态链接带来的预选。 */
@@ -39,12 +41,14 @@ interface Props {
 }
 
 /** LoginWizard 三步新增登录；open=false 时不渲染。 */
-export function LoginWizard({ open, machines, account, preset, onClose, onDone, onNotice }: Props) {
+export function LoginWizard({ open, machines, selfMachines, account, preset, onClose, onDone, onNotice }: Props) {
   const [step, setStep] = useState(1)
   const [machine, setMachine] = useState('')
   const [agent, setAgent] = useState('opencode')
   const [dir, setDir] = useState('')
   const [created, setCreated] = useState<{ home: string; command: LoginCommand } | null>(null)
+  /** 第二步是否选用远端变体（该机没有浏览器）；默认按目标机是否本机决定。 */
+  const [remoteLogin, setRemoteLogin] = useState(false)
   const [items, setItems] = useState<LoginCheckItem[]>([])
   const [error, setError] = useState('')
   const [checkNote, setCheckNote] = useState('')
@@ -64,6 +68,7 @@ export function LoginWizard({ open, machines, account, preset, onClose, onDone, 
     setMachine(nextMachine)
     setDir(defaultDir(nextAgent))
     setCreated(null)
+    setRemoteLogin(false)
     setItems([])
     setError('')
     setCheckNote('')
@@ -121,6 +126,7 @@ export function LoginWizard({ open, machines, account, preset, onClose, onDone, 
       const resp = await createLoginHome(machine, agent.trim(), name)
       console.info('accounts.login_wizard.home.success', { machine, agent, home: resp.home })
       setCreated(resp)
+      setRemoteLogin(!!resp.command.remote_run && !selfMachines.includes(machine))
       setStep(2)
     } catch (cause) {
       console.error('accounts.login_wizard.home.failure', { machine, agent, dir: name, cause })
@@ -132,9 +138,9 @@ export function LoginWizard({ open, machines, account, preset, onClose, onDone, 
 
   const copy = async () => {
     if (!created) return
-    const text = loginCommandText(created.command)
+    const text = remoteLogin && created.command.remote_run ? created.command.remote_run : loginCommandText(created.command)
     const ok = await copyToClipboard(text)
-    console.info('accounts.login_wizard.copy', { machine, copied: ok })
+    console.info('accounts.login_wizard.copy', { machine, remote: remoteLogin, copied: ok })
     onNotice(ok ? `已复制登录命令：${text}` : `请手动复制：${text}`)
   }
 
@@ -183,7 +189,13 @@ export function LoginWizard({ open, machines, account, preset, onClose, onDone, 
 
         {step === 2 && created && <>
           <p className="text-xs">已在 {machine} 建好 <span className="mono">{created.home}</span>。{created.command.ssh ? `在 ${machine} 上执行：` : '在本机终端执行：'}</p>
-          <div className="cmd"><pre>{created.command.ssh && <>{created.command.ssh} 后执行：<br /></>}{created.command.run}</pre><button type="button" className="tbtn copy" onClick={() => void copy()}>复制</button></div>
+          <div className="cmd"><pre>{created.command.ssh && <>{created.command.ssh} 后执行：<br /></>}{remoteLogin && created.command.remote_run ? created.command.remote_run : created.command.run}</pre><button type="button" className="tbtn copy" onClick={() => void copy()}>复制</button></div>
+          {created.command.remote_run && (
+            <label className="field-hint flex items-center gap-1.5">
+              <input type="checkbox" checked={remoteLogin} onChange={(e) => setRemoteLogin(e.target.checked)} />
+              远端登录（该机没有浏览器）
+            </label>
+          )}
           {created.command.note && <p className="field-hint">{created.command.note}</p>}
           <div className="wait"><span className="spin" /><span>等待登录… 每 5 秒检查一次</span></div>
           <p className="hint">关掉也没关系，定时发现会自动挂上。</p>

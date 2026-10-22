@@ -162,7 +162,7 @@
           "relogin": {
             "ssh": "ssh dev@macbook-pro",
             "run": "HOME=/Users/dev/.handoff/home/mbp-codex codex login",
-            "note": "远端或无浏览器机器用 codex login --device-auth"
+            "remote_run": "HOME=/Users/dev/.handoff/home/mbp-codex codex login --device-auth"
           },
           "carriers": [
             "mbp-codex",

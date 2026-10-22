@@ -489,3 +489,45 @@
 ### 提交（提交当时的命令与输出；末条随后 amend 收进本台账，hash 会变）
 
 - `git add -A && git commit -m "fix(B464): 段 6 收口——修复独立审查技术轮 findings 与文档收口"` → `d623cd99`，`31 files changed, 581 insertions(+), 171 deletions(-)`（含新增 `internal/agentd/b464_dispatch_gone_test.go`）。提交前删除临时 `web/node_modules` 软链。
+
+## implement 段 7：远端登录命令（2026-10-22，handoff runner 小队）
+
+### 红证据（先红后绿）
+
+- 后端新增断言引用 `proto.LoginCommand.RemoteRun` → 编译红：`resp.Command.RemoteRun undefined (type proto.LoginCommand has no field or method RemoteRun)`（两处测试文件共 5 行）。
+- 只加字段空壳后复跑：`TestLoginHomeCreatesIsolatedHomeAndCommandTable` 断言红 `codex 的 note 不应再承载 device-auth 命令："远端或无浏览器机器用 codex login --device-auth"`；`TestAccountViewReloginCarriesCommandAndSSH` 断言红 `... RemoteRun: Note:远端或无浏览器机器用 codex login --device-auth`。
+- 契约 fixture：改 Go 样本后 `go test ./internal/proto/ -run TestContractFixtures` 红，diff 显示旧 JSON 只有 `note`、新生成含 `remote_run`；`-update` 后绿。
+- TS 契约：先写 `remote_run` 断言 → `tsc -b` 红 `error TS2339: Property 'remote_run' does not exist on type 'LoginCommand'`（contract.test.ts 两处）；补 interface 字段后绿。
+- 前端行为：先写用例 → `npx vitest run src/app/accounts/AccountsPage.test.tsx -t 远端` 红 2 支（找不到「远端登录（该机没有浏览器）」勾选框；找不到「复制远端登录命令」按钮）；实现后 17/17 绿。
+
+### 实现落地（按文件）
+
+- `internal/proto/scheduling.go`：`LoginCommand` 增 `RemoteRun string json:"remote_run,omitempty"`（与 `run` 同样带 `HOME=` 前缀，仅 codex 这类有设备登录方式的 kind 给出）。
+- `internal/agentd/login_api.go`：`loginCommand` 增 `remote`；codex 命令表 `remote = "codex login --device-auth"`，其 `note` 清空（不再承载该命令）；`loginRunCommand` 对空命令返回空串（不让 remote 缺席时空出 `HOME=… ` 尾巴）；A11 建 HOME 回执填 `RemoteRun`。
+- `internal/agentd/account_api.go`：A4 `LoginView.relogin` 用同一命令表填 `RemoteRun`。
+- `internal/proto/contract_fixture_test.go` + `web/src/api/testdata/{AccountsResp,LoginHomeResp}.json`：opencode 登录为缺席样本，codex 登录与新增登录回执为在场样本；`web/src/api/contract.test.ts` 断言在场/缺席与 note 缺席。
+- `web/src/api/accounts.ts`：`LoginCommand` 增 `remote_run?: string`。
+- `web/src/app/accounts/LoginWizard.tsx`：第 2 步有 `remote_run` 时显示「远端登录（该机没有浏览器）」勾选框；进入第 2 步时按目标机是否本机（`selfMachines`）决定默认；勾选后展示与复制都取 `remote_run`，未勾仍走 `loginCommandText`（含 ssh 行）。
+- `web/src/app/accounts/AccountsPage.tsx`：从 `useAccounts().discovery` 取 `self=true` 的机器名传给向导。
+- `web/src/app/accounts/Logins.tsx`：`relogin.remote_run` 存在时在「复制登录命令」旁加「复制远端登录命令」，复制内容即 `remote_run`。
+- `web/src/app/accounts/testAccounts.ts` + `AccountsPage.test.tsx`：codex 样本带 `remote_run`；覆盖非本机默认勾选、本机默认不勾、切换后展示/复制切换，以及登录行远端按钮与 absent 情形。
+
+### 命令与读数（原文）
+
+- 快进：`git fetch origin && git merge --ff-only origin/cards/B464-charter-1` → `Updating b1bc6d0e..66f8ef23`、`Fast-forward`（2 files changed）。
+- `env -u CLAUDE_CODE_SESSION_ID go test ./internal/agentd/... ./internal/proto/...` → `ok ... internal/agentd 268.699s`、`ok ... accountwork 0.269s`、`ok ... internal/proto 0.039s`，`exit=0`。
+- `env -u CLAUDE_CODE_SESSION_ID go build ./...` → 无输出，`build_exit=0`；`go vet ./...` → 无输出，`vet_exit=0`；`gofmt -l $(git ls-files '*.go')` → 空。
+- `npx vitest run`（web）→ `Test Files 150 passed (150)`、`Tests 2024 passed (2024)`。
+- `npm run typecheck`（tsc -b）→ 无错误，`typecheck_exit=0`；`npm run lint` → `33 problems (0 errors, 33 warnings)`（warning 均为既有 react-refresh，`lint_exit=0`）。
+- 环境：worktree 原无 `web/node_modules`，`npm ci --no-audit --no-fund` → `added 290 packages in 1s`；未改 lockfile。
+
+### 偏离与自主决定
+
+1. **登录行「复制远端登录命令」复制裸 `remote_run`**（不带 ssh 前缀）：plan 要求「在『复制登录命令』旁加『复制远端登录命令』」，向导侧又明写「勾选时展示与复制的都是 remote_run」，故两侧对远端变体统一为命令全文本身；原「复制登录命令」仍保持含 ssh 的 `loginCommandText`。落在 plan 决策权限内的实现选择。
+2. **codex note 全局清空**（不只 A11）：plan 说「codex 的 note 不再承载该命令」，A4 `relogin` 同形，因此命令表 note 置空，两处投影同时生效；未给 note 编新文案。
+3. **勾选框默认值在「建 HOME 成功、进入第 2 步」时计算**：机器选择只在第 1 步，之后不会变化，避免后台 discovery 刷新把用户已切换的选择重置。属实现细节。
+4. 未改 README：其 codex 段只写「该机已跑过 `codex login`」，未描述登录命令形态，无需对齐。
+
+### 提交（提交当时的命令与输出；末条随后 amend 收进本台账，hash 会变）
+
+- `git add -A && git commit -m "feat(B464): 段 7 远端登录命令——命令表 remote_run、向导勾选与登录行复制"` → `9b32f012`，15 files changed（含本台账）。

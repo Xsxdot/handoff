@@ -251,12 +251,14 @@ type LoginView struct {
 }
 
 // LoginCommand 是「在这台机器的这个 HOME 下重新登录」的命令（B464 A4/A11）：run 带
-// `HOME=<登录 HOME 绝对路径>` 前缀；ssh 只在目标机是入口机能直连的远端时给出（relay 目标与
-// 本机缺席）；note 是各 CLI 的补充做法（无浏览器机器等）。
+// `HOME=<登录 HOME 绝对路径>` 前缀；remote_run 是同一 HOME 下给远端/无浏览器机器的变体
+// （同样带 HOME 前缀，仅 codex 这类有设备登录方式的 kind 给出）；ssh 只在目标机是入口机能
+// 直连的远端时给出（relay 目标与本机缺席）；note 是各 CLI 的补充做法。
 type LoginCommand struct {
-	SSH  string `json:"ssh,omitempty"`
-	Run  string `json:"run"`
-	Note string `json:"note,omitempty"`
+	SSH       string `json:"ssh,omitempty"`
+	Run       string `json:"run"`
+	RemoteRun string `json:"remote_run,omitempty"`
+	Note      string `json:"note,omitempty"`
 }
 
 // LoginHomeReq 是 POST /api/logins/home 的请求体（A11）：agent ∈ opencode|codex|grok|agy|claude，

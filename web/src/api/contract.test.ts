@@ -996,29 +996,33 @@ describe('账号 wire（B453 F1–F9 / B464 A1–A6）', () => {
       expect(Object.prototype.hasOwnProperty.call(input, key)).toBe(false)
     }
   })
-  it('LoginView 带服务端 relogin（A4）：ssh 可缺席、run 必给、note 可缺席', () => {
+  it('LoginView 带服务端 relogin（A4）：ssh 可缺席、run 必给、remote_run 仅在有远端变体时给出', () => {
     const resp: AccountsResp = accountsRespFixture as AccountsResp
     const withSsh: LoginView = resp.accounts[0].logins[0]
     expect(withSsh.relogin).toEqual({
       ssh: 'ssh dev@linux-01',
       run: 'HOME=/home/dev/.handoff/home/mimo opencode console login',
     })
+    expect(withSsh.relogin).not.toHaveProperty('remote_run')
     const bare = resp.accounts[0].logins[1]
     expect(Object.prototype.hasOwnProperty.call(bare, 'relogin')).toBe(false)
-    const noted = resp.accounts[2].logins[0]
-    expect(noted.relogin?.note).toContain('device-auth')
+    const codexLogin = resp.accounts[2].logins[0]
+    expect(codexLogin.relogin?.run).toContain('codex login')
+    expect(codexLogin.relogin?.remote_run).toBe('HOME=/Users/dev/.handoff/home/mbp-codex codex login --device-auth')
+    expect(codexLogin.relogin).not.toHaveProperty('note')
   })
   it('LoginProxyInput 必带 proxy 键（空串 = 清除，A9）', () => {
     const input: LoginProxyInput = loginProxyInputFixture
     expect(Object.keys(input)).toEqual(['proxy'])
     expect(input.proxy).toContain('***')
   })
-  it('LoginHomeResp 带机器无关 HOME 与登录命令（A11）', () => {
+  it('LoginHomeResp 带机器无关 HOME 与登录命令（A11）：run 必给、remote_run 可缺席', () => {
     const resp: LoginHomeResp = loginHomeRespFixture
     expect(resp.home).toBe('~/.handoff/home/cx-abcd')
     expect(resp.command.ssh).toBe('ssh dev@linux-01')
     expect(resp.command.run).toContain('codex login')
-    expect(resp.command.note).toContain('device-auth')
+    expect(resp.command.remote_run).toBe('HOME=/home/dev/.handoff/home/cx-abcd codex login --device-auth')
+    expect(resp.command).not.toHaveProperty('note')
   })
   it('LoginCheckResp 区分新账号/已有账号与登录数（A12）；AccountDiscoverResp 逐机成败（A10）', () => {
     const check: LoginCheckResp = loginCheckRespFixture

@@ -52,10 +52,12 @@ export interface AccountProblemView {
   message: string
 }
 
-/** B464 A4：重新登录命令；run 带 HOME=<登录 HOME> 前缀，ssh 仅入口机可直连的远端给。 */
+/** B464 A4：重新登录命令；run 带 HOME=<登录 HOME> 前缀，ssh 仅入口机可直连的远端给，
+ * remote_run 是同一 HOME 下给远端/无浏览器机器的变体（仅 codex 这类有设备登录方式的 kind 给出）。 */
 export interface LoginCommand {
   ssh?: string
   run: string
+  remote_run?: string
   note?: string
 }
 

@@ -112,13 +112,13 @@ func TestLoginHomeCreatesIsolatedHomeAndCommandTable(t *testing.T) {
 	abs := func(dir string) string { return filepath.Join(main, ".handoff", "home", dir) }
 
 	for _, tc := range []struct {
-		agent, dir, run, note string
+		agent, dir, run, note, remote string
 	}{
-		{"opencode", "oc-1234", "opencode console login", "opencode auth login -p"},
-		{"codex", "cx-1234", "codex login", "codex login --device-auth"},
-		{"grok", "gk-1234", "grok login", ""},
-		{"agy", "agy-1234", "agy", "交互运行"},
-		{"claude", "cl-1234", "claude auth login", ""},
+		{"opencode", "oc-1234", "opencode console login", "opencode auth login -p", ""},
+		{"codex", "cx-1234", "codex login", "", "codex login --device-auth"},
+		{"grok", "gk-1234", "grok login", "", ""},
+		{"agy", "agy-1234", "agy", "交互运行", ""},
+		{"claude", "cl-1234", "claude auth login", "", ""},
 	} {
 		code, body := seg3Req(t, env, http.MethodPost, "/api/logins/home",
 			`{"agent":"`+tc.agent+`","dir":"`+tc.dir+`"}`, nil)
@@ -138,6 +138,16 @@ func TestLoginHomeCreatesIsolatedHomeAndCommandTable(t *testing.T) {
 		}
 		if tc.note != "" && !strings.Contains(resp.Command.Note, tc.note) {
 			t.Fatalf("%s note 应含 %q：%q", tc.agent, tc.note, resp.Command.Note)
+		}
+		if tc.agent == "codex" && resp.Command.Note != "" {
+			t.Fatalf("codex 的 note 不应再承载 device-auth 命令：%q", resp.Command.Note)
+		}
+		if tc.remote == "" {
+			if resp.Command.RemoteRun != "" {
+				t.Fatalf("%s 不应给远端登录变体：%q", tc.agent, resp.Command.RemoteRun)
+			}
+		} else if !strings.HasPrefix(resp.Command.RemoteRun, "HOME="+abs(tc.dir)+" ") || !strings.Contains(resp.Command.RemoteRun, tc.remote) {
+			t.Fatalf("%s 远端登录命令应带 HOME 前缀并含 %q：%q", tc.agent, tc.remote, resp.Command.RemoteRun)
 		}
 		if resp.Command.SSH != "" {
 			t.Fatalf("本机新增登录不应给 ssh 行：%q", resp.Command.SSH)
@@ -456,12 +466,17 @@ func TestAccountViewReloginCarriesCommandAndSSH(t *testing.T) {
 	}
 	selfLogin, ok := seen["self"]
 	if !ok || selfLogin.Relogin == nil || !strings.Contains(selfLogin.Relogin.Run, "opencode console login") ||
-		!strings.Contains(selfLogin.Relogin.Run, "HOME="+home) || selfLogin.Relogin.SSH != "" {
-		t.Fatalf("本机登录 relogin 应带 HOME 前缀命令且无 ssh：%+v", selfLogin.Relogin)
+		!strings.Contains(selfLogin.Relogin.Run, "HOME="+home) || selfLogin.Relogin.SSH != "" ||
+		selfLogin.Relogin.RemoteRun != "" {
+		t.Fatalf("本机开放登录 relogin 应带 HOME 前缀命令、无 ssh、无远端变体：%+v", selfLogin.Relogin)
 	}
 	remoteLogin, ok := seen["remote"]
 	if !ok || remoteLogin.Relogin == nil || !strings.Contains(remoteLogin.Relogin.Run, "codex login") ||
 		remoteLogin.Relogin.SSH != "ssh dev@10.0.0.9" {
 		t.Fatalf("远端登录 relogin 应带 ssh 行：%+v", remoteLogin.Relogin)
+	}
+	if remoteLogin.Relogin.RemoteRun != "HOME=/remote/.handoff/home/cx codex login --device-auth" ||
+		remoteLogin.Relogin.Note != "" {
+		t.Fatalf("codex 远端 relogin 应给带 HOME 前缀的 remote_run 且 note 不再承载该命令：%+v", remoteLogin.Relogin)
 	}
 }

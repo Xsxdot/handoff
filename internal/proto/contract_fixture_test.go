@@ -1016,8 +1016,8 @@ func accountsRespSample(now time.Time) AccountsResp {
 		"mbp-codex", "mbp-oc-codex")
 	proxied.Proxy = "socks5://u:***@127.0.0.1:7897"
 	proxied.Relogin = &LoginCommand{SSH: "ssh dev@macbook-pro",
-		Run:  "HOME=/Users/dev/.handoff/home/mbp-codex codex login",
-		Note: "远端或无浏览器机器用 codex login --device-auth"}
+		Run:       "HOME=/Users/dev/.handoff/home/mbp-codex codex login",
+		RemoteRun: "HOME=/Users/dev/.handoff/home/mbp-codex codex login --device-auth"}
 	return AccountsResp{Accounts: []AccountView{{
 		ID: "opencode-go:3f9a1b2cc21e", Name: "og-main", Kind: "opencode-go", Label: "dev@example.com",
 		Fingerprint:     "sha256:3f9a1b2cc21e",
@@ -1083,11 +1083,12 @@ func accountsRespSample(now time.Time) AccountsResp {
 	}}
 }
 
-// loginHomeRespSample 是 B464 A11 新增登录回执：HOME 机器无关写法 + 带 HOME 前缀的命令 + ssh 行。
+// loginHomeRespSample 是 B464 A11 新增登录回执：HOME 机器无关写法 + 带 HOME 前缀的命令 + ssh 行；
+// codex 另带远端/无浏览器变体（note 不再承载该命令）。
 func loginHomeRespSample() LoginHomeResp {
 	return LoginHomeResp{Home: "~/.handoff/home/cx-abcd", Command: LoginCommand{
 		SSH: "ssh dev@linux-01", Run: "HOME=/home/dev/.handoff/home/cx-abcd codex login",
-		Note: "远端或无浏览器机器用 codex login --device-auth"}}
+		RemoteRun: "HOME=/home/dev/.handoff/home/cx-abcd codex login --device-auth"}}
 }
 
 // loginCheckRespSample 是 B464 A12 检查结果：新账号与已有账号各一条；未识别时是 []。
