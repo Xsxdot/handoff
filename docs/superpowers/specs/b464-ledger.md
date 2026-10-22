@@ -531,3 +531,12 @@
 ### 提交（提交当时的命令与输出；末条随后 amend 收进本台账，hash 会变）
 
 - `git add -A && git commit -m "feat(B464): 段 7 远端登录命令——命令表 remote_run、向导勾选与登录行复制"` → `9b32f012`，15 files changed（含本台账）。
+
+## 主会话审段 6 / 段 7 与复验（2026-10-22）
+
+- 段 6（b1bc6d0e，32 文件 +638/−171）：审查技术轮 C1/I1–I6/M1–M5/M8 逐条落地并带回归测试；文档收口（README 中英、CHANGELOG、roadmap B453 残余两行改写与 B464 残余节、skills/handoff 账号段）。偏离 1–4（镜像类型同步加 Carrier、M8 入口选 handleDispatch、roadmap 永不做落原地、测试自建登录）§9 内，认可。合并 66f8ef23（台账冲突两侧保留）。
+- 本机 darwin 全量（66f8ef23 树）：`env -u CLAUDE_CODE_SESSION_ID go test ./...` → `go_rc=0`；`gofmt -l` 空；`go vet ./...` 通过；`npx vitest run` → `Tests 2022 passed (2022)`；`npm run typecheck` 退出 0。I3 的 darwin 红已消。
+- 段 7（e1ec1081，15 文件 +178/−37）：`remote_run` 命令表/契约/向导勾选/登录行复制。偏离 1–4（登录行远端复制不带 ssh 前缀、codex note 全局清空、勾选默认在进第 2 步时计算、README 无需改）认可。执行者读数：agentd/proto 触及包 ok、vitest 2024 全过、typecheck/lint 0 error。合并 e3afddcd。implement 轮次计数曾 3/3 转等人（来自段 3/4/5 分段派发），已 `card note --reset-node implement` 留痕重置。
+- 隔离实例换 e3afddcd（mac embedweb + linux bin-br4-linux）。
+- **R11 复验（browser-worker，截图 scratch/r11b/）**：t464-linux 建 `r11b-lnx` → 第 2 步「远端登录（该机没有浏览器）」默认勾选，命令 `HOME=/root/.handoff/home/r11b-lnx codex login --device-auth`（取消勾选为 `codex login`，均带 ssh 行）；t464-mac 建 `r11b-mac` → 默认不勾；无 device-auth 括号说明。向导第 1 步「将新建的 HOME（目录名可改）」/「建目录并给出登录命令」。Codex 登录行均有「复制远端登录命令」，点击反馈「已复制远端登录命令：HOME=… codex login --device-auth」。og-xsx 名称保持、身份行显示 xsxdot@gmail.com（label 补齐不改名）。「即将」残句消失。t464-oc-cmd 编辑弹窗显示「未选登录（请选择）」，只改并发后保存被拦（「请先选择一条登录（或「无账号 · 主 HOME」）再保存；未选不会提交。」），取消后列表仍为未选 v1。登记载体 t464-linux/opencode 缺省第一条兼容登录，末项「无账号 · 主 HOME」无括注；本机 grok 空态链接 `/accounts?login=new&machine=t464-mac&agent=grok`。控制台无 JS 错误。观察：远端机命令框同时有「在 t464-linux 上执行：」提示与 ssh 行（Q18 形态，记 Minor 不改）。
+- **R9b 协调者代理按席位载体（I2 真机）：通过。** linux 隔离实例以 `HANDOFF_LOG_LEVEL=info` 重启，`session create … --squad t464-co`（session:2）：`协调者供给目标即主 HOME，跳过全部写入 target=/root`、`协调者回合使用登录代理 carrier=t464-oc-lnx login=login-2b5aa6d9f8a9c6ef proxy=http://127.0.0.1:1080`；不再出现「不套用登录代理」。
