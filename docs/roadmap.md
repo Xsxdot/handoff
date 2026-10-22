@@ -1017,3 +1017,5 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 - README（中英）命令表缺 11 个顶层子命令：`completion`、`decision`、`discipline`、`frames`、`machines`、`preview`、`room`、`session`、`squad`、`template`、`workflow`；`approver`/`console`/`sessions` 只在 README.md 正文出现、未进命令表。来源：B461 S4 finish-check 对 B453 的实跑结论。
 - 审批链对「运行新编二进制的 `--help`」一律未形成允许、转人工工单（S4 一跑 13 张）；模板已改为一次导出，但审批链对只读帮助命令的判定值得复核。来源：同上。
 - finish-check ④ 方向 A 只核子命令/参数是否存在，不核参数说明文字（如退出码清单）；B460 的 `--help` 缺退出码 5 因此只作备注未计数。要不要扩到说明文字由协调者定。来源：B461 审查第 2 轮 m6。
+- 前端测试（vitest）交熟练工：需执行机预置 `web/node_modules` 或可写的 npm 缓存。来源：`docs/superpowers/specs/b461.md` OOS。
+- 换版后冒烟交熟练工：需只读熟练工可调用 handoff 只读子命令（`status`、`card list`、`machines` 等）的白名单，今天权限门对 handoff 自身命令一律升级。来源：同上。
