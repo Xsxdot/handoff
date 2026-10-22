@@ -20,6 +20,7 @@ function base(name: string, kind: string, machine: string, state: string, extra:
     relogin: {
       ...(machine === 'linux-01' ? { ssh: 'ssh root@linux-01' } : {}),
       run: `${home === '~' ? '' : `HOME=${home} `}${kind === 'apikey' ? 'opencode auth login -p deepseek' : `${kind === 'opencode-go' ? 'opencode console login' : `${kind === 'claude' ? 'claude auth login' : `${kind} login`}`}`}`,
+      ...(kind === 'codex' ? { remote_run: `${home === '~' ? '' : `HOME=${home} `}codex login --device-auth` } : {}),
     },
     ...(place.proxy ? { proxy: place.proxy } : {}),
   }

@@ -63,6 +63,15 @@ export function Logins({ kind, logins, onLogin }: {
     setNote(ok ? `已复制登录命令：${text} —— 在该机重新登录后，下次发现会更新这条登录的状态。`
       : `请手动复制：${text} —— 在该机重新登录后，下次发现会更新这条登录的状态。`)
   }
+  const copyRemoteCommand = async (l: LoginView) => {
+    const text = l.relogin?.remote_run
+    if (!text) { setError('这条登录没有远端登录命令（服务端未下发 relogin.remote_run）'); return }
+    const ok = await copyToClipboard(text)
+    console.info('accounts.login.copy_remote_command', { login: l.id, copied: ok })
+    setError('')
+    setNote(ok ? `已复制远端登录命令：${text} —— 在该机重新登录后，下次发现会更新这条登录的状态。`
+      : `请手动复制：${text} —— 在该机重新登录后，下次发现会更新这条登录的状态。`)
+  }
 
   if (logins.length === 0) return <div className="lg-note">还没有登录。点「在其他机器登录」加一条。</div>
   return (
@@ -91,6 +100,7 @@ export function Logins({ kind, logins, onLogin }: {
                 <td className="ops">
                   {editing !== l.id && <button type="button" className="tbtn" aria-label={`编辑代理 ${l.id}`} onClick={() => startProxy(l)}>编辑代理</button>}
                   <button type="button" className="tbtn" onClick={() => void copyCommand(l)}>复制登录命令</button>
+                  {l.relogin?.remote_run && <button type="button" className="tbtn" onClick={() => void copyRemoteCommand(l)}>复制远端登录命令</button>}
                 </td>
               </tr>
             ))}

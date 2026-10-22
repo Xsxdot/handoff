@@ -58,10 +58,12 @@ const isolatedHomePrefix = "~/.handoff/home/"
 // SetAccountDiscoverer 注入本机发现器（只在挂共享账本的机器上装配）。
 func (s *Server) SetAccountDiscoverer(d *accountwork.Discoverer) { s.accountDiscoverer = d }
 
-// loginCommand 是一条登录命令与补充做法（plan R0-8 的命令表）。
+// loginCommand 是一条登录命令与补充做法（plan R0-8 的命令表）；remote 是同一 HOME 下给
+// 远端/无浏览器机器的变体（无变体的 kind 留空）。
 type loginCommand struct {
-	run  string
-	note string
+	run    string
+	remote string
+	note   string
 }
 
 // loginCommands 是各 kind 的登录命令（真机核实后的原文，plan R0-8）。第三方 API key 需要
@@ -69,7 +71,7 @@ type loginCommand struct {
 var loginCommands = map[string]loginCommand{
 	accounts.KindOpencodeGo: {run: "opencode console login",
 		note: "第三方 API key 登录：opencode auth login -p <provider>"},
-	accounts.KindCodex:  {run: "codex login", note: "远端或无浏览器机器用 codex login --device-auth"},
+	accounts.KindCodex:  {run: "codex login", remote: "codex login --device-auth"},
 	accounts.KindGrok:   {run: "grok login"},
 	accounts.KindAgy:    {run: "agy", note: "交互运行 agy，按提示完成登录"},
 	accounts.KindClaude: {run: "claude auth login"},
@@ -101,7 +103,7 @@ func loginCommandFor(kind, provider string) (loginCommand, bool) {
 
 // loginRunCommand 给登录命令加 `HOME=<登录 HOME 绝对路径>` 前缀（plan R0-8：全部以 HOME 前缀运行）。
 func loginRunCommand(homeAbs, run string) string {
-	if strings.TrimSpace(homeAbs) == "" {
+	if strings.TrimSpace(homeAbs) == "" || strings.TrimSpace(run) == "" {
 		return run
 	}
 	return "HOME=" + homeAbs + " " + run
@@ -211,7 +213,7 @@ func (s *Server) createLoginHome(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp := proto.LoginHomeResp{Home: isolatedHomePrefix + dir, Command: proto.LoginCommand{
-		Run: loginRunCommand(abs, cmd.run), Note: cmd.note}}
+		Run: loginRunCommand(abs, cmd.run), RemoteRun: loginRunCommand(abs, cmd.remote), Note: cmd.note}}
 	s.log.Info("新增登录：已建 HOME", "agent", agent, "kind", kind, "dir", dir, "home", abs)
 	writeJSON(w, http.StatusOK, resp)
 }

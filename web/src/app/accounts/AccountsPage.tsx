@@ -249,6 +249,7 @@ export function AccountsPage({ highlight = '', newLogin = null }: { highlight?: 
   }, [])
 
   const list = accounts ?? []
+  const selfMachines = discovery.filter((d) => d.self).map((d) => d.machine)
   const machineOptions = [...new Set([...machines, ...list.flatMap((a) => a.logins.map((l) => l.machine))])]
   const toggle = (name: string) => setOpened((cur) => { const next = new Set(cur); if (next.has(name)) next.delete(name); else next.add(name); return next })
   const note = (name: string, text: string) => setNotes((cur) => ({ ...cur, [name]: text }))
@@ -340,7 +341,7 @@ export function AccountsPage({ highlight = '', newLogin = null }: { highlight?: 
         })}
       </div>
       {deleting && <DeleteDialog a={deleting} onClose={() => setDeleting(null)} onRemoved={() => remove(deleting.name)} />}
-      <LoginWizard open={wizard.open} machines={machineOptions} account={wizard.account} preset={wizard.preset}
+      <LoginWizard open={wizard.open} machines={machineOptions} selfMachines={selfMachines} account={wizard.account} preset={wizard.preset}
         onClose={() => setWizard((cur) => ({ ...cur, open: false }))}
         onDone={() => { refresh(); console.info('accounts.login_wizard.done') }}
         onNotice={(text) => { const name = wizard.account?.name ?? ''; if (name) note(name, text); else setNotes((cur) => ({ ...cur, __page: text })) }} />

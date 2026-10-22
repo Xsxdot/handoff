@@ -423,7 +423,7 @@ func (s *Server) loginView(lv accounts.LoginView) proto.LoginView {
 			homeAbs = l.Home
 		}
 		out.Relogin = &proto.LoginCommand{SSH: s.loginSSHLine(l.Machine), Run: loginRunCommand(homeAbs, cmd.run),
-			Note: cmd.note}
+			RemoteRun: loginRunCommand(homeAbs, cmd.remote), Note: cmd.note}
 	}
 	return out
 }
