@@ -200,12 +200,6 @@ export const CARRIER_STATUS_LABEL: Record<CarrierStatus, string> = {
   unreachable: '不可达',
 }
 
-/** 登记弹窗默认 HOME 串；空名字返回空串。与 scheduling.DefaultHomeDir 同一格式。 */
-export function defaultHomeDir(name: string): string {
-  const trimmed = name.trim()
-  return trimmed ? `~/.handoff/home/${trimmed}` : ''
-}
-
 export interface HomeWakeReq {
   cli: string
   home_dir: string

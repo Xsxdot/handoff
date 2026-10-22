@@ -53,7 +53,7 @@ describe('SchedulingPage', () => {
     expect(screen.queryByText('sonnet')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '检测' })).not.toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: '查看载体 mbp' }))
-    expect(await screen.findByText('/Users/dev')).toBeVisible()
+    expect(await screen.findByText(/未选登录/)).toBeVisible()
     expect(screen.getByText('sonnet')).toBeVisible()
     await user.click(screen.getByText('操作'))
     expect(screen.getByRole('button', { name: '检测 mbp' })).toBeVisible()
@@ -62,8 +62,9 @@ describe('SchedulingPage', () => {
     expect(screen.queryByTestId('automation-carrier-row-mbp')).not.toBeInTheDocument()
   })
 
-  it('表单对齐原型：准入说明、机器/CLI/凭据枚举和主 HOME 同步提示完整', async () => {
+  it('表单对齐原型：机器/CLI/账号登录枚举，已删 HOME 输入与凭据模式', async () => {
     const user = userEvent.setup()
+    __setAccountsForTest(sampleAccounts())
     render(<SchedulingPage />)
     await user.click(screen.getByRole('button', { name: '登记载体' }))
 
@@ -72,9 +73,10 @@ describe('SchedulingPage', () => {
     expect(screen.getByRole('combobox', { name: '机器' })).toBeVisible()
     expect(screen.getByRole('combobox', { name: 'CLI' })).toBeVisible()
     expect(screen.getByRole('option', { name: 'agy' })).toBeInTheDocument()
-    expect(screen.getByRole('combobox', { name: '凭据来源' })).toBeVisible()
-    expect(screen.getByRole('option', { name: '主 HOME 同步' })).toBeVisible()
-    expect(screen.getByText(/主 HOME 同步 = 把主环境的认证态搬进隔离 HOME/)).toBeVisible()
+    expect(screen.getByRole('combobox', { name: '账号' })).toBeVisible()
+    expect(screen.getByRole('option', { name: '无账号 · 主 HOME（不参与额度判断）' })).toBeInTheDocument()
+    expect(screen.queryByLabelText('凭据来源')).toBeNull()
+    expect(screen.queryByLabelText('HOME 档案')).toBeNull()
   })
 
   it('renders carrier and squad fields and empty-state guidance', async () => {
@@ -85,7 +87,7 @@ describe('SchedulingPage', () => {
     })
     render(<SchedulingPage />)
     expect(await screen.findByText('mbp')).toBeVisible()
-    expect(screen.getByText('/h')).toBeVisible()
+    expect(screen.getByText(/未选登录/)).toBeVisible()
     expect(screen.getByText('coord')).toBeVisible()
     expect(screen.getByText('拉起通道（坐下 / 叫机器人）')).toBeVisible()
   })
@@ -104,33 +106,41 @@ describe('SchedulingPage', () => {
     expect(screen.queryByText('undefined')).not.toBeInTheDocument()
   })
 
-  it('new carrier HOME stays empty when the name is typed', async () => {
+  it('载体对话框没有 HOME 输入；选中登录后只读显示该登录决定的 HOME/凭据/代理', async () => {
     const user = userEvent.setup()
+    __setAccountsForTest(sampleAccounts())
     render(<SchedulingPage />)
     await user.click(screen.getByRole('button', { name: '登记载体' }))
-    const name = screen.getByLabelText('载体名')
-    const home = screen.getByLabelText('HOME 档案')
-    await user.type(name, 'exec')
-    expect(home).toHaveValue('')
-    await user.type(home, '/custom/home')
-    await user.clear(name)
-    await user.type(name, 'renamed')
-    expect(home).toHaveValue('/custom/home')
+    await user.type(screen.getByLabelText('载体名'), 'exec')
+    await user.selectOptions(screen.getByLabelText('机器'), '本机')
+    await user.selectOptions(screen.getByLabelText('CLI'), 'grok')
+    expect(screen.queryByLabelText('HOME 档案')).toBeNull()
+    await user.selectOptions(screen.getByLabelText('账号'), 'login-grok-mbp')
+    const dlg = screen.getByRole('dialog')
+    expect(dlg.textContent).toContain('~/.handoff/home/grok-mbp')
+    expect(dlg.textContent).toContain('凭据 auth.json')
+    expect(dlg.textContent).toContain('这条登录已过期')
   })
 
-  it('lists 主 HOME and skips probe when HOME is empty', async () => {
+  it('无账号 · 主 HOME：下拉末尾固定项，保存回 no_account', async () => {
     const user = userEvent.setup()
+    __setAccountsForTest(sampleAccounts())
     vi.mocked(getSquads).mockResolvedValue({
-      carriers: [{ name: 'plain', machine: '本机', cli: 'grok', home_dir: '', status: 'online', version: 1 }],
+      carriers: [{ name: 'plain', machine: '本机', cli: 'grok', home_dir: '', status: 'online', version: 1, no_account: true }],
       squads: [],
       running: [],
     })
     render(<SchedulingPage />)
-    expect(await screen.findByText('主 HOME')).toBeVisible()
+    const row = (await screen.findByText('plain')).closest('article')!
+    expect(row.textContent).toContain('无账号 · 主 HOME')
     await user.click(screen.getByRole('button', { name: '登记载体' }))
-    await user.type(screen.getByLabelText('载体名'), 'mbp')
-    await waitFor(() => expect(fetchMachines).toHaveBeenCalled())
-    expect(screen.getByRole('option', { name: 'linux-01' })).toBeInTheDocument()
+    await user.type(screen.getByLabelText('载体名'), 'freek')
+    await user.selectOptions(screen.getByLabelText('机器'), '本机')
+    await user.selectOptions(screen.getByLabelText('CLI'), 'grok')
+    await user.selectOptions(screen.getByLabelText('账号'), '')
+    await user.click(screen.getByRole('button', { name: '保存' }))
+    expect(putCarrier).toHaveBeenCalledWith('freek', 0, expect.objectContaining({ machine: '本机', cli: 'grok', no_account: true }))
+    expect(vi.mocked(putCarrier).mock.lastCall?.[2]).not.toHaveProperty('login')
   })
 
   it('按载体行编辑小队成员政策并保留模型元信息', async () => {
@@ -184,17 +194,18 @@ describe('SchedulingPage', () => {
 
   it('creates with expect zero and edits with the row version', async () => {
     const user = userEvent.setup()
+    __setAccountsForTest(sampleAccounts())
     vi.mocked(getSquads).mockResolvedValueOnce({ carriers: [], squads: [], running: [] })
     render(<SchedulingPage />)
     await user.click(screen.getByRole('button', { name: '登记载体' }))
     await user.type(screen.getByLabelText('载体名'), 'mbp')
     await user.selectOptions(screen.getByLabelText('机器'), '本机')
     await user.selectOptions(screen.getByLabelText('CLI'), 'opencode')
-    await user.clear(screen.getByLabelText('HOME 档案'))
-    await user.type(screen.getByLabelText('HOME 档案'), '/h')
-    await user.selectOptions(screen.getByLabelText('凭据来源'), 'standalone')
+    await user.selectOptions(screen.getByLabelText('账号'), 'login-og-mini')
     await user.click(screen.getByRole('button', { name: '保存' }))
-    expect(putCarrier).toHaveBeenCalledWith('mbp', 0, expect.objectContaining({ machine: '本机', home_dir: '/h' }))
+    expect(putCarrier).toHaveBeenCalledWith('mbp', 0, expect.objectContaining({ machine: '本机', login: 'login-og-mini' }))
+    expect(vi.mocked(putCarrier).mock.calls[0]?.[2]).not.toHaveProperty('home_dir')
+    expect(vi.mocked(putCarrier).mock.calls[0]?.[2]).not.toHaveProperty('account')
     expect(detectCarrier).toHaveBeenCalledTimes(1)
     expect(vi.mocked(putCarrier).mock.calls[0]?.[2]).not.toHaveProperty('max_concurrency')
 
@@ -283,78 +294,98 @@ describe('SchedulingPage 编辑弹窗对齐原型（B287）', () => {
     expect(screen.getByRole('dialog').querySelector('form')?.className).toContain('max-w-[480px]')
   })
 
-  // B453 S4（plan W2）：载体选账号——下拉只列同机账号、可不选；PUT 回传所选账号（不选则键缺席）；
-  // 指纹不一致一行红字（载体行与编辑对话框），可以保存、不拦派发。
-  describe('载体选账号（B453 S4）', () => {
+  // B464 S6（plan W3）：载体选登录——只列所选机器上与该执行器兼容的登录（同账号同机多 HOME 用
+  // 「账号 — HOME」区分，末尾固定「无账号 · 主 HOME」）；PUT 回传 login 或 no_account；
+  // 已失效登录暂停派发并给复制登录命令入口，已过期只标红。
+  describe('载体选登录（B464 S6）', () => {
     beforeEach(() => {
       __resetAccountsStoreForTest()
       __setAccountsForTest(sampleAccounts())
     })
 
-    it('账号下拉只列载体同机账号；本机别名列不在任何远端机上的账号（W2）', async () => {
+    it('账号下拉只列所选机器上兼容的登录，末尾固定「无账号 · 主 HOME」', async () => {
       const user = userEvent.setup()
       render(<SchedulingPage />)
       await user.click(await screen.findByRole('button', { name: '登记载体' }))
       const dlg = screen.getByRole('dialog')
       await user.selectOptions(within(dlg).getByLabelText('机器'), 'linux-01')
-      const names = () => [...within(dlg).getByLabelText('账号').querySelectorAll('option')].map((o) => o.value)
-      expect(names()).toEqual(['', 'og-main', 'og-team', 'codex-spare', 'agy-main'])
+      const values = () => [...within(dlg).getByLabelText('账号').querySelectorAll('option')].map((o) => o.value)
+      expect(values()).toEqual(['login-og-main', 'login-og-team', 'login-deepseek-key', ''])
       await user.selectOptions(within(dlg).getByLabelText('机器'), '本机')
-      expect(names()).toEqual(['', 'og-mini', 'codex-plus', 'grok-mbp'])
-      expect(within(dlg).getByText('不选账号时，派发不看额度。')).toBeInTheDocument()
+      expect(values()).toEqual(['login-og-mini', 'login-deepseek-key-mini', ''])
+      await user.selectOptions(within(dlg).getByLabelText('账号'), '')
+      expect(within(dlg).getByText(/无账号 · 主 HOME/)).toBeVisible()
     })
 
-    it('编辑带账号的载体：预选当前账号，保存回传 account；改成不选则键缺席（W2）', async () => {
+    it('编辑带登录的载体：预选当前登录，保存回传 login；改选无账号则回 no_account', async () => {
       const user = userEvent.setup()
       vi.mocked(getSquads).mockResolvedValue({
-        carriers: [{ name: 'mimo', machine: 'linux-01', cli: 'opencode', home_dir: '/root/.handoff/home/mimo', status: 'online', version: 7, login: 'login-og-main', account_id: 'opencode-go:og-main', account_name: 'og-main' }],
+        carriers: [{ name: 'mimo', machine: 'linux-01', cli: 'opencode', home_dir: '', status: 'online', version: 7, login: 'login-og-main', account_id: 'opencode-go:og-main', account_name: 'og-main' }],
         squads: [], running: [],
       })
       render(<SchedulingPage />)
       await user.click(await screen.findByRole('button', { name: '编辑 mimo' }))
       const dlg = screen.getByRole('dialog')
-      expect(within(dlg).getByLabelText('账号')).toHaveValue('og-main')
+      expect(within(dlg).getByLabelText('账号')).toHaveValue('login-og-main')
       await user.click(within(dlg).getByRole('button', { name: '保存' }))
-      expect(putCarrier).toHaveBeenLastCalledWith('mimo', 7, expect.objectContaining({ login: 'login-og-main', account_id: 'opencode-go:og-main', account_name: 'og-main' }))
+      expect(putCarrier).toHaveBeenLastCalledWith('mimo', 7, expect.objectContaining({ login: 'login-og-main' }))
+      expect(vi.mocked(putCarrier).mock.lastCall?.[2]).not.toHaveProperty('account')
+      expect(vi.mocked(putCarrier).mock.lastCall?.[2]).not.toHaveProperty('home_dir')
+
       await user.click(await screen.findByRole('button', { name: '编辑 mimo' }))
       await user.selectOptions(within(screen.getByRole('dialog')).getByLabelText('账号'), '')
       await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: '保存' }))
-      expect(vi.mocked(putCarrier).mock.lastCall?.[2]).not.toHaveProperty('account')
+      expect(vi.mocked(putCarrier).mock.lastCall?.[2]).not.toHaveProperty('login')
+      expect(vi.mocked(putCarrier).mock.lastCall?.[2]).toMatchObject({ no_account: true })
     })
 
-    it('指纹不一致：载体行与编辑对话框一行红字；载体行带账号与状态短语（W2）', async () => {
+    it('所选登录已失效：载体行与编辑对话框红字、给复制登录命令；没有指纹不一致红字', async () => {
       const user = userEvent.setup()
       vi.mocked(getSquads).mockResolvedValue({
-        carriers: [{ name: 'dp', machine: 'linux-01', cli: 'opencode', home_dir: '/root/.handoff/home/dp', status: 'online', version: 4, login: 'login-og-team', account_id: 'opencode-go:og-team', account_name: 'og-team' }],
+        carriers: [{ name: 'dp', machine: 'linux-01', cli: 'codex', home_dir: '', status: 'online', version: 4, login: 'login-codex-spare', account_id: 'codex:codex-spare', account_name: 'codex-spare', login_state: 'gone' }],
         squads: [], running: [],
       })
       render(<SchedulingPage />)
       const row = (await screen.findByText('dp', { selector: 'strong' })).closest('article')!
-      const red = within(row).getByText('凭据指纹与所选账号不一致')
-      expect(red).toHaveClass('q-out')
-      expect(within(row).getByText('og-team')).toBeInTheDocument()
-      expect(row.textContent).toContain('无额度')
+      expect(within(row).getByText('已失效')).toHaveClass('q-out')
+      expect(row.textContent).toContain('暂停派发')
+      expect(within(row).getByRole('button', { name: '复制登录命令' })).toBeVisible()
+      expect(row.textContent).not.toContain('凭据指纹与所选账号不一致')
       await user.click(within(row).getByRole('button', { name: '编辑 dp' }))
-      expect(within(screen.getByRole('dialog')).getByText('凭据指纹与所选账号不一致')).toHaveClass('q-out')
+      const dlg = screen.getByRole('dialog')
+      expect(dlg.textContent).toContain('这条登录已失效')
+      expect(dlg.textContent).toContain('载体暂停派发')
+      expect(dlg.textContent).not.toContain('凭据指纹与所选账号不一致')
+    })
+
+    it('空态：该机没有兼容登录时给「新增登录」链接并预选机器与 agent', async () => {
+      const user = userEvent.setup()
+      __setAccountsForTest([])
+      render(<SchedulingPage />)
+      await user.click(await screen.findByRole('button', { name: '登记载体' }))
+      const dlg = screen.getByRole('dialog')
+      const link = within(dlg).getByRole('link', { name: '新增登录' })
+      expect(link).toHaveAttribute('href', '/accounts?login=new&agent=opencode')
     })
 
     it('载体行显示所选账号的当前状态：正常报每周「已用% 倒计时」，问题报状态短语（R8 修 2）', async () => {
       vi.mocked(getSquads).mockResolvedValue({
         carriers: [
-          { name: 'mimo', machine: 'linux-01', cli: 'opencode', home_dir: '/root/.handoff/home/mimo', status: 'online', version: 7, login: 'login-og-main', account_id: 'opencode-go:og-main', account_name: 'og-main' },
-          { name: 'gk', machine: 'macbook-pro', cli: 'grok', home_dir: '/h/gk', status: 'online', version: 2, login: 'login-grok-mbp', account_id: 'grok:grok-mbp', account_name: 'grok-mbp' },
-          { name: 'ag', machine: 'linux-01', cli: 'agy', home_dir: '/h/ag', status: 'online', version: 3, login: 'login-agy-main', account_id: 'agy:agy-main', account_name: 'agy-main' },
+          { name: 'mimo', machine: 'linux-01', cli: 'opencode', home_dir: '', status: 'online', version: 7, login: 'login-og-main', account_id: 'opencode-go:og-main', account_name: 'og-main' },
+          { name: 'gk', machine: 'macbook-pro', cli: 'grok', home_dir: '', status: 'online', version: 2, login: 'login-grok-mbp', account_id: 'grok:grok-mbp', account_name: 'grok-mbp' },
+          { name: 'ag', machine: 'linux-01', cli: 'agy', home_dir: '', status: 'online', version: 3, login: 'login-agy-main', account_id: 'agy:agy-main', account_name: 'agy-main' },
         ],
         squads: [], running: [],
       })
       render(<SchedulingPage />)
       const rowOf = async (name: string) => (await screen.findByText(name, { selector: 'strong' })).closest('article')!
       const mimo = await rowOf('mimo')
-      expect(mimo.textContent).toMatch(/OpenCode Go\s*62%\s*4d 2h/)
+      expect(mimo.textContent).toMatch(/OpenCode Go.*62%\s*4d 2h/)
       expect(within(mimo).getByText('62%')).toHaveClass('q-warn')
       const gk = await rowOf('gk')
       expect(gk.textContent).toContain('△ 凭据已过期')
       expect(gk.textContent).not.toContain('grok login')
+      expect(gk.textContent).toContain('登录已过期')
       const ag = await rowOf('ag')
       expect(ag.textContent).toContain('48%')
       expect(ag.textContent).not.toContain('35%')

@@ -2048,10 +2048,14 @@ export function Shell() {
   )
 }
 
-// AccountsRoute 承接 /accounts?account=<名>：底栏弹层「管理账号…」带名跳来时预先展开并高亮。
+// AccountsRoute 承接 /accounts?account=<名> 与 /accounts?login=new&machine=&agent=：
+// 底栏弹层「管理账号…」带名跳来时预先展开并高亮；载体对话框空态链接带预选参数直开新增登录。
 function AccountsRoute() {
   const [params] = useSearchParams()
-  return <AccountsPage highlight={params.get('account') ?? ''} />
+  const newLogin = params.get('login') === 'new'
+    ? { machine: params.get('machine') ?? undefined, agent: params.get('agent') ?? undefined }
+    : null
+  return <AccountsPage highlight={params.get('account') ?? ''} newLogin={newLogin} />
 }
 
 // FullPageCover 把设置/工作项等整页盖在常驻工作台上。

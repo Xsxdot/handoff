@@ -1031,7 +1031,7 @@ func accountsRespSample(now time.Time) AccountsResp {
 		Logins:   []LoginView{oauth, login("login-aa00000000000002", "mac-mini", "~", "opencode.db", "sha256:3f9a1b2cc21e", "gone")},
 		Carriers: []string{"mimo"},
 	}, {
-		ID: "apikey:opencode-go:77d0c1e2a3b4", Name: "opencode-go-key-77d0", Kind: "apikey", Provider: "opencode-go",
+		ID: "apikey:deepseek:77d0c1e2a3b4", Name: "deepseek-key-77d0", Kind: "apikey", Provider: "deepseek",
 		Fingerprint: "sha256:77d0c1e2a3b4", Version: 1, State: "out", Stale: true,
 		Reading: &AccountReadingView{Windows: []AccountWindowView{
 			{Key: "session", UsedPercent: 100, ResetsAt: at(3*time.Hour + 12*time.Minute)},

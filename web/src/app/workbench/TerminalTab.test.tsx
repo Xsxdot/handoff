@@ -34,7 +34,7 @@ const termInstance = {
     sendFocusMode: false,
     applicationCursorKeysMode: false,
   },
-  onWriteParsed: vi.fn((_cb: () => void) => ({ dispose: vi.fn() })),
+  onWriteParsed: vi.fn((cb: () => void) => { void cb; return { dispose: vi.fn() } }),
   onData: vi.fn((cb: (d: string) => void) => {
     termOnData = cb
     return { dispose: vi.fn() }

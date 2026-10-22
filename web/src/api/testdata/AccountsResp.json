@@ -70,10 +70,10 @@
       ]
     },
     {
-      "id": "apikey:opencode-go:77d0c1e2a3b4",
-      "name": "opencode-go-key-77d0",
+      "id": "apikey:deepseek:77d0c1e2a3b4",
+      "name": "deepseek-key-77d0",
       "kind": "apikey",
-      "provider": "opencode-go",
+      "provider": "deepseek",
       "fingerprint": "sha256:77d0c1e2a3b4",
       "version": 1,
       "state": "out",

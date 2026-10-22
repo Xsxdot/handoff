@@ -350,3 +350,55 @@
 - 文件清单 37 文件 +441/−587（删除为主：`/api/host/probe`、`ProbeHome` 族、hostapi 凭据路径解析器、`ProfileReq.Credential`、web `probeHome`；新增 Q9 主 HOME 跳过、agy token 软链、`ResumeReq.HomeDir`）——非空转。`--no-ff` 合回 cards/B464-charter-1，台账冲突两侧保留。
 - 偏离 1（基线身份）：派发起点由节点取上轮分支 cards/B464-charter@363a5485，未取卡 base_branch charter-1@606f236d（仅台账差异）——记为 handoff 卡派发基线解析行为，非本卡缺陷，落 roadmap 观察。偏离 2（`ResumeReq.HomeDir`）：认可，agy 冷恢复不透传登录 HOME 则 Q8 不闭合。偏离 3–6：§9 权限内。
 - 审批：本任务约 4 张工单人工/循环放行，同 B465 根因。
+
+## implement 段 5（2026-10-22，handoff runner 小队）
+
+- 执行者：`card dispatch --step implement` 派出的 runner。起点 `505c8f2d`（卡补充要求先 `git fetch && git merge --ff-only origin/cards/B464-charter-1`，已快进成功；本分支 `cards/B464-charter-3`）。
+- 范围：只做 plan §7 段 5（S1–S7 形态）。不改 Go 后端逻辑；契约 fixture 样本按段 2 台账的「段 5 一并换样本」处理（见偏离 1）。
+- 纪律：零真机/浏览器验收（R11 归主会话）；不读真实凭据、不起 agentd、不碰生产账本；只提交不 push。
+
+### 偏离与自主决定
+
+1. **改了 Go 侧契约 fixture 样本（`internal/proto/contract_fixture_test.go`）**：段 2 台账写「既有样本不改（含 `apikey:opencode-go` 的 out 样本……段 5 重写账号页时一并换样本）」。本段把它换成 `apikey:deepseek` / `deepseek-key-77d0`，`go test ./internal/proto/ -run TestContractFixtures -update` 只重生成 `web/src/api/testdata/AccountsResp.json`。这不是后端逻辑改动，属 plan §9 类 (4)「契约 fixture 刷新」授权范围。
+2. **修了两处与段 5 无关的既有 lint 错误（自行拍板）**：`web/src/app/tree/MobileWorkspace.tsx` 的三元表达式语句改成 if/else、`web/src/app/workbench/TerminalTab.test.tsx` 的未用参数改成 `void cb`。原因：补充⑦要求 `npm run lint` 绿，而基线已有 2 个 error（非本段引入）。只改表达式/参数、无产品行为。**不在 plan §9 明确授权列表内，特此披露。**
+3. **删除 `defaultHomeDir` 与其两处断言**：plan 段 5 明确「处置 `defaultHomeDir` 等 B453 残留」；该函数只服务已删除的「载体手填 HOME」。不是删测试凑绿（无功能替代项）。
+4. **组件拆分与轮询实现**：`Logins.tsx`（登录子表/代理内联编辑/复制命令）与 `LoginWizard.tsx`（三步、5s 轮询）为新增文件；间隔固定 5s，文案照原型。属 §9「前端组件拆分、轮询实现、空态/提示措辞」授权。
+5. **空态链接在机器是本机别名时不带 `machine=`**：载体对话框「新增登录」链接若机器为 `本机/local/空`（控制台不知道自名），只预选 `agent`；真实机器名照带。规格要求预选机器，别名情形无法给出服务端可用的机器名，故披露。
+6. **账号页数据面**：`store.ts` 快照新增 `discovery` 与 `applyLogin`（代理回执就地合入）；不新增第二个拉取者。属内部实现调整（§9 授权）。
+7. **既有测试重写**：`AccountsPage.test.tsx` 从 B453 的登记/条目/HOME 形态整体重写为六组+登录子表+三步新增登录；`SchedulingPage.test.tsx` 的载体对话框从「HOME/凭据模式/账号名」改为「登录/无账号」；`model.test.ts` 的 kind 顺序与 `credentialMoved`/`entryText` 断言随 B464 模型重写。均为段 5 新形态的对应断言，未删测试凑绿；原 11 例红（段 1/2 删掉的旧行为）全部消解。
+8. **未做与后续**：R11 浏览器形态验收、R3/R6 用户登录类真机项未跑；`opencode` 新增登录仍给 OAuth 命令，第三方 key 的具体 provider 入口只在命令 note 里（A11 agent 五值不含 apikey）。
+
+### 实现落地（按文件）
+
+- `web/src/api/accounts.ts`：补 `LoginCommand/relogin`、`LoginProxyInput`、`LoginHomeResp`、`LoginCheckResp/Item`、`MachineDiscoverResult/AccountDiscoverResp`；新增 `putLoginProxy`（A9）、`createLoginHome`（A11）、`checkLoginHome`（A12）、`discoverAccounts`（A10）。
+- `web/src/app/accounts/model.ts`：六组 `KIND_ORDER`/`KINDS`（新增 claude/apikey 与 `quota`/`cli`）；`supportsProbe`/`quotaAccounts`；登录状态词与提示、凭据时刻、HOME 文案、重新登录命令文案；`machinesOf/machinesText`；`dispatchHint`（已失效暂停、已过期只提示、低/无额度暂停、na/未知照常、未选由调用方）；`FAIL_BRIEF` 补 `no_login`；`statusPhrase/updatedText` 补 `na`；删 `entryText/credentialMoved`。
+- `web/src/app/accounts/Logins.tsx`（新）：机器/HOME/来源/指纹/状态/代理/载体子表；代理行内编辑（PUT A9）；复制服务端 `relogin` 命令；已过期/已失效红字提示。
+- `web/src/app/accounts/LoginWizard.tsx`（新）：三步新增登录；目录名 `[a-z0-9-]`、建 HOME 409/400 原文、5s 轮询 + 立即检查、新账号/已有账号两种结果、关闭兜底说明。
+- `web/src/app/accounts/AccountsPage.tsx`：六组卡片、登录子表、改名（内联）、阈值/间隔保存、立即探测（仅可探 kind）、在其他机器登录预选、删除对话框（写明下次发现会重新出现）、页头「上次发现 · 立即发现」逐机报错、`?login=new` 预选。
+- `web/src/app/accounts/store.ts`：快照带 `discovery`、`applyLogin`。
+- `web/src/app/accounts/StatusBar.tsx`：底栏/使用量弹层只列 `quotaAccounts`。
+- `web/src/app/accounts/MobileAccounts.tsx`：六组、多机文案、na 不显示立即探测。
+- `web/src/app/settings/SchedulingPage.tsx`：载体对话框改为「机器 → 执行器 → 账号登录」；兼容 kind 过滤；同账号同机多登录用「账号 — HOME」；末尾「无账号 · 主 HOME」；空态链到账号页；只读 HOME/来源/代理/共用；删 HOME 输入、凭据模式、指纹红字；载体行显示「账号名 · 机器 HOME」、登录状态与派发提示 + 复制登录命令。
+- `web/src/app/shell/Shell.tsx`：`/accounts?login=new&machine=&agent=` 转给页面预选。
+- `web/src/api/scheduling.ts`：删 `defaultHomeDir`；`web/src/api/contract.test.ts` 补 A9–A12 与 `relogin` 断言、apikey 样本改 deepseek。
+- `web/src/app/accounts/accounts.css`：登录子表、三步对话框、发现行、阈值行的样式（沿用控制台灰阶 token）。
+
+### 红证据（先红后绿）
+
+- 新 `AccountsPage.test.tsx` 首次运行：`Tests 13 failed (13)`，失败原因含 `TypeError: entryText is not a function`（旧页无法渲染）与六组/登录/三步断言缺失。实现后 `npx vitest run src/app/accounts/AccountsPage.test.tsx` → 13/13 通过。
+- `SchedulingPage.test.tsx` 基线 6 红（凭据来源/HOME 输入/按名账号/指纹红字）。按新形态重写后 → 22/22 通过。
+- `model.test.ts` 新增登录状态/派发提示/na/凭据时刻断言；实现前后各跑一次，红→绿。
+- 全量 `npm test` → 基线 11 红（AccountsPage 5 + SchedulingPage 6），收口 **150 文件 / 2016 例全过**。
+
+### 命令与读数（本段真实跑到）
+
+- `cd web && npm test` → `Test Files 150 passed (150)`、`Tests 2016 passed (2016)`，20.79s（另一次收口 23.02s 同结果）。
+- `cd web && npm run typecheck` → 无输出，退出 0。
+- `cd web && npm run lint` → 退出 0，`✖ 33 problems (0 errors, 33 warnings)`（warning 均为既有 fast-refresh/exhaustive-deps）。
+- `env -u CLAUDE_CODE_SESSION_ID go test ./internal/proto/ -run TestContractFixtures` → `ok`；`-update` 只改 `web/src/api/testdata/AccountsResp.json`。
+- `go build ./...` → 无输出（通过）。
+- 末次改动（空态链接/发现行）后复跑 `AccountsPage.test.tsx` 13/13、`SchedulingPage.test.tsx` 22/22、`typecheck` 通过。
+
+### 提交
+
+- `git commit -m "feat(B464): 账号页六组与登录子表、新增登录三步、载体选登录形态（段 5）"` → `5246020a feat(B464): 账号页六组与登录子表、新增登录三步、载体选登录形态（段 5）`，`24 files changed, 1417 insertions(+), 561 deletions(-)`；提交后 `git status --porcelain` 空。本条随后 amend 收进同批提交（hash 会变，按台账纪律不回写 amend 后 HEAD）。
