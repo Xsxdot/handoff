@@ -63,7 +63,8 @@ func approverContextSection(tc ApproverTaskContext) string {
 	}
 	var b strings.Builder
 	b.WriteString("\n任务上下文：")
-	b.WriteString("\n- 任务形态：" + mode + "（readonly = 只读调查：不改仓库、不提交，结论写成报告交回）")
+	// 只解释本任务的实际形态（B465）：两种解释并列时，弱审批模型会把分支任务读成只读而升级
+	b.WriteString("\n- 任务形态：" + mode + modeExplanation(mode))
 	if tc.Workdir != "" {
 		b.WriteString("\n- 工作树：" + tc.Workdir)
 	}
@@ -77,6 +78,17 @@ func approverContextSection(tc ApproverTaskContext) string {
 		b.WriteString("\n" + readonlyApproverPolicy)
 	}
 	return b.String()
+}
+
+// modeExplanation 返回形态行括注；未知形态不加括注（不替审批者猜语义）。
+func modeExplanation(mode string) string {
+	switch mode {
+	case proto.TaskModeReadonly:
+		return "（readonly = 只读调查：不改仓库、不提交，结论写成报告交回）"
+	case proto.TaskModeBranch:
+		return "（分支任务：可在任务工作树内改代码、提交到任务分支）"
+	}
+	return ""
 }
 
 // readonlyApproverPolicy 是只读任务的裁决政策段（plan §9，S7 放行尺度 A）。

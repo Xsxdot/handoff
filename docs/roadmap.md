@@ -1044,3 +1044,7 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 - finish-check ④ 方向 A 只核子命令/参数是否存在，不核参数说明文字（如退出码清单）；B460 的 `--help` 缺退出码 5 因此只作备注未计数。要不要扩到说明文字由协调者定。来源：B461 审查第 2 轮 m6。
 - 前端测试（vitest）交熟练工：需执行机预置 `web/node_modules` 或可写的 npm 缓存。来源：`docs/superpowers/specs/b461.md` OOS。
 - 换版后冒烟交熟练工：需只读熟练工可调用 handoff 只读子命令（`status`、`card list`、`machines` 等）的白名单，今天权限门对 handoff 自身命令一律升级。来源：同上。
+
+## B465 残余（2026-10-22，审批链分支任务误判只读）
+
+- implement 纪律块加一句「改文件用执行器自带编辑工具，不用 python heredoc / sed -i 等 shell 改写」：编辑工具写工作树内文件由权限门静态规则放行，shell 改写要走审批链裁决，换弱模型后误判与人工工单随之增多。纪律块归 charter 仓（`~/workspace/charter`，改完 provision install + check），不在本仓改。来源：`docs/superpowers/specs/b465.md`。
