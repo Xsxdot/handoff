@@ -37,3 +37,10 @@
 - 工单 1 张，且是权限门误报：`for w in agentd approver …; do n1=$(grep -c "handoff $w" README.md); n2=$(grep -c "handoff $w" README.zh-CN.md); echo …; done`，reason「executor 试图调用 handoff 变更命令 $w（自指令藏在执行包装器的引号里）」——grep 模式串里的 handoff 字样被当成自调用；主会话批准，记 B463（seq 30192）。顶层 `--help` 与 ④ 的 for 循环 0 张（fcloop462.log approved=0）。
 - 结论原文：格式 通过 0；静态检查 通过；全量测试 通过 ok 65 / FAIL 0 / 无测试 7；命令表 有差异 11（方向 A 0）；残余与 CHANGELOG 有未入 3（B462 spec OOS 三项未入 roadmap）——主会话已补（B462 c0e8c0b5），并据其「命令表备注」补 `--help` 缺退出码 5 一条。产物 go-test.log（72 行）、help.txt（1011 行，单条 for 循环导出）。
 - 判定：v3 出货版本工单验收达标（循环与顶层帮助 0 张，唯一 1 张为权限门误报，归 B463）。
+
+## finish（2026-10-22，主会话；用户离开期授权合并/推送/换版）
+- 合并：本地 main（origin/main d905c3ab）`git merge --no-ff cards/B462-charter-1` → caac5ec5（无冲突）；`git merge --no-ff cards/B461-charter-1` → c7b3413d（CHANGELOG [Unreleased] 新增段、roadmap 残余段两处冲突，双方条目均保留）；文档对齐 11dfde13（finish-check 段的换版改指 `upgrade --from`）；残余 d3f53365（B461 spec OOS 两项入 roadmap）。
+- 合并后新鲜全量：本机 `gofmt -l` 空、`go vet ./...` 净、`env -u CLAUDE_CODE_SESSION_ID go test ./... -count=1 -p 4` rc=0 65 ok；linux-01 finish-check v3（临时分支 finish/B461-B462，任务 dd3f157e）ok 65 / FAIL 0 / 无测试 7，命令表差异 11 与说明文字 1 均已在 roadmap，残余未入 2 → d3f53365 补入。工单 1 张（README grep 误报，同 B463）。
+- 推送：`git push origin main` → d3f53365；删除临时分支 finish/B461-B462。
+- 换版（B462 自身的生产使用）：`scripts/build-deploy.sh --pack <scratch>/prodpack darwin/arm64 linux/amd64`（tag d3f533656250）；本机 `cp -p ~/.local/bin/handoff ~/.local/bin/handoff.bak-pre-b462` 后原子 mv 新 CLI，`handoff upgrade --now --from <prodpack>` → macbook-pro「成功 e53b10ce83b9 → d3f533656250」（远端 .prev 生成、换版后账本仍可读）、本机「成功 已换到 d3f533656250」（等新版上线期间启动闸 503 两次后上线、账本仍可读）；linux-01「跳过 1 个活跃任务」（ERP 卡 E23 的 charter 节点任务 adc8a9e2，非本卡，不 --force），待空闲后 `handoff upgrade --now --from <prodpack> --target linux-01`。
+- 生产冒烟：`handoff machines` 三台可达（本机/macbook-pro d3f533656250，linux-01 e53b10ce83b9 活跃 1）；`handoff card list --status finish` 正常（账本挂载）；`handoff template list` finish-check v3。

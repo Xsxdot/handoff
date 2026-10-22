@@ -60,3 +60,10 @@
 ## review（2026-10-22，独立审查 subagent，ab03d907..cd172f7b）
 - 结论 PASS，无 Critical/Important。复跑：build/vet OK；触及 5 包 ok；全量 `go test ./... -count=1 -p 4` 65 ok / 0 FAIL / 7 无测试。变异 4 处全红并还原回绿：(a) --from 不强推 → TestUpgradeFromPushes…/MissingPlatform…；(b) 前可读后 503 判成功 → TestJudgeLedgerAfterGrid、RemoteOne…、CLI 远端与本机各一；(c) 自登记错误拍平为非瞬时 → TestSetupLedgerRetriesTransientSelfRegister、…GivesUpOnShutdown…；(d) sha 不校验 → TestLocalDirInstallerRejectsBadOrMissingChecksum。
 - Minor：M1 Q9 超时原文经共享 RemoteOne 也进控制台「执行机升级」失败原因（Q9 授权内，控制台测试绿，记账）；M2 NewLocalDirInstaller 复制 NewInstaller 函数体（主会话已改为调用 NewInstaller，release/cmd 相关测试 ok）；M3 CHANGELOG 列表空行（主会话已删）；M4 真机用 B453 测试库、R8 删设备行而非删库（如实记录，库随 B453 finish 删除）。
+
+## finish（2026-10-22，主会话；用户离开期授权合并/推送/换版）
+- 合并：本地 main（origin/main d905c3ab）`git merge --no-ff cards/B462-charter-1` → caac5ec5（无冲突）；`git merge --no-ff cards/B461-charter-1` → c7b3413d（CHANGELOG [Unreleased] 新增段、roadmap 残余段两处冲突，双方条目均保留）；文档对齐 11dfde13（finish-check 段的换版改指 `upgrade --from`）；残余 d3f53365（B461 spec OOS 两项入 roadmap）。
+- 合并后新鲜全量：本机 `gofmt -l` 空、`go vet ./...` 净、`env -u CLAUDE_CODE_SESSION_ID go test ./... -count=1 -p 4` rc=0 65 ok；linux-01 finish-check v3（临时分支 finish/B461-B462，任务 dd3f157e）ok 65 / FAIL 0 / 无测试 7，命令表差异 11 与说明文字 1 均已在 roadmap，残余未入 2 → d3f53365 补入。工单 1 张（README grep 误报，同 B463）。
+- 推送：`git push origin main` → d3f53365；删除临时分支 finish/B461-B462。
+- 换版（B462 自身的生产使用）：`scripts/build-deploy.sh --pack <scratch>/prodpack darwin/arm64 linux/amd64`（tag d3f533656250）；本机 `cp -p ~/.local/bin/handoff ~/.local/bin/handoff.bak-pre-b462` 后原子 mv 新 CLI，`handoff upgrade --now --from <prodpack>` → macbook-pro「成功 e53b10ce83b9 → d3f533656250」（远端 .prev 生成、换版后账本仍可读）、本机「成功 已换到 d3f533656250」（等新版上线期间启动闸 503 两次后上线、账本仍可读）；linux-01「跳过 1 个活跃任务」（ERP 卡 E23 的 charter 节点任务 adc8a9e2，非本卡，不 --force），待空闲后 `handoff upgrade --now --from <prodpack> --target linux-01`。
+- 生产冒烟：`handoff machines` 三台可达（本机/macbook-pro d3f533656250，linux-01 e53b10ce83b9 活跃 1）；`handoff card list --status finish` 正常（账本挂载）；`handoff template list` finish-check v3。
