@@ -1048,3 +1048,10 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 ## B465 残余（2026-10-22，审批链分支任务误判只读）
 
 - implement 纪律块加一句「改文件用执行器自带编辑工具，不用 python heredoc / sed -i 等 shell 改写」：编辑工具写工作树内文件由权限门静态规则放行，shell 改写要走审批链裁决，换弱模型后误判与人工工单随之增多。纪律块归 charter 仓（`~/workspace/charter`，改完 provision install + check），不在本仓改。来源：`docs/superpowers/specs/b465.md`。
+
+## B466 残余（2026-10-23，cd 子目录后 heredoc/glob 误升级人工）
+
+- linux-01 换版后用 E40.3 同形命令真机实测（`cd server && python3 - <<'EOF' … EOF\ngofmt -w …/*.go` 期望 Consult、`cd server && gofmt -w …/*.go` 期望 AutoAllow、`cd admin && cat > … <<'EOF' … EOF\nnode --test …` 期望 Consult）：用户指定由主会话统一换版，本卡未验。来源：`docs/superpowers/specs/b466.md`。
+- `node --test`（仅文件参数）进静态白名单：与 `go test`/`npm run` 同风险类，今天无论有无 cd 都交审批链；是政策扩展，另起卡。
+- heredoc 闭集接受「安全后继」（`cat > f <<'EOF' … EOF\necho done` / `node --test …`）：今天闭集要求终止符后无命令，这类写入落 Consult；扩展须逐段证明后继可静默。
+- 无 cd 时的 glob 写落点仍按字面交 InScope、不展开匹配（cd 基准下已展开并逐个判软链）；收紧会改「无 cd 零变化」不变式，需单独裁决。
