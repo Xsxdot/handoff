@@ -418,3 +418,10 @@
   - 「未选登录 · 照常派发」与原型「不进派发」相反：spec SC3 / plan Q13 已裁以 spec 为准，非缺陷。
   - **待修**：(a) 编辑存量「未选」载体时下拉预选「无账号 · 主 HOME」（value 空串），保存即静默改成无账号——违反 plan「编辑必须二选一」，Important；(b) 探测行「不晚于 即将 后」残句；(c) 本机别名时空态链接缺 `machine=`（段 5 偏离 5）；(d) 文案与原型差异：向导第 1 步标签/按钮、下拉末项「（不参与额度判断）」、空态缺「（OpenCode Go / 第三方 API key）」括注。
   - 环境噪声（非本卡）：侧栏「会话列表已断开：本机未配置控制台人名 console_user」与 `/api/sessions` 403——隔离配置未设 console_user。
+
+## 真机 R9 / R12（2026-10-22，主会话）
+
+- **R9 协调者主 HOME 零写入：通过。** 隔离 mac 配置补 `console_user: t464-tester`（建会话需身份）并重启；测试账本建协调小队 `t464-co`（成员 t464-oc-lnx：og-xsx 登录、t464-linux 主 HOME `/root`、登录代理 http://127.0.0.1:1080），`session create --project handoff --squad t464-co` 首次因载体并发被残留待审任务占满失败（归档 e85504f3/06e8d022/9e400e80 后）`session resident launch session:1 --squad t464-co` → `{"identity":"agent:t464-co","carrier":"t464-oc-lnx","carrier_machine":"t464-linux"}`。linux 日志：`协调者回合开始 … home_dir=/root`、`协调者回合完成 … duration=34.3s`。回合前后对 `/root/.handoff/config.yaml`、`/root/.config/opencode/**`、`/root/.agents`、`/root/AGENTS.md`、`/root/.handoff/home/**` 的 size/mtime/sha256 快照（scratch/t464/r9-before.txt 与 r9-after2.txt，34 行）`diff` 无差异；`/root/.handoff` 下新近变动只有在役 agentd 自身 db 与任务帧。
+- **R9 附带发现（交审查判级）**：同回合 WARN「协调者回合的载体身份对应多个不同登录，不套用登录代理」carriers=[t464-oc-lnx, t464-ds]——`internal/agentd/account_carrier.go` `coordinatorAccountProxy(cli, homeDir)` 按 (CLI, HOME) 反查载体，同 HOME 多登录（B464 下常态）即放弃登录代理。
+- **R12 密钥审计：通过（附一条存量现象）。** 只打印计数与键路径的脚本：取 linux `/root` 与 `~/.handoff/home/*` 下 opencode auth.json / opencode.db 账号表 / codex / grok / agy token 中 ≥24 字符的串（9 个源文件、21 串），查隔离实例 `agentd.out`、测试账本 `pg_dump --data-only`、数据目录普通文件（跳过软链、FIFO/socket）。结果：`agentd.out` 0；账本 1 = agy token 的 `.token.expiry` 时间戳（长 30，非密钥，误报）；数据目录 1 = 任务 9238c515（旧二进制 8cd3a9d6 派出，即 R13 作废那条）`agyhome` 下按旧逻辑复制的 token 与 `.orig-google-oauth` 普通文件——正是本卡 Q8 消除的行为，已删除这两份测试残留。mac 侧（opencode.db 1 源、2 串）对 `macdata/agentd.log`、`mac.out`、`macdata/**` 均 0。
+- **存量现象（finish 落 roadmap）**：生产 agentd 在 B464 之前派出的 agy 任务，其任务目录 `agyhome` 下留有 token 普通文件副本；换版后新任务为软链，但旧任务目录的副本不会自动消失——finish 时确认 `handoff gc` 是否回收终态任务 agyhome，不回收则立条。
