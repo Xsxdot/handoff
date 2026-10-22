@@ -31,3 +31,9 @@
 ## S4 补派（v2，2026-10-22）
 - `handoff dispatch --template finish-check --prompt "卡 B453 base=a4e206d8" --timeout 40m --wait`，任务 5ee97f19，检出 57757830（= 当时已推送的 B453 HEAD）。工单 1 张（`"$TMPDIR/handoff-fc" --help`），for 循环未触发工单。
 - 结论原文：格式 通过 0；静态检查 通过；全量测试 通过 ok 67 / FAIL 0 / 无测试 7；命令表 有差异 11（方向 A 零差异）；残余与 CHANGELOG 有未入 1（b453-plan.md:162 agy Windows 探测）——主会话已补 roadmap（B453 ac4cce6b）。产物 go-test.log、help.txt（892 行）。
+
+## S4 补派（v3，2026-10-22，出货版本）
+- 命令：在 B462 工作树 `handoff dispatch --template finish-check --prompt "卡 B462 base=d905c3ab" --timeout 40m --wait`（模板 v3，2026-10-22T11:17 登记），任务 da335d04，检出 b19c25a0（= 已推送的 B462 HEAD；末行 JSON commit 一致）。
+- 工单 1 张，且是权限门误报：`for w in agentd approver …; do n1=$(grep -c "handoff $w" README.md); n2=$(grep -c "handoff $w" README.zh-CN.md); echo …; done`，reason「executor 试图调用 handoff 变更命令 $w（自指令藏在执行包装器的引号里）」——grep 模式串里的 handoff 字样被当成自调用；主会话批准，记 B463（seq 30192）。顶层 `--help` 与 ④ 的 for 循环 0 张（fcloop462.log approved=0）。
+- 结论原文：格式 通过 0；静态检查 通过；全量测试 通过 ok 65 / FAIL 0 / 无测试 7；命令表 有差异 11（方向 A 0）；残余与 CHANGELOG 有未入 3（B462 spec OOS 三项未入 roadmap）——主会话已补（B462 c0e8c0b5），并据其「命令表备注」补 `--help` 缺退出码 5 一条。产物 go-test.log（72 行）、help.txt（1011 行，单条 for 循环导出）。
+- 判定：v3 出货版本工单验收达标（循环与顶层帮助 0 张，唯一 1 张为权限门误报，归 B463）。
