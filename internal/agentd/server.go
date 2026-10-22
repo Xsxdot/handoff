@@ -1593,7 +1593,8 @@ type coordinatorRunner struct {
 	reg         *executor.Registry
 	prepareHome func(keysclient.SessionSpec) (string, error)
 	// isPushResidentSession 判续接的 CLI 会话是不是 push 驻场者（B444 P2 返工四，review C2）：是 → 本轮不注入
-	// 卡席位对。事实在账本（经 collab），不在 SessionRef（B233.2 冻结镜像不加字段）。nil = 未装配，Resume 拒跑。
+	// 卡席位对。事实在账本（经 collab），不在 SessionRef（B233.2 镜像已加可选 Carrier，但那是进程内 DTO、不过
+	// wire，见下条；驻场判定仍只认账本）。nil = 未装配，Resume 拒跑。
 	isPushResidentSession func(sessionID string) (bool, error)
 	// accountProxy 按（载体名, CLI, 规范化 HOME）查协调者载体所选登录的代理（B453 S4：协调者回合
 	// 也套代理；B464 I2：优先用载体名，零值才回落按 CLI+HOME 反查）。nil 或返回空串 = 沿用今天的环境。

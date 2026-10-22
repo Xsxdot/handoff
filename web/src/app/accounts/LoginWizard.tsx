@@ -138,7 +138,7 @@ export function LoginWizard({ open, machines, selfMachines, account, preset, onC
 
   const copy = async () => {
     if (!created) return
-    const text = remoteLogin && created.command.remote_run ? created.command.remote_run : loginCommandText(created.command)
+    const text = loginCommandText(created.command, remoteLogin && created.command.remote_run ? 'remote_run' : 'run')
     const ok = await copyToClipboard(text)
     console.info('accounts.login_wizard.copy', { machine, remote: remoteLogin, copied: ok })
     onNotice(ok ? `已复制登录命令：${text}` : `请手动复制：${text}`)

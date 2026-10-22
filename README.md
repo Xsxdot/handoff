@@ -428,7 +428,7 @@ log states which path this run used.
 | `handoff footprint` | Per-task process usage and this machine's process headroom | — |
 | `handoff account list` | Accounts (identities) and their quota readings, each account row followed by its logins (machine:HOME, source, state, masked proxy, carriers); needs `ledger.dsn` | `--json` (one AccountView object per line, same shape as `GET /api/accounts`, incl. `logins`) |
 | `handoff account discover` | Ask the entry machine to discover logged-in identities now (all registered machines, or one with `--machine`); a failed machine is reported on its own row | `--machine <m>`; exit 0 all ok, 1 any machine failed |
-| `handoff account probe <name>` | Ask the account's own machine to probe it now and print the new reading | exit code 1 when the probe fails |
+| `handoff account probe <name\|id>` | Ask the account's own machine to probe it now and print the new reading; the argument is an account name or account id | exit code 1 when the probe fails |
 | `handoff squad list` | List carriers and squads (one JSON object per line with `--json`; each row carries its CAS version). Carrier rows carry the account cell: `account · machine HOME`, or `无账号` / `-` (unselected) | `--json` |
 | `handoff status` | Is agentd usable, version, active tasks, executor liveness | `--target <name>`; `--json`; exit code 0=usable 1=unreachable |
 | `handoff upgrade` | Survey/upgrade this machine and all targets | `--now`; `--target <name>`; `--force`; `--rollback`; `--from <dir>` (local build) |

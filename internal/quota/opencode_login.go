@@ -80,6 +80,13 @@ func readLoginAccount(home, rel string) (loginAccount, error) {
 	var token, email sql.NullString
 	var expiry sql.NullInt64
 	err = db.QueryRowContext(ctx, "SELECT access_token, token_expiry, email FROM account WHERE id = ?", active.String).Scan(&token, &expiry, &email)
+	// 旧版 opencode.db 的 account 表没有 email 列（email 只喂 label，不是身份材料）：退回两列查询，
+	// 身份与登录照常认出，label 留空（最终审查第 2 轮 m5）。
+	if err != nil && !errors.Is(err, sql.ErrNoRows) && strings.Contains(err.Error(), "no such column") {
+		log().Warn("opencode.db 的 account 表无 email 列，登录照常认出但 label 留空", "path", path)
+		email = sql.NullString{}
+		err = db.QueryRowContext(ctx, "SELECT access_token, token_expiry FROM account WHERE id = ?", active.String).Scan(&token, &expiry)
+	}
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		return loginAccount{}, fail(CategoryCredentialMissing, "%s 无登录账号（当前账号在 account 表里不存在）", path)

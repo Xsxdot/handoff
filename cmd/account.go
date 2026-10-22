@@ -111,8 +111,8 @@ var accountDiscoverCmd = &cobra.Command{
 }
 
 var accountProbeCmd = &cobra.Command{
-	Use:   "probe <名称>",
-	Short: "让账号所在机立即探测一次并打印新读数（探测失败退出码 1）",
+	Use:   "probe <名称或 id>",
+	Short: "让账号所在机立即探测一次并打印新读数；参数可为账号名称或账号 id（探测失败退出码 1）",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name := args[0]

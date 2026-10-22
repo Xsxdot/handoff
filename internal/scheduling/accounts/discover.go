@@ -224,10 +224,11 @@ func (s *Service) ensureAccount(id string, f FoundLogin, machine string, at time
 	return true, nil
 }
 
-// backfillLabel 只给已存在账号补可读 label（I1：邮箱优先后来的来源也能补上），不改名字与
-// 其他发现字段。label 只在变化时写一次；并发下他机先写成功按已补处理。
+// backfillLabel 只给「还没有 label」的已存在账号补可读 label（I1：邮箱优先后来的来源也能补上），
+// 不改名字与其他发现字段。已有 label 一律保留——同一身份的两条登录可能给出不同邮箱，逐轮覆写会
+// 在它们之间来回改（最终审查第 2 轮 m4）。并发下他机先写成功按已补处理。
 func (s *Service) backfillLabel(id string, existing Account, f FoundLogin, machine string, defs map[string]Account) error {
-	if f.Label == "" || existing.Label == f.Label {
+	if f.Label == "" || existing.Label != "" {
 		return nil
 	}
 	cur, version, err := s.definition(id)

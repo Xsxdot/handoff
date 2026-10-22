@@ -558,3 +558,64 @@
 
 - **R8 claude 载体派任务：通过。** 隔离 mac 建 `t464-claude`（t464-mac、cli claude、login-9424b4c0cad7dab9 主 HOME）→ 检测 online（v2）；首次派发 500「裁决 socket 路径过长（172 字节，上限 107）」——隔离数据目录在长 scratch 路径下的测试环境问题（claude 执行器用 `perm.sock`），以 `/tmp/t464m` 软链指向原数据目录、配置 `datadir: /tmp/t464m` 重启后重派任务 0a17f380 回文 `ok-r8-claude`（rc=0），已归档。
 - **S7 claude 跨 Mac 归并：用户裁定不做真机验证，转 roadmap**（用户原话「B」）。mac-pro `claude auth status` → loggedIn False。依据见 spec 头部承诺变更行；finish 落 roadmap「B464 残余」。
+## implement 段 8（2026-10-22，修最终审查第 2 轮 N1 与 m1–m7）
+
+- 执行者：主会话派出的 implement subagent（charter:implement / architecture-law 已加载）。工作树 `.handoff/worktrees/89c6b245`，分支 `cards/B464-charter-1`；开工 `git fetch origin && git merge --ff-only origin/cards/B464-charter-1` → 快进 `e1ec1081..dd5729d7`（只动台账一行）。零真机动作、不读真实凭据、不起/不重启 agentd。
+
+### 偏离与自主决定
+
+- 无。八条修法（N1、m1–m7）逐条按派单范围落地，无越界；未新增跨子系统穿透、无测试专用生产入口。所有自行拍板均落在 plan §9 决策权限（实现细节）范围内，逐条如下。
+- m2 自主拍板：远端复制内容选「与非远端一致，含 ssh 行」——非远端 `loginCommandText` 现有行为就是 `ssh … 后执行：<cmd>`；据此远端变体也走同一函数（variant='remote_run'），ssh 与 note 规则不变。展示侧 `pre` 本就含 ssh 前缀，故展示与复制同规则。
+- m5 自主拍板：以 `strings.Contains(err.Error(), "no such column")` 判旧 schema 并退回两列查询；只吞「缺列」这一类错误，其余错误（含 ErrNoRows）仍按原分支报。email 只喂 label，不参与身份/指纹。
+
+### N1（Important）驻场续轮带载体名
+
+- 改点：`internal/agentd/residentpush.go` `wakeResidentRound` 组 spec 加 `Carrier: binding.Carrier`、组 ref 加 `Carrier: spec.Carrier`；`internal/keystone/resident.go` `LaunchForResident` 缓存驻场 ref 加 `Carrier: spec.Carrier`。
+- 全仓核对构造协调者 `SessionSpec`/`SessionRef` 的生产路径（清单）：`agentd/scheddrain.go:506`（首轮，已有）、`:700`（唤醒，已有）；`agentd/residentpush.go:264`（本次补）、`keystone/resident.go:74`（本次补）；`keystone/keystone.go:321` `launchRound` ref（已有 `Carrier: spec.Carrier`）；`keystone/keystone.go:279` 冷 attach 的 ref 只喂 locator（不走 Resume、无代理语义，不改）；`agentd/server.go:1655/1689` 是 coordinatorRunner 内部把 ref 转 spec/CoordReq（已带）。结论：仅上述两处漏带，已补全。
+- 测试：`internal/agentd/b464_resident_carrier_test.go` `TestB464ResidentRoundCarriesSeatCarrierToLoginProxy`——从生产入口 `wakeResidentRound` 进，经真 keystone（`keystone.WakeResident`）到 `coordinatorRunner.Resume`（Coordinator 为记录桩），夹具「同 HOME 两条登录、两载体 coord-a/coord-b 各选其一、代理不同」，断言 Resume 回合 `HTTPS_PROXY` = 席位载体 coord-b 那条登录的代理。
+- 有牙确认（变异，未提交）：① 修前（spec/ref 均无 Carrier）该测试红：`得 ""（ok=false）`；② 只把 ref 的 `Carrier: spec.Carrier` 改回 `""`（spec 保留）→ 红：`续轮应取席位载体 coord-b 那条登录的代理 … 得 ""`；还原后绿。即该测试钉住 ref→Resume 这一段（等价于 scheddrain:508 / wakeResidentRound 的 Carrier 传递被抹掉）。
+
+### m1 注释与 plan
+
+- `internal/agentd/server.go` `coordinatorRunner.isPushResidentSession` 注释改：不再说「SessionRef 冻结镜像不加字段」，改述 B233.2 镜像已加可选 Carrier（进程内 DTO、不过 wire），驻场判定仍只认账本。
+- `docs/superpowers/plans/b464-plan.md` §11 末尾加行：「B233.2 镜像增可选 Carrier（进程内 DTO、不过 wire；循 B435.2 Q2 甲先例，主会话认可 2026-10-22）」。
+
+### m2 远端命令展示与复制统一
+
+- `web/src/app/accounts/model.ts` `loginCommandText(cmd, variant='run')`：variant='remote_run' 时正文取 `remote_run`，ssh 前缀与 note 规则不变。
+- `LoginWizard.tsx` copy 改走该函数（勾远端 = variant='remote_run'）；展示 `pre` 本就含 ssh 前缀，二者同规则。`Logins.tsx` copyRemoteCommand 同改。
+- 测试：`AccountsPage.test.tsx` 更新两处期望为带 ssh 行（登录行 `ssh root@linux-01 后执行：…--device-auth`；向导本机勾选与 mac-mini 默认勾选各一条）。有牙（变异未提交）：把 Logins/向导复制还原成旧「只给 remote_run」→ `AccountsPage.test.tsx` 2 failed；还原后 17 passed。
+
+### m3 SchedulingPage homeChanged
+
+- `SchedulingPage.tsx`：先比登录 id——`sameLogin = previous.login === (carrier.login===NO_LOGIN ? '' : carrier.login)`；`homeChanged = previous!==null && !sameLogin && (previous.home_dir??'') !== nextHome`。存量 home_dir 的绝对路径/`~` 写法与登录 HOME 写法不同不再误判。
+- 测试：`SchedulingPage.test.tsx` 加 `it.each(['/root/.handoff/home/og-main','~/.handoff/home/og-main'])`——编辑登录未变的载体保存 → `detectCarrier` 未被调用、回传 login。有牙（变异未提交）：去掉 `!sameLogin &&` → 1 failed；还原后 27 passed。
+
+### m4 backfillLabel 只补空
+
+- `internal/scheduling/accounts/discover.go`：`backfillLabel` 判据改 `f.Label=="" || existing.Label!=""`（已有 label 一律保留）。
+- 测试：`discover_test.go` `TestReconcileKeepsExistingLabelAgainstOtherLogin`——账号带 `a@example.com` 建（版本 1），另一机同身份登录给 `b@example.com` → label 仍 a、版本仍 1、登录挂到 2 条。有牙（变异未提交）：还原旧判据 → 红 `得 "b@example.com"`；还原后绿。
+
+### m5 opencode.db 无 email 列容错
+
+- `internal/quota/opencode_login.go`：`SELECT access_token, token_expiry, email …` 报 `no such column` 时 Warn 并退回 `SELECT access_token, token_expiry …`（email 留空）；ErrNoRows 与其它错误分支不变。
+- 测试：`opencodego_login_test.go` `loginRow.noEmail` 建无 email 列的 account 表；`logins_test.go` `TestLoginsOpencodeDBSchemaWithoutEmailColumn` 断言登录仍被认出、Label 为空、无 problems、指纹仍取 `账号 id/org`。有牙（变异未提交）：把容错条件改 `if false` → 红 `无 email 列时仍应认出登录：[]`；还原后绿。
+
+### m7 CLI/README 写明参数可为名称或 id
+
+- `cmd/account.go` `accountProbeCmd` Use 改 `<名称或 id>`、Short 补「参数可为账号名称或账号 id」；`README.md`/`README.zh-CN.md` 命令表同改。
+- 读数：`go build -o $TMPDIR/handoff-b464 .` 后 `handoff-b464 account probe --help` 打 `handoff account probe <名称或 id>` 且 Short 含「账号名称或账号 id」。
+
+### m6 段 6 夹具变更补记
+
+- 段 6 改了 `web/src/app/settings/SchedulingPage.test.tsx` 的 `shows an actionable CAS conflict` 夹具：给 carrier 行加 `no_account: true`（C1 保存拦截的必然改动），断言语义不变（仍断言 409 文案可见、对话框保留、未触发检测）。
+
+### 收口读数（原文）
+
+- `gofmt -l internal cmd` → 空；`go build ./...` → 空输出；`go vet ./...` → 空输出。
+- `env -u CLAUDE_CODE_SESSION_ID go test ./internal/agentd/... ./internal/keystone/... ./internal/scheduling/... ./internal/quota/... ./cmd/... -count=1` → 全 `ok`（agentd 289.547s、accountwork 0.242s、keystone 1.735s、scheduling 23.708s、accounts 0.033s、scheduling/internal/logging 0.002s、quota 3.868s、cmd 144.230s）。
+- web（先 `npm ci`，node_modules 原缺）：`npx vitest run` → 150 files / 2026 tests 全过；`npm run typecheck`（tsc -b）→ 0 错；`npm run lint` → 33 warnings / **0 errors**。
+
+### 提交事实
+
+- 命令：`git add -A && git commit -m "fix(B464): 段 8——驻场续轮带载体名(N1)、远端命令复制含 ssh、homeChanged 先比登录、label 只补空、无 email 列容错、CLI/README 名称或 id"`。输出：`c8e8d5f6 fix(B464): 段 8——…`（19 文件 + 新增 `internal/agentd/b464_resident_carrier_test.go`；node_modules 为 gitignore，未入库）。随后按台账纪律只 amend 一次把本行收进同一提交（amend 换 hash 属 git 事实）。

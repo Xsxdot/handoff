@@ -263,6 +263,7 @@ func (s *Server) wakeResidentRound(ctx context.Context, r proto.SessionResident,
 	defer s.releaseSchedulingBinding(residentClaimKey(r.Session), binding)
 	spec, err := orchestration.NormalizeCoordinatorSpec(keysclient.SessionSpec{
 		CLI: r.PushCLI, HomeDir: r.HomeDir, Model: r.Model, Workdir: r.Workdir,
+		Carrier: binding.Carrier,
 	})
 	if err != nil {
 		s.log.Error("规范化驻场者 SessionSpec 失败", "session", r.Session, "carrier", r.Carrier, "cause", err)
@@ -270,6 +271,7 @@ func (s *Server) wakeResidentRound(ctx context.Context, r proto.SessionResident,
 	}
 	ref := keysclient.SessionRef{
 		CLI: spec.CLI, SessionID: r.PushSession, HomeDir: spec.HomeDir, Workdir: spec.Workdir, Model: spec.Model,
+		Carrier: spec.Carrier,
 	}
 	s.log.Info("驻场者续轮开始", "session", r.Session, "identity", r.Identity, "squad", binding.Squad,
 		"carrier", binding.Carrier, "cli", ref.CLI, "push_session", ref.SessionID, "event_count", len(evs))

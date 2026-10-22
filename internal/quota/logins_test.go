@@ -105,6 +105,27 @@ func TestLoginsOpencodeShapeProblemsAreReportedWithoutSecrets(t *testing.T) {
 	}
 }
 
+// TestLoginsOpencodeDBSchemaWithoutEmailColumn 锁 m5：旧版 opencode.db 的 account 表没有 email
+// 列时容错——登录仍被认出（来源/指纹照常），Label 留空，不报问题。
+func TestLoginsOpencodeDBSchemaWithoutEmailColumn(t *testing.T) {
+	home := t.TempDir()
+	writeOpencodeDB(t, home, loginRow{id: "acc_legacy_1", org: "org_legacy", token: sentinelKey, noEmail: true})
+	got, problems := ogRegistry().Logins(home)
+	if len(problems) != 0 {
+		t.Fatalf("无 email 列不是问题，得 %v", problems)
+	}
+	if len(got) != 1 || got[0].Kind != KindOpencodeGo || got[0].Source != "opencode.db" {
+		t.Fatalf("无 email 列时仍应认出登录：%+v", got)
+	}
+	if got[0].Label != "" {
+		t.Fatalf("无 email 列时 Label 应为空，得 %q", got[0].Label)
+	}
+	if got[0].Fingerprint != Fingerprint("acc_legacy_1/org_legacy") {
+		t.Fatalf("身份仍取账号 id/org：%q", got[0].Fingerprint)
+	}
+	assertNoSecret(t, got[0].Fingerprint, sentinelKey, "acc_legacy_1", "org_legacy")
+}
+
 func mustFindings(t *testing.T, home string) []LoginFinding {
 	t.Helper()
 	got, problems := ogRegistry().Logins(home)

@@ -73,6 +73,7 @@ func (s *Service) LaunchForResident(ctx context.Context, spec keysclient.Session
 	s.mu.Lock()
 	s.residents[brief.Session] = keysclient.SessionRef{
 		CLI: spec.CLI, SessionID: result.SessionID, HomeDir: spec.HomeDir, Workdir: spec.Workdir, Model: spec.Model,
+		Carrier: spec.Carrier,
 	}
 	s.mu.Unlock()
 	log().Info("驻场者首轮拉起完成", "session", brief.Session, "push_session", result.SessionID)
