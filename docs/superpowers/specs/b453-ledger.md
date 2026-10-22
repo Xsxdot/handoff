@@ -462,3 +462,20 @@
 - 处置：R3-I2 → plan §8 r4（02bd3aa9）；R3-m2 → roadmap（同提交，并关闭 opencode-go 欠交条目）；R3-I1/R3-m1 → 修复轮 6（bb4f2454）。
 - 第 4 轮（4c304658..bb4f2454）PASS：L5、L6、L9、L11 转红；quota 包 ok、vet/gofmt 净；仅剩 r4 措辞 Minor（主会话已改为「按该 kind 的缺省处理」）。
 - 浏览器复核（隔离 t453-mac 67436fe5，浏览器熟练工）：og-mini 底栏「0% 4h11m ·5% 3d 20h」带进度条；弹层详细「5h 0% 周 5% 月 2%」、精简「3d 20h 5%」；hover 面板含 go-plus 与三窗口；/accounts 凭据行「自动（auth.json › opencode-go，否则 opencode.db 登录账号） · sha256:1e5f72dfee52」；登记框 opencode-go 条目标签「留空 = 自动；opencode.db = 登录账号；其他 = auth.json 里的键」，其余 kind 文案不变——与 spec r1.3 及原型形态一致。
+
+## finish（2026-10-22，主会话；用户离开期授权合并/推送/换版）
+
+### 偏离与自主决定
+
+1. linux-01 未换版：`handoff upgrade --now --from` 报「linux-01 跳过 1 个活跃任务」，该任务是 ERP 卡 E23 的 adc8a9e2（waiting_review，别的流程），按「不对他人活跃任务 --force」没有强换；linux-01 仍是 e53b10ce，待 E23 收口后补 `handoff upgrade --now --target linux-01 --from <包>`。不在 plan 决策权限内的裁决，但属用户既有红线的直接执行。
+2. 测试库角色未删：`DROP ROLE` 被拒——handoff_b453 与 B435 等测试库共用角色，仍拥有其他测试库；角色保留，只删库。
+
+### 过程与证据
+
+- 合并：主线临时工作树 `--no-ff` 合入 cards/B453-charter-1 → 6849dcf2（CHANGELOG 冲突取两侧）；原型基准回流 9cccc7ab（账号页、移动端设置、额度底栏与 dock 入口进 prototypes/base，README B453 行改「已确认」）。
+- 本机合并树全量：gofmt 净；go test ok 67；typecheck ok；vitest 150 文件 / 2013 用例全过。
+- linux-01 finish-check 熟练工（任务 16fd8b2a，commit 6849dcf2）：格式 0、vet 过、全量 ok 67 / FAIL 0；命令表 11 处差异均为既有（roadmap「B461 残余」）；残余 81 条未入 0；CHANGELOG 命中。审批链（opencode 单环）裁决 15 次全允许、4–8s；唯一人工工单是硬闸对含 handoff 字样的 grep 误判（B463）。
+- 推送：`git push origin HEAD:main` 4bf7c996..9cccc7ab；删远端临时分支 finish/B453。
+- 换版：`scripts/build-deploy.sh --pack` 出 9cccc7ab6e67（darwin/arm64、linux/amd64）；本机备份 `handoff.bak-pre-b453`；`handoff upgrade --now --from` → macbook-pro d3f533656250 → 9cccc7ab6e67 成功、本机成功；linux-01 见偏离 1。
+- 生产冒烟：`handoff machines` 三机可达（mac-mini/macbook-pro 9cccc7ab6e67）；`handoff account list` 正常（生产未登记账号，空表）；`handoff card list --status finish` 正常。
+- 清理：停并删隔离实例 t453-linux（/root/b453-iso）、t453-mbp（~/b453-iso），t453-mac 已不在；停 authproxy；删含 DSN 的 t453 配置与 token；DROP DATABASE handoff_b453（凭据脚本内流转未打印），credentials.md 该行标「已 DROP」（模板 r6b-ro 随库失效）。
