@@ -1004,3 +1004,10 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 - 只读工作树访问自身 git 元数据目录（主仓 `.git/worktrees/<任务id>/`，opencode 报 external_directory）不在 B460 任务范围内，按规则升级人工；可考虑把本工作树的 gitdir 只读纳入范围。来源：B460 真机 R4（台账「review 真机」节）。
 - grok 网页抓取请求结构化（ACP 载荷无样本，linux-01 grok 未登录）；B460 只做了 opencode/claude/agy。来源：B460 plan Q6、真机 R4。
 - 权限门的相对 `cd` 证明假设执行者 shell 未设 `CDPATH`；若设了，`cd sub` 可能落到范围外。可在拉起执行器时显式清空 `CDPATH`，或把相对 cd 一律视为不可信。来源：B460 审查第 2 轮。
+
+## B462 残余（2026-10-22，本机构建换版 spec Out of Scope「本期不做、后续要做」）
+
+- 远端一键回滚（`handoff upgrade --rollback --target <机器>`）：今天 `--rollback` 只换本机 `.prev`，远端回滚要登机手工 `mv handoff.prev handoff` 再重启。来源：`docs/superpowers/specs/b462.md` OOS。
+- 多级备份：`.prev` 只留一级，连换两次就丢掉更早的版本。来源：同上。
+- 控制台「执行机升级」入口接本地构建来源（今天只走 release）。来源：同上。
+- `dispatch --wait` / `wait --final` 的 `--help` 退出码说明只列 0/3/4/124，缺 B460 新增的 5（README 两份已写）。来源：B461 finish-check 对 B462 实跑（命令表备注）。
