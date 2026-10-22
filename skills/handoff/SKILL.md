@@ -130,7 +130,7 @@ handoff wait <task> --notify --timeout 1h
 - 基线必须已推送（接收者 mimo 在 linux-01，从远端取提交）：finish 第 1 步先推卡分支再派。
 - 读结论前先核回报末行 JSON 的 `commit` 是否就是要检查的提交：本地领先未推时，它检出的是远端那个较旧的提交。
 - 合并后的树：合并提交与已检提交的 tree 哈希相同（`git rev-parse <提交>^{tree}`）就沿用上次结论并记两侧哈希；不同就把合并提交先推到临时分支 `finish/<卡>` 再派，结论通过后才推主线、删临时分支。
-- 前端测试（vitest）与换版后冒烟不在它范围内：前者执行机没有 `web/node_modules`，后者要跑 `handoff` 自身命令（权限门一律升级）——前端本地跑，冒烟走换版脚本。
+- 前端测试（vitest）与换版后冒烟不在它范围内：前者执行机没有 `web/node_modules`，后者要跑 `handoff` 自身命令（权限门一律升级）——前端本地跑，换版与冒烟走 `handoff upgrade --now --from <目录>`（B462，见「换版」段）。
 
 **`--wait` 在主会话里怎么跑。** `--wait` 缺省等 30 分钟，而 Bash 工具前台上限是 10 分钟。**首选后台运行**（`run_in_background`，进程退出时叫醒你）；或前台 `--wait --timeout 9m`，退出 124 后接 `handoff wait <完整 task-id> --final --machine <M> --timeout 9m` 继续等（命令原文在 stderr 里）。超时只结束等待，任务照跑。两种形态下 **5 与 124 的处置不同**：124 是「还没完」，原样续等即可；5 是「卡在人身上」，先答工单再续等——不答就续等只会立刻再以 5 退出。
 
