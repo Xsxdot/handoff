@@ -430,3 +430,11 @@
 - 前端：`model.test.ts` entryText 用例与 `AccountsPage.test.tsx` 登记 opencode-go 用例先红（`expected '/root（agy CLI 自己的登录态）' to be '/root › 自动（…）'`、条目值/占位不符）；改 `KINDS`、`entryText`、`inputOf`（条目判据由「该 kind 缺省条目非空」改为「kind 不是 agy」——否则 opencode-go 填的 `opencode.db` 会被丢掉）、条目标签与占位后 `vitest src/app/accounts` 43 passed。
 - 文档：README / README.zh-CN 登记与探测两段、SKILL.md 账号节、CHANGELOG「所在机定时探测额度」条目各补一句；`go test ./internal/skill/` ok。
 - 收尾：`go build ./... && go vet ./...` 过；`go test ./internal/quota/... ./internal/agentd/ ./cmd/ ./internal/scheduling/... -count=1` 全 ok；`npm run typecheck` 退出 0；`vitest src/app/accounts src/app/settings` 13 files / 123 passed；eslint 触及目录无输出；gofmt 无差异。
+
+## 真机 R1′（2026-10-22，opencode.db 登录账号来源，主会话；用户批准读 opencode.db）
+- 事前手工实测（token 经 600 临时文件给 curl，未打印，用后删）：mac-mini opencode 1.19.3 当前账号 token 未过期（约 29 天）、org 已设；`zen/go/v1/usage` + OAuth Bearer → 403 `Workspace access denied`；`console/api/go/status` + Bearer + `x-org-id` → 200，meters fiveHour 0.4% / week 4.9% / month 2.4%，product go-plus。脱敏样本 `scratchpad/t453/samples/opencode-go-console-status.json`（去 subscriberUserId/paymentMethodId）。
+- 隔离实例 t453-mac 换到 67436fe5（+dirty1 = 用户的 b434-ledger.md），登记 og-mini（kind opencode-go，machine t453-mac，home /Users/df-zidong，entry 空）→ 立即探测 state ok，plan_type go-plus，windows session 0.374%（resets 2026-10-22T07:43:46Z）/ weekly 4.879%（2026-10-26T00:00:00Z）/ monthly 2.439%（2026-11-20T03:33:08Z），与手工实测一致。
+- agentd 日志：「opencode-go auth.json 无可用 API key 条目，改用登录账号」→「opencode-go 凭据来源 entry="" source=opencode.db」→「额度接口调用开始 url=…/console/api/go/status」→「返回 status=200 elapsed≈0.73s」。
+- 泄密核查（脚本内读 token/org 原值只计数）：agentd.log、mac.out、`GET /api/accounts` 响应中 token 0 次、org 0 次。
+- 指纹：两次探测均 `sha256:1e5f72dfee52`（稳定，非 token 派生）。
+- 结论：opencode-go 欠交销账（S1/S2 opencode-go 真实账号成功读数）。
