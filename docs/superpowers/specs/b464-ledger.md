@@ -116,3 +116,14 @@
 - 偏离 3（web 12 例红）：段 5 重写账号页与载体对话框时消解；段 5 收口前全量 vitest 必须回绿。
 - 偏离 9（部分先实现后补测，红由注入缺陷取得）：记为流程偏离，审查的变异复验对这些路径加做。
 - 其余（V10 忽略残留键、A14 只在 HTTP 强制二选一、发现 60s、Q10 最小形、Q20 最小形）在 plan §9 权限内，认可。
+
+## 真机 R1 首故事（2026-10-22，主会话；隔离 t464-mac 127.0.0.1:7796 / t464-linux :7795，测试账本 handoff_b464，在役 7777 未动）
+
+- 二进制：main 755c0aa5c35c 与分支 23b65527d3d1（`build-deploy.sh --pack`，darwin/arm64、linux/amd64）。
+- 先以 main 起两实例，API 建存量载体：t464-oc-mac（t464-mac、opencode、HOME 空、standalone）、t464-oc-muse（t464-linux、`~/.handoff/home/muse`、main_home_sync）、t464-oc-cmd（t464-linux、`~/.handoff/home/command`、无凭据）。换分支二进制重启。
+- ① 首轮发现：账号 `opencode-go:1e5f72dfee52`（自动名 opencode-go-1e5f）两条登录——t464-mac `~` opencode.db ok、t464-linux `~` opencode.db ok（**跨机同身份归并成立**，指纹 sha256:1e5f72d 与 B453 R1′ 一致）；账号 `opencode-go:54ce90677410` 一条登录 t464-linux `~/.handoff/home/muse` auth.json（探测 fail，key 侧问题，不属本卡）。linux 主 HOME 的 `deepseek` 第三方 key 未发现（apikey 属段 2）。
+- ② 迁移：t464-oc-mac → login-f633…（mac 主 HOME），home_dir `''`；t464-oc-muse → login-2dcc…（muse），home_dir 原串保留；t464-oc-cmd → 未选（login/no_account 皆空）。符合 §5。
+- ③ `PUT /api/squads/carriers/t464-oc`（login=login-f633…，请求体故意带 `home_dir:"/tmp/should-be-ignored"`）→ home_dir `''`、account_name opencode-go-1e5f、login_state ok；detect → online。
+- ④ `dispatch --receiver t464-oc --new-worktree --prompt "echo HOME=$HOME"` → rc 0，最终回答 `HOME=/Users/df-zidong`（主 HOME）。任务 9e400e80（分支 handoff/9e400e80 建在主仓，清理时删）。
+- ⑤ 前后对照：在役 agentd pid mac 87935、linux 1205162 不变；linux `opencode/auth.json`、`codex/auth.json`、agy token mtime 不变；两机主 HOME `opencode.db` mtime 变（opencode 运行自身写会话，R1 任务与在役载体都在主 HOME 跑 opencode，非 handoff 写凭据）；`~/.handoff/home/muse/.local/share/opencode/opencode.db-shm` 近 20 分钟有更新——发现器 `mode=ro` 打开 WAL 库时 SQLite 维护 -shm 索引所致，非凭据写入（**Minor，交审查**：可评估 `immutable=1` 与一致性取舍）。
+- 结论：**R1 通过**，进段 2。
