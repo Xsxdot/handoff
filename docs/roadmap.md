@@ -1011,3 +1011,9 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 - 多级备份：`.prev` 只留一级，连换两次就丢掉更早的版本。来源：同上。
 - 控制台「执行机升级」入口接本地构建来源（今天只走 release）。来源：同上。
 - `dispatch --wait` / `wait --final` 的 `--help` 退出码说明只列 0/3/4/124，缺 B460 新增的 5（README 两份已写）。来源：B461 finish-check 对 B462 实跑（命令表备注）。
+
+## B461 残余（2026-10-22，finish-check 熟练工首跑）
+
+- README（中英）命令表缺 11 个顶层子命令：`completion`、`decision`、`discipline`、`frames`、`machines`、`preview`、`room`、`session`、`squad`、`template`、`workflow`；`approver`/`console`/`sessions` 只在 README.md 正文出现、未进命令表。来源：B461 S4 finish-check 对 B453 的实跑结论。
+- 审批链对「运行新编二进制的 `--help`」一律未形成允许、转人工工单（S4 一跑 13 张）；模板已改为一次导出，但审批链对只读帮助命令的判定值得复核。来源：同上。
+- finish-check ④ 方向 A 只核子命令/参数是否存在，不核参数说明文字（如退出码清单）；B460 的 `--help` 缺退出码 5 因此只作备注未计数。要不要扩到说明文字由协调者定。来源：B461 审查第 2 轮 m6。

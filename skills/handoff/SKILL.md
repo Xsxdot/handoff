@@ -123,6 +123,15 @@ handoff wait <task> --notify --timeout 1h
 - 命令行显式值覆盖定义：`--receiver` 换接收者，`--here` / `--machine <M>` 换亲和（二者互斥；`--here` 不能与 `--target` 同用）。
 - 定义示例在仓内 `skills/handoff/skilled/code-investigate.json`，`handoff template put <名> --file <json>` 写入。卡派发（`card dispatch`）拒用熟练工定义。
 
+**收尾检查交 `finish-check`**（B461）。charter finish 的机械检查——gofmt、vet、新鲜全量（含已知抖动的单包复跑判别）、README 命令表对 `--help`、新增行残余标记是否入 roadmap、CHANGELOG 是否提到本卡——派给只读熟练工，主会话只读「## 结论」五行：
+
+    handoff dispatch --template finish-check --prompt "卡 B453 base=<合并基线提交>" --wait
+
+- 基线必须已推送（接收者 mimo 在 linux-01，从远端取提交）：finish 第 1 步先推卡分支再派。
+- 读结论前先核回报末行 JSON 的 `commit` 是否就是要检查的提交：本地领先未推时，它检出的是远端那个较旧的提交。
+- 合并后的树：合并提交与已检提交的 tree 哈希相同（`git rev-parse <提交>^{tree}`）就沿用上次结论并记两侧哈希；不同就把合并提交先推到临时分支 `finish/<卡>` 再派，结论通过后才推主线、删临时分支。
+- 前端测试（vitest）与换版后冒烟不在它范围内：前者执行机没有 `web/node_modules`，后者要跑 `handoff` 自身命令（权限门一律升级）——前端本地跑，冒烟走换版脚本。
+
 **`--wait` 在主会话里怎么跑。** `--wait` 缺省等 30 分钟，而 Bash 工具前台上限是 10 分钟。**首选后台运行**（`run_in_background`，进程退出时叫醒你）；或前台 `--wait --timeout 9m`，退出 124 后接 `handoff wait <完整 task-id> --final --machine <M> --timeout 9m` 继续等（命令原文在 stderr 里）。超时只结束等待，任务照跑。两种形态下 **5 与 124 的处置不同**：124 是「还没完」，原样续等即可；5 是「卡在人身上」，先答工单再续等——不答就续等只会立刻再以 5 退出。
 
 **退出码 5 = 有工单待答。** 执行者撞到审批链判不了、要人答的权限请求或提问时，`--wait` / `wait --final` 立即以 5 退出（进入时已有待答工单也一样，不连事件流）。已被审批链自动批准的不算。stdout 是工单块，每张一块、块间空一行，最后一行是续等命令：
