@@ -17,3 +17,17 @@
 - 命令表差异 11 项（completion、decision、discipline、frames、machines、preview、room、session、squad、template、workflow 未进两份 README）为存量，落 roadmap。
 - 判定：S4 通过（真实派发、五项都跑出结论、差异与红都有出处）；模板缺陷一处——④ 逐条读帮助触发 13 张工单。
 - 修正：④ 改为「先拿顶层清单，再用一条 for 循环把全部子命令帮助导进 $HANDOFF_ARTIFACTS_DIR/help.txt」，一次运行至多一张工单。改后模板需 `handoff template put` 升 v2。
+
+## 偏离与自主决定（2026-10-22 补，审查第 1 轮 I1；本卡 L1 由主会话直接实现，拍板者亦为主会话，依据用户离开期授权）
+1. 模板 prompt 规矩第 4 条「一条命令只做一件事，不要用 `;`、`&&` 拼」是 spec S2 未写的新增（主会话为降低执行者把多条命令拼成一条、绕开权限逐条审视而加）。它与修正后 ④ 的 for 循环冲突——修复轮已加豁免「第 ④ 项规定的那一条 for 循环除外」，并新增第 5 条「在 bash 里跑」（审查 m1：zsh 不拆词）。
+2. ④ 的读法由逐条 `--help` 改为一条循环导出，生产模板由 v1 升 v2（S4 后），本轮再升 v3（I2 措辞：示例合并为同一条循环）。spec 写「登记 v1」指首版，后续版本是同一模板的修订。
+3. S4 两条验收未达仍判 S4 通过——拍板者主会话，理由与边界：
+   - 「结论与已知一致」：已知（mac 上 67 ok / 0 FAIL）本身是错的基准。FAIL 2 后经主会话在 linux-01 克隆复现、证实为 B453 测试时序竞态（真缺陷，B453 修复轮 4 57757830 修复），finish-check 的结论才是对的。判据应改读为「结论与事实一致」——这一点改变了 spec 的字面判据，属主会话裁决，记于此。
+   - 「人工工单 0 或接近 0」：v1 实测 13 张，**未达**，是模板缺陷，不判通过；修正后 v2 在 B453 57757830 上真实派发（任务 5ee97f19）只出 1 张（读顶层 `--help`，审批链 B463 降级所致），v3 另派一次验证（见下节）。故 S4 的工单验收以 v2/v3 真实派发为准，v1 那次只作「找到缺陷」的证据。
+4. S4 首跑检出 085ff40b，落后当时本地 B453 HEAD（dcf018f2，未推送）：基线必须已推送，派发前未推导致。已在 SKILL.md 补「核末行 JSON 的 commit」（审查 m2）。v2 那次派发前已推送，检出 57757830 = 当时 HEAD。
+5. spec 验收测试 `go test ./internal/skill/ ./cmd/ -run 'Skill|Template'` 台账漏记输出：审查复跑两包 ok（0.89s / 1.00s）；该测试不读 `skilled/*.json`，对本卡无约束力（审查 m3，记账不做）。
+- m4：S4 循环未逐张记工单原因——工单全文与原因只保留首张；循环脚本只批「严格匹配单行 handoff-fc … --help」的工单，原因不影响批准判据。记账。
+
+## S4 补派（v2，2026-10-22）
+- `handoff dispatch --template finish-check --prompt "卡 B453 base=a4e206d8" --timeout 40m --wait`，任务 5ee97f19，检出 57757830（= 当时已推送的 B453 HEAD）。工单 1 张（`"$TMPDIR/handoff-fc" --help`），for 循环未触发工单。
+- 结论原文：格式 通过 0；静态检查 通过；全量测试 通过 ok 67 / FAIL 0 / 无测试 7；命令表 有差异 11（方向 A 零差异）；残余与 CHANGELOG 有未入 1（b453-plan.md:162 agy Windows 探测）——主会话已补 roadmap（B453 ac4cce6b）。产物 go-test.log、help.txt（892 行）。

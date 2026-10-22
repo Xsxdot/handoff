@@ -128,6 +128,7 @@ handoff wait <task> --notify --timeout 1h
     handoff dispatch --template finish-check --prompt "卡 B453 base=<合并基线提交>" --wait
 
 - 基线必须已推送（接收者 mimo 在 linux-01，从远端取提交）：finish 第 1 步先推卡分支再派。
+- 读结论前先核回报末行 JSON 的 `commit` 是否就是要检查的提交：本地领先未推时，它检出的是远端那个较旧的提交。
 - 合并后的树：合并提交与已检提交的 tree 哈希相同（`git rev-parse <提交>^{tree}`）就沿用上次结论并记两侧哈希；不同就把合并提交先推到临时分支 `finish/<卡>` 再派，结论通过后才推主线、删临时分支。
 - 前端测试（vitest）与换版后冒烟不在它范围内：前者执行机没有 `web/node_modules`，后者要跑 `handoff` 自身命令（权限门一律升级）——前端本地跑，冒烟走换版脚本。
 
