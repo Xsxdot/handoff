@@ -1029,6 +1029,9 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 - 登录 HOME 的清理：删除不再使用的 `~/.handoff/home/*` 目录（发现扫不到只会把登录标已失效，不删目录）。来源：spec OOS。
 - 卡派发新轮起点取的是**上一轮分支**而非卡的 `base_branch`（台账记：派发起点 `cards/B464-charter@363a5485`，未取卡 base_branch `charter-1@606f236d`，仅台账差异）。记为 handoff 卡派发基线解析行为，非 B464 缺陷。来源：`docs/superpowers/specs/b464-ledger.md`「独立审查」前的段 5 记录。
 - B464 之前派出的 agy 任务，任务目录 `tasks/<id>/agyhome` 下留有按旧逻辑复制的 token 普通文件副本；B464 起新任务改为软链。`handoff gc` 只回收 `tmp/<id8>` 与 `tasks/<id>/tmp` 缓存叶子（`orchestration/internal/cacheplan` 的 ActiveLeaf/LegacyLeaf），**不回收** `tasks/<id>/agyhome`，需手工删或另立清理项。来源：B464 真机 R12/R13 存量现象。
+- claude 跨 Mac 归并未做真机验证（spec S7 承诺变更，2026-10-22 用户裁定「B」）：同机制的 opencode-go 跨机归并已真机通过、claude 身份 `oauthAccount.accountUuid` 有单测；待第二台 Mac 登录同一 claude 账号时补验「两台 Mac 两条登录归为一个账号」。来源：B464 spec 头部承诺变更行、台账「真机 R8 claude 载体与 S7 承诺变更」。
+- agentd 数据目录路径过长时 claude 执行器无法启动：任务的裁决 socket `<datadir>/tasks/<uuid>/perm.sock` 超过 unix socket 107 字节上限即 500「裁决 socket 路径过长」（B464 隔离实例数据目录在长 scratch 路径下实测 172 字节）；可改为把 socket 放到短路径（如 `$TMPDIR/hf-<id8>.sock`）或在 agentd 启动时校验 datadir 长度并提示。来源：B464 台账「真机 R8 claude 载体」。
+- 账号域小项（B464 审查记账）：`backfillLabel` 重读后已有 label 的早返回不写回本轮内存、不打日志（下轮自愈）；新增登录远端机命令框同时显示「在 <机器> 上执行：」与 ssh 行（Q18 形态，文案可合并）；SchedulingPage `homeChanged` 的 `~` 写法用例无牙。来源：B464 台账「最终局部核验」「主会话审段 6/段 7 与复验」。
 
 ## B460 残余（2026-10-21，熟练工工单治理 spec Out of Scope「本期不做、后续要做」）
 
