@@ -1,14 +1,16 @@
 // prober.go —— 账号额度探测器（B453 S2，plan Q3；B464 段 1 迁入 accountwork 子包，plan Q21）。
 //
-// 职责：只探测「可探登录在本机」的账号——每个账号取一条可探登录（plan Q10 段 1 最小形：
-// 第一条正常登录，accounts.ProbeLogin），只有那条登录的所在机探它；周期扫描（到期 = 上次
+// 职责：只探测「可探登录在本机」的账号——每个账号取一条可探登录（plan Q10：正常 + 所在机
+// 发现新鲜 + id 最小，accounts.ProbeLogin），只有那条登录的所在机探它；不支持额度探测的 kind
+// （na）在调 quota 之前跳过；探测得到 credential_expired/unauthorized 时给所用登录记失效证据
+// （plan Q5，登录读作已过期 → 可探登录自然换下一条，换了登录立即再探、不等失败退避）；周期扫描（到期 = 上次
 // 尝试 + 账号间隔）与立即探测（ProbeNow）共用同一实例与同一条写路径；同一账号单飞，立即
 // 探测写入的 last_attempt_at 自然顺延下一次周期探测。读本机凭据、调额度接口由
 // internal/quota 完成；结果映射成编制域值类型后经 RecordProbe 读-合并-CAS 写进共享账本的
 // 读数行（带本次所用登录 id，plan L8）。
 //
 // 边界：
-//   - 不代探他机登录（凭据只在所在机）；不碰账号定义行与登录行；
+//   - 不代探他机登录（凭据只在所在机）；不碰账号定义行；登录行只写失效证据（MarkLoginAuthFailed）；
 //   - 调度状态全在账本读数行（last_attempt_at），进程内只有在飞集合——重启后按
 //     读数行重建节拍，不突发全量重探；
 //   - 失败按 30s×2ⁿ 退避、封顶为账号间隔（probeDue）；
@@ -46,6 +48,9 @@ var ErrNotLocal = errors.New("账号的可探登录不在本机")
 // ErrNoProbeLogin 表示账号没有可探登录（名下没有正常登录）。
 var ErrNoProbeLogin = errors.New("账号没有可用登录")
 
+// ErrProbeUnsupported 表示账号 kind 不支持额度探测（claude、第三方 key，plan Q11）。
+var ErrProbeUnsupported = errors.New("账号类型不支持额度探测")
+
 // ErrStopped 表示探测器未启动或已停止。
 var ErrStopped = errors.New("账号探测器未运行")
 
@@ -55,11 +60,13 @@ type QuotaProber interface {
 }
 
 // ProberAccounts 是探测器对账号域的使用方接口（实现：*accounts.Service）。方法集 = 生产调用
-// 闭包：List（周期扫描）、Get（立即探测读账号与可探登录）、RecordProbe（写回读数行）。
+// 闭包：List（周期扫描）、Get（立即探测读账号与可探登录）、RecordProbe（写回读数行）、
+// MarkLoginAuthFailed（凭据失效证据，plan Q5）。
 type ProberAccounts interface {
 	List() ([]accounts.View, error)
 	Get(ref string) (accounts.View, error)
 	RecordProbe(id string, o accounts.ProbeOutcome) error
+	MarkLoginAuthFailed(id string, at time.Time, writer, category string) (bool, error)
 }
 
 // ProberConfig 是探测器的装配参数，全部由组装点（cmd/agentd.go）注入。
@@ -158,6 +165,9 @@ func (p *Prober) scan(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
+		if !accounts.SupportsProbe(v.Account.Kind) {
+			continue // na：不调 quota（未注册 kind 在 quota 里是错误，na 不是）
+		}
 		login, ok := probeLoginOf(v)
 		if !ok || !p.cfg.IsSelf(login.Machine) || !probeDue(v, now) {
 			continue
@@ -199,12 +209,15 @@ func probeLoginOf(v accounts.View) (accounts.Login, bool) {
 	return accounts.Login{}, false
 }
 
-// probeDue：从未尝试 → 到期；否则上次尝试 + retryWait 已过。节拍全由读数行推出，
-// 重启后自然续上，不突发全量重探。
+// probeDue：从未尝试 → 到期；上次失败用的是另一条登录（可探登录已换）→ 立即到期；否则上次
+// 尝试 + retryWait 已过。节拍全由读数行推出，重启后自然续上，不突发全量重探。
 func probeDue(v accounts.View, now time.Time) bool {
 	last := v.Record.LastAttemptAt
 	if last == nil {
 		return true
+	}
+	if v.Record.LastError != nil && v.Record.Login != "" && v.Record.Login != v.ProbeLogin {
+		return true // 失败退避属于失败的那条登录；换了登录不该替它等
 	}
 	return !now.Before(last.Add(retryWait(v.Account, v.Record)))
 }
@@ -267,6 +280,9 @@ func (p *Prober) ProbeNow(ctx context.Context, ref string) (accounts.View, error
 	v, err := p.cfg.Accounts.Get(ref)
 	if err != nil {
 		return accounts.View{}, err
+	}
+	if !accounts.SupportsProbe(v.Account.Kind) {
+		return accounts.View{}, fmt.Errorf("%w：账号 %s 是 %s", ErrProbeUnsupported, v.Account.Name, v.Account.Kind)
 	}
 	login, ok := probeLoginOf(v)
 	if !ok {
@@ -356,6 +372,12 @@ func (p *Prober) probeOnce(ctx context.Context, a accounts.Account, l accounts.L
 		p.log.Error("账号探测结果写回失败", "account", a.ID, "kind", a.Kind, "cause", werr)
 		return fmt.Errorf("账号 %s 的探测结果写回账本失败: %w", a.Name, werr)
 	}
+	if f := outcome.Failure; f != nil && credentialRejected(f.Category) {
+		// 证据写失败只告警：读数行已记下这次失败，下一轮探测会再得到同一证据。
+		if _, merr := p.cfg.Accounts.MarkLoginAuthFailed(l.ID, started, p.cfg.Writer, f.Category); merr != nil {
+			p.log.Warn("登录失效证据写入失败", "account", a.ID, "login", l.ID, "category", f.Category, "cause", merr)
+		}
+	}
 	if outcome.Failure != nil {
 		next := outcome.FinishedAt.Add(retryWait(a, accounts.ReadingRecord{
 			LastError: outcome.Failure, FailureStreak: prevStreak + 1}))
@@ -371,17 +393,26 @@ func (p *Prober) probeOnce(ctx context.Context, a accounts.Account, l accounts.L
 	return nil
 }
 
+// credentialRejected 报告失败类别是不是「凭据失效」证据（plan Q5）：凭据过期或被上游拒绝。
+// 网络、代理、限速、上游 5xx 等与凭据无关，不记证据。
+func credentialRejected(category string) bool {
+	return category == string(quota.CategoryCredentialExpired) || category == string(quota.CategoryUnauthorized)
+}
+
 // SourceEntry 把登录的凭据来源名映射成额度适配的条目（plan V8：探测按登录 source 取凭据）。
-// opencode-go：auth.json → `opencode-go` 条目（API key），opencode.db → 登录账号。其余 kind
-// 的来源在 B464 段 2 接入，暂按适配器缺省条目。
+// opencode-go：auth.json → `opencode-go` 条目（API key），opencode.db → 登录账号；codex：
+// auth.json → `tokens`；grok：auth.json → 首选 issuer（前缀匹配 `issuer::<uuid>`）；agy 无条目。
+// 未知组合按适配器缺省条目。
 func SourceEntry(kind, source string) string {
-	if kind == accounts.KindOpencodeGo {
-		switch source {
-		case "auth.json":
-			return "opencode-go"
-		case "opencode.db":
-			return "opencode.db"
-		}
+	switch {
+	case kind == accounts.KindOpencodeGo && source == "auth.json":
+		return "opencode-go"
+	case kind == accounts.KindOpencodeGo && source == "opencode.db":
+		return "opencode.db"
+	case kind == accounts.KindCodex && source == "auth.json":
+		return "tokens"
+	case kind == accounts.KindGrok && source == "auth.json":
+		return "https://auth.x.ai"
 	}
 	return ""
 }

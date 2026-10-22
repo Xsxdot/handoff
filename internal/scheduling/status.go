@@ -139,6 +139,9 @@ func (s *Service) ApplyDetect(name string, ev DetectEvidence, detail string) (Ca
 	default:
 		carrier.Status = StatusOnline
 	}
+	if ev.Reachable && ev.NeedLogin && !ev.Quota {
+		s.markDetectLoginFailed(carrier)
+	}
 	quotaToLastError := false
 	if carrier.Status == StatusOnline && ev.Quota {
 		marked, markErr := s.markDetectQuota(carrier, detail)
@@ -169,6 +172,23 @@ func (s *Service) ApplyDetect(name string, ev DetectEvidence, detail string) (Ca
 	statusLog().Info("写入载体检测结果成功", "name", name, "version", version,
 		"previous_status", previous, "status", carrier.Status, "quota_to_last_error", quotaToLastError)
 	return carrier, nil
+}
+
+// markDetectLoginFailed 给检测得到「需要登录」的载体所选登录记失效证据（plan Q5：登录读作
+// 已过期，不挡派发；凭据变化后下一轮发现回正常）。未选登录、账号域未装配、登录已删 → 不记；
+// 证据写失败只告警——载体状态与最近错误照常写，检测结论不因证据写入失败而丢。
+func (s *Service) markDetectLoginFailed(c Carrier) {
+	loginID := strings.TrimSpace(c.Login)
+	if loginID == "" || s.accounts == nil {
+		return
+	}
+	if _, err := s.accounts.MarkLoginAuthFailed(loginID, time.Now(), "detect:"+c.Machine, "need_login"); err != nil {
+		if errors.Is(err, accounts.ErrNotFound) {
+			statusLog().Warn("检测需要登录但所选登录已不存在，不记失效证据", "name", c.Name, "login", loginID)
+			return
+		}
+		statusLog().Warn("检测需要登录：写登录失效证据失败", "name", c.Name, "login", loginID, "cause", err)
+	}
 }
 
 // markDetectQuota 给检测撞额度的载体所选登录所属账号打撞额度标记（spec S4、plan Q19；B464 起

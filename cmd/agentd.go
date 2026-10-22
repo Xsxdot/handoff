@@ -692,9 +692,9 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 	}
 }
 
-// newQuotaRegistry 组装额度适配注册表（B453，组装点唯一）。凭据相对路径沿用
-// toolchain 唯一维护的表；本平台无已知落点时适配器报 unsupported_platform。agy 不读
-// 凭据文件（登录态归 CLI 自管），经 PATH 找 agy（启动时 pathenv 已扩 PATH）。
+// newQuotaRegistry 组装额度适配注册表（B453，组装点唯一；B464 起兼作登录发现的离线取材）。
+// 凭据相对路径沿用 toolchain 唯一维护的表；本平台无已知落点时适配器报 unsupported_platform。
+// agy 探测经 PATH 找 agy（启动时 pathenv 已扩 PATH），离线取材只读其 token 文件的身份与到期。
 func newQuotaRegistry() *quota.Registry {
 	rel := func(cli string) string {
 		if p, ok := toolchain.CredRelPathFor(cli); ok {
@@ -702,12 +702,16 @@ func newQuotaRegistry() *quota.Registry {
 		}
 		return ""
 	}
-	return quota.NewRegistry(map[string]quota.Prober{
+	reg := quota.NewRegistry(map[string]quota.Prober{
 		quota.KindOpencodeGo: &quota.OpencodeGo{CredRelPath: rel("opencode")},
 		quota.KindCodex:      &quota.Codex{CredRelPath: rel("codex")},
 		quota.KindGrok:       &quota.Grok{CredRelPath: rel("grok")},
 		quota.KindAgy:        &quota.Agy{},
 	})
+	// claude 只有离线取材（登录发现），不支持额度探测（B464 plan Q11）；第三方 API key 由
+	// opencode 适配从同一份 auth.json 取材。
+	reg.RegisterLoginReader(quota.KindClaude, &quota.Claude{})
+	return reg
 }
 
 func setupLedger(cfg *config.Config, srv *agentd.Server, taskStore *store.Store, ctx context.Context,

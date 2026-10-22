@@ -5,7 +5,7 @@
 //     （plan L1/Q2），只由发现建，人可改名/阈值/间隔；
 //   - 登录（kind=account_login）：账号在某台机器某个 HOME 下的一份凭据（plan L5–L7）；
 //     id 是「机器 × HOME × kind × provider × 来源」槽位的确定性哈希，写者是所在机发现器
-//     （归属/来源/指纹/状态）与人（代理，段 2），两者都走读-合并-CAS；
+//     （归属/来源/指纹/状态）、人（代理）与探测器/检测（失效证据），都走读-合并-CAS；
 //   - 读数（kind=account_reading）：探测器机写，B453 同款，增 login（plan L8）；
 //   - 发现结果（kind=discovery_run）：每机一行，id = 机器名（plan L9）。
 //
@@ -24,7 +24,7 @@ const (
 	KindDiscoveryRun = "discovery_run"
 )
 
-// 账号类型（B453 F7 + B464 A3，冻结）。claude/apikey 的取材在段 2。
+// 账号类型（B453 F7 + B464 A3，冻结）。claude/apikey 不支持额度探测（kinds.go）。
 const (
 	KindOpencodeGo = "opencode-go"
 	KindCodex      = "codex"
@@ -64,12 +64,12 @@ type Account struct {
 	CreatedAt       time.Time `json:"created_at"`
 }
 
-// LoginState 是登录状态（plan L7，冻结）。段 1 只产出 ok/gone；expired 的证据型判据在段 2。
+// LoginState 是登录状态（plan L7，冻结）。expired 是证据型（plan Q5，见 discover.go stateOf）。
 type LoginState string
 
 const (
 	LoginOK      LoginState = "ok"      // 正常
-	LoginExpired LoginState = "expired" // 已过期（段 2）
+	LoginExpired LoginState = "expired" // 已过期：有失效证据且其后凭据未变，或离线到期已过且无 refresh
 	LoginGone    LoginState = "gone"    // 已失效：上次在、本次发现扫不到
 )
 
@@ -199,7 +199,13 @@ const (
 	StateOut  State = "out"  // 无额度
 	StateFail State = "fail" // 探测失败
 	StateNone State = "none" // 未探测
+	StateNA   State = "na"   // 不支持额度探测（claude、第三方 API key，plan Q11）
 )
+
+// DiscoveryFreshFor 是「所在机发现新鲜」的窗口（plan Q10：3 个发现周期；发现节拍 60s 见
+// accountwork.DefaultDiscoverEvery，两者的倍数关系由 accountwork 的测试锁住）。所在机最近一轮
+// 发现早于它的登录不当可探登录——那台机器可能已离线，它的登录状态不再可信。
+const DiscoveryFreshFor = 3 * time.Minute
 
 // LoginView 是一条登录的读面：登录行 + 行版本 + 引用它的载体名（排序）。
 type LoginView struct {
@@ -221,6 +227,7 @@ type View struct {
 	Logins []LoginView
 	// Carriers 是引用名下任一登录的载体名（排序去重；组装点未注入引用查询时为空）。
 	Carriers []string
-	// ProbeLogin 是当前「可探登录」的 id（plan Q10 段 1 最小形：第一条正常登录）；空 = 没有。
+	// ProbeLogin 是当前「可探登录」的 id（plan Q10：正常 + 所在机发现新鲜 + id 最小）；空 = 没有
+	// （na 账号恒空）。支持探测的账号没有可探登录时读面推导为「探测失败 · 没有可用登录」。
 	ProbeLogin string
 }

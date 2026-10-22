@@ -1,7 +1,7 @@
 // admission.go —— 统一准入判据（B453 段 3，spec S5 / plan V10）。
 //
-// 职责：「载体可用 = 载体已上线 且 所选登录所属账号不在低额度/无额度」只在这里判一次（B464 起
-// 载体 → 登录 → 账号）；五个准入
+// 职责：「载体可用 = 载体已上线 且 所选登录未失效 且 所选登录所属账号不在低额度/无额度」只在
+// 这里判一次（B464 起载体 → 登录 → 账号；登录「已过期」不挡，spec S5/plan V11）；五个准入
 // 入口（AdmitCarrier、SelectWhere、AdmitFrozen、AdmitSeatCarrier、admitInto）与 gateway
 // 的他机点名派发预检（CheckUsable）都经 usability，不得在入口另写一份（结构断言见
 // b453_admission_test.go）。不可用时给点名说明：载体、账号、状态、预计恢复（spec S5 文案）。
@@ -33,11 +33,24 @@ type Unusable struct {
 	Account   string         // 因账号被挡时为账号名（展示用）；空 = 因载体状态被挡
 	State     accounts.State // 账号状态（低额度/无额度）
 	RecoverAt *time.Time     // 预计恢复时刻；nil = 未知
+	// GoneLogin 非空 = 因所选登录已失效被挡（plan V11），带登录所在机与 HOME 供点名。
+	GoneLogin *accounts.Login
 	now       time.Time
 }
 
-// String 渲染点名文案，例如「mini：账号 og-mini 无额度，预计 2h41m 后恢复」「mini：载体不可达」。
-func (u Unusable) String() string { return u.Carrier + "：" + u.reason() }
+// String 渲染点名文案，例如「mini：账号 og-mini 无额度，预计 2h41m 后恢复」「mini：载体不可达」；
+// 登录已失效时为「载体 mini 的登录已失效：mac-mini ~/.handoff/home/x」（单载体与小队同一句）。
+func (u Unusable) String() string {
+	if u.GoneLogin != nil {
+		return u.goneText()
+	}
+	return u.Carrier + "：" + u.reason()
+}
+
+// goneText 是登录已失效的点名文案（plan V11 原文）。
+func (u Unusable) goneText() string {
+	return "载体 " + u.Carrier + " 的登录已失效：" + u.GoneLogin.Machine + " " + u.GoneLogin.Home
+}
 
 // reason 是不带载体名的原因：「账号 og-mini 无额度，预计 2h41m 后恢复」「载体不可达」。
 func (u Unusable) reason() string {
@@ -84,8 +97,8 @@ func HumanDuration(d time.Duration) string {
 // 故障（登录/账号定义/读数行读不出），调用方按准入失败上浮，与载体读取失败同等处理。
 //
 // 所选登录或其账号已被删除（删除与载体选择并发，plan §10 门禁绕过族）按「未选账号登录」放行
-// 并 Warn：账号删了就不再有可挡的读数，拦住它只会让载体莫名不可用。登录「已失效」的准入跳过
-// 在 B464 段 2。
+// 并 Warn：账号删了就不再有可挡的读数，拦住它只会让载体莫名不可用。所选登录「已失效」（上次
+// 发现在该 HOME 找不到凭据）→ 不可用；「已过期」照常放行（CLI 可能自行刷新，spec S5）。
 func (s *Service) usability(c Carrier) (*Unusable, error) {
 	if c.Status != StatusOnline {
 		return &Unusable{Carrier: c.Name, Status: c.Status}, nil
@@ -102,6 +115,11 @@ func (s *Service) usability(c Carrier) (*Unusable, error) {
 		}
 		statusLog().Error("准入读取载体登录失败", "carrier", c.Name, "login", loginID, "cause", err)
 		return nil, fmt.Errorf("载体 %s 的账号登录 %s 读取失败: %w", c.Name, loginID, err)
+	}
+	if login.State == accounts.LoginGone {
+		l := login
+		statusLog().Info("准入因登录已失效跳过载体", "carrier", c.Name, "login", loginID, "machine", l.Machine, "home", l.Home)
+		return &Unusable{Carrier: c.Name, Status: c.Status, GoneLogin: &l}, nil
 	}
 	now := time.Now()
 	a, err := s.accounts.Assess(login.Account, now)
@@ -130,10 +148,13 @@ func (s *Service) requireUsable(c Carrier) error {
 	if err != nil {
 		return err
 	}
-	if u != nil {
-		return &unusableError{msg: "载体 " + u.Carrier + " 不可用：" + u.reason()}
+	switch {
+	case u == nil:
+		return nil
+	case u.GoneLogin != nil:
+		return &unusableError{msg: u.goneText()}
 	}
-	return nil
+	return &unusableError{msg: "载体 " + u.Carrier + " 不可用：" + u.reason()}
 }
 
 // CheckUsable 用统一判据判一个载体当下能否接新派发（gateway 他机点名派发在转发前预检，

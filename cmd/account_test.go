@@ -48,6 +48,12 @@ func sampleAccounts(t *testing.T) proto.AccountsResp {
 				Fingerprint: "sha256:77d0c1e2a3b4", State: "ok", ChangedAt: changed, Proxy: "socks5://u:***@127.0.0.1:7897",
 				Carriers: []string{}}},
 			Carriers: []string{}},
+		// B464 段 2：不支持额度探测（na）的 claude 账号，阈值与间隔缺席；一条已过期登录。
+		{ID: "claude:c1c1c1c1c1c1", Name: "cl@example.com", Kind: "claude", Label: "cl@example.com",
+			Fingerprint: "sha256:c1c1c1c1c1c1", Version: 1, State: "na",
+			Logins: []proto.LoginView{{ID: "login-cc00000000000001", Machine: "mac-mini", Home: "~", Source: "claude-auth",
+				Fingerprint: "sha256:c1c1c1c1c1c1", State: "expired", ChangedAt: changed, Carriers: []string{"cl"}}},
+			Carriers: []string{"cl"}},
 	}}
 }
 
@@ -93,7 +99,8 @@ func TestAccountListTableColumns(t *testing.T) {
 	for _, want := range []string{"名称", "类型", "状态", "窗口已用", "最近重置", "上次探测",
 		"og-linux", "正常", "5h 34%", "周 58%", "月 13%", "Claude and GPT models 周 59%", "2h4", "og-mini", "探测失败", "凭据文件不存在",
 		"└*登录", "linux-01:~/.handoff/home/mimo", "opencode.db", "载体:mimo,mimo-2", "└ 登录", "mac-mini:~", "已失效",
-		"代理:socks5://u:***@127.0.0.1:7897", "代理:-", "载体:-"} {
+		"代理:socks5://u:***@127.0.0.1:7897", "代理:-", "载体:-",
+		"cl@example.com", "claude", "不支持额度探测", "claude-auth", "已过期", "载体:cl"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("表格缺 %q:\n%s", want, out)
 		}

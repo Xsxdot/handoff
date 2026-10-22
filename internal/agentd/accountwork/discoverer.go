@@ -8,6 +8,8 @@
 // 边界：
 //   - 只读凭据（quota 只读打开，绝不刷新/改写/复制）；原始身份材料不出 quota，这里只见来源名
 //     与短指纹；
+//   - kind 规则（accounts.LoginMainHomeOnly）在取材前生效：darwin 上非主 HOME 不问 claude
+//     （plan Q6 分支 b，平台由组装点注入 GOOS）；
 //   - 同一时刻只跑一轮（单飞）；周期任务 ticker + ctx，Stop() 等循环退出；
 //   - 「哪台是本机」只体现在 Machine（本机自名）上：发现器只写本机的登录。
 package accountwork
@@ -19,6 +21,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"sync"
 	"time"
@@ -36,7 +39,7 @@ const isolatedHomeRel = ".handoff/home"
 
 // LoginReader 是发现器对额度适配子系统的使用方接口（实现：*quota.Registry）。
 type LoginReader interface {
-	Logins(home string) ([]quota.LoginFinding, []error)
+	Logins(home string, keep ...func(kind string) bool) ([]quota.LoginFinding, []error)
 }
 
 // DiscoveryAccounts 是发现器对账号域的使用方接口（实现：*accounts.Service）。
@@ -50,6 +53,8 @@ type DiscovererConfig struct {
 	Quota    LoginReader
 	Machine  string                 // 本机自名（登录行的 machine）
 	MainHome func() (string, error) // 主 HOME 绝对路径（os.UserHomeDir）
+	// GOOS 是本机平台（kind 规则用；空 = runtime.GOOS）。测试注入以锁住 darwin/linux 两种行为。
+	GOOS string
 	// AfterRound 在一轮发现成功写回后调用（存量载体迁移，plan §5）；nil = 不调。
 	AfterRound func(res accounts.ReconcileResult)
 	Every      time.Duration // 0 = DefaultDiscoverEvery
@@ -78,6 +83,9 @@ func NewDiscoverer(cfg DiscovererConfig) *Discoverer {
 	}
 	if cfg.Every <= 0 {
 		cfg.Every = DefaultDiscoverEvery
+	}
+	if cfg.GOOS == "" {
+		cfg.GOOS = runtime.GOOS
 	}
 	return &Discoverer{cfg: cfg, log: logger.With("component", "account_discoverer")}
 }
@@ -194,13 +202,18 @@ func (d *Discoverer) scan() (accounts.Discovery, error) {
 	return disc, nil
 }
 
-// scanHome 对一个 HOME 离线取材并映射成账号域值类型（只有来源名、短指纹、label、到期）。
+// scanHome 对一个 HOME 离线取材并映射成账号域值类型（来源名、短指纹、label、到期、能否自刷新、
+// 凭据变更时刻）。非主 HOME 跳过本平台只认主 HOME 的 kind（不读文件、不起子进程）。
 func (d *Discoverer) scanHome(home, abs string) accounts.ScannedHome {
 	out := accounts.ScannedHome{Home: home, HomeAbs: abs}
-	findings, problems := d.cfg.Quota.Logins(abs)
+	keep := func(kind string) bool {
+		return home == accounts.MainHome || !accounts.LoginMainHomeOnly(kind, d.cfg.GOOS)
+	}
+	findings, problems := d.cfg.Quota.Logins(abs, keep)
 	for _, f := range findings {
 		out.Logins = append(out.Logins, accounts.FoundLogin{Kind: f.Kind, Provider: f.Provider, Source: f.Source,
-			Fingerprint: f.Fingerprint, Label: f.Label, ExpiresAt: f.ExpiresAt})
+			Fingerprint: f.Fingerprint, Label: f.Label, ExpiresAt: f.ExpiresAt, Refreshable: f.Refreshable,
+			CredChangedAt: f.ChangedAt})
 	}
 	for _, p := range problems {
 		out.Errors = append(out.Errors, p.Error())

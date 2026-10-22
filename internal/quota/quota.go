@@ -26,6 +26,9 @@ const (
 	KindCodex      = "codex"
 	KindGrok       = "grok"
 	KindAgy        = "agy"
+	// KindClaude 与 KindAPIKey 只有离线取材（LoginReader），不支持额度探测（plan Q11）。
+	KindClaude = "claude"
+	KindAPIKey = "apikey"
 )
 
 // 窗口键（spec F8 `windows[].key`）。
@@ -114,9 +117,11 @@ type Prober interface {
 	Probe(ctx context.Context, req Request) (Snapshot, error)
 }
 
-// Registry 按 kind 分派到适配器。由组装点构造一次，并发安全（只读 map）。
+// Registry 按 kind 分派到适配器。由组装点构造一次，并发安全（只读 map）。readers 是只有离线
+// 取材、不支持额度探测的 kind（claude，plan Q11），只在组装期经 RegisterLoginReader 登记。
 type Registry struct {
 	adapters map[string]Prober
+	readers  map[string]LoginReader
 }
 
 // NewRegistry 用 kind → 适配器表构造注册表。表在构造后不再变化。

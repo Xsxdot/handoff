@@ -163,3 +163,32 @@ func ParseOpencodeGoConsoleStatus(status int, body []byte) (Snapshot, error) {
 	}
 	return out, nil
 }
+
+// loginRefreshInfo 尽力读当前登录账号行的 refresh_token 是否非空与 time_updated（R0-4 列名）。
+// 读不出（旧 schema、库被锁）按「可自刷新、变更时刻未知」处理——宁可少标「已过期」也不误报
+// （plan Q5）。不交出任何列值。
+func loginRefreshInfo(home, rel, accountID string) (bool, *time.Time) {
+	path := filepath.Join(home, rel)
+	db, err := sql.Open("sqlite", loginDSN(path))
+	if err != nil {
+		return true, nil
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	ctx, cancel := context.WithTimeout(context.Background(), loginQueryTimeout)
+	defer cancel()
+	var hasRefresh sql.NullBool
+	var updated sql.NullInt64
+	err = db.QueryRowContext(ctx, "SELECT refresh_token IS NOT NULL AND trim(refresh_token) <> '', time_updated FROM account WHERE id = ?",
+		accountID).Scan(&hasRefresh, &updated)
+	if err != nil {
+		log().Debug("opencode.db 读 refresh/time_updated 失败，按可自刷新处理", "path", path, "cause", err)
+		return true, nil
+	}
+	var at *time.Time
+	if updated.Valid && updated.Int64 > 0 {
+		t := epochToTime(float64(updated.Int64))
+		at = &t
+	}
+	return !hasRefresh.Valid || hasRefresh.Bool, at
+}

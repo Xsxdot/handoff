@@ -70,6 +70,8 @@ func TestContractFixtures(t *testing.T) {
 		{"TicketNotice", ticketNoticeSample(now)},
 		{"AccountsResp", accountsRespSample(now)},
 		{"AccountInput", accountInputSample()},
+		{"AccountRenameInput", AccountInput{Name: "og-main"}},
+		{"LoginProxyInput", loginProxyInputSample()},
 		{"AccountDeleteRefusal", AccountDeleteRefusal{
 			Error:    "账号 codex-plus 仍被载体引用：mbp-codex、mbp-oc-codex；先在自动化页给它们换账号或清空选择",
 			Carriers: []string{"mbp-codex", "mbp-oc-codex"},
@@ -1056,13 +1058,32 @@ func accountsRespSample(now time.Time) AccountsResp {
 		Logins: []LoginView{login("login-ee00000000000001", "macbook-pro", "~/.handoff/home/mbp-grok", "auth.json",
 			"sha256:5e6f70819a2b", "ok")},
 		Carriers: []string{},
+	}, {
+		// B464 段 2：不支持额度探测（na）的 claude 账号——阈值/间隔/读数/可探登录缺席；登录已过期（Q5 证据型）。
+		ID: "claude:c1c1c1c1c1c1", Name: "cl@example.com", Kind: "claude", Label: "cl@example.com",
+		Fingerprint: "sha256:c1c1c1c1c1c1", Version: 1, State: "na",
+		Logins:   []LoginView{login("login-ff00000000000001", "mac-mini", "~", "claude-auth", "sha256:c1c1c1c1c1c1", "expired", "cl")},
+		Carriers: []string{"cl"},
+	}, {
+		// B464 段 2：没有可探登录（名下登录都已过期）→ 读面推导探测失败 · 没有可用登录（不写读数行）。
+		ID: "agy:a9a9a9a9a9a9", Name: "agy-a9a9", Kind: "agy", Fingerprint: "sha256:a9a9a9a9a9a9",
+		IntervalMinutes: 15, WarnPercent: 60, LowPercent: 80, Version: 1, State: "fail",
+		LastError: &AccountProblemView{Category: "no_login", Message: "没有可用登录：名下登录都已过期或已失效，在所在机器重新登录后恢复探测"},
+		Logins:    []LoginView{login("login-ab00000000000001", "linux-01", "~", "antigravity-oauth-token", "sha256:a9a9a9a9a9a9", "expired")},
+		Carriers:  []string{},
 	}}, Discovery: []DiscoveryView{
 		{Machine: "linux-01", Self: true, At: at(-30 * time.Second)},
 		{Machine: "macbook-pro", Self: false, Error: "列不出 ~/.handoff/home：permission denied"},
 	}}
 }
 
-// accountInputSample 是 B464 A6 编辑体：三项数值给值（指针在场），name 缺席（改名属段 2）。
+// loginProxyInputSample 是 B464 A9 登录代理体：proxy 必在场（空串 = 清除）。
+func loginProxyInputSample() LoginProxyInput {
+	p := "socks5://u:***@127.0.0.1:7897"
+	return LoginProxyInput{Proxy: &p}
+}
+
+// accountInputSample 是 B464 A6 编辑体：三项数值给值（指针在场），name 缺席（改名体见 AccountRenameInput）。
 func accountInputSample() AccountInput {
 	iv, warn, low := 15, 60, 80
 	return AccountInput{IntervalMinutes: &iv, WarnPercent: &warn, LowPercent: &low}

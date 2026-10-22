@@ -36,10 +36,11 @@ type Grok struct {
 }
 
 type grokEntry struct {
-	Key       string         `json:"key"`
-	UserID    string         `json:"user_id"`
-	Email     string         `json:"email"`
-	ExpiresAt flexibleMoment `json:"expires_at"`
+	Key          string         `json:"key"`
+	UserID       string         `json:"user_id"`
+	Email        string         `json:"email"`
+	ExpiresAt    flexibleMoment `json:"expires_at"`
+	RefreshToken string         `json:"refresh_token"`
 }
 
 // Probe 实现 Prober。指纹取条目 user_id（缺则 email）。

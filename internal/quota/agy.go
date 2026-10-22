@@ -44,6 +44,8 @@ var semverRe = regexp.MustCompile(`(\d+)\.(\d+)\.(\d+)`)
 type Agy struct {
 	Binary  string        // 缺省 "agy"（经 exec.LookPath 找，agentd 启动时已扩 PATH）
 	Timeout time.Duration // /usage 子进程总时限，缺省 40s
+	// TokenRelPath 是离线取材读的登录 token 相对 HOME 的路径（Logins），缺省 agyTokenRelPath。
+	TokenRelPath string
 }
 
 // Probe 实现 Prober。req.Entry 对 agy 无意义（登录态由 CLI 自管）。
@@ -124,8 +126,15 @@ func agyEnv(home, proxy string) []string {
 	return env
 }
 
-// runGroup 在独立进程组里跑一次命令：超时或 ctx 取消杀整组；非零退出归 upstream（带 stderr 尾部）。
+// runGroup 在独立进程组里跑一次 agy 命令（runGroupLabeled 的 agy 文案版）。
 func runGroup(ctx context.Context, timeout time.Duration, bin string, env []string, args ...string) ([]byte, []byte, error) {
+	return runGroupLabeled(ctx, timeout, "agy", bin, env, args...)
+}
+
+// runGroupLabeled 在独立进程组里跑一次命令：超时或 ctx 取消杀整组；非零退出归 upstream（带
+// stderr 尾部），此时 stdout 照样交回（claude auth status 未登录时可能非零退出却给出 JSON）。
+// label 只进失败文案（「agy -p /usage 超时」「claude auth status 失败」）。
+func runGroupLabeled(ctx context.Context, timeout time.Duration, label, bin string, env []string, args ...string) ([]byte, []byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, bin, args...)
@@ -139,12 +148,12 @@ func runGroup(ctx context.Context, timeout time.Duration, bin string, env []stri
 	err := cmd.Run()
 	if ctx.Err() != nil {
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			return nil, stderr.Bytes(), fail(CategoryTimeout, "agy %s 超时（%s），已终止其进程组", strings.Join(args, " "), timeout)
+			return nil, stderr.Bytes(), fail(CategoryTimeout, "%s %s 超时（%s），已终止其进程组", label, strings.Join(args, " "), timeout)
 		}
-		return nil, stderr.Bytes(), fail(CategoryTimeout, "agy %s 被取消：%v", strings.Join(args, " "), ctx.Err())
+		return nil, stderr.Bytes(), fail(CategoryTimeout, "%s %s 被取消：%v", label, strings.Join(args, " "), ctx.Err())
 	}
 	if err != nil {
-		return nil, stderr.Bytes(), fail(CategoryUpstream, "agy %s 失败（%v）：%s", strings.Join(args, " "), err, tail(stderr.Bytes()))
+		return stdout.Bytes(), stderr.Bytes(), fail(CategoryUpstream, "%s %s 失败（%v）：%s", label, strings.Join(args, " "), err, tail(stderr.Bytes()))
 	}
 	return stdout.Bytes(), stderr.Bytes(), nil
 }

@@ -6,6 +6,8 @@
 //   - 每个（机器, HOME, kind, provider, 来源）槽位一条登录（LoginID），只在内容变化时写；
 //     同一槽位换了身份 = 登录改挂账号（Info）；
 //   - 本机上次在、本次扫不到的登录标「已失效」（不删行）；所在 HOME 本轮扫描出错的不标；
+//   - 登录状态按证据推导（plan Q5，stateOf）：失效证据（探测/检测写入的 auth_failed_at）在且其后
+//     凭据未变 → 已过期；离线到期已过且无 refresh → 已过期；凭据变化即清证据回正常；
 //   - 写 discovery_run/<机器>（「上次发现」时刻）。
 //
 // 边界：入参只有位置、来源名、短指纹与 label——原始身份材料与凭据值不进本包。扫描、
@@ -30,6 +32,10 @@ type FoundLogin struct {
 	Fingerprint string // sha256:<hex12>，身份短指纹
 	Label       string // 可读身份（邮箱）；取不到为空
 	ExpiresAt   *time.Time
+	// Refreshable = 凭据里有 refresh token（CLI 自刷新，离线到期已过不算过期，plan Q5）。
+	Refreshable bool
+	// CredChangedAt 是凭据最近变更时刻（不落账本，只与登录的失效证据比较）；nil = 未知。
+	CredChangedAt *time.Time
 }
 
 // ScannedHome 是一个被扫描的 HOME：机器无关写法、所在机绝对路径、认出的登录与扫描错误。
@@ -180,8 +186,10 @@ func (s *Service) ensureAccount(id string, f FoundLogin, machine string, at time
 		return false, nil
 	}
 	a := Account{ID: id, Kind: f.Kind, Provider: f.Provider, Label: f.Label, Fingerprint: f.Fingerprint,
-		Name: autoName(f.Kind, f.Provider, f.Label, f.Fingerprint, taken), CreatedBy: machine, CreatedAt: at,
-		IntervalMinutes: DefaultIntervalMinutes, WarnPercent: DefaultWarnPercent, LowPercent: DefaultLowPercent}
+		Name: autoName(f.Kind, f.Provider, f.Label, f.Fingerprint, taken), CreatedBy: machine, CreatedAt: at}
+	if SupportsProbe(f.Kind) { // na kind 的阈值与间隔缺席（plan L3/Q11）
+		a.IntervalMinutes, a.WarnPercent, a.LowPercent = DefaultIntervalMinutes, DefaultWarnPercent, DefaultLowPercent
+	}
 	body, err := json.Marshal(a)
 	if err != nil {
 		return false, fmt.Errorf("编码账号 %s 失败: %w", id, err)
@@ -205,27 +213,30 @@ func (s *Service) ensureAccount(id string, f FoundLogin, machine string, at time
 	return true, nil
 }
 
-// upsertLogin 合并写发现器负责的登录字段；内容不变不写。返回是否新建、是否变化。
+// upsertLogin 合并写发现器负责的登录字段与按证据推导的状态；内容不变不写。人写字段（代理）
+// 原样保留。返回是否新建、是否变化。
 func (s *Service) upsertLogin(id, accountID, machine string, h ScannedHome, f FoundLogin, at time.Time) (bool, bool, error) {
 	added := false
-	var prevAccount string
+	var prevAccount, prevState string
 	_, wrote, err := s.mergeLogin(id, machine, func(cur *Login) *Login {
 		want := Login{Account: accountID, Machine: machine, Home: h.Home, HomeAbs: h.HomeAbs, Kind: f.Kind,
-			Provider: f.Provider, Source: f.Source, Fingerprint: f.Fingerprint, State: LoginOK, ExpiresAt: utcPtr(f.ExpiresAt)}
+			Provider: f.Provider, Source: f.Source, Fingerprint: f.Fingerprint, ExpiresAt: utcPtr(f.ExpiresAt)}
 		if cur == nil {
 			added = true
-			want.ChangedAt = at
+			want.State, want.ChangedAt = stateOf(f, nil, at), at
 			return &want
 		}
 		added = false
-		prevAccount = cur.Account
-		if sameDiscovered(*cur, want) {
+		prevAccount, prevState = cur.Account, string(cur.State)
+		want.AuthFailedAt = evidenceAfter(*cur, f)
+		want.State = stateOf(f, want.AuthFailedAt, at)
+		if sameDiscovered(*cur, want) && sameTime(cur.AuthFailedAt, want.AuthFailedAt) {
 			return nil
 		}
-		next := *cur // 保留人写字段（代理）与失效证据
+		next := *cur // 保留人写字段（代理）
 		next.Account, next.Machine, next.Home, next.HomeAbs = want.Account, want.Machine, want.Home, want.HomeAbs
 		next.Kind, next.Provider, next.Source, next.Fingerprint = want.Kind, want.Provider, want.Source, want.Fingerprint
-		next.State, next.ExpiresAt, next.ChangedAt = LoginOK, want.ExpiresAt, at
+		next.State, next.ExpiresAt, next.AuthFailedAt, next.ChangedAt = want.State, want.ExpiresAt, want.AuthFailedAt, at
 		return &next
 	})
 	if err != nil {
@@ -240,9 +251,38 @@ func (s *Service) upsertLogin(id, accountID, machine string, h ScannedHome, f Fo
 		logger().Info("登录改挂账号", "login", id, "machine", machine, "home", h.Home,
 			"old_account", prevAccount, "new_account", accountID)
 	case wrote:
-		logger().Info("登录有变化", "login", id, "machine", machine, "home", h.Home, "account", accountID)
+		logger().Info("登录有变化", "login", id, "machine", machine, "home", h.Home, "account", accountID,
+			"prev_state", prevState)
 	}
 	return wrote && added, wrote && !added, nil
+}
+
+// evidenceAfter 返回本轮发现后仍成立的失效证据（plan Q5）：凭据有变化即作废——变更时刻晚于
+// 证据、到期时刻后移（CLI 已刷新）、或同槽位换了身份（重新登录了另一个账号）。
+func evidenceAfter(cur Login, f FoundLogin) *time.Time {
+	ev := cur.AuthFailedAt
+	switch {
+	case ev == nil:
+		return nil
+	case f.CredChangedAt != nil && f.CredChangedAt.After(*ev),
+		cur.ExpiresAt != nil && f.ExpiresAt != nil && f.ExpiresAt.After(*cur.ExpiresAt),
+		cur.Fingerprint != f.Fingerprint:
+		return nil
+	}
+	t := ev.UTC()
+	return &t
+}
+
+// stateOf 是在场登录的状态推导（plan Q5 证据型）：有效失效证据 → 已过期；离线到期已过且没有
+// refresh token → 已过期；否则正常。「已失效」只由 Reconcile 的扫不到判定。
+func stateOf(f FoundLogin, evidence *time.Time, at time.Time) LoginState {
+	switch {
+	case evidence != nil:
+		return LoginExpired
+	case f.ExpiresAt != nil && !f.ExpiresAt.After(at) && !f.Refreshable:
+		return LoginExpired
+	}
+	return LoginOK
 }
 
 // sameDiscovered 比较发现器负责的字段（不含变更时刻、人写字段与失效证据）。

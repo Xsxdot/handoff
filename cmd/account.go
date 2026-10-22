@@ -106,12 +106,12 @@ func accountProbeFailed(v proto.AccountView) bool {
 }
 
 var accountStateLabel = map[string]string{
-	"ok": "正常", "low": "低额度", "out": "无额度", "fail": "探测失败", "none": "未探测",
+	"ok": "正常", "low": "低额度", "out": "无额度", "fail": "探测失败", "none": "未探测", "na": "不支持额度探测",
 }
 
 var accountWindowLabel = map[string]string{"session": "5h", "weekly": "周", "monthly": "月"}
 
-// loginStateLabel 是登录状态的人话（L7；expired 由段 3 起产生）。
+// loginStateLabel 是登录状态的人话（L7；expired 是证据型，plan Q5）。
 var loginStateLabel = map[string]string{"ok": "正常", "expired": "已过期", "gone": "已失效"}
 
 // renderAccountTable 打表格：每个账号一行（名称/类型/状态/窗口已用/最近重置/上次探测/说明），

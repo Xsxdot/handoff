@@ -110,7 +110,7 @@ type recordingReader struct {
 	homes []string
 }
 
-func (r *recordingReader) Logins(home string) ([]quota.LoginFinding, []error) {
+func (r *recordingReader) Logins(home string, _ ...func(kind string) bool) ([]quota.LoginFinding, []error) {
 	r.mu.Lock()
 	r.homes = append(r.homes, home)
 	r.mu.Unlock()

@@ -312,9 +312,15 @@ type AccountProblemView struct {
 	Message  string `json:"message"`
 }
 
+// LoginProxyInput 是 PUT /api/logins/{id}/proxy 的请求体（A9）：proxy 必给，空串 = 清除；打码
+// 回填（读面里的 `user:***@host`）= 保留原值。
+type LoginProxyInput struct {
+	Proxy *string `json:"proxy"`
+}
+
 // AccountInput 是 PUT /api/accounts/{ref}?expect= 的请求体（A6）。账号只由发现产生：expect=0
-// 一律 400。三项数值用指针区分「缺席 = 保留现值」与「给了 0」（交校验）；name 改名在 B464 段 2
-// 开放。
+// 一律 400。三项数值用指针区分「缺席 = 保留现值」与「给了 0」（交校验）；name 空 = 不改，
+// 非空即改名（唯一、禁 `:`/`/`，撞名 409）。
 type AccountInput struct {
 	Name            string `json:"name,omitempty"`
 	IntervalMinutes *int   `json:"interval_minutes,omitempty"`

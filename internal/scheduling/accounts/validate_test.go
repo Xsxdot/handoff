@@ -2,7 +2,7 @@ package accounts_test
 
 // validate_test.go —— 账号编辑校验、删除与代理打码（B453 段 2；B464 段 1 改为发现建账号）。
 //
-// 职责：锁人写面（手填新建拒、段 1 改名未开放、阈值/间隔校验、发现字段不可由请求改）；
+// 职责：锁人写面（手填新建拒、改名字符规则、阈值/间隔校验、发现字段不可由请求改）；
 // 删除（名下登录被载体引用拒删并列出、无引用连带删读数行、读数行删除失败只告警、CAS
 // 冲突、不存在、按名字或 id 引用）；代理 userinfo 密码段打码。
 // 边界：载体引用由组装点经 SetReferrers 注入（编制域按登录 id 给出），这里用桩函数。
@@ -17,7 +17,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/scheduling/accounts"
 )
 
-// TestPutEditValidation 锁 B464 的人写面：expect=0（手填新建）一律拒；段 1 改名未开放；
+// TestPutEditValidation 锁 B464 的人写面：expect=0（手填新建）一律拒；改名禁 `:`；
 // 阈值/间隔校验同 B453；请求里的发现字段（kind/指纹）被忽略、以现值为准。
 func TestPutEditValidation(t *testing.T) {
 	svc := accounts.New(newMem())
@@ -37,7 +37,7 @@ func TestPutEditValidation(t *testing.T) {
 		wantErr string // 空 = 应通过
 	}{
 		{"手填新建", acct, 0, "由发现产生"},
-		{"改名（段 2）", mod(func(a *accounts.Account) { a.Name = "other" }), 1, "改名"},
+		{"改名含冒号（段 2 起改名开放，规则见 manage_test.go）", mod(func(a *accounts.Account) { a.Name = "og:x" }), 1, "名字"},
 		{"预警线等于低额度线", mod(func(a *accounts.Account) { a.WarnPercent, a.LowPercent = 80, 80 }), 1, "阈值"},
 		{"低额度线超过 100", mod(func(a *accounts.Account) { a.LowPercent = 101 }), 1, "阈值"},
 		{"预警线为 0", mod(func(a *accounts.Account) { a.WarnPercent = 0 }), 1, "阈值"},

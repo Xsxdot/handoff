@@ -127,3 +127,87 @@
 - ④ `dispatch --receiver t464-oc --new-worktree --prompt "echo HOME=$HOME"` → rc 0，最终回答 `HOME=/Users/df-zidong`（主 HOME）。任务 9e400e80（分支 handoff/9e400e80 建在主仓，清理时删）。
 - ⑤ 前后对照：在役 agentd pid mac 87935、linux 1205162 不变；linux `opencode/auth.json`、`codex/auth.json`、agy token mtime 不变；两机主 HOME `opencode.db` mtime 变（opencode 运行自身写会话，R1 任务与在役载体都在主 HOME 跑 opencode，非 handoff 写凭据）；`~/.handoff/home/muse/.local/share/opencode/opencode.db-shm` 近 20 分钟有更新——发现器 `mode=ro` 打开 WAL 库时 SQLite 维护 -shm 索引所致，非凭据写入（**Minor，交审查**：可评估 `immutable=1` 与一致性取舍）。
 - 结论：**R1 通过**，进段 2。
+
+## implement 段 2（2026-10-22）
+
+- 执行者：主会话派出的 implement subagent（charter:implement / architecture-law 已加载），工作树同段 1，起点 `e5c79704`（已确认 HEAD 即此提交）。纪律同段 1：零真机、不读真实凭据、测试一律 `env -u CLAUDE_CODE_SESSION_ID`、提交不 push。
+- 输入：plan §7 段 2、台账「段 0 真机事实 R0」、主会话派发补充（codex/grok/agy/claude/apikey 取材口径、Q5 证据型）。
+- **主会话补充裁决（用户 2026-10-22「先按共用处理」）**：R0-2 不再实测，claude 按 Q6 分支 b——darwin 上 claude 登录只认主 HOME（非主 HOME 不发现为 claude 登录），linux 每个 HOME 独立；落为一处可切换的 kind 规则（可注入 GOOS），规则函数导出给段 3 的新增登录校验用。
+- 夹具键名只取 R0：codex `tokens{access_token,account_id,id_token,refresh_token}`、`OPENAI_API_KEY`；grok 条目 `https://auth.x.ai::<uuid>`，键 `key,email,expires_at(字符串),refresh_token,user_id`；agy `antigravity-oauth-token` 顶层 `auth_method,id_token(JWT: sub,email),token{access_token,expires_in,expiry,refresh_token,token_type}`；claude `claude auth status --json` 的 `loggedIn/authMethod`、`.claude.json › oauthAccount{accountUuid,emailAddress}`；opencode `auth.json` 条目 `type=api`/`key`。值一律哨兵。
+
+### 读数（实现前）
+
+- **grok 前缀匹配并非 B453 现存缺陷**：`internal/quota/grok.go` `pickEntry`/`Identity` 自 `5c4c17ba`（B453 段 2）起即按「键等于 issuer 或以 `issuer::` 开头」选条目，`expires_at` 字符串由 `flexibleMoment` 解析；`grok_test.go:114-117,161` 已有 `https://auth.x.ai::<uuid>` 夹具。R0-6「B453 按精确名取条目」与代码不符。处理：新写的 grok 离线取材同口径（先红后绿）；对既有探测器以一次变异（去掉前缀分支）验证现有测试会红，作为「有牙」证据，不改产品代码。
+
+### quota 离线取材（codex / grok / agy / claude / apikey）
+
+- 先写 `internal/quota/logins_kinds_test.go`（每 kind 一张夹具表 + V4 哨兵），编译红后只加空桩（新字段、`Claude.Logins` 返回空、`RegisterLoginReader` 空实现）取断言红：`env -u CLAUDE_CODE_SESSION_ID go test ./internal/quota/ -run Logins` → `--- FAIL: TestLoginsCodexTable / TestLoginsGrokTable / TestLoginsAgyTable / TestLoginsClaudeTable / TestLoginsClaudeCachesByFileState / TestLoginsAPIKeyEntriesAreThirdPartyKeys / TestLoginsOpencodeDBRefreshAndChangedAt / TestRegistryLoginsKeepFilterSkipsKinds`（「应恰认出一份登录，得 []」「problems = []，want problem=true」等）。
+- 实现后首跑：`TestLoginsClaudeTable` **V4 红**——`claude auth status` 输出不是 JSON 时失败文案回显了 CLI stdout 片段（夹具里塞的哨兵 key 出现在问题文案里）。判断：第三方 CLI 的输出不保证不含凭据，失败文案一律只给 HOME 与字节数，不回显 stdout/stderr；修后绿。另一处红是我自己新测试对返回顺序的假设（opencode-go 条目先于第三方 key），改为排序后比较。
+- `go test ./internal/quota/` → `ok`（4.9s）。
+- grok 既有探测器「有牙」证据（变异，不改产品代码）：把 `pickEntry` 的条件改成只认精确名（去掉 `issuer::` 前缀分支）→ `TestGrokProbeEntrySelectionFallbackAndExpiry`、`TestGrokProbeUnauthorizedDoesNotFallBack` 红（`credential_missing: … 里没有 issuer "https://auth.x.ai" 的条目`）；还原后 `grep -c MUTATION-B464S2 grok.go` = 0。
+- 判断（§9 权限内）：
+  - 来源名（登录槽位的一部分）：codex/grok `auth.json`、agy `antigravity-oauth-token`、claude `claude-auth`（跨平台不变：linux 凭据文件与 macOS 钥匙串同一槽位）、apikey `auth.json`（槽位里带 provider）。
+  - `LoginFinding` 增 `Refreshable`、`ChangedAt`（凭据变更时刻，Q5 证据比较用；**不进登录行 body**，L6 不变）。ChangedAt：文件类取 mtime；opencode.db 取当前账号行 `time_updated`（库文件 mtime 随会话写入常变，不能当凭据变更）；claude 取 `.claude/.credentials.json` mtime，没有则 `.claude.json` mtime。
+  - opencode.db 的 refresh/time_updated 是尽力读：读不出按「可自刷新、变更时刻未知」——宁可少标已过期（Q5 反误报方向）。
+  - claude：`.claude.json` 无 `oauthAccount` 不起子进程；CLI 未装按未登录；按两个文件 mtime/大小缓存结果（TTL 10 分钟），文件不变不重跑 node 子进程；子进程环境去掉 `CLAUDE_CONFIG_DIR`、`ANTHROPIC_API_KEY`、`ANTHROPIC_AUTH_TOKEN`（只按该 HOME 的登录判定）。不读钥匙串、不读凭据文件内容（只 stat）。
+  - `Registry.Logins(home, keep...)`：发现器按 kind 规则过滤，被过滤的 kind 不读文件、不起子进程（darwin 非主 HOME 不跑 claude）。claude 经 `RegisterLoginReader` 登记（只取材、不探测）。
+  - `runGroup` 泛化为 `runGroupLabeled`（文案带程序名；非零退出时 stdout 照样交回，claude 未登录可能非零退出）——agy 两处调用出错即返回、不读 stdout，行为不变。
+
+### 账号域（登录状态 Q5、代理 Q16、可探登录 Q10、na Q11、改名/删除 Q17/Q20）
+
+- 先写 `internal/scheduling/accounts/login_state_test.go`（V5 表、证据保留最晚、代理合并写、V6 三写者并发 N=50、V8 可探登录、kind 规则与 na）与 `manage_test.go`（V7 改名、删除连带全部登录、Q20 旧行可删），桩（`zz_stub.go`：常量/空方法）取断言红：`--- FAIL: TestLoginStateEvidenceTransitions`（「失效证据：状态 "ok" 证据 <nil>，want "expired"」「到期已过 + 不可刷新：状态 "ok"」）、`TestMarkLoginAuthFailedKeepsLatestAndRejectsUnknown`、`TestSetLoginProxyMergesMaskedEchoAndClears`、`TestConcurrentDiscoverProxyEvidenceKeepLastWrites`（`Proxy: AuthFailedAt:<nil>`）、`TestProbeLoginNeedsOKAndFreshMachine`（「首选所在机发现过期应换 m2」）、`TestKindRulesNAAndMainHomeOnly`、`TestRenameRulesAndReferencesSurvive`（「账号改名尚未开放」）、`TestDeleteCascadesAllLoginsAndReading`（登录行残留 3 条）、`TestLegacyB453RowHiddenButDeletable`（「账号 og-old: 账号不存在」）、`TestPutEditValidation`。删桩实现后 `go test ./internal/scheduling/accounts/` → `ok`。
+- **既有断言改写**（plan §9 类 (3) 账号登记）：`validate_test.go` `TestPutEditValidation` 的「改名（段 2）→ 拒」一行改为「改名含冒号 → 拒」——段 1 的占位断言随改名开放失效，改名规则的完整表在 `manage_test.go`。
+- 判断（§9 权限内）：
+  - kind 规则表落在 `accounts/kinds.go`（`SupportsProbe`、`LoginMainHomeOnly(kind, goos)` 导出，段 3 新增登录校验直接用）；平台由调用方注入。
+  - Q5 状态推导 `stateOf`/`evidenceAfter`：失效证据作废的三种凭据变化——`CredChangedAt` 晚于证据、到期后移、同槽位换身份；`CredChangedAt` 缺席不算变化。已失效登录不被证据改写，证据随行保留，再现时照同一规则判。
+  - 证据写入 `MarkLoginAuthFailed(id, at, writer, category)`：只保留最晚证据，写即读作已过期；探测取开始时刻。
+  - Q10 新鲜度窗口 `DiscoveryFreshFor = 3m`（= 3 × 发现节拍 60s，§9 授权 2–5 个周期取 3）。
+  - 「没有可用登录」只在读面（`newView`）推导：State=fail、`last_error{category:"no_login"}`、文案分三种原因（无登录 / 都已过期或失效 / 所在机发现过期），不写读数行。**准入（Assess）不读登录与发现**：准入热路径不加两次列表读；载体自己的登录失效由准入的「登录已失效」判据挡（V11），已过期按 spec 放行。`no_login` 是新类别值，web `FAIL_BRIEF` 未列的类别回落「探测失败」，段 5 补短因。
+  - 改名并发撞名窗口接受（与 Q2 自动起名同一取舍）；`ErrNameTaken` 与 `ErrInvalid` 区分（gateway 409 vs 400）。
+  - 删除：定义行删掉后登录行/读数行删除失败只告警（孤儿登录行下一轮发现以同一 id 重建账号并重新挂上）。
+
+### 发现器 / 探测器（accountwork）
+
+- 先写 `accountwork_s2_test.go`，桩（接口签名、`GOOS` 字段、`ErrProbeUnsupported` 占位）取断言红：`--- FAIL: TestDiscovererClaudeMainHomeOnlyByGOOS`（darwin「claude 登录 HOME = [~/.handoff/home/iso ~]，want [~]」）、`TestDiscovererMapsRefreshAndChangeForExpiredState`（两 HOME 都 expired）、`TestProberWritesEvidenceAndSwitchesLogin`（「5s 内未等到：首选登录记失效证据」）、`TestProberSkipsNAAccounts`（「账号没有可用登录」而非不支持探测）。linux 子例的红是我测试对顺序的假设（归并结果按登录 id 排序），改为排序后比较。实现后 `go test ./internal/agentd/accountwork/` → `ok`。
+- V4 发现路径全 kind 泄密表 `TestDiscovererSecretsNeverLeakAllKinds` 实现后才写（首跑即绿）；「有牙」证据：临时让 codex label 拼上 `account_id` → 红「发现路径泄露了 "acct-SENTINEL-raw-identity"」；还原后 `grep -c MUTATION-B464S2 internal/quota/logins.go` = 0。
+- 判断（§9 权限内）：
+  - 发现器 `GOOS` 注入（空 = `runtime.GOOS`）；kind 规则在取材前过滤（`Registry.Logins(home, keep)`），darwin 非主 HOME 不跑 claude 子进程。
+  - 探测器：na 在调 quota 前跳过；`ProbeNow` na → `ErrProbeUnsupported`（gateway 409）；失败类别 `credential_expired`/`unauthorized` → `MarkLoginAuthFailed(登录, 探测开始时刻)`，网络/代理/限速/上游不记；证据写失败只告警。
+  - **换登录立即再探**：`probeDue` 在「上次失败用的是另一条登录」时立即到期——失败退避属于失败的那条登录，可探登录已换就不该替它等（否则 V8「换下一条」要等 30s×2ⁿ）。
+  - `SourceEntry` 补 codex `auth.json → tokens`、grok `auth.json → https://auth.x.ai`（前缀匹配在适配器里）。
+- `TestDiscoverFreshWindowIsThreeRounds` 锁 `accounts.DiscoveryFreshFor == 3 × DefaultDiscoverEvery`。
+
+### 编制域准入 / 检测证据
+
+- 先写 `internal/scheduling/b464_login_admission_test.go`，断言红：`AdmitCarrier 应因登录已失效拒（ErrNoHealthy + 「载体 c1 的登录已失效：m1 ~/.handoff/home/cx」），得 <nil>`；`检测需要登录应给所选登录记失效证据：… State:ok … AuthFailedAt:<nil>`。实现后 `go test ./internal/scheduling/...` → `ok`。
+- 放弃：首版夹具把第二个账号放同一台机器 m1——`putAccount` 的那轮发现只含 cy 的 HOME，归并按「本机完整扫描里没有」把 cx 的登录标了已失效（发现语义正确，是夹具写法错）。改为第二个账号放 m2。
+- 判断：「登录已失效」文案单载体与小队同一句「载体 X 的登录已失效：<机器> <HOME>」（小队拼进「小队 S 没有可用载体——…」）；已过期放行（七个入口逐一锁）。检测证据只在「可达 且 需要登录 且 非撞额度」时记（撞额度说明 CLI 带着凭据到了上游）。
+
+### gateway / CLI / 契约
+
+- 先写 `internal/agentd/b464_login_api_test.go`，断言红：`设代理应 200 且回打码值：404 404 page not found`；`改名撞名应 409：500 {"error":"账号名字 \"cy\" 已被账号 … 占用…"}`。实现 `PUT /api/logins/{id}/proxy`（体 `{proxy}`，键缺席 400）、`ErrNameTaken → 409`、na 立即探测 409 后 `ok`。
+- 放弃：首版测试在 `newSchedEnv` 之前 `t.Setenv("HOME", 临时目录)`——夹具起服务时以该 HOME 下的 Go 缓存拉模块（30s+，且清理时 `go/pkg/mod` 只读文件删不掉报 FAIL）。登录 HOME 用绝对路径写法、不经进程 HOME 展开，去掉 Setenv 后 2.2s 绿。临时目录是空目录，不涉及任何真实凭据。
+- V9：端点写入后，检测回合 `hostWakeLogin`、派发快照 `dispatchAccount`、协调者回合 `coordinatorAccountProxy` 三处读到同一代理，清除后三处都回空；探测器一处在 accountwork（`TestProberWritesEvidenceAndSwitchesLogin` 断言请求带登录代理、未设回落机器代理）。
+- `cmd/account.go` 状态词表加 `na → 不支持额度探测`；`cmd/account_test.go` 样本**追加**一个 na claude 账号（含已过期登录）与对应表格断言（只加不改）。先红「表格缺 "不支持额度探测"」后绿。
+- `cmd/agentd.go` 组装 `RegisterLoginReader(claude, &quota.Claude{})`。
+- 契约 fixture（plan §9 类 (4)）：`AccountsResp` **追加** na claude 账号（已过期登录）与「探测失败 · 没有可用登录」agy 账号；新增 `AccountRenameInput.json`、`LoginProxyInput.json`。`go test ./internal/proto/ -run TestContractFixtures` 先红（AccountsResp 漂移、两个新 fixture 不存在）→ `-update` → `ok`。既有样本不改（含 `apikey:opencode-go` 的 out 样本——形状仍合法，语义按段 2 规则已不会产生，段 5 重写账号页时一并换样本）。
+- web：临时软链主仓 `web/node_modules`，`npm run typecheck` 通过；`npx vitest run src/api/contract.test.ts` 65/65；全量 `npx vitest run` 仍是段 1 的 12 例红（AccountsPage 5 + SchedulingPage 7），无新增。提交前删软链。TS 侧未加 `LoginProxyInput` 类型与 A9 调用（段 5）。
+
+### 收口读数（段 2）
+
+- `go build ./...` → 无输出。
+- `go vet ./internal/quota/... ./internal/scheduling/... ./internal/agentd/... ./cmd/... ./internal/proto/...` → 无输出。
+- `gofmt -l <改动的 .go>` → 空。
+- `env -u CLAUDE_CODE_SESSION_ID go test -count=1 ./internal/quota/... ./internal/scheduling/... ./internal/agentd/... ./cmd/... ./internal/proto/...` → 全 ok（quota 4.6s、scheduling 0.9s、accounts 0.2s、agentd 75.2s、accountwork 0.7s、cmd 81.2s、proto 0.3s）。未遇到两个环境敏感测试。
+- `go test -race -count=1 ./internal/scheduling/accounts/ ./internal/agentd/accountwork/ ./internal/quota/` → 全 ok。
+
+### 交审查的事项（不在本段改）
+
+- R1 ⑤ opencode.db `mode=ro` 触碰 `-shm`：本段 `loginRefreshInfo` 每轮对 opencode.db 再开一次同 DSN 只读连接（读 refresh_token 是否非空与 time_updated），触碰频率翻倍、性质不变；按主会话指示不改 DSN，交审查一并裁 `immutable=1` 的取舍。
+- 「没有可用登录」只在读面推导，准入（Assess）不读登录与发现；载体自己的登录失效由「登录已失效」挡。若审查认为准入也要同一推导，代价是准入热路径每次多两次列表读。
+- claude 的「凭据变更时刻」在 macOS 只能取 `.claude.json` mtime（钥匙串无 mtime），claude 运行时常写该文件 → 检测证据在 claude 下一次运行后即作废、登录回正常（偏向少报已过期）。
+
+### 提交（提交当时的命令与输出；随后 amend 一次收进本台账，hash 会变）
+
+- 先按三个自然步骤提交（quota / 账号域+编制域 / accountwork+gateway+cmd+契约），自检 `git checkout 0579d9f4 && go build ./...` → `cmd/agentd.go:872:14: cannot use quotaReg … does not implement accountwork.LoginReader (wrong type for method Logins)`——中间提交单独编译不过（取材接口签名与使用方接口同批变）。判断：不留编译不过的中间提交，`git reset --soft e5c79704` 合为一个提交。
+- `git commit`（全部段 2 改动 + 本台账）→ `7318d7fb feat(B464): 其余 kind 取材、证据型已过期、登录代理、可探登录完整形、na、账号管理（段 2）`，`35 files changed, 2736 insertions(+), 120 deletions(-)`；`go build ./...` 通过。

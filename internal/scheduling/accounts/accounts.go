@@ -36,6 +36,8 @@ var (
 	ErrInvalid = errors.New("accounts: 账号编辑校验未过")
 	// ErrRetryExhausted 表示读数行/登录行合并写连续 CAS 冲突超出预算。
 	ErrRetryExhausted = errors.New("accounts: 读数行连续冲突")
+	// ErrNameTaken 表示改名撞上另一个账号的名字（plan L4 全局唯一）；gateway 据此回 409。
+	ErrNameTaken = errors.New("accounts: 账号名已被占用")
 )
 
 // maxCASAttempts 与编制域计数的重试预算同值（plan Q1：上限沿用 maxCASAttempts=8）。
@@ -57,11 +59,12 @@ type Service struct {
 // New 用组装点绑定的注册表端口构造服务。
 func New(repo schedclient.Registry) *Service { return &Service{repo: repo} }
 
-// Put 以 CAS 写人可改的账号字段（改阈值/间隔），返回新版本。a.ID 必填（调用方先 Get 解析 ref）。
+// Put 以 CAS 写人可改的账号字段（改名、阈值、间隔），返回新版本。a.ID 必填（调用方先 Get 解析 ref）。
 //
-// expect=0 一律 ErrInvalid：账号只由发现产生（spec「永不做：手填账号登记」）。改名在段 2
-// 开放，段 1 名字与现值不同即 ErrInvalid。kind/指纹/建者等发现字段一律取现值，请求里的
-// 同名字段被忽略。版本冲突返回包 schedclient.ErrCASConflict 的错误。
+// expect=0 一律 ErrInvalid：账号只由发现产生（spec「永不做：手填账号登记」）。名字：空 = 不改；
+// 禁含 `:` 与 `/`（ErrInvalid）；与其他账号重名 → ErrNameTaken（并发两人改成同名的窗口接受，
+// 与自动起名同一取舍，plan Q2）。kind/指纹/建者等发现字段一律取现值，请求里的同名字段被忽略。
+// na 账号（不支持额度探测）不接受阈值与间隔。版本冲突返回包 schedclient.ErrCASConflict 的错误。
 func (s *Service) Put(a Account, expect int) (int, error) {
 	if expect == 0 {
 		logger().Warn("账号编辑校验失败：expect=0", "id", a.ID, "name", a.Name)
@@ -71,11 +74,14 @@ func (s *Service) Put(a Account, expect int) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	if a.Name != "" && a.Name != cur.Name {
-		logger().Warn("账号编辑校验失败：改名尚未开放", "id", a.ID, "name", cur.Name, "new_name", a.Name)
-		return 0, fmt.Errorf("%w: 账号改名尚未开放（B464 段 2）", ErrInvalid)
-	}
 	next := cur
+	if name := strings.TrimSpace(a.Name); name != "" && name != cur.Name {
+		if err := s.checkRename(cur, name); err != nil {
+			logger().Warn("账号改名被拒", "id", a.ID, "name", cur.Name, "new_name", name, "cause", err)
+			return 0, err
+		}
+		next.Name = name
+	}
 	next.IntervalMinutes, next.WarnPercent, next.LowPercent = a.IntervalMinutes, a.WarnPercent, a.LowPercent
 	if err := validateEdit(next); err != nil {
 		logger().Warn("账号编辑校验失败", "id", a.ID, "name", cur.Name, "expect", expect, "cause", err)
@@ -91,13 +97,38 @@ func (s *Service) Put(a Account, expect int) (int, error) {
 		logger().Warn("写入账号定义失败", "id", a.ID, "expect", expect, "cause", err)
 		return 0, fmt.Errorf("账号 %s 写入失败: %w", cur.Name, err)
 	}
-	logger().Info("写入账号定义成功", "id", a.ID, "name", next.Name, "kind", next.Kind,
+	logger().Info("写入账号定义成功", "id", a.ID, "name", next.Name, "old_name", cur.Name, "kind", next.Kind,
 		"expect", expect, "version", version, "interval_minutes", next.IntervalMinutes)
 	return version, nil
 }
 
-// validateEdit 是人可改字段的形态校验（spec S5）：间隔可选值、两条阈值次序。
+// checkRename 是改名规则（plan L4）：禁 `:`/`/`（与 id 形态区分，API 路径可同时接受 id 或名字），
+// 全局唯一。
+func (s *Service) checkRename(cur Account, name string) error {
+	if strings.ContainsAny(name, ":/") {
+		return fmt.Errorf("%w: 账号名字 %q 不能含「:」或「/」", ErrInvalid, name)
+	}
+	defs, _, err := s.definitions()
+	if err != nil {
+		return err
+	}
+	for id, other := range defs {
+		if id != cur.ID && other.Name == name {
+			return fmt.Errorf("账号名字 %q 已被账号 %s 占用: %w", name, id, ErrNameTaken)
+		}
+	}
+	return nil
+}
+
+// validateEdit 是人可改字段的形态校验（spec S5）：间隔可选值、两条阈值次序；na 账号阈值与间隔
+// 必须缺席（plan L3/Q11）。
 func validateEdit(a Account) error {
+	if !SupportsProbe(a.Kind) {
+		if a.IntervalMinutes != 0 || a.WarnPercent != 0 || a.LowPercent != 0 {
+			return fmt.Errorf("%w: 账号 %s（%s）不支持额度探测，没有探测间隔与阈值", ErrInvalid, a.Name, a.Kind)
+		}
+		return nil
+	}
 	switch {
 	case !slices.Contains(AllowedIntervals, a.IntervalMinutes):
 		return fmt.Errorf("%w: 账号 %s 的探测间隔 %d 分钟不在 %v 之内", ErrInvalid, a.Name, a.IntervalMinutes, AllowedIntervals)
@@ -204,7 +235,11 @@ func (s *Service) Get(ref string) (View, error) {
 	if err != nil {
 		return View{}, err
 	}
-	return newView(a, version, rec, logins, refs, time.Now()), nil
+	runs, err := s.discoveryTimes()
+	if err != nil {
+		return View{}, err
+	}
+	return newView(a, version, rec, logins, refs, runs, time.Now()), nil
 }
 
 // List 列出全部账号（按名称排序）。没有定义行的读数行（孤儿）不出现；B453 手填旧行不出现。
@@ -235,10 +270,14 @@ func (s *Service) List() ([]View, error) {
 	if err != nil {
 		return nil, err
 	}
+	runs, err := s.discoveryTimes()
+	if err != nil {
+		return nil, err
+	}
 	now := time.Now()
 	out := make([]View, 0, len(defs))
 	for id, a := range defs {
-		out = append(out, newView(a, versions[id], byID[id], logins, refs, now))
+		out = append(out, newView(a, versions[id], byID[id], logins, refs, runs, now))
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Account.Name != out[j].Account.Name {
@@ -249,8 +288,11 @@ func (s *Service) List() ([]View, error) {
 	return out, nil
 }
 
-// newView 组装读面：名下登录（按 id 排序）、各登录与账号的引用载体、可探登录。
-func newView(a Account, version int, rec ReadingRecord, logins []LoginView, refs map[string][]string, now time.Time) View {
+// newView 组装读面：名下登录（按 id 排序）、各登录与账号的引用载体、可探登录（plan Q10）。
+// 支持探测的账号没有可探登录 → 状态推导为「探测失败」，最近错误为「没有可用登录」——只在
+// 读面推导，不写读数行（plan Q10）。runs 是各机最近一轮发现时刻。
+func newView(a Account, version int, rec ReadingRecord, logins []LoginView, refs map[string][]string,
+	runs map[string]time.Time, now time.Time) View {
 	v := View{Account: a, Version: version, State: Derive(a, rec, now), Stale: IsStale(rec, now),
 		RecoverAt: RecoverAt(a, rec, now), Record: rec, Logins: []LoginView{}, Carriers: []string{}}
 	seen := map[string]bool{}
@@ -270,19 +312,50 @@ func newView(a Account, version int, rec ReadingRecord, logins []LoginView, refs
 		own = append(own, lv.Login)
 	}
 	sort.Strings(v.Carriers)
-	if pl, ok := ProbeLogin(own); ok {
-		v.ProbeLogin = pl.ID
+	if !SupportsProbe(a.Kind) {
+		return v
 	}
+	if pl, ok := ProbeLogin(own, runs, now); ok {
+		v.ProbeLogin = pl.ID
+		return v
+	}
+	v.State, v.RecoverAt = StateFail, nil
+	v.Record.LastError = &Problem{Category: CategoryNoLogin, Message: noProbeLoginMessage(own, runs, now)}
 	return v
 }
 
-// ProbeLogin 选账号的「可探登录」（plan Q10 段 1 最小形）：状态正常的登录里 id 最小的一条。
-// 段 2 再加「所在机发现新鲜」条件与换登录。没有正常登录返回 false。
-func ProbeLogin(logins []Login) (Login, bool) {
+// CategoryNoLogin 是「没有可用登录」的失败类别（读面推导，不写读数行）。
+const CategoryNoLogin = "no_login"
+
+// noProbeLoginMessage 说清为什么没有可探登录（人话，不含凭据）。
+func noProbeLoginMessage(own []Login, runs map[string]time.Time, now time.Time) string {
+	if len(own) == 0 {
+		return "没有可用登录：名下没有登录，在要用的机器上登录对应 CLI 后等发现挂上"
+	}
+	ok := 0
+	for _, l := range own {
+		if l.State == LoginOK {
+			ok++
+		}
+	}
+	if ok == 0 {
+		return "没有可用登录：名下登录都已过期或已失效，在所在机器重新登录后恢复探测"
+	}
+	return "没有可用登录：名下正常登录所在的机器最近 " + DiscoveryFreshFor.String() + " 内没有发现（可能离线）"
+}
+
+// ProbeLogin 选账号的「可探登录」（plan Q10）：状态正常、所在机最近一轮发现在 DiscoveryFreshFor
+// 之内（runs 里没有该机 = 不新鲜）的登录里 id 最小的一条。没有返回 false。全队对「谁来探」
+// 看到同一结论：首选失效或所在机离线，自然换下一条。
+func ProbeLogin(logins []Login, runs map[string]time.Time, now time.Time) (Login, bool) {
 	var best Login
 	found := false
 	for _, l := range logins {
 		if l.State != LoginOK {
+			continue
+		}
+		at, ok := runs[l.Machine]
+		if !ok || now.Sub(at) > DiscoveryFreshFor {
 			continue
 		}
 		if !found || l.ID < best.ID {
@@ -290,6 +363,19 @@ func ProbeLogin(logins []Login) (Login, bool) {
 		}
 	}
 	return best, found
+}
+
+// discoveryTimes 读各机最近一轮发现时刻（机器名 → at）。
+func (s *Service) discoveryTimes() (map[string]time.Time, error) {
+	runs, err := s.DiscoveryRuns()
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]time.Time, len(runs))
+	for _, r := range runs {
+		out[r.Machine] = r.At
+	}
+	return out, nil
 }
 
 func sortedCopy(in []string) []string {
@@ -410,7 +496,8 @@ func (s *Service) readRecord(name string) (ReadingRecord, int, error) {
 	return rec, raw.Version, nil
 }
 
-// Derive 按读数行推导账号五档状态（spec S3，plan Q4 优先级）：
+// Derive 按读数行推导账号状态（spec S3，plan Q4 优先级）：
+//  0. kind 不支持额度探测（claude、第三方 key）→ na（plan Q11，不挡准入）；
 //  1. 有撞额度标记 → 无额度（持续到开始晚于标记的成功探测，探测失败不清）；
 //  2. 最近一次尝试失败（成功即清 LastError，故非空即「晚于最近成功」）→ 探测失败；
 //  3. 从无成功读数 → 未探测；
@@ -422,6 +509,8 @@ func (s *Service) readRecord(name string) (ReadingRecord, int, error) {
 // 准入、API、CLI 共用这一份推导（spec「单一推导函数」）。
 func Derive(a Account, rec ReadingRecord, now time.Time) State {
 	switch {
+	case !SupportsProbe(a.Kind):
+		return StateNA
 	case rec.QuotaMark != nil:
 		return StateOut
 	case rec.LastError != nil:
@@ -538,6 +627,8 @@ func (st State) Label() string {
 		return "探测失败"
 	case StateNone:
 		return "未探测"
+	case StateNA:
+		return "不支持额度探测"
 	default:
 		return string(st)
 	}

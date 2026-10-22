@@ -217,6 +217,62 @@
         }
       ],
       "carriers": []
+    },
+    {
+      "id": "claude:c1c1c1c1c1c1",
+      "name": "cl@example.com",
+      "kind": "claude",
+      "label": "cl@example.com",
+      "fingerprint": "sha256:c1c1c1c1c1c1",
+      "version": 1,
+      "state": "na",
+      "stale": false,
+      "logins": [
+        {
+          "id": "login-ff00000000000001",
+          "machine": "mac-mini",
+          "home": "~",
+          "source": "claude-auth",
+          "fingerprint": "sha256:c1c1c1c1c1c1",
+          "state": "expired",
+          "changed_at": "2026-08-11T09:30:00+08:00",
+          "carriers": [
+            "cl"
+          ]
+        }
+      ],
+      "carriers": [
+        "cl"
+      ]
+    },
+    {
+      "id": "agy:a9a9a9a9a9a9",
+      "name": "agy-a9a9",
+      "kind": "agy",
+      "fingerprint": "sha256:a9a9a9a9a9a9",
+      "interval_minutes": 15,
+      "warn_percent": 60,
+      "low_percent": 80,
+      "version": 1,
+      "state": "fail",
+      "stale": false,
+      "last_error": {
+        "category": "no_login",
+        "message": "没有可用登录：名下登录都已过期或已失效，在所在机器重新登录后恢复探测"
+      },
+      "logins": [
+        {
+          "id": "login-ab00000000000001",
+          "machine": "linux-01",
+          "home": "~",
+          "source": "antigravity-oauth-token",
+          "fingerprint": "sha256:a9a9a9a9a9a9",
+          "state": "expired",
+          "changed_at": "2026-08-11T09:30:00+08:00",
+          "carriers": []
+        }
+      ],
+      "carriers": []
     }
   ],
   "discovery": [

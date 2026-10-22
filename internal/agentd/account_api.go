@@ -10,7 +10,9 @@
 //   - 账号规则（归并、校验、合并写、状态推导）全在 internal/scheduling/accounts，这里只做
 //     「缺席 = 保留现值」的填充（区分键缺席与「给了 0」）与形状翻译；
 //   - 读面里登录代理的密码段打码（accounts.MaskProxy）；载体引用由账号域经注入的查询给出；
-//   - 账号只由发现建：PUT expect=0 → 400（spec「永不做：手填账号登记」）。
+//   - 账号只由发现建：PUT expect=0 → 400（spec「永不做：手填账号登记」）；改名撞名 409；
+//   - 登录代理（A9）：PUT /api/logins/{id}/proxy 服务端读-合并-CAS，不要求 expect；
+//   - 不支持额度探测的账号（na：claude、第三方 key）立即探测 409。
 package agentd
 
 import (
@@ -35,7 +37,8 @@ import (
 //   - Delete：DELETE /api/accounts/{ref}；
 //   - MarkQuota：任务回合撞额度（quota_rerun.go）；
 //   - Login：载体所选登录 → kind/代理/所属账号（检测链、派发快照、协调者代理，account_carrier.go）；
-//   - DiscoveryRuns：GET /api/accounts 的「上次发现」。
+//   - DiscoveryRuns：GET /api/accounts 的「上次发现」；
+//   - SetLoginProxy：PUT /api/logins/{id}/proxy（A9）。
 type AccountsClient interface {
 	List() ([]accounts.View, error)
 	Get(ref string) (accounts.View, error)
@@ -45,6 +48,7 @@ type AccountsClient interface {
 	MarkQuota(id string, m accounts.QuotaMark) error
 	Login(id string) (accounts.Login, error)
 	DiscoveryRuns() ([]accounts.DiscoveryRun, error)
+	SetLoginProxy(id, proxy string) (accounts.LoginView, error)
 }
 
 // 编译期断言：账号域实现满足 gateway 使用方接口。
@@ -62,6 +66,50 @@ func (s *Server) registerAccountRoutes(api *http.ServeMux) {
 	api.HandleFunc("PUT /api/accounts/{ref}", s.withAccounts(s.handleAccountPut))
 	api.HandleFunc("DELETE /api/accounts/{ref}", s.withAccounts(s.handleAccountDelete))
 	api.HandleFunc("POST /api/accounts/{ref}/probe", s.withAccounts(s.handleAccountProbe))
+	api.HandleFunc("PUT /api/logins/{id}/proxy", s.withAccounts(s.handleLoginProxyPut))
+}
+
+// handleLoginProxyPut PUT /api/logins/{id}/proxy（A9）：体 {proxy}（空串 = 清除，键缺席 400）；
+// 服务端读-合并-CAS，不要求 expect；打码回填保留原值；校验失败 400；登录不存在 404；成功
+// 200 LoginView（代理打码、带引用载体）。登录行在共享账本，任一机都可写，不转发。
+func (s *Server) handleLoginProxyPut(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var in proto.LoginProxyInput
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		s.log.Warn("设置登录代理请求体解析失败", "login", id, "cause", err)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("解析请求体: %v", err)})
+		return
+	}
+	if in.Proxy == nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "请求体缺 proxy（清除代理请传空串）"})
+		return
+	}
+	lv, err := s.accounts.SetLoginProxy(id, strings.TrimSpace(*in.Proxy))
+	if err != nil {
+		switch {
+		case errors.Is(err, accounts.ErrInvalid):
+			writeErr(w, http.StatusBadRequest, err)
+		case errors.Is(err, accounts.ErrNotFound):
+			writeErr(w, http.StatusNotFound, err)
+		default:
+			s.log.Error("设置登录代理失败", "login", id, "cause", err)
+			writeErr(w, http.StatusInternalServerError, err)
+		}
+		return
+	}
+	// 引用载体只在账号读面上（注入的引用查询）：回读所属账号取这条登录的完整读面。
+	if v, err := s.accounts.Get(lv.Login.Account); err == nil {
+		for _, own := range v.Logins {
+			if own.Login.ID == id {
+				lv = own
+			}
+		}
+	} else {
+		s.log.Warn("设置登录代理后读所属账号失败，响应不带引用载体", "login", id, "account", lv.Login.Account, "cause", err)
+	}
+	s.log.Info("设置登录代理成功", "login", id, "machine", lv.Login.Machine, "home", lv.Login.Home,
+		"proxy", accounts.MaskProxy(lv.Login.Proxy))
+	writeJSON(w, http.StatusOK, loginView(lv))
 }
 
 func (s *Server) withAccounts(h http.HandlerFunc) http.HandlerFunc {
@@ -156,6 +204,8 @@ func (s *Server) handleAccountPut(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case errors.Is(err, accounts.ErrInvalid):
 			writeErr(w, http.StatusBadRequest, err)
+		case errors.Is(err, accounts.ErrNameTaken):
+			writeErr(w, http.StatusConflict, err)
 		case errors.Is(err, schedclient.ErrCASConflict):
 			writeErr(w, http.StatusConflict, fmt.Errorf("账号 %s 已被修改（重新读取版本后再保存）: %w", cur.Account.Name, err))
 		default:
@@ -224,7 +274,8 @@ func accountFromInput(cur accounts.Account, in proto.AccountInput) accounts.Acco
 }
 
 // handleAccountProbe POST /api/accounts/{ref}/probe（A8）：
-//   - 没有可探登录（名下无正常登录）：409；
+//   - 不支持额度探测的账号（na）：409；
+//   - 没有可探登录（名下无正常登录、或所在机发现已过期）：409；
 //   - 可探登录在本机：交本机探测器执行，200 AccountView（失败也写在 last_error 里）；
 //     本机探测器未运行 503（不报成功空读数）；
 //   - 可探登录在他机：转发同一路径；转发失败 502「转发到 X 失败」，读数不变；
@@ -241,6 +292,12 @@ func (s *Server) handleAccountProbe(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
+	if !accounts.SupportsProbe(v.Account.Kind) {
+		err := fmt.Errorf("%w：账号 %s 是 %s，只管登录、不探额度", accountwork.ErrProbeUnsupported, v.Account.Name, v.Account.Kind)
+		s.log.Warn("立即探测被拒：账号类型不支持额度探测", "id", v.Account.ID, "kind", v.Account.Kind)
+		writeErr(w, http.StatusConflict, err)
+		return
+	}
 	machine := ""
 	for _, lv := range v.Logins {
 		if lv.Login.ID == v.ProbeLogin {
@@ -248,7 +305,8 @@ func (s *Server) handleAccountProbe(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if machine == "" {
-		err := fmt.Errorf("账号 %s 没有可用登录（名下没有状态正常的登录），无法探测额度", v.Account.Name)
+		err := fmt.Errorf("账号 %s 没有可用登录（名下没有状态正常、且所在机器最近 %s 内发现过的登录），无法探测额度",
+			v.Account.Name, accounts.DiscoveryFreshFor)
 		s.log.Warn("立即探测被拒：没有可探登录", "id", v.Account.ID, "name", v.Account.Name)
 		writeErr(w, http.StatusConflict, err)
 		return
@@ -271,7 +329,8 @@ func (s *Server) handleAccountProbe(w http.ResponseWriter, r *http.Request) {
 				code = http.StatusServiceUnavailable
 			case errors.Is(err, accounts.ErrNotFound):
 				code = http.StatusNotFound
-			case errors.Is(err, accountwork.ErrNoProbeLogin), errors.Is(err, accountwork.ErrNotLocal):
+			case errors.Is(err, accountwork.ErrNoProbeLogin), errors.Is(err, accountwork.ErrNotLocal),
+				errors.Is(err, accountwork.ErrProbeUnsupported):
 				code = http.StatusConflict
 			}
 			s.log.Error("立即探测失败", "name", name, "machine", machine, "cause", err)
