@@ -1,0 +1,359 @@
+<!doctype html>
+<!--
+  B453 账号页（新模块，dock「◔」进入）—— fork 副本 b453-accounts，形态待走查。
+  回答的形态问题：
+  ① 账号是账本独立实体、手工登记；各机控制台看到同一份列表（按机器分组只是排版）；
+  ② 本期支持四种账号类型：opencode-go、codex、grok、agy（Antigravity，窗口按模型组拆：Gemini / Claude·GPT 各 5h 与周），额度都是窗口百分比（窗口词表对齐 orca：session 5h /
+     weekly 7d / monthly，各带 resetAt，类型给几个窗口就显示几个——grok 只有 weekly 7d 与 monthly；
+     另有 planType 徽标与 extraUsage）。grok 的 token 由 grok CLI 自己刷新，过期时探测失败并提示去该机 grok login。
+     每个账号两条线：
+     预警 60%（只变色）/ 低额度 80%（暂停派发），按账号可改；任一窗口到 100% 即「无额度」；
+     刷新语义：默认 15 分钟、成功读数超 30 分钟标「已过期」、失败 30s×2ⁿ 退避封顶 15 分钟；
+  ③ 凭据位置只显示 HOME + 条目 + 短指纹，密钥不离机；探测由账号所在机 agentd 执行；
+  ④ 动作：登记 / 编辑（同一表单）/ 删除（仍被载体引用时拦住并点名）/ 立即探测；
+  ⑤ ?account=<名> 展开并高亮某账号（底栏弹层「管理账号…」跳到这里）；
+  ⑥ 视觉照 orca 设置页：按类型分组、细边框单色卡片，彩色只给越线数字/状态短语。
+  交互遵循 light-interaction.md：零依赖、纯 mock、file:// 直开。数据见 ../shared/accounts.js。
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>handoff 控制台 · 账号</title>
+<link rel="stylesheet" href="../shared/styles.css">
+<style>
+  .acct-body { height: 100%; overflow-y: auto; padding: 28px 32px 48px; }
+  .acct-wrap { max-width: 900px; }
+  .pg-head { display: flex; align-items: baseline; gap: 12px; }
+  .pg-head h1 { margin: 0; font-size: 20px; font-weight: 600; }
+  .pg-head a { margin-left: auto; font-size: 12px; color: var(--muted-foreground); text-decoration: none; }
+  .pg-head a:hover { color: var(--foreground); }
+  .pg-desc { margin: 6px 0 18px; font-size: 12.5px; line-height: 1.6; color: var(--muted-foreground); }
+
+  .kgroup { padding: 20px 0 8px; border-top: 1px solid var(--border); }
+  .kg-head { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 12px; }
+  .kg-head .grow { flex: 1; min-width: 0; }
+  .kg-title { display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 600; }
+  .kg-title .k-ic { width: 15px; height: 15px; color: var(--foreground); }
+  .kg-desc { margin-top: 3px; font-size: 12px; color: var(--muted-foreground); }
+
+  .acard { border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; margin-bottom: 8px; background: var(--background); cursor: pointer; transition: border-color .2s, box-shadow .3s; }
+  .acard:hover { border-color: var(--q-hover-bd); }
+  .acard.flash { border-color: var(--q-hover-bd); box-shadow: 0 0 0 3px var(--muted); }
+  .a-r1 { display: flex; align-items: center; gap: 8px; min-height: 22px; }
+  .a-name { font-family: var(--font-mono); font-size: 13px; font-weight: 600; }
+  .a-r1 .spacer { flex: 1; }
+  .a-state { font-size: 12px; white-space: nowrap; }
+  .a-actions { display: flex; gap: 2px; }
+  .tbtn { border: 0; background: none; font: inherit; font-size: 12px; color: var(--muted-foreground); padding: 2px 6px; border-radius: 4px; cursor: pointer; }
+  .tbtn:hover { background: var(--muted); color: var(--foreground); }
+  .tbtn:disabled { cursor: default; background: none; }
+  .a-chev { color: var(--muted-foreground); font-size: 12px; width: 12px; text-align: center; transition: transform .15s; }
+  .acard.open .a-chev { transform: rotate(90deg); }
+  .a-r2 { margin-top: 2px; font-family: var(--font-mono); font-size: 11.5px; color: var(--muted-foreground); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .a-r3 { margin-top: 9px; }
+  .a-r3 .q-wins { grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 6px 24px; }
+  .a-r3 .q-win { display: grid; grid-template-columns: auto minmax(40px, 1fr) auto auto; align-items: center; gap: 8px; }
+  .a-r3 .note { font-size: 11.5px; color: var(--muted-foreground); }
+  .a-detail { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); cursor: default; }
+  .kv { display: grid; grid-template-columns: auto 1fr; gap: 5px 16px; margin: 0; font-size: 12px; }
+  .kv dt { color: var(--muted-foreground); }
+  .kv dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+  .kv code { font-family: var(--font-mono); font-size: 11.5px; }
+  .kv a { color: var(--foreground); font-family: var(--font-mono); font-size: 11.5px; }
+  .probe-note { font-size: 11.5px; color: var(--muted-foreground); margin: 8px 0 0; }
+  .empty { border: 1px dashed var(--border); border-radius: 8px; padding: 14px 16px; font-size: 12px; color: var(--muted-foreground); }
+
+  /* 表单（对话框）：灰阶 */
+  dialog h3 { margin: 0 0 12px; font-size: 15px; font-weight: 600; }
+  .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 12px; margin-bottom: 10px; }
+  .form-grid .full { grid-column: 1 / -1; }
+  .form-grid label { display: block; font-size: 12px; color: var(--muted-foreground); margin-bottom: 4px; }
+  .form-grid .unit { display: flex; align-items: center; gap: 6px; }
+  .form-grid .unit span { font-size: 12px; color: var(--muted-foreground); }
+  .field-hint { font-size: 11.5px; color: var(--muted-foreground); margin: 4px 0 0; line-height: 1.5; }
+  .mock-ok { font-size: 12px; color: var(--muted-foreground); margin: 10px 0 0; line-height: 1.6; }
+  .hint { font-size: 12px; color: var(--muted-foreground); margin: 4px 0 0; line-height: 1.6; }
+  @media (max-width: 760px) {
+    .acct-body { padding: 20px 16px 40px; }
+    .a-r1 { flex-wrap: wrap; }
+  }
+</style>
+</head>
+<body class="has-statusbar">
+<div class="app-shell">
+  <aside class="sidebar">
+    <div class="brand">
+      <span>handoff</span>
+      <button class="icon-btn" title="显示偏好">☰</button>
+    </div>
+    <div class="tree-search">
+      <input class="input sm" placeholder="搜索项目、机器或任务">
+      <kbd class="kbd">⌘K</kbd>
+    </div>
+    <div class="tree">
+      <div class="tree-group">
+        <div class="tree-label machine-row"><span>linux-01（协调机）</span></div>
+        <a class="tree-item">handoff</a>
+        <a class="tree-item tree-task">● B453 账号与额度</a>
+      </div>
+      <div class="tree-group">
+        <div class="tree-label machine-row"><span>mac-mini</span></div>
+        <a class="tree-item">handoff</a>
+      </div>
+      <div class="tree-group">
+        <div class="tree-label machine-row"><span>macbook-pro</span></div>
+        <a class="tree-item">gokit</a>
+      </div>
+    </div>
+    <div class="dock">
+      <a class="dock-btn" href="board.html" title="工作项账本">▤<span class="badge dock-badge">3</span></a>
+      <a class="dock-btn" href="../index.html" title="任务看板">▦</a>
+      <a class="dock-btn" href="../index.html" title="工单">✉<span class="badge dock-badge">2</span></a>
+      <!-- B453 新增：账号与额度 -->
+      <a class="dock-btn" href="accounts.html" style="background:var(--muted);color:var(--foreground)" aria-current="page" title="账号与额度">◔</a>
+      <a class="dock-btn" href="settings.html" title="设置">⚙</a>
+      <a class="dock-btn" href="../index.html" title="home 基准终端">▭</a>
+      <button class="dock-btn" title="添加项目">＋</button>
+    </div>
+  </aside>
+
+  <div class="main">
+    <main class="content">
+      <div class="acct-body">
+        <div class="acct-wrap">
+          <div class="pg-head"><h1>账号与额度</h1><a href="mobile-settings.html">移动端视图 ›</a></div>
+          <p class="pg-desc">账号登记在账本里，各机控制台看到同一份；密钥不离机，额度由所在机 agentd 探测。<br>低额度或无额度时，引用它的载体暂停派发，额度恢复后自动回来。</p>
+          <div id="groups"></div>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+
+<!-- 登记 / 编辑账号（同一表单） -->
+<dialog id="acctDialog">
+  <form id="acctForm" style="padding:18px 20px;width:520px;max-width:92vw">
+    <h3 style="margin:0 0 12px;font-size:15px" id="acctDialogTitle">登记账号</h3>
+    <div class="form-grid">
+      <div><label>账号名（唯一，登记后不可改）</label><input class="input mono" id="afName" placeholder="如 og-team" required></div>
+      <div><label>类型</label><select class="input" id="afKind"></select></div>
+      <div><label>所在机器（探测在这台机器上执行）</label><select class="input" id="afMachine"></select></div>
+      <div><label>探测间隔</label><select class="input" id="afInterval"><option value="5">每 5 分钟</option><option value="10">每 10 分钟</option><option value="15">每 15 分钟</option><option value="30">每 30 分钟</option><option value="60">每 1 小时</option></select></div>
+      <div class="full"><label>凭据 HOME（该机上的路径）</label><input class="input mono" id="afHome" placeholder="/root/.handoff/home/…" required></div>
+      <div class="full"><label>凭据条目（HOME 下的文件 › 键）</label><input class="input mono" id="afEntry" required>
+        <p class="field-hint" id="afEntryHint">只登记位置。保存后所在机 agentd 读取凭据、回填短指纹，密钥不进账本。</p></div>
+      <div class="full"><label>代理（可选，只用于这个账号的探测与派发）</label><input class="input mono" id="afProxy" placeholder="留空 = 沿用该机代理，如 socks5://127.0.0.1:7897"></div>
+      <div><label>预警线（只变色，不影响派发）</label>
+        <div class="unit"><input class="input" id="afWarn" type="number" min="0" max="100" style="width:90px"><span>%</span></div></div>
+      <div><label>低额度线（达到即暂停派发）</label>
+        <div class="unit"><input class="input" id="afThreshold" type="number" min="0" max="100" style="width:90px"><span>%</span></div></div>
+      <div class="full"><p class="field-hint" id="afThHint" style="margin-top:-4px"></p></div>
+    </div>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">
+      <button type="button" class="btn sm" id="afCancel">取消</button>
+      <button type="submit" class="btn sm primary">保存</button>
+    </div>
+    <p class="mock-ok" id="afFeedback" hidden></p>
+  </form>
+</dialog>
+
+<!-- 删除确认：仍被载体引用时拦住 -->
+<dialog id="delDialog">
+  <div style="padding:18px 20px;width:420px;max-width:92vw">
+    <h3 style="margin:0 0 8px;font-size:15px" id="delTitle"></h3>
+    <p class="hint" id="delDesc" style="font-size:12.5px"></p>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px" id="delActions"></div>
+  </div>
+</dialog>
+
+<script src="../shared/accounts.js" data-root="../"></script>
+<script>
+  const A = HandoffAccounts;
+  const groupsEl = document.getElementById('groups');
+  let highlight = new URLSearchParams(location.search).get('account') || '';
+  const opened = new Set(highlight ? [highlight] : []);
+  const $ = (id) => document.getElementById(id);
+
+  function cardHTML(a) {
+    const k = A.KINDS[a.kind];
+    const refs = A.carriersOf(a.name);
+    const carriersTxt = refs.map((c) => {
+      const h = A.dispatchHint(c);
+      return `<a href="settings.html?section=automation&carrier=${c.name}">${c.name}</a>${h && h.paused ? '<span class="dim">（暂停派发）</span>' : ''}`;
+    }).join('、') || '<span class="dim">没有载体引用</span>';
+    const probed = a.probedAgo != null ? `${A.ago(a.probedAgo)}（${A.clock(A.NOW - a.probedAgo)}）` : '从未';
+    // 第三行：窗口紧凑横排；无读数时写一句弱色说明
+    const r3 = a.quota
+      ? A.winsCompact(a) + (a.status === 'fail' ? `<div class="note" style="margin-top:6px">显示的是 ${A.ago(a.goodAgo)}的读数</div>` : '')
+      : `<div class="note">${a.status === 'none' ? '尚未探测，保存后由所在机 agentd 探测一次' : '额度未知 · ' + a.error}</div>`;
+    return `
+      <div class="acard${opened.has(a.name) ? ' open' : ''}${a.name === highlight ? ' flash' : ''}" id="acct-${a.name}" data-card="${a.name}">
+        <div class="a-r1">
+          <span class="a-chev">›</span>
+          <span class="a-name">${a.name}</span>${A.plan(a)}
+          <span class="spacer"></span>
+          <span class="a-state">${A.statusText(a)}</span>
+          <span class="a-actions">
+            <button class="tbtn" data-probe="${a.name}">立即探测</button>
+            <button class="tbtn" data-edit="${a.name}">编辑</button>
+            <button class="tbtn" data-del="${a.name}">删除</button>
+          </span>
+        </div>
+        <div class="a-r2">${a.machine} · ${a.home}${a.entry ? ` › ${a.entry}` : `（${k.entryNote || '凭据条目未登记'}）`} · ${a.fp || '指纹待首次探测回填'}</div>
+        <div class="a-r3">${r3}</div>
+        <div class="a-detail" ${opened.has(a.name) ? '' : 'hidden'}>
+          <dl class="kv">
+            <dt>类型</dt><dd>${k.label}</dd>
+            <dt>代理</dt><dd>${a.proxy ? `<code>${a.proxy}</code>` : '<span class="dim">沿用该机代理</span>'}</dd>
+            <dt>阈值</dt><dd>预警 ≥ ${a.warn}%（只变色） · 低额度 ≥ ${a.threshold}%（暂停派发）</dd>
+            <dt>探测</dt><dd>每 ${a.interval} 分钟 · 上次 ${probed} · ${A.nextProbeText(a)}${a.goodAgo != null && a.goodAgo !== a.probedAgo ? ` · 最后成功读数 ${A.ago(a.goodAgo)}` : ''}</dd>
+            ${a.error ? `<dt>上次错误</dt><dd>△ ${a.error}</dd>` : ''}
+            ${a.quota && a.quota.extraUsage ? `<dt>额外额度</dt><dd class="mono">${a.quota.extraUsage}</dd>` : ''}
+            <dt>使用此账号的载体</dt><dd>${carriersTxt}</dd>
+          </dl>
+        </div>
+        <p class="probe-note" id="pn-${a.name}" hidden></p>
+      </div>`;
+  }
+
+  function render() {
+    groupsEl.innerHTML = Object.entries(A.KINDS).map(([key, k]) => {
+      const list = A.byProblem(A.accounts.filter((a) => a.kind === key));
+      return `<section class="kgroup">
+        <div class="kg-head">
+          <div class="grow">
+            <div class="kg-title">${A.icon(key)}${k.name}</div>
+            <div class="kg-desc">${k.blurb}</div>
+          </div>
+          <button class="btn sm" data-new="${key}">＋ 登记账号</button>
+        </div>
+        ${list.map(cardHTML).join('') || `<div class="empty">还没有 ${k.name} 账号，点右上「登记账号」。</div>`}
+      </section>`;
+    }).join('');
+    bind();
+  }
+
+  function bind() {
+    groupsEl.querySelectorAll('[data-card]').forEach((card) => card.addEventListener('click', (e) => {
+      if (e.target.closest('button, a, .a-detail')) return;
+      const n = card.dataset.card;
+      if (opened.has(n)) opened.delete(n); else opened.add(n);
+      card.classList.toggle('open');
+      card.querySelector('.a-detail').hidden = !opened.has(n);
+    }));
+    groupsEl.querySelectorAll('[data-new]').forEach((b) => b.addEventListener('click', () => openForm(null, b.dataset.new)));
+    groupsEl.querySelectorAll('[data-probe]').forEach((b) => b.addEventListener('click', () => probe(b)));
+    groupsEl.querySelectorAll('[data-edit]').forEach((b) => b.addEventListener('click', () => openForm(A.find(b.dataset.edit))));
+    groupsEl.querySelectorAll('[data-del]').forEach((b) => b.addEventListener('click', () => openDelete(A.find(b.dataset.del))));
+  }
+
+  // ---- 立即探测（mock）：由账号所在机 agentd 执行；探测失败的那个代理仍不通 ----
+  function probe(btn) {
+    const a = A.find(btn.dataset.probe);
+    btn.disabled = true; btn.textContent = '探测中…';
+    const note = $('pn-' + a.name);
+    note.hidden = false; note.textContent = `已请求 ${a.machine} 的 agentd 探测（mock）…`;
+    A.probe(a, () => {
+      // A.probe 完成后会 notify → render；渲染后再写结果说明
+      setTimeout(() => {
+        const n = $('pn-' + a.name);
+        if (!n) return;
+        n.hidden = false;
+        n.textContent = a.status === 'fail' ? `探测完成：仍失败（${a.error}）。检查 ${a.machine} 上的代理或登录。` : '探测完成，已写回账本。';
+      });
+    });
+  }
+
+  // ---- 登记 / 编辑（同一表单） ----
+  const dlg = $('acctDialog');
+  Object.entries(A.KINDS).forEach(([key, k]) => $('afKind').insertAdjacentHTML('beforeend', `<option value="${key}">${k.label}</option>`));
+  A.MACHINES.forEach((m) => $('afMachine').insertAdjacentHTML('beforeend', `<option>${m}</option>`));
+  let editing = null;
+  $('afThHint').textContent = `按任一窗口（会话 5h / 每周 / 每月）的已用百分比判断；任一窗口到 100% 即无额度。默认预警 ${A.DEFAULT_WARN}%、低额度 ${A.DEFAULT_LOW}%。`;
+  // 换类型时回填该类型的默认凭据条目；新登记时阈值填默认值
+  // agy 没有可登记的凭据条目（agy CLI 自己的登录态）：条目置灰并说明
+  function syncEntry() {
+    const k = A.KINDS[$('afKind').value];
+    const managed = !k.entry;
+    $('afEntry').disabled = managed;
+    $('afEntry').placeholder = managed ? '由 agy CLI 管理' : '';
+    if (managed) $('afEntry').value = '';
+    $('afEntryHint').textContent = managed
+      ? `由 agy CLI 管理（${k.entryNote}），无需登记条目。只登记 HOME，保存后所在机 agentd 读登录态、回填短指纹。`
+      : '只登记位置。保存后所在机 agentd 读取凭据、回填短指纹，密钥不进账本。';
+  }
+  function fillDefaults() {
+    $('afEntry').value = A.KINDS[$('afKind').value].entry;
+    if (!$('afThreshold').value) $('afThreshold').value = A.DEFAULT_LOW;
+    if (!$('afWarn').value) $('afWarn').value = A.DEFAULT_WARN;
+  }
+  function openForm(a, kind) {
+    editing = a;
+    $('acctDialogTitle').textContent = a ? `编辑账号 · ${a.name}` : `登记账号 · ${A.KINDS[kind || 'opencode-go'].name}`;
+    $('afName').value = a ? a.name : '';
+    $('afName').readOnly = !!a;
+    $('afKind').value = a ? a.kind : (kind || 'opencode-go');
+    $('afMachine').value = a ? a.machine : 'linux-01';
+    $('afInterval').value = a ? a.interval : 15;
+    $('afHome').value = a ? a.home : '';
+    $('afEntry').value = a ? a.entry : '';
+    $('afProxy').value = a ? a.proxy : '';
+    $('afThreshold').value = a && a.threshold != null ? a.threshold : '';
+    $('afWarn').value = a && a.warn != null ? a.warn : '';
+    $('afFeedback').hidden = true;
+    if (!a) fillDefaults();
+    syncEntry();
+    dlg.showModal();
+  }
+  $('afKind').addEventListener('change', () => { fillDefaults(); syncEntry(); });
+  $('afName').addEventListener('input', () => {
+    if (!editing && $('afName').value.trim()) {
+      const root = $('afMachine').value === 'linux-01' ? '/root/.handoff/home/' : '~/.handoff/home/';
+      $('afHome').value = root + $('afName').value.trim();
+    }
+  });
+  $('afCancel').addEventListener('click', () => dlg.close());
+  $('acctForm').addEventListener('submit', (e) => {
+    e.preventDefault(); // 原型不连后端
+    const fb = $('afFeedback');
+    fb.hidden = false;
+    fb.textContent = editing
+      ? '已保存（mock）。凭据位置或代理有变时，所在机 agentd 会重新读指纹并探测一次。'
+      : `已登记（mock）。${$('afMachine').value} 的 agentd 将读取凭据、回填指纹并探测一次；密钥不进账本。`;
+  });
+
+  // ---- 删除：仍被载体引用时拦住，点名去改哪些载体 ----
+  const del = $('delDialog');
+  function openDelete(a) {
+    const refs = A.carriersOf(a.name);
+    if (refs.length) {
+      $('delTitle').textContent = `不能删除 ${a.name}`;
+      $('delDesc').innerHTML = `仍有 ${refs.length} 个载体引用这个账号：${refs.map((c) => `<b class="mono">${c.name}</b>`).join('、')}。先在「设置 · 自动化」把它们换到别的账号，或清空账号选择。`;
+      $('delActions').innerHTML = '<button class="btn sm" id="delClose">关闭</button><a class="btn sm primary" href="settings.html?section=automation" style="text-decoration:none">去改载体</a>';
+    } else {
+      $('delTitle').textContent = `删除账号 ${a.name}？`;
+      $('delDesc').textContent = `只删除账本里的登记，${a.machine} 上的凭据文件不动。删除后各机控制台同时看不到它。`;
+      $('delActions').innerHTML = '<button class="btn sm" id="delClose">取消</button><button class="btn sm primary" id="delOk">删除</button>';
+      $('delOk').addEventListener('click', () => {
+        A.accounts.splice(A.accounts.indexOf(a), 1);
+        del.close();
+        A.notify();
+      });
+    }
+    $('delClose').addEventListener('click', () => del.close());
+    del.showModal();
+  }
+
+  // 底栏：在本页点「管理账号…」不必整页跳转，直接展开、滚到并高亮
+  A.subscribe(render);
+  A.mountStatusBar({ onPick: (name) => { highlight = name; opened.add(name); render(); focusHighlight(); } });
+  function focusHighlight() {
+    const el = highlight && $('acct-' + highlight);
+    if (el) el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  }
+  render();
+  focusHighlight();
+</script>
+</body>
+</html>

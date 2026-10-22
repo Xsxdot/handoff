@@ -280,7 +280,7 @@
 
 </style>
 </head>
-<body>
+<body class="has-statusbar">
 <div class="app-shell">
   <aside class="sidebar">
     <div class="brand">handoff</div>
@@ -304,6 +304,8 @@
       <a class="dock-btn" style="background:var(--muted);color:var(--foreground)" href="board.html" title="工作项账本" aria-current="page">▤<span class="badge dock-badge">3</span></a>
       <a class="dock-btn" href="../index.html" title="任务看板（task 级弹层在工作台内）">▦</a>
       <button class="dock-btn" title="工单">✉<span class="badge dock-badge">1</span></button>
+      <!-- B453 新增：账号与额度 -->
+      <a class="dock-btn" href="accounts.html" title="账号与额度">◔</a>
       <a class="dock-btn" href="settings.html" title="设置">⚙</a>
       <button class="dock-btn" title="home 基准终端">▭</button>
       <button class="dock-btn" title="添加项目">＋</button>
@@ -1300,5 +1302,8 @@
   render();
   renderQueue();
 </script>
+<!-- B453：控制台底栏（额度条），mock 与账号页共用 -->
+<script src="../shared/accounts.js" data-root="../"></script>
+<script>HandoffAccounts.mountStatusBar();</script>
 </body>
 </html>
