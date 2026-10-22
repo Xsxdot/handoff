@@ -338,7 +338,10 @@ export function SchedulingPage({ compact = false }: SchedulingPageProps = {}): R
           ? undefined
           : (accounts ?? []).flatMap((a) => a.logins).find((l) => l.id === carrier.login)
         const nextHome = carrier.login === NO_LOGIN ? '' : selectedLogin ? (selectedLogin.home === '~' ? '' : selectedLogin.home) : (previous?.home_dir ?? '')
-        const sameLogin = previous !== null && (previous.login ?? '') === (carrier.login === NO_LOGIN ? '' : carrier.login)
+        // 三态比较：上一份回执「无账号」记 NO_LOGIN、存量未选记 ''、其余记登录 id。
+        // 未选（''）不等于无账号；折叠成同一值会把「未选 → 无账号」误判为登录未变、不检测。
+        const prevLogin = previous === null ? '' : previous.no_account ? NO_LOGIN : (previous.login ?? '')
+        const sameLogin = prevLogin !== '' && prevLogin === carrier.login
         const homeChanged = previous !== null && !sameLogin && (previous.home_dir ?? '') !== nextHome
         const result = await putCarrier(name, expect, {
           name,

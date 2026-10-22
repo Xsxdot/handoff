@@ -9,10 +9,12 @@ package accounts_test
 // 边界：内存 registry（与账本适配器同一 CAS 契约）；扫描与取材由 agentd/accountwork 承接。
 
 import (
+	"encoding/json"
 	"fmt"
 	"sync"
 	"testing"
 
+	"github.com/Xsxdot/handoff/internal/schedclient"
 	"github.com/Xsxdot/handoff/internal/scheduling/accounts"
 )
 
@@ -247,5 +249,56 @@ func TestReconcileLoginStateTransitions(t *testing.T) {
 	other := reconcile(t, svc, "m2")
 	if other.Gone != 0 {
 		t.Fatalf("他机的发现不得动本机登录：%+v", other)
+	}
+}
+
+// labelRaceRegistry 模拟「本机快照之后他机先补了 label」：首次按 id 读账号行时先把 label
+// 写成他机值，再返回重读后的行。用来证明 backfillLabel 以重读的 cur 为准。
+type labelRaceRegistry struct {
+	*memRegistry
+	id    string
+	label string
+}
+
+func (r *labelRaceRegistry) Get(kind, id string) (schedclient.Record, error) {
+	rec, err := r.memRegistry.Get(kind, id)
+	if err != nil || kind != accounts.KindAccount || id != r.id {
+		return rec, err
+	}
+	var a accounts.Account
+	if err := json.Unmarshal(rec.Body, &a); err != nil {
+		return schedclient.Record{}, err
+	}
+	if a.Label != "" {
+		return rec, nil // 已经是他机补好的行：后续读原样返回
+	}
+	a.Label = r.label
+	body, err := json.Marshal(a)
+	if err != nil {
+		return schedclient.Record{}, err
+	}
+	if _, err := r.memRegistry.Put(kind, id, rec.Version, body, "race"); err != nil {
+		return schedclient.Record{}, err
+	}
+	return r.memRegistry.Get(kind, id)
+}
+
+// TestReconcileBackfillLabelRechecksCurrentRow 锁 m-a：快照无 label、重读发现他机已补
+// label → 不按本次发现的 label 覆写、不写行（版本不动）。
+func TestReconcileBackfillLabelRechecksCurrentRow(t *testing.T) {
+	mem := newMem()
+	reconcile(t, accounts.New(mem), "m1", mainHome(ogFound("opencode.db", fpA)))
+	race := &labelRaceRegistry{memRegistry: mem, id: "opencode-go:aaaa11112222", label: "other@example.com"}
+	reconcile(t, accounts.New(race), "m1", mainHome(accounts.FoundLogin{Kind: accounts.KindOpencodeGo,
+		Source: "opencode.db", Fingerprint: fpA, Label: "u@example.com"}))
+	views, err := accounts.New(mem).List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(views) != 1 {
+		t.Fatalf("应恰一个账号，得 %+v", views)
+	}
+	if views[0].Account.Label != "other@example.com" || views[0].Version != 2 {
+		t.Fatalf("重读已有 label 应保留且不写行，得 %+v（版本 %d）", views[0].Account, views[0].Version)
 	}
 }
