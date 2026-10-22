@@ -501,11 +501,13 @@ go test ./cmd/ -run 'B460|B452|Wait|Dispatch' -count=1
 
 ```
 任务上下文：
-- 任务形态：<readonly 或 branch>（readonly = 只读调查：不改仓库、不提交，结论写成报告交回）
+- 任务形态：<readonly 或 branch><括注：只写本任务形态的那一条>
 - 工作树：<workdir>
 - 产物目录：<artifacts_dir>（环境变量 HANDOFF_ARTIFACTS_DIR）
 - 任务临时目录：<task_tmp_dir>（环境变量 TMPDIR）
 ```
+
+形态括注（B465 更正：原草案对 branch 也写 readonly 解释，flash 审批模型据此把分支任务当只读升级）：readonly →「（readonly = 只读调查：不改仓库、不提交，结论写成报告交回）」；branch →「（分支任务：可在任务工作树内改代码、git commit 到本地任务分支；push 等改变远端仓库的操作不在此列）」。
 
 仅当形态为 readonly 时再追加：
 
