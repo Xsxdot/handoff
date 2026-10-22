@@ -1,6 +1,6 @@
 # B453 实现计划：账号与额度（手工登记、所在机定时探测、派发看账号额度）
 
-- 状态：**已拍板（2026-10-22，主会话协调者；用户外出，按 2026-10-22 自主授权裁决）**。裁决见下方「拍板」节；与下方各 Q 的「荐」不一致处以「拍板」节为准。 **§8 修订 r1**（2026-10-22，审查第 1 轮 I1 回写）。 **§8 修订 r2**（2026-10-22，审查第 1 轮 I2：F5 增 `recover_at`）。 **§8 修订 r3**（2026-10-22，Q2 用户裁决：opencode-go 登录账号来源）。
+- 状态：**已拍板（2026-10-22，主会话协调者；用户外出，按 2026-10-22 自主授权裁决）**。裁决见下方「拍板」节；与下方各 Q 的「荐」不一致处以「拍板」节为准。 **§8 修订 r1**（2026-10-22，审查第 1 轮 I1 回写）。 **§8 修订 r2**（2026-10-22，审查第 1 轮 I2：F5 增 `recover_at`）。 **§8 修订 r3**（2026-10-22，Q2 用户裁决：opencode-go 登录账号来源）。 **§8 修订 r4**（2026-10-22，审查第 3 轮 R3-I2：F5 entry 缺席条件）。
 - 输入：`docs/superpowers/specs/b453.md` **r1.1**（r1 2026-10-22 用户批准；r1.1 同日增第四种 kind `agy`，提交 `9043ba71`）。L3，形态甲（本地盯），**不扇出**：一张卡、单分支 `cards/B453-charter-1`、按段串行。
 - 事实：`b453-facts-code.md`（基线 fad1aadf，本稿复核过的行号见 §10）、`b453-facts-orca.md`（三家 HTTP + agy CLI 的外部形状）、`b453-facts-providers.md`。台账 `docs/superpowers/specs/b453-ledger.md`「plan」节是本稿全部读数、命令与判断的原始记录。
 - 基线：分支 `cards/B453-charter-1` @ `9043ba71`（已含 main/B460；代码与 `a4e206d8` 相同，之后只有文档提交）。
@@ -406,6 +406,9 @@
 - **F9 增补**：opencode-go 的 `entry` 取值语义——空 = 自动（`auth.json` 有 `opencode-go` 条目用 API key，否则用 `opencode.db` 当前登录账号）；`opencode.db` = 只用登录账号；其他值 = 只用 `auth.json` 同名条目。其余 kind 不变。
 - **F8 增补**：opencode-go 登录账号来源的 `fingerprint` 取「账号 id + org id」的短哈希（与 API key 来源不可比：同一人换来源即视为不同凭据，载体指纹比对按此标不一致）；`plan_type` 取 console 状态的 `product`（如 `go-plus`）。
 - 外部 wire（对接，非本侧冻结）：`GET https://opencode.ai/console/api/go/status`，Bearer `account.access_token` + `x-org-id: account_state.active_org_id`；`access.meters.{fiveHour,week,month}.{usedMicroCents,limitMicroCents,resetsAt}`。样本 `scratchpad/t453/samples/opencode-go-console-status.json`（已脱敏，实现时入仓 testdata）。
+
+**§8 修订 r4（2026-10-22，审查第 3 轮 R3-I2）**
+- **F5 增补**：AccountView 的 `entry` 除 agy 外，opencode-go 自动模式（定义里 entry 为空）也缺席；AccountInput（F9）缺 `entry` 键时服务端按空处理（opencode-go = 自动，codex/grok 取各自缺省条目）。消费方把缺席读作「自动 / 由 CLI 管理」，不得当作错误。
 
 **拍板记录**（难逆转、无上下文会惊讶、真取舍）：
 - **定义与读数分两行**（F18，Q1）。被否方案：同行分字段。反过来写不会有任何单测变红（单线程下两种都对），只有 V3 并发负载与 R1 人侧编辑体验能看出差别。

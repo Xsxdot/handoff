@@ -1008,7 +1008,7 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 - 分支任务撞额度的 `notice` 工单不发推送（推送扇出按事件分类，notice 没有对应事件），只在 `--wait` 退出 5、控制台工单面板与收件箱可见。来源：同上。
 - `/api/machines`（或身份读面）加本机全队名：控制台读不到本机名，载体对话框「同机账号」靠「账号所在机不是任何已登记远端机」推断，账号登记的「所在机器」也只能自由输入。来源：B453 段 5。
 - 撞额度分类签名表仍是合成的（opencode-go `ENTITLEMENT_ERROR`、codex `insufficient_quota`/`usage_limit_reached`、grok、agy），R6a 只拿到「key 过期」反例与成功样本；有真样本后替换并补回放。来源：B453 真机 R6a。
-- opencode-go 欠交（待用户二选一）：唯一的 `auth.json › opencode-go` API key（linux-01 `muse`）已过期，真机探测得 401 `api_key_expired`；mac-mini 的 opencode 是 OAuth 账号登录（登录态在 `opencode.db`），没有 API key。或在 OpenCode Console 新建 API key 写入某载体 HOME，或同意新增 `opencode.db › account`（OAuth token）凭据位置（plan Q2 备选）。来源：B453 真机 R1。
+- ~~opencode-go 欠交（待用户二选一）：唯一的 `auth.json › opencode-go` API key（linux-01 `muse`）已过期，真机探测得 401 `api_key_expired`；mac-mini 的 opencode 是 OAuth 账号登录（登录态在 `opencode.db`），没有 API key。或在 OpenCode Console 新建 API key 写入某载体 HOME，或同意新增 `opencode.db › account`（OAuth token）凭据位置（plan Q2 备选）。来源：B453 真机 R1。~~ 已由 B453 r1.3 关闭（2026-10-22 用户选 opencode.db 登录账号来源，真机 R1′ og-mini 读到三窗口）。
 - 窗口标签词表在 `cmd/account.go` 与 `scheduling/accounts.WindowLabel` 各一份（CLI 只消费 wire、不 import 编制域，不能直接复用后者）；要合一就把标签放到 `proto` 侧。来源：B453 段 4 交回、段 6 核对。
 - 旁见（非本卡引入，只记）：删除载体后 `squad list` / `GET /api/squads` 仍列出计数 0 的运行位行（`carrier/<名>`、`squad/<队>/<名>`）——运行位行取 `RunningCounts()` 全量键（B390 观察面），删载体不清计数，与上文 B448 R11「生产遗留无主计数」同一条缝。来源：B453 真机 R6b。
 - 旁见（非本卡）：只回复「OK」的回合被当成 question 工单，`dispatch --wait` 以 5 退出。来源：B453 真机 R3。
@@ -1017,6 +1017,7 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 - 载体检测时的限速说明（429，按 B453 不算额度）会在 `ApplyDetect` 写回时被清掉，载体卡片看不到「最近一次检测被限速」；要么保留为检测证据的一部分，要么另设短期提示。来源：B453 审查第 1 轮 m4。
 - 撞额度标记的来源（哪个任务、哪台机器、何时打的标记）未投影到 `AccountView`，控制台只显示「无额度」而无法追到触发任务；需要时扩 F5 可选键（走冻结变更）。来源：B453 审查第 1 轮 m6。
 - agy 在 Windows 上的额度探测：非目标平台，现报「本平台未支持」；需要时再接。来源：`docs/superpowers/plans/b453-plan.md:162`「留待后续」，B461 finish-check 残余核对发现未入账。
+- opencode-go 同 HOME 的「自动」条目（auth.json 有 key 时实际选中 `auth.json › opencode-go`）与显式 `opencode-go` 条目查重不判同一凭据，可重复登记；要判重须改 F9 的字面语义（走冻结变更）。来源：B453 审查第 3 轮 R3-m2。
 
 ## B460 残余（2026-10-21，熟练工工单治理 spec Out of Scope「本期不做、后续要做」）
 
