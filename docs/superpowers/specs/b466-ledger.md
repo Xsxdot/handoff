@@ -47,3 +47,12 @@
    变化只有 9 条 escalate→consult（8 条人工清单 python、8718 黑名单未命中），其余 104 条出口不变，AutoAllow 集合不变。
 10. 全仓编译：`go build ./... && go vet ./...` + `gofmt -l` 空，EXIT=0。
 11. 提交：`git commit`（implement）→ `ab2e9532 fix(B466): 落点解析剥离数据型 heredoc 正文、cd 基准下 glob 写落点可证明、cd 链可信时 cd 后参数位写可静默`
+
+## finish（2026-10-23，用户授权「合并推送吧，换版等主会话一起换，你不用操作」）
+
+12. 合并前新鲜全量（分支 4b81d03b + 本台账提交）：`gofmt -l $(git ls-files '*.go')` 空、`go vet ./...` 过；
+    `env -u CLAUDE_CODE_SESSION_ID go test ./... -count=1` 第 1 次 `internal/executor/opencode` `TestProbeReplayClassification/S3,S4`
+    红（「回放未产出任何终结事件，实际事件 [usage progress usage]」）——roadmap 已记的全量并行负载偶发红（本分支未改该包，
+    `git diff --stat c0a6c8d2..HEAD -- internal/executor` 空）；单跑 3/3 ok；第 2 次全量 67 包 ok、EXIT=0。
+13. main 未动（`git rev-parse main origin/main` 均 c0a6c8d2 = 本分支基线），`--no-ff` 合并树与分支树一致，合并后全量即上条。
+14. 换版：按用户指示不在本会话操作，由主会话统一换 linux-01；真机实测随换版进行。
