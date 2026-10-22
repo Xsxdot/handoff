@@ -456,3 +456,9 @@
   - 还原后 `git diff --stat internal/quota/opencodego.go` 为空，同命令 ok。
 - R3-m1：新用例 `TestOpencodeGoLoginDSNIsReadOnly`（只读连接能读、写语句报 readonly、库不存在不建库）先编译红 `undefined: loginDSN`；提取 `loginDSN` 后绿。变异 `mode=ro` → `mode=rwc`：`go test ./internal/quota/ -count=1` 只有新用例 FAIL `探测器的连接必须拒绝写入（SQLITE_READONLY），得 <nil>`（其余全绿，印证审查所说无锁）；还原后 `mode=ro&` 计数回 1。
 - 收尾：`go test ./internal/quota/ -count=1` ok；`go vet ./internal/quota/` 过；`go build ./...` 过；gofmt 无差异。
+
+## review 第 3–4 轮（2026-10-22，独立审查 subagent）
+- 第 3 轮（57757830..4c304658）FAIL：R3-I1 登录来源凭据抹除无测试锁（L5/L6 变异全绿）、R3-I2 F5 entry 缺席条件未回写；R3-m1 只读打开无锁（L9 全绿）、R3-m2 自动/显式条目不判重。核销 N1/N2/N3 与修复轮 4（只改测试）。复跑 8 包 ok、vitest 全量 3 次 2013、变异 L1–L4/L7/L8/前端 红。
+- 处置：R3-I2 → plan §8 r4（02bd3aa9）；R3-m2 → roadmap（同提交，并关闭 opencode-go 欠交条目）；R3-I1/R3-m1 → 修复轮 6（bb4f2454）。
+- 第 4 轮（4c304658..bb4f2454）PASS：L5、L6、L9、L11 转红；quota 包 ok、vet/gofmt 净；仅剩 r4 措辞 Minor（主会话已改为「按该 kind 的缺省处理」）。
+- 浏览器复核（隔离 t453-mac 67436fe5，浏览器熟练工）：og-mini 底栏「0% 4h11m ·5% 3d 20h」带进度条；弹层详细「5h 0% 周 5% 月 2%」、精简「3d 20h 5%」；hover 面板含 go-plus 与三窗口；/accounts 凭据行「自动（auth.json › opencode-go，否则 opencode.db 登录账号） · sha256:1e5f72dfee52」；登记框 opencode-go 条目标签「留空 = 自动；opencode.db = 登录账号；其他 = auth.json 里的键」，其余 kind 文案不变——与 spec r1.3 及原型形态一致。

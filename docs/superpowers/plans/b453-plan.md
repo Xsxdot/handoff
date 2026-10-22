@@ -408,7 +408,7 @@
 - 外部 wire（对接，非本侧冻结）：`GET https://opencode.ai/console/api/go/status`，Bearer `account.access_token` + `x-org-id: account_state.active_org_id`；`access.meters.{fiveHour,week,month}.{usedMicroCents,limitMicroCents,resetsAt}`。样本 `scratchpad/t453/samples/opencode-go-console-status.json`（已脱敏，实现时入仓 testdata）。
 
 **§8 修订 r4（2026-10-22，审查第 3 轮 R3-I2）**
-- **F5 增补**：AccountView 的 `entry` 除 agy 外，opencode-go 自动模式（定义里 entry 为空）也缺席；AccountInput（F9）缺 `entry` 键时服务端按空处理（opencode-go = 自动，codex/grok 取各自缺省条目）。消费方把缺席读作「自动 / 由 CLI 管理」，不得当作错误。
+- **F5 增补**：AccountView 的 `entry` 除 agy 外，opencode-go 自动模式（定义里 entry 为空）也缺席；AccountInput（F9）缺 `entry` 键时服务端按该 kind 的缺省处理（opencode-go 缺省为空 = 自动，codex/grok 取各自缺省条目，agy 不用条目）。消费方把缺席读作「自动 / 由 CLI 管理」，不得当作错误。
 
 **拍板记录**（难逆转、无上下文会惊讶、真取舍）：
 - **定义与读数分两行**（F18，Q1）。被否方案：同行分字段。反过来写不会有任何单测变红（单线程下两种都对），只有 V3 并发负载与 R1 人侧编辑体验能看出差别。
