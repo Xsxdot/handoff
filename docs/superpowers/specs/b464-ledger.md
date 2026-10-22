@@ -425,3 +425,13 @@
 - **R9 附带发现（交审查判级）**：同回合 WARN「协调者回合的载体身份对应多个不同登录，不套用登录代理」carriers=[t464-oc-lnx, t464-ds]——`internal/agentd/account_carrier.go` `coordinatorAccountProxy(cli, homeDir)` 按 (CLI, HOME) 反查载体，同 HOME 多登录（B464 下常态）即放弃登录代理。
 - **R12 密钥审计：通过（附一条存量现象）。** 只打印计数与键路径的脚本：取 linux `/root` 与 `~/.handoff/home/*` 下 opencode auth.json / opencode.db 账号表 / codex / grok / agy token 中 ≥24 字符的串（9 个源文件、21 串），查隔离实例 `agentd.out`、测试账本 `pg_dump --data-only`、数据目录普通文件（跳过软链、FIFO/socket）。结果：`agentd.out` 0；账本 1 = agy token 的 `.token.expiry` 时间戳（长 30，非密钥，误报）；数据目录 1 = 任务 9238c515（旧二进制 8cd3a9d6 派出，即 R13 作废那条）`agyhome` 下按旧逻辑复制的 token 与 `.orig-google-oauth` 普通文件——正是本卡 Q8 消除的行为，已删除这两份测试残留。mac 侧（opencode.db 1 源、2 串）对 `macdata/agentd.log`、`mac.out`、`macdata/**` 均 0。
 - **存量现象（finish 落 roadmap）**：生产 agentd 在 B464 之前派出的 agy 任务，其任务目录 `agyhome` 下留有 token 普通文件副本；换版后新任务为软链，但旧任务目录的副本不会自动消失——finish 时确认 `handoff gc` 是否回收终态任务 agyhome，不回收则立条。
+
+## 独立审查（技术轮，2026-10-22，本地 subagent，diff 755c0aa5..680ef95c）
+
+- 裁决：**不放行**。第一步漏报 4 项（段 5 载体对话框未选/无账号合并、段 5 文案偏离原型、段 5 偏离 7「未删测试凑绿」与事实不符、段 1 删检测 argv 断言未列清单）。
+- Critical：C1 `SchedulingPage.tsx:54/322/329/480` 草稿把「未选」与「无账号」都读成 `login:''`，编辑存量未选载体保存即发 `no_account:true`、服务端镜像 HOME 置空（搬到主 HOME），前端 `homeChanged` 不触发检测停在 pending；新建缺省无账号（原型缺省第一条兼容登录）。违反 Q3/A14、S6、原型。
+- Important：I1 F1 opencode-go OAuth 登录不取 `account.email` 作 label（`quota/opencode_login.go:73-86`、`logins.go:170`）；I2 协调者回合登录代理按 (CLI,HOME) 反查，同 HOME 多登录即失效（`agentd/account_carrier.go:122-165`，R9 实测）；I3 `TestLoginHomeCreatesIsolatedHomeAndCommandTable` 未钉 `loginGOOS`，darwin 全量稳定红；I4 检测回合 argv「不跑 --version、含 run/--format json/ping」断言被删；I5 wire 窗口 `group` 键失去契约在场样本（`contract.test.ts:927-929` 注释仍声称锁定）；I6 前端重写删掉仍成立断言（会话 5h 窗口、「显示的是」旧读数、`.a-r3` 完整原因、「探测请求失败」、点卡头展开、登录行载体列、载体行账号名/无额度/HOME、contract.test 的 plan_type/used_percent/last_attempt_at）。
+- Minor：M1「不晚于 即将 后」（B453 存量，`model.ts:355/401`）；M2 本机别名空态链接用 `discovery.self` 补 machine；M3 文案对齐原型；M4 F3 不成立（「账号探测开始」行自段 1 起带 proxy），可选给成功/失败行加打码 proxy；M5 F4 维持 `mode=ro`，在 `loginDSN` 注释写明不用 immutable 的理由；M8 「登录已失效」补一支经 agentd 派发入口的测试、dispatchHint 补页面层断言。
+- 复跑：`go vet` / `gofmt -l` 空；全量 go test 红 I3 与 `TestServeMultipleListeners`（单跑 -count=3 ok，负载偶发，非本卡）；vitest 无负载 150/2016 全过；typecheck 0。
+- 变异 M1–M6 全部转红、还原回绿（账号 id 归并、迁移规则 3、准入 gone、登录代理、前端二选一、前端 gone 暂停）；缺口：M3 只红在域层（真机 R4 补）、M6 只红在纯函数层。
+- 处置：全部 Critical/Important 与 Minor 1–5、8 并入段 6（修复 + plan 段 6 文档收口）派 runner 小队。
