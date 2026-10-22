@@ -96,3 +96,23 @@
 - `git commit`（Go 全部改动 + 契约 fixture）→ `cb24bb62 feat(B464): 账号登录发现、载体选登录与 HOME 供给去复制（段 1）`，`83 files changed, 4026 insertions(+), 1724 deletions(-)`。
 - `git commit`（竖切测试）→ `de2c0237 test(B464): 首故事竖切——发现 → 存量迁移 → 选登录建载体 → 检测 → 派发，零凭据写入`。
 - `git commit`（web 类型对齐 + 本台账）→ `ea4958a1 feat(B464): 控制台类型对齐段 1 wire；台账记 implement 段 1`；提交前删除临时 `web/node_modules` 软链；`git status --porcelain` 空。
+
+## 段 0 真机事实 R0（2026-10-22，主会话；只打印键名/存在性/时间，未读任何凭据值）
+
+- **R0-1 claude**：mac-mini 与 macbook-pro 均 `2.1.220`；linux-01 未装 claude。`~/.claude.json › oauthAccount` 有 `accountUuid`、`emailAddress`、`organizationUuid` 等 18 键（两台 Mac 都有），但 `claude auth status --json` 两台都是 `loggedIn:false, authMethod:none`（mac-mini 本地 GUI 会话执行；mbp 经 SSH）——**oauthAccount 存在 ≠ 已登录**，资料是旧缓存。登录判据须用 `claude auth status --json` 的 `loggedIn`（子进程，按 HOME 跑），身份取 `oauthAccount.accountUuid`（仅在 loggedIn 时可信），label `emailAddress`。两台 Mac 均无 `~/.claude/.credentials.json`；钥匙串：mac-mini 只有 `Claude Safe Storage`（无 `Claude Code-credentials`），mbp 有 `Claude Code-credentials`（无后缀变体）。登录命令 `claude auth login`（`--claudeai` 缺省订阅；`--console` API 计费；`--sso`）。
+- **R0-2 claude 钥匙串是否跨 HOME 共用：未定**。空临时 HOME 下 `auth status` 为 false，但两台主 HOME 也都是 false（mac-mini 未登录；mbp 经 SSH 访问不到登录钥匙串），无法对照。需在已登录的 Mac GUI 会话里对照「主 HOME / 空 HOME」各跑一次 `claude auth status --json`——并入 Q22 的用户登录请求一次完成。段 2 的 claude 取材在此之前只按「loggedIn 判据 + accountUuid 身份」写，不写钥匙串分支。
+- **R0-3 agy**（linux-01，agy 1.4.4）：`~/.gemini/antigravity-cli/antigravity-oauth-token` 是 JSON，顶层 `auth_method`（值 consumer）、`id_token`（JWT，claims 含 `email`、`sub`、`email_verified`…）、`token{access_token,expires_in,expiry,refresh_token,token_type}`；`.orig-google-oauth` 为 Google 授权库格式（client_id/refresh_token/expiry/scopes…）。→ **Q7 分支 (a)**：离线身份 = id_token `sub`（label `email`），不需要跑 `/usage`。agy 无 login 子命令（`--help` 列出的子命令无 auth/login），首次登录 = 在该 HOME 交互运行 `agy` 按提示登录。
+- **R0-4 opencode**（linux-01 1.19.3）：`auth.json` 只有 `deepseek: type=api`（第三方 key）；`opencode.db` `account(id,email,url,access_token,refresh_token,token_expiry,time_created,time_updated)`、`account_state(id,active_account_id,active_org_id)`，1 个账号，active 登录 token_expiry 约 670h 后、有 refresh_token。label 可取 `account.email`。登录命令：OAuth 账号 = `opencode console login`（另有 `console switch` 切 org）；provider API key = `opencode auth login -p <provider>`（`-m` 选方法）。
+- **R0-5 codex**（linux-01 codex-cli 0.163.0）：`auth.json` 顶层 `OPENAI_API_KEY`（空）、`auth_mode`、`last_refresh`、`tokens{access_token,account_id,id_token,refresh_token}`；id_token claims 含 `email`、`sub`、`https://api.openai.com/auth`；access_token exp 约 222h 后，last_refresh 2026-10-21。登录命令：`codex login`（浏览器）；无浏览器机器 `codex login --device-auth`；`codex login status` 查状态。label 取 id_token `email`。
+- **R0-6 grok**：linux-01 1.0.13 主 HOME 无 `~/.grok/auth.json`；macbook-pro 1.0.62 的 `auth.json` 条目名为 `https://auth.x.ai::<uuid>`（**带 `::<uuid>` 后缀**，B453 适配器按 `https://auth.x.ai` 精确名取条目——段 2 须按前缀匹配，否则新版 grok 探测/发现落空），条目键 `auth_mode,email,expires_at(字符串),key,refresh_token,user_id,team_id,principal_id…`。登录命令 `grok login`（`--oauth`）。
+- **R0-7 到期噪声**：codex ~9 天、opencode OAuth ~28 天、agy/grok 有 expiry，**四家都带 refresh token**，闲置 HOME 离线到期必然常年已过 → Q5 按 (C) 证据型执行（不改选 A）。
+- **R0-8 登录命令表（段 3 照抄）**：opencode OAuth `opencode console login`；opencode key `opencode auth login -p <provider>`；codex `codex login`（远端/无浏览器 `codex login --device-auth`）；grok `grok login`；agy 交互运行 `agy`；claude `claude auth login`。全部以 `HOME=<登录 HOME>` 前缀运行。
+- **R0-9 agy token 写法**：首次记录 linux-01 `antigravity-oauth-token` inode 5374653 mtime 1792637088；下一次在役 agy 任务跑完后复记，比对后定 Q8。
+
+## 主会话复核段 1 交回（2026-10-22）
+
+- 偏离 1（Q23 提前）：追认——Q23 已拍板采纳，段 1 删 `Carrier.Account` 后只能存账号 id，提前合理。
+- 偏离 2（既有测试断言改写）：留给独立审查逐条核对「既有测试断言改写清单」。
+- 偏离 3（web 12 例红）：段 5 重写账号页与载体对话框时消解；段 5 收口前全量 vitest 必须回绿。
+- 偏离 9（部分先实现后补测，红由注入缺陷取得）：记为流程偏离，审查的变异复验对这些路径加做。
+- 其余（V10 忽略残留键、A14 只在 HTTP 强制二选一、发现 60s、Q10 最小形、Q20 最小形）在 plan §9 权限内，认可。
