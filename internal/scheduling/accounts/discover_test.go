@@ -168,6 +168,36 @@ func TestReconcileBackfillsAccountLabelWithoutRenaming(t *testing.T) {
 	}
 }
 
+// TestReconcileKeepsExistingLabelAgainstOtherLogin 锁 m4：账号已有 label 时，另一条同身份登录
+// 给出不同邮箱不得覆写、不写行（版本不动）——否则两条登录会逐轮互写。
+func TestReconcileKeepsExistingLabelAgainstOtherLogin(t *testing.T) {
+	svc := accounts.New(newMem())
+	reconcile(t, svc, "m1", mainHome(accounts.FoundLogin{Kind: accounts.KindOpencodeGo,
+		Source: "opencode.db", Fingerprint: fpA, Label: "a@example.com"}))
+	views, err := svc.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(views) != 1 || views[0].Account.Label != "a@example.com" || views[0].Version != 1 {
+		t.Fatalf("首轮应带 label 建账号一次：%+v", views)
+	}
+	reconcile(t, svc, "m2", mainHome(accounts.FoundLogin{Kind: accounts.KindOpencodeGo,
+		Source: "opencode.db", Fingerprint: fpA, Label: "b@example.com"}))
+	views, err = svc.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if views[0].Account.Label != "a@example.com" {
+		t.Fatalf("已有 label 不得被另一条登录的邮箱覆写，得 %q", views[0].Account.Label)
+	}
+	if views[0].Version != 1 {
+		t.Fatalf("不覆写就不该写账号行，版本 = %d", views[0].Version)
+	}
+	if len(views[0].Logins) != 2 {
+		t.Fatalf("另一机登录仍应挂上，得 %d 条", len(views[0].Logins))
+	}
+}
+
 // TestReconcileLoginStateTransitions 锁段 1 的两态迁移：扫不到 → 已失效（不删行）、再现 →
 // 正常、同槽位换身份 → 改挂账号；出错的 HOME 不标已失效；discovery_run 每轮写。
 func TestReconcileLoginStateTransitions(t *testing.T) {

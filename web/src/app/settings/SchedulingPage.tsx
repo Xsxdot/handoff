@@ -331,13 +331,15 @@ export function SchedulingPage({ compact = false }: SchedulingPageProps = {}): R
       if (dialog.kind === 'carrier') {
         const carrier = draft as CarrierDraft
         const previous = dialog.value
-        // HOME 变才检测：服务端按登录镜像 home_dir（空 = 主 HOME），所以比较上一份回执的
-        // home_dir 与本次所选登录的 HOME，而不是比较登录 id（换登录但同 HOME 不必重检）。
+        // HOME 变才检测：先比登录 id——同一条登录 = 服务端镜像的 home_dir 不会变（存量行的
+        // 绝对路径/`~` 写法与登录的 `~/.handoff/home/...` 写法可能不同，比 home_dir 会误判）；
+        // 登录变了或从未选到选了，再比上一份回执的 home_dir 与本次所选登录的 HOME。
         const selectedLogin = carrier.login === NO_LOGIN
           ? undefined
           : (accounts ?? []).flatMap((a) => a.logins).find((l) => l.id === carrier.login)
         const nextHome = carrier.login === NO_LOGIN ? '' : selectedLogin ? (selectedLogin.home === '~' ? '' : selectedLogin.home) : (previous?.home_dir ?? '')
-        const homeChanged = previous !== null && (previous.home_dir ?? '') !== nextHome
+        const sameLogin = previous !== null && (previous.login ?? '') === (carrier.login === NO_LOGIN ? '' : carrier.login)
+        const homeChanged = previous !== null && !sameLogin && (previous.home_dir ?? '') !== nextHome
         const result = await putCarrier(name, expect, {
           name,
           machine: carrier.machine,

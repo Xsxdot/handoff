@@ -64,7 +64,7 @@ export function Logins({ kind, logins, onLogin }: {
       : `请手动复制：${text} —— 在该机重新登录后，下次发现会更新这条登录的状态。`)
   }
   const copyRemoteCommand = async (l: LoginView) => {
-    const text = l.relogin?.remote_run
+    const text = loginCommandText(l.relogin, 'remote_run')
     if (!text) { setError('这条登录没有远端登录命令（服务端未下发 relogin.remote_run）'); return }
     const ok = await copyToClipboard(text)
     console.info('accounts.login.copy_remote_command', { login: l.id, copied: ok })

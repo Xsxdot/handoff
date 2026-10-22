@@ -354,6 +354,21 @@ describe('SchedulingPage 编辑弹窗对齐原型（B287）', () => {
       expect(detectCarrier).toHaveBeenCalledWith('mimo')
     })
 
+    it.each(['/root/.handoff/home/og-main', '~/.handoff/home/og-main'])(
+      '登录未变不触发检测：存量 home_dir=%s 与登录 HOME 写法不同也不误判（m3）',
+      async (storedHome) => {
+        const user = userEvent.setup()
+        vi.mocked(getSquads).mockResolvedValue({
+          carriers: [{ name: 'mimo', machine: 'linux-01', cli: 'opencode', home_dir: storedHome, status: 'online', version: 7, login: 'login-og-main', account_id: 'opencode-go:og-main', account_name: 'og-main' }],
+          squads: [], running: [],
+        })
+        render(<SchedulingPage />)
+        await user.click(await screen.findByRole('button', { name: '编辑 mimo' }))
+        await user.click(screen.getByRole('button', { name: '保存' }))
+        expect(vi.mocked(putCarrier).mock.lastCall?.[2]).toMatchObject({ login: 'login-og-main' })
+        expect(detectCarrier).not.toHaveBeenCalled()
+      })
+
     it('编辑带登录的载体：预选当前登录，保存回传 login；改选无账号则回 no_account', async () => {
       const user = userEvent.setup()
       vi.mocked(getSquads).mockResolvedValue({

@@ -203,7 +203,7 @@ describe('账号管理', () => {
     const user = userEvent.setup()
     render(<AccountsPage />)
     await user.click(within(loginRow('login-codex-spare')).getByRole('button', { name: '复制远端登录命令' }))
-    expect(copyToClipboard).toHaveBeenLastCalledWith('HOME=~/.handoff/home/codex-spare codex login --device-auth')
+    expect(copyToClipboard).toHaveBeenLastCalledWith('ssh root@linux-01 后执行：HOME=~/.handoff/home/codex-spare codex login --device-auth')
     expect(card('codex-spare').textContent).toContain('已复制远端登录命令')
     expect(within(loginRow('login-og-main')).queryByRole('button', { name: '复制远端登录命令' })).toBeNull()
   })
@@ -276,7 +276,7 @@ describe('新增登录（三步）', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
   })
 
-  it('远端登录勾选框：非本机默认勾选并复制 remote_run；本机默认不勾，勾上后展示与复制切换', async () => {
+  it('远端登录勾选框：非本机默认勾选并复制带 ssh 行的 remote_run；本机默认不勾，勾上后展示与复制切换', async () => {
     const user = userEvent.setup()
     const command = (machine: string) => ({
       ssh: `ssh root@${machine}`,
@@ -299,7 +299,7 @@ describe('新增登录（三步）', () => {
     await user.click(localBox)
     expect(dialog().querySelector('pre')?.textContent).toContain('--device-auth')
     await user.click(within(dialog()).getByRole('button', { name: '复制' }))
-    expect(copyToClipboard).toHaveBeenLastCalledWith('HOME=/root/.handoff/home/cx-abcd codex login --device-auth')
+    expect(copyToClipboard).toHaveBeenLastCalledWith('ssh root@linux-01 后执行：HOME=/root/.handoff/home/cx-abcd codex login --device-auth')
     await user.click(within(dialog()).getByRole('button', { name: '关闭' }))
 
     // 非本机（mac-mini）默认勾选，展示/复制 remote_run。
@@ -311,7 +311,7 @@ describe('新增登录（三步）', () => {
     expect(remoteBox).toBeChecked()
     expect(dialog().querySelector('pre')?.textContent).toContain('--device-auth')
     await user.click(within(dialog()).getByRole('button', { name: '复制' }))
-    expect(copyToClipboard).toHaveBeenLastCalledWith('HOME=/root/.handoff/home/cx-abcd codex login --device-auth')
+    expect(copyToClipboard).toHaveBeenLastCalledWith('ssh root@mac-mini 后执行：HOME=/root/.handoff/home/cx-abcd codex login --device-auth')
   })
 
   it('新身份识别结果文案是「新账号」；darwin claude 的 400 原文照显', async () => {

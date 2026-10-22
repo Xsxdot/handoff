@@ -149,11 +149,15 @@ export function loginCredText(l: LoginView, kind: string, now: number): string {
   return `变更 ${ago(l.changed_at, now)}`
 }
 
-/** loginCommandText 重新登录命令一句话：远端先 ssh 再执行；note 放括号里。 */
-export function loginCommandText(cmd: LoginCommand | undefined): string {
+/** loginCommandText 重新登录命令一句话：远端先 ssh 再执行；note 放括号里。
+ * variant='remote_run' 时命令正文换成远端变体，ssh 行与 note 规则不变——展示与复制同源，
+ * 避免「展示含 ssh、复制只给 remote_run」的两套文案（B464 最终审查第 2 轮 m2）。 */
+export function loginCommandText(cmd: LoginCommand | undefined, variant: 'run' | 'remote_run' = 'run'): string {
   if (!cmd) return ''
+  const command = variant === 'remote_run' ? cmd.remote_run : cmd.run
+  if (!command) return ''
   const prefix = cmd.ssh ? `${cmd.ssh} 后执行：` : ''
-  return `${prefix}${cmd.run}${cmd.note ? `（${cmd.note}）` : ''}`
+  return `${prefix}${command}${cmd.note ? `（${cmd.note}）` : ''}`
 }
 
 /** winTone 窗口分档：100% 无额度；≥ 低额度线 低额度；≥ 预警线 只变色；其余正常。 */
