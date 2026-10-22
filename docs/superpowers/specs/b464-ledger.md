@@ -668,3 +668,9 @@
 ### 提交事实
 
 - 命令：`git add -A && git commit -m "fix(B464): 段 9——homeChanged 三态比较、卡协调者载体名入口测试、label 重读保护、email 列容错收窄"`。输出：`[cards/B464-charter-7 7cabae94] fix(B464): 段 9——…`、`8 files changed, 265 insertions(+), 7 deletions(-)`、`create mode 100644 internal/agentd/b464_coordinator_carrier_test.go`。随后按台账纪律只 amend 一次把本行收进同一提交（amend 换 hash 属 git 事实）。
+
+## 主会话审段 9 与最终局部核验（2026-10-22）
+
+- 段 9（276f5303，8 文件 +269/−7）：I-1 `SchedulingPage.tsx` 三态比较并收正式用例；I-2 新增 `b464_coordinator_carrier_test.go`（清队首轮、冷唤醒两支生产入口测试）；m-a 重读后判 `cur.Label`；m-b 收窄 `no such column: email`；台账更正段 8 N1「等价于」表述。合并 a0e20a82。
+- **最终局部核验（本地 subagent，2f72c64b..a0e20a82）：通过，可进 finish。** 自做变异：A `scheddrain.go:508` → 红 `TestB464QueuedFirstRoundCarriesSeatCarrierToLoginProxy`；D `scheddrain.go:702` → 红 `TestB464ColdWakeCarriesSeatCarrierToLoginProxy`；C `keystone.go:348` overlay 短路 → 红同上；I-1 旧判据 → `Tests 1 failed | 27 passed (28)`，还原 28 passed。复跑 `env -u CLAUDE_CODE_SESSION_ID go test -count=1 ./...` RC=0（全包 ok）、vet/gofmt 空、vitest `150 files / 2027 tests` 全过、tsc 0。Minor（记账不阻塞）：m-a 早返回未写回内存 defs、未打日志（下轮发现自愈）；C 只由 agentd 入口测试捕获；m3 的 `~` 一例无牙（沿用）。
+- **review 裁决：通过**（技术轮 → 第 2 轮 → 段 8 局部复审 → 段 9 局部核验；真机 R1–R9c/R11–R13 见各节；S7 claude 跨 Mac 归并经用户裁定转 roadmap；R10 正式检查与 R14 归 finish）。
