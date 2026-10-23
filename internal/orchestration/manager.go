@@ -1612,7 +1612,7 @@ func (m *Manager) resumeForContinue(ctx context.Context, taskID string, ad execu
 	m.log.Info("进入冷恢复", "task", taskID, "executor", execName, "session", task.ExecutorSession)
 	out, err := r.Resume(executor.ResumeReq{
 		TaskID: taskID, TaskDir: filepath.Join(m.cfg.DataDir, "tasks", taskID),
-		RepoPath: task.Workdir(), SessionID: task.ExecutorSession,
+		RepoPath: task.Workdir(), HomeDir: task.HomeDir, SessionID: task.ExecutorSession,
 		Env: envKVs, Discipline: discText, Model: task.Model,
 		MarkRoot: prochost.ResolveMarkRoot(task.Workdir(), task.WorktreeManaged), Cold: true,
 		Approval: approval,
@@ -3944,7 +3944,7 @@ func (m *Manager) ResumeTask(taskID string) bool {
 		}
 	}
 	out, err := r.Resume(executor.ResumeReq{
-		TaskID: taskID, TaskDir: taskDir, RepoPath: task.Workdir(),
+		TaskID: taskID, TaskDir: taskDir, RepoPath: task.Workdir(), HomeDir: task.HomeDir,
 		SessionID: task.ExecutorSession, Env: envKVs, Discipline: discText, Model: task.Model,
 		MarkRoot: prochost.ResolveMarkRoot(task.Workdir(), task.WorktreeManaged), Cold: false,
 		Approval: approval,

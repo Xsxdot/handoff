@@ -1,23 +1,28 @@
 // SchedulingPage.tsx —— 自动化编制展示与 CAS 编辑分区。
 // 职责：展示服务端的载体/小队快照，并通过 scheduling API 保存登记草稿。
 // 边界：只触发目标机探测/检测 API，不在浏览器发现机器、写 flow 或决定协调者选择规则。
-// B453 S4：载体选账号（只列同机账号、可不选）；PUT 是整体替换，必须回传所选账号，否则编辑
-// 其它字段会把账号清掉。账号数据读 Shell 级共享快照（accounts/store），本页不另拉。
-import { useEffect, useRef, useState } from 'react'
+// B453 S4 / B464 段 1：载体选账号登录（只列同机登录）或「无账号 · 主 HOME」，二选一；HOME 由
+// 服务端按所选登录镜像（本页只读显示）。PUT 是整体替换，必须回传所选登录。账号数据读 Shell 级
+// 共享快照（accounts/store），本页不另拉。B464 段 1 只做与新 wire 对齐的最小改动，对话框按原型
+// 重做属后续段。
+import { useEffect, useState } from 'react'
 import type { ReactElement } from 'react'
 import { ChevronRight } from 'lucide-react'
-import type { CarrierInput, CarrierStatus, CarrierView, HomeProbeResp, SquadInput, SquadMember, SquadView, SquadsResp } from '../../api/scheduling'
+import type { CarrierInput, CarrierStatus, CarrierView, SquadInput, SquadMember, SquadView, SquadsResp } from '../../api/scheduling'
 import { fetchMachines } from '../../api/client'
-import { CARRIER_STATUS_LABEL, deleteCarrier, detectCarrier, getCarrierRunCommand, getSquads, probeHome, putCarrier, putSquad } from '../../api/scheduling'
+import { CARRIER_STATUS_LABEL, deleteCarrier, detectCarrier, getCarrierRunCommand, getSquads, putCarrier, putSquad } from '../../api/scheduling'
 import { copyToClipboard } from '../lib/clipboard'
 import { errorMessage } from '../lib/format'
-import type { AccountView } from '../../api/accounts'
-import { kindMeta, recoverAt, sameMachine, stateLabel, countdown } from '../accounts/model'
+import type { AccountView, LoginView } from '../../api/accounts'
+import { dispatchHint, homeText, kindMeta, loginCommandText, loginStateLabel, sameMachine, supportsProbe } from '../accounts/model'
 import { KindIcon, StatusText, Summary } from '../accounts/QuotaBits'
 import { useAccounts, useNow } from '../accounts/store'
 import '../accounts/accounts.css'
 
-type CarrierDraft = Omit<CarrierInput, 'max_concurrency' | 'account'> & { name: string; maxConcurrencyText: string; account: string }
+// login 三态（B464 C1）：登录 id / NO_LOGIN（「无账号 · 主 HOME」哨兵，同原型 NO_LOGIN 形）/
+// 空串（存量未选，未选不得提交）。home_dir 只是所选登录 HOME 的只读回显（服务端写镜像）。
+const NO_LOGIN = 'none'
+type CarrierDraft = Omit<CarrierInput, 'max_concurrency' | 'login' | 'no_account'> & { name: string; maxConcurrencyText: string; login: string }
 type SquadDraft = Omit<SquadInput, 'name'> & {
   name: string
   memberConcurrencyText: Record<string, string>
@@ -32,10 +37,6 @@ const INPUT = 'h-8 w-full rounded-md border bg-background px-2 text-xs'
 // 原型 .form-grid label：块级、12px、muted、下缘 4px——标签在控件上方。
 const FIELD_LABEL = 'mb-1 block text-xs text-muted-foreground'
 const CLI_OPTIONS = ['opencode', 'claude', 'codex', 'grok', 'agy']
-const CREDENTIAL_OPTIONS = [
-  { value: 'standalone', label: '独立账号' },
-  { value: 'main_home_sync', label: '主 HOME 同步' },
-]
 
 // 空值和 0 都表示“不限”，服务端 wire 用字段缺席表达这个状态；正数才进入 CAS body。
 function optionalConcurrency(raw: string): number | undefined {
@@ -50,38 +51,54 @@ function carrierDraft(row: CarrierView | null): CarrierDraft {
     name: row?.name ?? '',
     machine: row?.machine ?? '本机',
     cli: row?.cli ?? 'opencode',
-    home_dir: row?.home_dir ?? '',
     model: row?.model ?? '',
-    credential: row?.credential ?? 'standalone',
     maxConcurrencyText: row?.max_concurrency?.toString() ?? '',
-    account: row?.account ?? '',
+    login: row ? (row.no_account ? NO_LOGIN : row.login ?? '') : '',
   }
 }
 
-// MISMATCH_TEXT 指纹不一致的红字（S4 原型文案）；可以保存、不拦派发。
-const MISMATCH_TEXT = '凭据指纹与所选账号不一致'
-
-// dispatchHint 载体行的派发提示：账号低额度/无额度 → 暂停派发与预计恢复；其余不提示。
-function dispatchHint(a: AccountView, now: number): string {
-  if (a.state !== 'low' && a.state !== 'out') return ''
-  const r = recoverAt(a)
-  return r !== null ? `暂停派发，预计 ${countdown(r - now)} 后恢复` : '暂停派发，恢复时刻未知'
+/** 执行器 → 兼容账号 kind（载体下拉只列这些登录；服务端仍是权威校验）。 */
+const COMPATIBLE: Record<string, string[]> = {
+  opencode: ['opencode-go', 'apikey'],
+  codex: ['codex'],
+  grok: ['grok'],
+  agy: ['agy'],
+  claude: ['claude'],
 }
 
 /**
- * CarrierAccount 载体详情里的「账号」一栏（S4「显示所选账号与其状态」）：图标 名称 类型 一句话读数
- * （正常 = 每周「已用% 倒计时」，问题 = 状态短语，口径同弹层精简）；指纹不一致一行红字。
+ * CarrierAccount 载体详情里的「账号」一栏（S6）：账号名 · 机器 HOME（主 HOME 显示 ~），
+ * 登录状态与派发提示；已失效暂停、已过期只标红，未选登录照常派发并提示去选。
  */
 function CarrierAccount({ row, accounts }: { row: CarrierView; accounts: AccountView[] | null }) {
   const now = useNow()
-  if (!row.account) return <span className="text-muted-foreground">未选</span>
-  const a = accounts?.find((x) => x.name === row.account)
-  const hint = a ? dispatchHint(a, now) : ''
+  const [note, setNote] = useState('')
+  if (row.no_account) return <span className="text-muted-foreground">无账号 · 主 HOME（无凭据）</span>
+  if (!row.login) return <span className="text-muted-foreground">未选登录 · 照常派发，建议去「账号与额度」选一条</span>
+  const a = accounts?.find((x) => x.id === row.account_id)
+  const login = a?.logins.find((l) => l.id === row.login)
+  const hint = a && login ? dispatchHint(a, login, now) : null
+  const name = row.account_name ?? row.login
+  const copy = async () => {
+    const text = loginCommandText(login?.relogin)
+    if (!text) return
+    const ok = await copyToClipboard(text)
+    console.info({ event: 'scheduling.relogin.copy', login: row.login, copied: ok })
+    setNote(ok ? `已复制登录命令：${text}` : `请手动复制：${text}`)
+  }
   return (
     <span className="acct-scope">
-      <span className="acct-ref">{a && <KindIcon kind={a.kind} />}<span className="font-mono">{row.account}</span>{a && <span className="k">{kindMeta(a.kind).name}</span>}{a && <span className="st"><Summary a={a} now={now} order="lead" /></span>}</span>
-      {hint && <span className="block text-muted-foreground">{hint}</span>}
-      {row.account_mismatch && <span className="fp-mismatch block"><span className="q-out">{MISMATCH_TEXT}</span><br />载体 HOME 里读到的凭据不是 {row.account} 的；这个载体实际在用别的账号的额度。改选正确的账号，或把 HOME 换回该账号的凭据后点「检测」。</span>}
+      <span className="acct-ref">
+        {a && <KindIcon kind={a.kind} />}
+        <span className="font-mono">{name}</span>
+        {a && <span className="k">{kindMeta(a.kind).name}</span>}
+        <span className="k">· {a ? login?.machine ?? row.machine : row.machine} {login ? homeText(login.home) : ''}</span>
+        {login && <span className={`st ${login.state === 'ok' ? 'q-mute' : 'q-out'}`}>{loginStateLabel(login.state)}</span>}
+        {a && <span className="st"><Summary a={a} now={now} order="lead" /></span>}
+      </span>
+      {hint && <span className={`block ${hint.tone}`}>{hint.text}</span>}
+      {hint?.relogin && login?.relogin && <button type="button" className="tbtn" onClick={() => void copy()}>复制登录命令</button>}
+      {note && <span className="block text-muted-foreground">{note}</span>}
     </span>
   )
 }
@@ -157,9 +174,6 @@ export function SchedulingPage({ compact = false }: SchedulingPageProps = {}): R
   const [draft, setDraft] = useState<CarrierDraft | SquadDraft | null>(null)
   const [saveError, setSaveError] = useState('')
   const [saving, setSaving] = useState(false)
-  const [probe, setProbe] = useState<HomeProbeResp | null>(null)
-  const [probeError, setProbeError] = useState('')
-  const [probing, setProbing] = useState(false)
   const [detecting, setDetecting] = useState('')
   const [detectError, setDetectError] = useState<Record<string, string>>({})
   const [deleting, setDeleting] = useState('')
@@ -169,11 +183,15 @@ export function SchedulingPage({ compact = false }: SchedulingPageProps = {}): R
   const [expandedCarriers, setExpandedCarriers] = useState<Set<string>>(() => new Set())
   const [expandedSquads, setExpandedSquads] = useState<Set<string>>(() => new Set())
   const [compactSection, setCompactSection] = useState<'carriers' | 'squads'>('carriers')
-  const probeSequence = useRef(0)
-  const { accounts } = useAccounts()
+  const { accounts, discovery } = useAccounts()
   // 已登记远端机名（machineOptions 去掉本机别名）：同机判据用它推断「本机」的账号。
   const remoteNames = machineOptions.filter((m) => m !== '本机')
-  const accountsOn = (machine: string): AccountView[] => (accounts ?? []).filter((a) => sameMachine(a.machine, machine, remoteNames))
+  // loginsOn 这台机器上与该执行器兼容的登录（连同所属账号）；载体只能选同机兼容登录
+  // （服务端仍是权威校验）。cli 空 = 不限执行器（切换机器时用于判断原选择是否还可用）。
+  const loginsOn = (machine: string, cli = ''): { account: AccountView; login: LoginView }[] =>
+    (accounts ?? []).flatMap((account) => account.logins
+      .filter((l) => sameMachine(l.machine, machine, remoteNames) && (cli === '' || (COMPATIBLE[cli] ?? []).includes(account.kind)))
+      .map((login) => ({ account, login })))
 
   const load = async (): Promise<void> => {
     console.info({ event: 'scheduling.load.start', scope: 'settings' })
@@ -205,10 +223,13 @@ export function SchedulingPage({ compact = false }: SchedulingPageProps = {}): R
 
   const openCarrier = (row: CarrierView | null): void => {
     setDialog({ kind: 'carrier', value: row })
-    setDraft(carrierDraft(row))
+    const base = carrierDraft(row)
+    if (row === null) {
+      // 新建缺省第一条兼容登录；这台机器没有兼容登录才缺省「无账号 · 主 HOME」（原型 settings.html:595）。
+      base.login = loginsOn(base.machine, base.cli)[0]?.login.id ?? NO_LOGIN
+    }
+    setDraft(base)
     setSaveError('')
-    setProbe(null)
-    setProbeError('')
   }
 
   const openSquad = (row: SquadView | null): void => {
@@ -222,47 +243,8 @@ export function SchedulingPage({ compact = false }: SchedulingPageProps = {}): R
       setDialog(null)
       setDraft(null)
       setSaveError('')
-      setProbe(null)
-      setProbeError('')
     }
   }
-
-  // 探测请求只消费当前 draft；序号使旧响应不能覆盖用户刚改过的 HOME/CLI/机器。
-  // `~` 仍原样交给目标机解释，页面不展开路径。
-  useEffect(() => {
-    if (dialog?.kind !== 'carrier' || draft === null || !('home_dir' in draft)) return
-    const carrier = draft as CarrierDraft
-    if (carrier.home_dir === '' || carrier.cli === '') {
-      setProbe(null)
-      setProbeError('')
-      return
-    }
-    const sequence = ++probeSequence.current
-    setProbing(true)
-    setProbe(null)
-    setProbeError('')
-    const timer = window.setTimeout(() => {
-      const started = performance.now()
-      console.info({ event: 'scheduling.probe.start', cli: carrier.cli, machine: carrier.machine, path: carrier.home_dir })
-      void probeHome({
-        cli: carrier.cli,
-        path: carrier.home_dir,
-        credential: carrier.credential,
-        machine: carrier.machine,
-      }).then((result) => {
-        if (sequence !== probeSequence.current) return
-        console.info({ event: 'scheduling.probe.success', cli: carrier.cli, machine: carrier.machine, path: carrier.home_dir, kind: result.kind, elapsed: performance.now() - started })
-        setProbe(result)
-      }).catch((cause: unknown) => {
-        if (sequence !== probeSequence.current) return
-        console.error({ event: 'scheduling.probe.failure', cli: carrier.cli, machine: carrier.machine, path: carrier.home_dir, elapsed: performance.now() - started, cause })
-        setProbeError(errorMessage(cause))
-      }).finally(() => {
-        if (sequence === probeSequence.current) setProbing(false)
-      })
-    }, 0)
-    return () => window.clearTimeout(timer)
-  }, [dialog?.kind, draft && 'home_dir' in draft ? draft.home_dir : '', draft && 'cli' in draft ? draft.cli : '', draft && 'credential' in draft ? draft.credential : '', draft && 'machine' in draft ? draft.machine : ''])
 
   const detect = async (name: string): Promise<void> => {
     setDetecting(name)
@@ -325,6 +307,11 @@ export function SchedulingPage({ compact = false }: SchedulingPageProps = {}): R
       return
     }
     const expect = dialog.value?.version ?? 0 // CAS 必须使用打开弹窗时的行快照版本。
+    if (dialog.kind === 'carrier' && (draft as CarrierDraft).login === '') {
+      console.warn('scheduling.save.validation', { kind: dialog.kind, name, reason: 'login_not_selected' })
+      setSaveError('请先选择一条登录（或「无账号 · 主 HOME」）再保存；未选不会提交。')
+      return
+    }
     let squadMembers: SquadMember[] | undefined
     if (dialog.kind === 'squad') {
       try {
@@ -344,16 +331,25 @@ export function SchedulingPage({ compact = false }: SchedulingPageProps = {}): R
       if (dialog.kind === 'carrier') {
         const carrier = draft as CarrierDraft
         const previous = dialog.value
-        const homeChanged = previous !== null && previous.home_dir !== carrier.home_dir
+        // HOME 变才检测：先比登录 id——同一条登录 = 服务端镜像的 home_dir 不会变（存量行的
+        // 绝对路径/`~` 写法与登录的 `~/.handoff/home/...` 写法可能不同，比 home_dir 会误判）；
+        // 登录变了或从未选到选了，再比上一份回执的 home_dir 与本次所选登录的 HOME。
+        const selectedLogin = carrier.login === NO_LOGIN
+          ? undefined
+          : (accounts ?? []).flatMap((a) => a.logins).find((l) => l.id === carrier.login)
+        const nextHome = carrier.login === NO_LOGIN ? '' : selectedLogin ? (selectedLogin.home === '~' ? '' : selectedLogin.home) : (previous?.home_dir ?? '')
+        // 三态比较：上一份回执「无账号」记 NO_LOGIN、存量未选记 ''、其余记登录 id。
+        // 未选（''）不等于无账号；折叠成同一值会把「未选 → 无账号」误判为登录未变、不检测。
+        const prevLogin = previous === null ? '' : previous.no_account ? NO_LOGIN : (previous.login ?? '')
+        const sameLogin = prevLogin !== '' && prevLogin === carrier.login
+        const homeChanged = previous !== null && !sameLogin && (previous.home_dir ?? '') !== nextHome
         const result = await putCarrier(name, expect, {
           name,
           machine: carrier.machine,
           cli: carrier.cli,
-          home_dir: carrier.home_dir,
           model: carrier.model?.trim() || undefined,
-          credential: carrier.credential,
           ...(optionalConcurrency(carrier.maxConcurrencyText) === undefined ? {} : { max_concurrency: optionalConcurrency(carrier.maxConcurrencyText) }),
-          ...(carrier.account ? { account: carrier.account } : {}),
+          ...(carrier.login === NO_LOGIN ? { no_account: true } : { login: carrier.login }),
         })
         console.info({ event: 'scheduling.save.success', kind: 'carrier', name, version: result.version })
         if (previous === null || homeChanged) {
@@ -410,7 +406,7 @@ export function SchedulingPage({ compact = false }: SchedulingPageProps = {}): R
   }
 
   const updateCarrierName = (name: string): void => {
-    setDraft((current) => current === null || !('home_dir' in current) ? current : { ...current, name })
+    setDraft((current) => current === null || !('cli' in current) ? current : { ...current, name })
   }
 
   const toggleExpanded = (setter: typeof setExpandedCarriers, name: string): void => {
@@ -443,7 +439,7 @@ export function SchedulingPage({ compact = false }: SchedulingPageProps = {}): R
               <span className="mobile-automation-trailing"><span className="text-xs" data-status={status}>{CARRIER_STATUS_LABEL[status]}</span><span className="text-[11px] text-muted-foreground">v{row.version}</span><ChevronRight aria-hidden="true" className="size-4" /></span>
             </button>
             {expandedCarriers.has(row.name) && <div className="mobile-automation-detail">
-              <dl className="grid grid-cols-[max-content_minmax(0,1fr)] gap-x-3 gap-y-2 text-xs"><dt className="text-muted-foreground">HOME 档案</dt><dd className="break-all font-mono">{row.home_dir || '主 HOME'}</dd><dt className="text-muted-foreground">模型</dt><dd>{row.model || 'CLI 默认'}</dd><dt className="text-muted-foreground">账号</dt><dd><CarrierAccount row={row} accounts={accounts} /></dd><dt className="text-muted-foreground">凭据来源</dt><dd>{row.credential}</dd><dt className="text-muted-foreground">并发上限</dt><dd>{row.max_concurrency ?? '不限'}</dd></dl>
+              <dl className="grid grid-cols-[max-content_minmax(0,1fr)] gap-x-3 gap-y-2 text-xs"><dt className="text-muted-foreground">模型</dt><dd>{row.model || 'CLI 默认'}</dd><dt className="text-muted-foreground">账号</dt><dd><CarrierAccount row={row} accounts={accounts} /></dd><dt className="text-muted-foreground">并发上限</dt><dd>{row.max_concurrency ?? '不限'}</dd></dl>
               {row.last_error && <p className="mt-2 text-xs text-destructive">最近检测：{row.last_error}</p>}
               {detectError[row.name] && <p role="alert" className="mt-2 text-xs text-destructive">检测失败：{detectError[row.name]}；请修正 HOME/登录后重试。</p>}
               {deleteError[row.name] && <p role="alert" className="mt-2 text-xs text-destructive">删除失败：{deleteError[row.name]}</p>}
@@ -452,7 +448,7 @@ export function SchedulingPage({ compact = false }: SchedulingPageProps = {}): R
             </div>}
           </> : <>
           <div className="flex flex-wrap items-center gap-2 text-xs"><strong className="font-mono">{row.name}</strong><span className="rounded-full bg-muted px-2 py-0.5" data-status={status}>{CARRIER_STATUS_LABEL[status]}</span><span>{row.machine} · {row.cli}</span><span className="flex-1" /><span>在跑 — / {row.max_concurrency ?? '不限'} · v{row.version}</span><button type="button" className="rounded border px-2 py-1" onClick={() => openCarrier(row)}>编辑 {row.name}</button><button type="button" className="rounded border px-2 py-1" disabled={detecting === row.name} onClick={() => void detect(row.name)}>{detecting === row.name ? '检测中…' : '检测'}</button><button type="button" className="rounded border px-2 py-1" onClick={() => void runCarrier(row.name)}>运行</button><button type="button" aria-label={`删除 ${row.name}`} className="rounded border px-2 py-1 text-destructive" disabled={deleting === row.name} onClick={() => void removeCarrier(row)}>{deleting === row.name ? '删除中…' : '删除'}</button></div>
-          <dl className="mt-3 grid grid-cols-[max-content_minmax(0,1fr)] gap-x-4 gap-y-1 text-xs"><dt className="text-muted-foreground">HOME 档案</dt><dd className="font-mono">{row.home_dir || <span className="text-muted-foreground">主 HOME</span>}</dd><dt className="text-muted-foreground">模型</dt><dd>{row.model || <span className="text-muted-foreground">CLI 默认</span>}</dd><dt className="text-muted-foreground">账号</dt><dd><CarrierAccount row={row} accounts={accounts} /></dd><dt className="text-muted-foreground">凭据来源</dt><dd>{row.credential}</dd><dt className="text-muted-foreground">并发上限</dt><dd>{row.max_concurrency ?? '不限'}</dd></dl>
+          <dl className="mt-3 grid grid-cols-[max-content_minmax(0,1fr)] gap-x-4 gap-y-1 text-xs"><dt className="text-muted-foreground">模型</dt><dd>{row.model || <span className="text-muted-foreground">CLI 默认</span>}</dd><dt className="text-muted-foreground">账号</dt><dd><CarrierAccount row={row} accounts={accounts} /></dd><dt className="text-muted-foreground">并发上限</dt><dd>{row.max_concurrency ?? '不限'}</dd></dl>
           {row.last_error && <p className="mt-2 text-xs text-destructive">最近检测：{row.last_error}</p>}
           {detectError[row.name] && <p role="alert" className="mt-2 text-xs text-destructive">检测失败：{detectError[row.name]}；请修正 HOME/登录后重试。</p>}
           {deleteError[row.name] && <p role="alert" className="mt-2 text-xs text-destructive">删除失败：{deleteError[row.name]}</p>}
@@ -483,37 +479,52 @@ export function SchedulingPage({ compact = false }: SchedulingPageProps = {}): R
           <div><h3 id="scheduling-dialog-title" className="text-sm font-semibold">{dialog.kind === 'carrier' ? (dialog.value ? `编辑载体 · ${dialog.value.name}（v${dialog.value.version}）` : '登记载体') : (dialog.value ? `编辑小队 · ${dialog.value.name}（v${dialog.value.version}）` : '建小队')}</h3></div>
           {dialog.kind === 'carrier' ? <div className="grid gap-x-3 gap-y-2.5 sm:grid-cols-2">
             <div><label htmlFor="sched-carrier-name" className={FIELD_LABEL}>载体名（唯一，登记后不可改）</label><input id="sched-carrier-name" aria-label="载体名" className={INPUT} readOnly={dialog.value !== null} value={draft.name} onChange={(event) => updateCarrierName(event.target.value)} /></div>
-            <div><label htmlFor="sched-carrier-machine" className={FIELD_LABEL}>机器</label><select id="sched-carrier-machine" aria-label="机器" className={INPUT} value={(draft as CarrierDraft).machine} onChange={(event) => { const machine = event.target.value; const cur = (draft as CarrierDraft).account; updateDraft({ machine, account: cur && accounts !== null && !accountsOn(machine).some((a) => a.name === cur) ? '' : cur }) }}>{(draft as CarrierDraft).machine && !machineOptions.includes((draft as CarrierDraft).machine) && <option value={(draft as CarrierDraft).machine}>{(draft as CarrierDraft).machine}</option>}{machineOptions.map((machine) => <option key={machine} value={machine}>{machine}</option>)}</select></div>
-            <div><label htmlFor="sched-carrier-cli" className={FIELD_LABEL}>CLI</label><select id="sched-carrier-cli" aria-label="CLI" className={INPUT} value={(draft as CarrierDraft).cli} onChange={(event) => updateDraft({ cli: event.target.value })}>{CLI_OPTIONS.map((cli) => <option key={cli} value={cli}>{cli}</option>)}</select></div>
+            <div><label htmlFor="sched-carrier-machine" className={FIELD_LABEL}>机器</label><select id="sched-carrier-machine" aria-label="机器" className={INPUT} value={(draft as CarrierDraft).machine} onChange={(event) => { const machine = event.target.value; const cli = (draft as CarrierDraft).cli; const cur = (draft as CarrierDraft).login; const options = loginsOn(machine, cli); const next = options.some((o) => o.login.id === cur) ? cur : (options[0]?.login.id ?? NO_LOGIN); updateDraft({ machine, login: next }) }}>{(draft as CarrierDraft).machine && !machineOptions.includes((draft as CarrierDraft).machine) && <option value={(draft as CarrierDraft).machine}>{(draft as CarrierDraft).machine}</option>}{machineOptions.map((machine) => <option key={machine} value={machine}>{machine}</option>)}</select></div>
+            <div><label htmlFor="sched-carrier-cli" className={FIELD_LABEL}>CLI</label><select id="sched-carrier-cli" aria-label="CLI" className={INPUT} value={(draft as CarrierDraft).cli} onChange={(event) => { const cli = event.target.value; const options = loginsOn((draft as CarrierDraft).machine, cli); const cur = (draft as CarrierDraft).login; updateDraft({ cli, login: options.some((o) => o.login.id === cur) ? cur : (options[0]?.login.id ?? NO_LOGIN) }) }}>{CLI_OPTIONS.map((cli) => <option key={cli} value={cli}>{cli}</option>)}</select></div>
             <div><label htmlFor="sched-carrier-model" className={FIELD_LABEL}>模型（留空 = CLI 默认）</label><input id="sched-carrier-model" aria-label="模型" className={INPUT} value={(draft as CarrierDraft).model ?? ''} onChange={(event) => updateDraft({ model: event.target.value })} /></div>
-            <div className="sm:col-span-2"><label htmlFor="sched-carrier-home" className={FIELD_LABEL}>HOME 档案（选填；空 = 该机主 HOME。只在要隔离时填写）</label><input id="sched-carrier-home" aria-label="HOME 档案" className={INPUT} placeholder="空 = 主 HOME" value={(draft as CarrierDraft).home_dir} onChange={(event) => updateDraft({ home_dir: event.target.value })} /></div>
-            <div className="acct-scope sm:col-span-2"><label htmlFor="sched-carrier-account" className={FIELD_LABEL}>账号（只列这台机器上的账号；额度判断看它）</label>{(() => {
+            <div className="acct-scope sm:col-span-2"><label htmlFor="sched-carrier-account" className={FIELD_LABEL}>账号登录（只列这台机器上与该执行器兼容的登录；HOME / 凭据 / 代理由登录决定）</label>{(() => {
               const carrier = draft as CarrierDraft
-              const options = accountsOn(carrier.machine)
-              const selected = options.find((a) => a.name === carrier.account)
-              const row = dialog.value
-              // 下拉里没有当前值（账号快照未到/账号功能未启用）时保留它，不静默清掉已有绑定
-              const keep = carrier.account !== '' && !selected
-              const mismatch = row !== null && row.account_mismatch === true && row.account === carrier.account && row.home_dir === carrier.home_dir
+              const options = loginsOn(carrier.machine, carrier.cli)
+              const selected = options.find((o) => o.login.id === carrier.login)
+              const counts: Record<string, number> = {}
+              for (const o of options) counts[o.account.id] = (counts[o.account.id] ?? 0) + 1
+              // 下拉里没有当前值（账号快照未到/存量未选）时保留它，不静默清掉已有选择。
+              const keep = carrier.login !== '' && carrier.login !== NO_LOGIN && !selected
+              const selectedLogin = selected?.login
+              const others = selectedLogin ? selectedLogin.carriers.filter((c) => c !== dialog.value?.name) : []
+              const hasNoCompatible = accounts !== null && options.length === 0
+              const kindNames = (COMPATIBLE[carrier.cli] ?? []).map((kind) => kindMeta(kind).name).join(' / ')
+              // 本机别名时用发现结果里的 self 机器名补 machine（B464 M2），新增登录向导才能预选本机。
+              const linkMachine = ['', '本机', 'local'].includes(carrier.machine)
+                ? (discovery.find((d) => d.self)?.machine ?? '')
+                : carrier.machine
               return <>
-                <select id="sched-carrier-account" aria-label="账号" className={INPUT} value={carrier.account} onChange={(event) => updateDraft({ account: event.target.value })}>
-                  <option value="">（不选：不参与额度判断）</option>
-                  {keep && <option value={carrier.account}>{carrier.account}</option>}
-                  {options.map((a) => <option key={a.name} value={a.name}>{a.name} · {kindMeta(a.kind).name} · {stateLabel(a.state)}</option>)}
+                <select id="sched-carrier-account" aria-label="账号" className={INPUT} value={carrier.login} onChange={(event) => updateDraft({ login: event.target.value })}>
+                  {carrier.login === '' && <option value="" disabled>未选登录（请选择）</option>}
+                  {options.map((o) => {
+                    const extra = [counts[o.account.id] > 1 ? homeText(o.login.home) : '', o.login.state !== 'ok' ? `登录${loginStateLabel(o.login.state)}` : ''].filter(Boolean).join(' · ')
+                    return <option key={o.login.id} value={o.login.id}>{o.account.name}{extra ? ` — ${extra}` : ''}</option>
+                  })}
+                  {keep && <option value={carrier.login}>{dialog.value?.account_name ?? carrier.login}</option>}
+                  <option value={NO_LOGIN}>无账号 · 主 HOME</option>
                 </select>
-                {accounts === null ? <p className="acct-pick-hint">账号列表未读到（账号功能需挂共享账本）；不选账号时派发不看额度。</p>
-                  : mismatch ? <p className="fp-mismatch"><span className="q-out">{MISMATCH_TEXT}</span><br />载体 HOME 里读到的凭据不是 {carrier.account} 的。可以保存，但派发会按 {carrier.account} 的额度判断，实际扣的是另一个账号。</p>
-                  : options.length === 0 ? <p className="acct-pick-hint">{carrier.machine} 上还没有登记账号。先到「账号」页登记。</p>
-                  : !selected ? <p className="acct-pick-hint">不选账号时，派发不看额度。</p>
-                  : <p className="acct-pick-hint">{kindMeta(selected.kind).label} · 当前 <StatusText a={selected} />{selected.state === 'ok' ? '正常' : ''}。{row ? '保存后点「检测」会比对载体 HOME 里的凭据指纹。' : '创建后自动检测时比对载体 HOME 里的凭据指纹。'}</p>}
+                {hasNoCompatible && <p className="acct-pick-hint">这台机器上还没有 {carrier.cli} 登录{kindNames ? `（${kindNames}）` : ''} → <a className="underline" href={`/accounts?login=new${linkMachine ? `&machine=${encodeURIComponent(linkMachine)}` : ''}&agent=${encodeURIComponent(carrier.cli)}`}>新增登录</a></p>}
+                {carrier.login === NO_LOGIN
+                  ? <div className="login-info">HOME <span className="mono">~（主 HOME）</span> · 无凭据 · 代理随该机环境<br />不看额度、不看登录状态：只适合免费模型等不需要凭据的执行。</div>
+                  : carrier.login === ''
+                    ? <p className="acct-pick-hint">未选登录：保存前请选择一条登录（或选「无账号 · 主 HOME」）。</p>
+                    : selectedLogin && selected ? <div className="login-info">
+                        HOME <span className="mono">{homeText(selectedLogin.home)}</span> · 凭据 {selectedLogin.source} · 代理 {selectedLogin.proxy ? <span className="mono">{selectedLogin.proxy}</span> : '随该机环境'}<span className="from">（登录上设置）</span>
+                        {others.length > 0 && <><br />与 {others.map((c) => <span key={c} className="mono">{c}</span>)} 共用这条登录</>}
+                        {!supportsProbe(selected.account.kind) ? <><br />不支持额度探测：派发不看额度</> : <><br />额度 <StatusText a={selected.account} />{selected.account.state === 'ok' ? '正常' : ''}</>}
+                        {selectedLogin.state === 'expired' && <><br /><span className="q-out">这条登录已过期</span>——CLI 运行时可能自行刷新；如失败请重新登录。照常派发。</>}
+                        {selectedLogin.state === 'gone' && <><br /><span className="q-out">这条登录已失效</span>——重新登录之前，载体暂停派发。</>}
+                      </div>
+                    : <p className="acct-pick-hint">所选登录不在当前账号快照里；刷新后再保存，或重新选择。</p>}
               </>
             })()}</div>
-            <div><label htmlFor="sched-carrier-cred" className={FIELD_LABEL}>凭据来源（选填；空 = 独立账号）</label><select id="sched-carrier-cred" aria-label="凭据来源" className={INPUT} value={(draft as CarrierDraft).credential} onChange={(event) => updateDraft({ credential: event.target.value })}>{CREDENTIAL_OPTIONS.map((credential) => <option key={credential.value} value={credential.value}>{credential.label}</option>)}</select></div>
             <div><label htmlFor="sched-carrier-conc" className={FIELD_LABEL}>并发上限（0 / 留空 = 不限）</label><input id="sched-carrier-conc" aria-label="并发上限" className={INPUT} type="number" min="0" value={(draft as CarrierDraft).maxConcurrencyText} onChange={(event) => updateDraft({ maxConcurrencyText: event.target.value })} /></div>
-            <p className="text-[11px] leading-5 text-muted-foreground sm:col-span-2">主 HOME 同步 = 把主环境的认证态搬进隔离 HOME；两个同账户载体的真实限额共享——给它们选同一个账号，派发按账号额度判断。</p>
-            {probing && <p className="text-[11px] text-muted-foreground sm:col-span-2">正在检测目标机 HOME…</p>}
-            {probe && <p className="text-[11px] sm:col-span-2">{probe.kind === 'empty' ? '目标 HOME 为空，检测时可创建。' : probe.kind === 'logged_in' ? '已发现该 CLI 凭据。' : '目录非空但未见该 CLI 凭据，不会覆盖已有文件。'}{probe.detail ? ` ${probe.detail}` : ''}</p>}
-            {probeError && <p role="alert" className="text-[11px] text-destructive sm:col-span-2">HOME 检测失败：{probeError}</p>}
+            <p className="text-[11px] leading-5 text-muted-foreground sm:col-span-2">载体在所选登录的 HOME 里跑，凭据不复制；同一登录可被多个载体共用，派发按账号额度判断。</p>
           </div> : <div className="grid gap-x-3 gap-y-2.5 sm:grid-cols-2">
             <div><label htmlFor="sched-squad-name" className={FIELD_LABEL}>小队名（唯一）</label><input id="sched-squad-name" aria-label="小队名" className={INPUT} readOnly={dialog.value !== null} value={draft.name} onChange={(event) => updateDraft({ name: event.target.value })} /></div>
             <div><label htmlFor="sched-squad-role" className={FIELD_LABEL}>角色（不混编）</label><select id="sched-squad-role" aria-label="角色" className={INPUT} value={(draft as SquadDraft).role} onChange={(event) => updateDraft({ role: event.target.value })}><option value="executor">执行者队</option><option value="coordinator">协调者队</option></select></div>

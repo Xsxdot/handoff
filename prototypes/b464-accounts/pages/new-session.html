@@ -1,0 +1,380 @@
+<!doctype html>
+<!--
+  项目内新建会话（B444）形态镜像。
+
+  职责：
+    - 新建会话对话框的全部可见状态：表单（项目只读 / 标题可空 / 卡多选 / 驻场小队必选预填）、
+      卡空态、多个协调小队待选、没有协调小队、提交中、建成后的点名结果视图
+    - 移动端（≤720px）入口：项目「操作」面板里的「新建会话」；工作台「⋯」菜单不再有该项
+    - 建成后会话详情里的两处读数：push 驻场者的载体落点、timeline 的「会话改名」行
+
+  边界：
+    - 不连后端：卡、小队、成员、timeline 全是页内 mock 常量
+    - 顶部「状态」条是原型脚手架，真实产品里没有它（同 base README「原型脚手架」约定）
+    - 镜像来源：web/src/app/rooms/{NewSessionDialog,SessionDetail,sessionModel}.tsx、
+      web/src/app/tree/{ProjectTree,MobileWorkspace}.tsx
+-->
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>handoff · 项目内新建会话</title>
+    <style>
+      :root {
+        --background: #ffffff;
+        --foreground: #171717;
+        --muted: #737373;
+        --border: #e5e5e5;
+        --muted-bg: #f5f5f5;
+        --amber: #b45309;
+        --destructive: #dc2626;
+        --font-sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+        --font-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+      * { box-sizing: border-box; }
+      body { margin: 0; color: var(--foreground); background: #fafafa; font-family: var(--font-sans); font-size: 14px; -webkit-font-smoothing: antialiased; }
+      button, input, select { font: inherit; color: inherit; }
+      .mono { font-family: var(--font-mono); }
+      .muted { color: var(--muted); }
+
+      /* ---------- 原型脚手架：状态切换条（真实产品里没有） ---------- */
+      .scaffold { position: sticky; top: 0; z-index: 60; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 8px 16px; background: #171717; color: #fff; font-size: 12px; }
+      .scaffold b { margin-right: 4px; font-weight: 600; }
+      .scaffold .tab { padding: 3px 9px; border: 1px solid #525252; border-radius: 999px; background: transparent; color: #d4d4d4; cursor: pointer; }
+      .scaffold .tab.active { background: #fff; color: #171717; border-color: #fff; }
+      .scaffold a { margin-left: auto; color: #d4d4d4; }
+
+      .page { max-width: 1100px; margin: 0 auto; padding: 20px 16px 48px; }
+      .note { margin: 0 0 14px; color: var(--muted); font-size: 12px; line-height: 1.6; }
+
+      /* ---------- 对话框（镜像 NewSessionDialog：遮罩 + max-w-md 卡片，内容区可滚、按钮区固定） ---------- */
+      .stage { position: relative; display: flex; align-items: center; justify-content: center; min-height: 600px; padding: 16px; border-radius: 12px; background: rgba(0,0,0,.4); }
+      .dialog { display: flex; flex-direction: column; width: 100%; max-width: 448px; max-height: calc(100dvh - 2rem); overflow: hidden; border: 1px solid var(--border); border-radius: 12px; background: var(--background); box-shadow: 0 20px 40px rgba(0,0,0,.18); }
+      .dialog h3 { margin: 0; padding: 16px 16px 0; font-size: 14px; font-weight: 600; }
+      .dialog-body { flex: 1; min-height: 0; overflow-y: auto; padding: 0 16px; }
+      .dialog-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 16px; }
+      .field-label { display: block; margin-top: 12px; color: var(--muted); font-size: 12px; }
+      .input, .select { display: block; width: 100%; margin-top: 4px; padding: 4px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--background); font-size: 14px; }
+      .input[readonly] { cursor: default; background: rgba(245,245,245,.6); }
+      .input::placeholder { color: #a3a3a3; }
+      .cards { max-height: 192px; margin-top: 4px; overflow-y: auto; border: 1px solid var(--border); border-radius: 6px; }
+      .card-opt { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 6px 8px; border-bottom: 1px solid var(--border); cursor: pointer; font-size: 14px; }
+      .card-opt:last-child { border-bottom: 0; }
+      .card-opt b { flex: 0 0 auto; font-family: var(--font-mono); font-size: 12px; }
+      .card-opt .title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .card-opt .status { flex: 0 0 auto; color: var(--muted); font-size: 12px; }
+      .cards-empty { margin: 0; padding: 8px; color: var(--muted); font-size: 12px; }
+      .hint { margin: 8px 0 0; font-size: 12px; line-height: 1.5; }
+      .hint.amber { color: var(--amber); }
+      .hint.red { color: var(--destructive); }
+      .btn { padding: 4px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--background); font-size: 12px; cursor: pointer; }
+      .btn.primary { border-color: #0f172a; background: #0f172a; color: #fff; }
+      .btn:disabled { opacity: .5; cursor: default; }
+      .result-list { margin: 4px 0 0; padding-left: 20px; }
+      .result-list b { font-family: var(--font-mono); }
+      code { font-family: var(--font-mono); font-size: 12px; word-break: break-all; }
+
+      /* ---------- 移动端（镜像 MobileWorkspace：页头 + 项目行「操作」+ 底部 sheet） ---------- */
+      .phone { width: 390px; max-width: 100%; margin: 0 auto; min-height: 760px; position: relative; overflow: hidden; border: 1px solid var(--border); border-radius: 24px; background: var(--background); }
+      .m-header { display: flex; align-items: center; gap: 8px; padding: 14px 16px 10px; }
+      .m-header h1 { flex: 1; margin: 0; font-size: 22px; font-weight: 600; }
+      .m-icon-btn { display: flex; width: 32px; height: 32px; align-items: center; justify-content: center; border: 0; border-radius: 8px; background: transparent; font-size: 18px; cursor: pointer; }
+      .m-menu { margin: 0 16px 8px; padding: 4px; border: 1px solid var(--border); border-radius: 10px; }
+      .m-menu button { display: flex; width: 100%; gap: 8px; padding: 8px; border: 0; background: transparent; text-align: left; font-size: 14px; }
+      .m-row { display: flex; align-items: center; gap: 8px; margin: 0 16px; padding: 12px 0; border-bottom: 1px solid var(--border); font-size: 15px; }
+      .m-row b { flex: 1; font-weight: 600; }
+      .m-res { margin: 0 16px 0 40px; padding: 10px 0; border-bottom: 1px solid var(--border); color: #404040; font-size: 14px; }
+      .sheet-backdrop { position: absolute; inset: 0; display: flex; align-items: flex-end; background: rgba(0,0,0,.35); }
+      .sheet { width: 100%; padding: 12px 16px 24px; border-radius: 16px 16px 0 0; background: var(--background); }
+      .sheet header { display: flex; align-items: center; margin-bottom: 8px; }
+      .sheet header h2 { flex: 1; margin: 0; font-size: 17px; }
+      .sheet-group { margin-top: 10px; padding: 10px; border: 1px solid var(--border); border-radius: 12px; }
+      .sheet-group-label { margin-bottom: 6px; color: var(--muted); font-size: 12px; }
+      .sheet-group .select { margin: 0 0 8px; padding: 8px; }
+      .sheet-action { display: flex; width: 100%; align-items: center; gap: 10px; padding: 10px; border: 0; border-radius: 10px; background: transparent; text-align: left; font-size: 15px; cursor: pointer; }
+      .sheet-action.primary { justify-content: center; background: #171717; color: #fff; }
+      .sheet-group.secondary { padding: 4px; }
+      .sheet-action.is-new { background: #f5f5f5; }
+      .sheet-action img { width: 20px; height: 20px; }
+      .m-legend { margin: 14px auto 0; max-width: 390px; }
+
+      /* ---------- 会话详情抽屉片段（镜像 SessionDetail） ---------- */
+      .detail { max-width: 560px; margin: 0 auto; padding: 12px; border: 1px solid var(--border); border-radius: 12px; background: var(--background); }
+      .detail section { margin-bottom: 16px; padding: 12px; border: 1px solid var(--border); border-radius: 12px; background: rgba(255,255,255,.65); box-shadow: 0 1px 2px rgba(0,0,0,.04); }
+      .detail h4 { margin: 0 0 8px; color: var(--muted); font-size: 12px; font-weight: 600; }
+      .member { display: flex; align-items: center; gap: 8px; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 14px; }
+      .member:last-child { border-bottom: 0; }
+      .member .who { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .member .carrier { margin-left: 4px; color: var(--muted); font-family: var(--font-mono); font-size: 12px; }
+      .pill { flex: 0 0 auto; padding: 0 6px; border: 1px solid var(--border); border-radius: 999px; color: var(--muted); font-size: 10px; }
+      .pill.owner { background: #f1f5f9; color: #334155; font-weight: 600; }
+      .member .state { flex: 0 0 auto; color: var(--muted); font-size: 12px; }
+      .tl { display: flex; align-items: baseline; gap: 8px; padding: 4px 0; font-size: 12px; }
+      .tl .t { flex: 0 0 auto; color: var(--muted); font-family: var(--font-mono); font-size: 10px; }
+      .tl .k { flex: 0 0 auto; font-weight: 500; }
+      .tl .d { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+      .tl .a { flex: 0 0 auto; color: var(--muted); }
+      .tl.is-new { background: #fffbeb; border-radius: 4px; }
+      .member.is-new { background: #fffbeb; }
+
+      .removed { max-width: 560px; margin: 0 auto; padding: 12px 16px; border: 1px dashed #d4d4d4; border-radius: 12px; background: var(--background); font-size: 13px; line-height: 1.7; }
+      .removed ul { margin: 6px 0 0; padding-left: 18px; }
+
+      @media (max-width: 720px) {
+        .page { padding: 12px 0 32px; }
+        .note, .removed, .detail { margin-left: 16px; margin-right: 16px; }
+        .stage { min-height: 100dvh; border-radius: 0; }
+        .phone { border: 0; border-radius: 0; width: 100%; }
+      }
+    </style>
+  </head>
+  <body>
+    <nav class="scaffold" aria-label="原型脚手架（真实产品里没有）">
+      <b>状态</b>
+      <button class="tab active" data-tab="form">表单</button>
+      <button class="tab" data-tab="empty">卡空态 · 多小队</button>
+      <button class="tab" data-tab="nosquad">无协调小队</button>
+      <button class="tab" data-tab="busy">提交中</button>
+      <button class="tab" data-tab="result">结果视图</button>
+      <button class="tab" data-tab="mobile">移动端入口</button>
+      <button class="tab" data-tab="detail">会话详情</button>
+      <a href="project-tree-option-1.html">← 桌面左栏入口</a>
+    </nav>
+
+    <div class="page">
+      <!-- ① 表单态：恰一个协调小队时预填；标题空着也能创建（服务端自动命名） -->
+      <div class="panel" data-panel="form">
+        <p class="note">入口：桌面左栏项目行「终端 · 文件夹 · <b>新建会话</b>」第三枚 icon，或移动端项目「操作」面板。项目由入口带入、只读；卡只列<b>本项目、未进任何会话、未终态</b>的卡（过滤只是体验层，服务端仍逐卡校验）。</p>
+        <div class="stage">
+          <form class="dialog" role="dialog" aria-label="新建会话" id="createForm">
+            <h3>新建会话</h3>
+            <div class="dialog-body">
+              <label class="field-label" for="f-project">项目</label>
+              <input class="input" id="f-project" aria-label="所属项目" value="handoff" readonly data-project />
+              <label class="field-label" for="f-title">标题</label>
+              <input class="input" id="f-title" aria-label="会话标题" placeholder="留空则自动命名" />
+              <div class="field-label" id="cards-label">卡（可多选）</div>
+              <div class="cards" role="group" aria-labelledby="cards-label" data-cards></div>
+              <label class="field-label" for="f-squad">驻场小队</label>
+              <select class="select" id="f-squad" aria-label="驻场小队" required>
+                <option value="coord-squad" selected>coord-squad</option>
+              </select>
+            </div>
+            <div class="dialog-foot">
+              <button type="button" class="btn">取消</button>
+              <button type="submit" class="btn primary">创建</button>
+            </div>
+          </form>
+        </div>
+      </div>
+
+      <!-- ② 卡空态 + 多个协调小队：不替人挑，留空占位「请选择协调小队」，未选时「创建」禁用 -->
+      <div class="panel" data-panel="empty" hidden>
+        <p class="note">本项目没有可拉入的卡时卡区给一行空态；有多个 role=coordinator 小队时不预填，未选前「创建」禁用。</p>
+        <div class="stage">
+          <div class="dialog" role="dialog" aria-label="新建会话">
+            <h3>新建会话</h3>
+            <div class="dialog-body">
+              <label class="field-label">项目</label>
+              <input class="input" aria-label="所属项目" value="benchmarking" readonly />
+              <label class="field-label">标题</label>
+              <input class="input" aria-label="会话标题" placeholder="留空则自动命名" />
+              <div class="field-label">卡（可多选）</div>
+              <div class="cards"><p class="cards-empty">本项目没有可拉入的卡</p></div>
+              <label class="field-label">驻场小队</label>
+              <select class="select" aria-label="驻场小队">
+                <option value="" selected>请选择协调小队</option>
+                <option>coord-squad</option>
+                <option>coord-squad-mini</option>
+              </select>
+            </div>
+            <div class="dialog-foot">
+              <button type="button" class="btn">取消</button>
+              <button type="button" class="btn primary" disabled>创建</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ③ 没有协调小队：驻场者必选，所以给可行动提示并禁用创建 -->
+      <div class="panel" data-panel="nosquad" hidden>
+        <p class="note">驻场小队是必选项：一个 role=coordinator 小队都没有时不画下拉，给可行动提示，「创建」禁用。读取小队中显示「正在读取小队…」，读失败显示「读取小队失败：&lt;原文&gt;」。</p>
+        <div class="stage">
+          <div class="dialog" role="dialog" aria-label="新建会话">
+            <h3>新建会话</h3>
+            <div class="dialog-body">
+              <label class="field-label">项目</label>
+              <input class="input" aria-label="所属项目" value="handoff" readonly />
+              <label class="field-label">标题</label>
+              <input class="input" aria-label="会话标题" placeholder="留空则自动命名" />
+              <div class="field-label">卡（可多选）</div>
+              <div class="cards" data-cards></div>
+              <label class="field-label">驻场小队</label>
+              <p class="hint amber" role="alert" style="margin-top:4px">还没有协调小队（role=coordinator），无法拉起驻场者。请先到「设置」里建一个协调小队再新建会话。</p>
+            </div>
+            <div class="dialog-foot">
+              <button type="button" class="btn">取消</button>
+              <button type="button" class="btn primary" disabled>创建</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ④ 提交中：建会话同步跑驻场者首轮，可能较久；表单与取消一并锁住 -->
+      <div class="panel" data-panel="busy" hidden>
+        <p class="note">提交后建会话会同步拉起 push 驻场者跑首轮，可能较久：输入、取消、创建全部禁用，底部给「正在拉起驻场者…」。</p>
+        <div class="stage">
+          <div class="dialog" role="dialog" aria-label="新建会话">
+            <h3>新建会话</h3>
+            <div class="dialog-body">
+              <label class="field-label">项目</label>
+              <input class="input" aria-label="所属项目" value="handoff" readonly />
+              <label class="field-label">标题</label>
+              <input class="input" aria-label="会话标题" placeholder="留空则自动命名" disabled />
+              <div class="field-label">卡（可多选）</div>
+              <div class="cards" data-cards data-checked="B447" data-disabled></div>
+              <label class="field-label">驻场小队</label>
+              <select class="select" aria-label="驻场小队" disabled><option>coord-squad</option></select>
+              <p class="hint muted" role="status">正在拉起驻场者…</p>
+            </div>
+            <div class="dialog-foot">
+              <button type="button" class="btn" disabled>取消</button>
+              <button type="button" class="btn primary" disabled>创建</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ⑤ 结果视图：会话已建成并已开 tab；有被拒卡或驻场者首轮失败才进这一态，否则直接关对话框 -->
+      <div class="panel" data-panel="result" hidden>
+        <p class="note">会话本身已建立、已开 tab。只有出现被拒的卡或驻场者首轮失败时对话框才转到这里逐项点名；全部成功则对话框直接关闭。重试暂只给 CLI 命令（Web 重试按钮在 roadmap）。</p>
+        <div class="stage">
+          <div class="dialog" role="dialog" aria-label="新建会话">
+            <h3>新建会话</h3>
+            <div class="dialog-body">
+              <p style="margin:12px 0 0;font-size:14px">会话「B447 驻场者重试入口」已建立。</p>
+              <div role="alert" style="margin-top:12px;font-size:12px">
+                <p class="hint amber" style="margin:0;font-weight:500">以下卡未拉入：</p>
+                <ul class="result-list">
+                  <li><b>B439</b>：卡已在会话「B439 账本迁移」中</li>
+                </ul>
+              </div>
+              <div role="alert" style="margin-top:12px;font-size:12px">
+                <p class="hint red" style="margin:0;font-weight:500">驻场者未拉起：carrier mac-mini unreachable: dial tcp 10.0.0.12:7420: i/o timeout</p>
+                <p class="muted" style="margin:4px 0 0">可稍后重试：<code>handoff session resident launch s-20261019-7f3a</code></p>
+              </div>
+            </div>
+            <div class="dialog-foot">
+              <button type="button" class="btn primary">知道了</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ⑥ 移动端入口：项目「操作」面板的次级组里；工作台「⋯」菜单只剩添加项目 / 全部协作会话 -->
+      <div class="panel" data-panel="mobile" hidden>
+        <p class="note">移动端入口在项目「操作」面板「更多项目操作」组的第一项。工作台页头「⋯」菜单（左上）只剩「添加项目」「全部协作会话」——B442 的「新建会话」菜单项已撤。</p>
+        <div class="phone">
+          <header class="m-header"><h1>工作台</h1><button class="m-icon-btn" aria-label="搜索工作台">⌕</button><button class="m-icon-btn" aria-label="工作台操作"><img src="../assets/more-horizontal.svg" alt="" width="20" /></button></header>
+          <div class="m-menu" aria-label="工作台操作菜单">
+            <button type="button">＋ 添加项目</button>
+            <button type="button">▢ 全部协作会话</button>
+          </div>
+          <div class="m-row"><span>▾</span><img src="../assets/folder.svg" alt="" width="20" /><b>handoff</b><button class="m-icon-btn" aria-label="handoff 操作"><img src="../assets/more-horizontal.svg" alt="" width="20" /></button></div>
+          <div class="m-res">B444 项目内新建会话</div>
+          <div class="m-res">bash · main</div>
+          <div class="sheet-backdrop">
+            <section class="sheet" role="dialog" aria-modal="true" aria-label="handoff 操作与位置">
+              <header><h2>handoff</h2><button class="m-icon-btn" aria-label="关闭项目操作"><img src="../assets/close.svg" alt="" width="18" /></button></header>
+              <div class="sheet-group">
+                <div class="sheet-group-label">新终端默认位置</div>
+                <select class="select" aria-label="新终端默认位置"><option>本机 · main</option><option>linux-01 · main</option></select>
+                <button type="button" class="sheet-action primary"><img src="../assets/terminal.svg" alt="" style="filter:invert(1)" />新建终端</button>
+              </div>
+              <div class="sheet-group">
+                <div class="sheet-group-label">目录浏览位置</div>
+                <select class="select" aria-label="目录浏览位置"><option>本机 · main</option></select>
+                <button type="button" class="sheet-action primary"><img src="../assets/folder-open.svg" alt="" style="filter:invert(1)" />浏览目录</button>
+              </div>
+              <div class="sheet-group secondary" role="group" aria-label="更多项目操作">
+                <a class="sheet-action is-new" href="new-session.html?project=handoff" style="text-decoration:none;color:inherit"><img src="../assets/message-square-plus.svg" alt="" /><span>新建会话</span></a>
+                <button type="button" class="sheet-action"><img src="../assets/plus.svg" alt="" /><span>工作树与项目目录</span></button>
+                <button type="button" class="sheet-action"><img src="../assets/more-horizontal.svg" alt="" /><span>项目位置管理</span></button>
+              </div>
+            </section>
+          </div>
+        </div>
+      </div>
+
+      <!-- ⑦ 会话详情：push 驻场者的载体落点 + timeline 的「会话改名」行（淡黄底仅为原型标注 B444 新增处） -->
+      <div class="panel" data-panel="detail" hidden>
+        <p class="note">会话属项目，驻场者在项目会话里标「组织者」。push 驻场者成员行附「· push · &lt;载体&gt;@&lt;机器&gt;」；人第一次说话后驻场者自动命名，timeline 多一行「会话改名 旧名 → 新名」。淡黄底只是原型里标出 B444 新增处。</p>
+        <div class="detail" aria-label="会话详情">
+          <section aria-label="成员">
+            <h4>成员</h4>
+            <div class="member"><span class="who">xsx</span><span class="pill">成员</span><span class="pill owner">群主</span><span class="state">在线</span></div>
+            <div class="member is-new"><span class="who">coord-squad<span class="carrier">· push · claude@mac-mini</span></span><span class="pill">组织者</span><span class="state">空闲</span></div>
+            <div class="member"><span class="who">opencode-01<span class="carrier" style="font-family:var(--font-sans)">· B447 驻场者重试入口</span><span class="carrier">· pull</span></span><span class="pill">席位</span><span class="state">工作中</span></div>
+          </section>
+          <section aria-label="会话卡">
+            <h4>会话卡</h4>
+            <div class="member"><b class="mono">B447</b><span class="who">驻场者重试入口</span><span class="state">implement</span><span class="state">opencode-01</span><span class="carrier">· pull</span></div>
+          </section>
+          <section aria-label="会话 timeline">
+            <h4>会话 timeline（结构事件）</h4>
+            <div class="tl"><span class="t">12 分钟前</span><span class="k">会话建立</span><span class="a">· 由 xsx</span></div>
+            <div class="tl"><span class="t">12 分钟前</span><span class="k">卡进群</span><b class="mono">B447</b><span class="a">· 由 xsx</span></div>
+            <div class="tl"><span class="t">12 分钟前</span><span class="k">协调者入座</span><b class="mono">B447</b><span class="d">opencode-01</span><span class="a">· 由 coord-squad</span></div>
+            <div class="tl is-new"><span class="t">9 分钟前</span><span class="k">会话改名</span><span class="d" title='{"from":"新会话","title":"B447 驻场者重试入口"}'>新会话 → B447 驻场者重试入口</span><span class="a">· 由 coord-squad</span></div>
+          </section>
+        </div>
+        <div class="removed" style="margin-top:16px">
+          <b>B444 撤掉的入口</b>（新建会话只能从项目进）：
+          <ul>
+            <li>桌面左栏底部图标区：无「新建会话」</li>
+            <li>移动端工作台「⋯」菜单：无「新建会话」（见「移动端入口」态）</li>
+            <li>会话列表 SessionSidebar：无「新建会话」按钮</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      // mock 数据：handoff 项目里本项目、未进任何会话、未终态的卡（真实过滤在 sessionModel.pullableCards）
+      const pullable = [
+        { id: 'B447', title: '驻场者重试入口（Web 按钮）', status: 'ready' },
+        { id: 'B448', title: '跨机载体落点回显', status: 'spec' },
+        { id: 'B450', title: '会话列表按项目分组的空态文案', status: 'ready' },
+      ];
+
+      document.querySelectorAll('[data-cards]').forEach((box) => {
+        const checked = (box.dataset.checked || '').split(',');
+        const disabled = box.hasAttribute('data-disabled');
+        pullable.forEach((card) => {
+          const row = document.createElement('label');
+          row.className = 'card-opt';
+          row.innerHTML = `<input type="checkbox" aria-label="${card.id} ${card.title}" ${checked.includes(card.id) ? 'checked' : ''} ${disabled ? 'disabled' : ''}/><b>${card.id}</b><span class="title">${card.title}</span><span class="status">${card.status}</span>`;
+          box.appendChild(row);
+        });
+      });
+
+      // 入口带入的项目（?project=），没传参时默认 handoff
+      const project = new URLSearchParams(window.location.search).get('project') || 'handoff';
+      document.querySelectorAll('[data-project]').forEach((input) => { input.value = project; });
+
+      function showPanel(name) {
+        document.querySelectorAll('.scaffold .tab').forEach((t) => t.classList.toggle('active', t.dataset.tab === name));
+        document.querySelectorAll('.panel').forEach((p) => { p.hidden = p.dataset.panel !== name; });
+      }
+      document.querySelectorAll('.scaffold .tab').forEach((tab) => {
+        tab.addEventListener('click', () => showPanel(tab.dataset.tab));
+      });
+
+      // 表单反馈：不真发请求，演示「提交中 → 结果视图」两步
+      document.getElementById('createForm').addEventListener('submit', (e) => {
+        e.preventDefault();
+        showPanel('busy');
+        setTimeout(() => showPanel('result'), 1200);
+      });
+    </script>
+  </body>

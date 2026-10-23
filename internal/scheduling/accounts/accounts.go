@@ -1,15 +1,17 @@
-// Package accounts 是编制域的账号领域（B453）：账号定义的登记、探测读数与撞额度
-// 标记的合并写、账号状态推导。
+// Package accounts 是编制域的账号领域（B453 起；B464 改为账号 + 登录两类记录）：账号与登录
+// 的关系、身份归并、自动起名、登录状态迁移、探测读数与撞额度标记的合并写、账号状态推导。
 //
 // 职责：
-//   - 定义行（kind=account）：人写，整行 CAS，与载体同一 version 语义；
+//   - 账号行（kind=account）：只由发现建（Reconcile，expect=0 竞争即归并）；人只改名/阈值/
+//     间隔，整行 CAS（Put）；
+//   - 登录行（kind=account_login）：所在机发现器合并写（只在内容变化时写），见 login.go；
 //   - 读数行（kind=account_reading）：机写，「读 → 合并本写者负责的字段 → CAS，冲突重读
 //     重试」，探测器与标记者互不丢写；
-//   - 状态推导 Derive：准入（段 3）、API、CLI 共用这一份。
+//   - 状态推导 Derive：准入、API、CLI 共用这一份。
 //
 // 边界：持久化只经 schedclient.Registry 端口（组装点绑定账本）；不调外部接口、不读
-// 凭据（那是 internal/quota 与 agentd 探测器）；不知道「哪台是本机」（探测执行权归
-// agentd）。
+// 凭据（那是 internal/quota 与 agentd 的 accountwork）；不知道「哪台是本机」（发现/探测
+// 执行权归 agentd）。
 package accounts
 
 import (
@@ -18,24 +20,24 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand/v2"
-	"path"
-	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
-	"github.com/Xsxdot/handoff/internal/proxycfg"
 	"github.com/Xsxdot/handoff/internal/schedclient"
 )
 
 var (
-	// ErrNotFound 表示账号定义行不存在。
+	// ErrNotFound 表示账号（或登录）行不存在。
 	ErrNotFound = errors.New("accounts: 账号不存在")
-	// ErrInvalid 表示登记输入未过校验；gateway 据此回 400。
-	ErrInvalid = errors.New("accounts: 账号登记校验未过")
-	// ErrRetryExhausted 表示读数行合并写连续 CAS 冲突超出预算。
+	// ErrInvalid 表示编辑输入未过校验；gateway 据此回 400。
+	ErrInvalid = errors.New("accounts: 账号编辑校验未过")
+	// ErrRetryExhausted 表示读数行/登录行合并写连续 CAS 冲突超出预算。
 	ErrRetryExhausted = errors.New("accounts: 读数行连续冲突")
+	// ErrNameTaken 表示改名撞上另一个账号的名字（plan L4 全局唯一）；gateway 据此回 409。
+	ErrNameTaken = errors.New("accounts: 账号名已被占用")
 )
 
 // maxCASAttempts 与编制域计数的重试预算同值（plan Q1：上限沿用 maxCASAttempts=8）。
@@ -44,109 +46,90 @@ const maxCASAttempts = 8
 
 func logger() *slog.Logger { return slog.Default().With("mod", "scheduling", "domain", "accounts") }
 
+// legacyWarned 记录已告警过的 B453 手填旧行 id（plan Q20：每行只 Warn 一次，不刷屏）。
+var legacyWarned sync.Map
+
 // Service 是账号领域的规则入口。无内存权威状态，全部经 Registry 持久。
 type Service struct {
-	repo      schedclient.Registry
-	referrers func(account string) ([]string, error) // 载体引用查询；nil = 无引用（见 SetReferrers）
+	repo schedclient.Registry
+	// referrers 返回「登录 id → 引用它的载体名」（组装点注入编制域查询；nil = 无引用）。
+	referrers func() (map[string][]string, error)
 }
 
 // New 用组装点绑定的注册表端口构造服务。
 func New(repo schedclient.Registry) *Service { return &Service{repo: repo} }
 
-// Put 以 CAS 写账号定义（expect=0 新建），返回新版本。
+// Put 以 CAS 写人可改的账号字段（改名、阈值、间隔），返回新版本。a.ID 必填（调用方先 Get 解析 ref）。
 //
-// 校验失败返回包 ErrInvalid 的错误；版本冲突返回包 schedclient.ErrCASConflict 的错误。
-// 只写定义行，不碰读数行——人编辑不抹读数，探测写读数也不顶定义行版本（Q1）。
+// expect=0 一律 ErrInvalid：账号只由发现产生（spec「永不做：手填账号登记」）。名字：空 = 不改；
+// 禁含 `:` 与 `/`（ErrInvalid）；与其他账号重名 → ErrNameTaken（并发两人改成同名的窗口接受，
+// 与自动起名同一取舍，plan Q2）。kind/指纹/建者等发现字段一律取现值，请求里的同名字段被忽略。
+// na 账号（不支持额度探测）不接受阈值与间隔。版本冲突返回包 schedclient.ErrCASConflict 的错误。
 func (s *Service) Put(a Account, expect int) (int, error) {
-	if err := validate(a); err != nil {
-		logger().Warn("账号登记校验失败", "name", a.Name, "kind", a.Kind, "machine", a.Machine,
-			"expect", expect, "cause", err)
-		return 0, err
+	if expect == 0 {
+		logger().Warn("账号编辑校验失败：expect=0", "id", a.ID, "name", a.Name)
+		return 0, fmt.Errorf("%w: 账号由发现产生，不能手工登记（新建）；在要用的机器上登录对应 CLI，等发现挂上", ErrInvalid)
 	}
-	existing, err := s.definitions()
+	cur, _, err := s.definition(a.ID)
 	if err != nil {
 		return 0, err
 	}
-	for _, other := range existing {
-		if other.Name == a.Name {
-			if expect > 0 && isMaskedEcho(a.Proxy, other.Proxy) {
-				a.Proxy = other.Proxy // 编辑回填的是打码值：保留原代理
-			}
-			continue
-		}
-		if sameCredential(other, a) {
-			err := fmt.Errorf("%w: 账号 %s 与已登记账号 %s 指向同一凭据（机器 %s、HOME %s、类型 %s、条目 %q），同一凭据只能登记一次",
-				ErrInvalid, a.Name, other.Name, a.Machine, a.HomeDir, a.Kind, a.Entry)
-			logger().Warn("账号登记校验失败：重复凭据", "name", a.Name, "conflict", other.Name, "expect", expect)
+	next := cur
+	if name := strings.TrimSpace(a.Name); name != "" && name != cur.Name {
+		if err := s.checkRename(cur, name); err != nil {
+			logger().Warn("账号改名被拒", "id", a.ID, "name", cur.Name, "new_name", name, "cause", err)
 			return 0, err
 		}
+		next.Name = name
 	}
-	body, err := json.Marshal(a)
-	if err != nil {
-		logger().Error("编码账号定义失败", "name", a.Name, "cause", err)
+	next.IntervalMinutes, next.WarnPercent, next.LowPercent = a.IntervalMinutes, a.WarnPercent, a.LowPercent
+	if err := validateEdit(next); err != nil {
+		logger().Warn("账号编辑校验失败", "id", a.ID, "name", cur.Name, "expect", expect, "cause", err)
 		return 0, err
 	}
-	version, err := s.repo.Put(KindAccount, a.Name, expect, body, "accounts")
+	body, err := json.Marshal(next)
 	if err != nil {
-		logger().Warn("写入账号定义失败", "name", a.Name, "expect", expect, "cause", err)
-		return 0, fmt.Errorf("账号 %s 写入失败: %w", a.Name, err)
+		logger().Error("编码账号定义失败", "id", a.ID, "cause", err)
+		return 0, err
 	}
-	logger().Info("写入账号定义成功", "name", a.Name, "kind", a.Kind, "machine", a.Machine,
-		"expect", expect, "version", version, "interval_minutes", a.IntervalMinutes,
-		"proxy_set", a.Proxy != "")
+	version, err := s.repo.Put(KindAccount, a.ID, expect, body, "accounts")
+	if err != nil {
+		logger().Warn("写入账号定义失败", "id", a.ID, "expect", expect, "cause", err)
+		return 0, fmt.Errorf("账号 %s 写入失败: %w", cur.Name, err)
+	}
+	logger().Info("写入账号定义成功", "id", a.ID, "name", next.Name, "old_name", cur.Name, "kind", next.Kind,
+		"expect", expect, "version", version, "interval_minutes", next.IntervalMinutes)
 	return version, nil
 }
 
-// definitions 读全部账号定义（查重用）。
-func (s *Service) definitions() ([]Account, error) {
-	recs, err := s.repo.List(KindAccount)
+// checkRename 是改名规则（plan L4）：禁 `:`/`/`（与 id 形态区分，API 路径可同时接受 id 或名字），
+// 全局唯一。
+func (s *Service) checkRename(cur Account, name string) error {
+	if strings.ContainsAny(name, ":/") {
+		return fmt.Errorf("%w: 账号名字 %q 不能含「:」或「/」", ErrInvalid, name)
+	}
+	defs, _, err := s.definitions()
 	if err != nil {
-		return nil, fmt.Errorf("列账号定义失败: %w", err)
+		return err
 	}
-	out := make([]Account, 0, len(recs))
-	for _, r := range recs {
-		var a Account
-		if err := json.Unmarshal(r.Body, &a); err != nil {
-			return nil, fmt.Errorf("account/%s 解码失败: %w", r.ID, err)
+	for id, other := range defs {
+		if id != cur.ID && other.Name == name {
+			return fmt.Errorf("账号名字 %q 已被账号 %s 占用: %w", name, id, ErrNameTaken)
 		}
-		out = append(out, a)
 	}
-	return out, nil
+	return nil
 }
 
-// sameCredential：同机、同 HOME（归一后）、同类型、同条目即同一凭据。并发两人同时登记
-// 同一凭据可能都成功（先扫后写，plan §7 接受：人工低频，第二个可删）。
-func sameCredential(a, b Account) bool {
-	return a.Machine == b.Machine && a.Kind == b.Kind && a.Entry == b.Entry &&
-		normalizeHome(a.HomeDir) == normalizeHome(b.HomeDir)
-}
-
-func normalizeHome(h string) string {
-	h = strings.TrimSpace(h)
-	if h == "~" || strings.HasPrefix(h, "~/") {
-		return "~" + path.Clean("/"+strings.TrimPrefix(h, "~"))
+// validateEdit 是人可改字段的形态校验（spec S5）：间隔可选值、两条阈值次序；na 账号阈值与间隔
+// 必须缺席（plan L3/Q11）。
+func validateEdit(a Account) error {
+	if !SupportsProbe(a.Kind) {
+		if a.IntervalMinutes != 0 || a.WarnPercent != 0 || a.LowPercent != 0 {
+			return fmt.Errorf("%w: 账号 %s（%s）不支持额度探测，没有探测间隔与阈值", ErrInvalid, a.Name, a.Kind)
+		}
+		return nil
 	}
-	return path.Clean(h)
-}
-
-// validate 是单条定义的形态校验（spec S1）：必填、kind 词表、HOME 形态（绝对路径或 ~、~/
-// 开头）、间隔可选值、两条阈值次序、代理形态。跨账号的查重在 Put。
-func validate(a Account) error {
-	if err := proxycfg.Validate(a.Proxy); err != nil {
-		return fmt.Errorf("%w: 账号 %s 的代理无效：%v", ErrInvalid, a.Name, err)
-	}
-	home := strings.TrimSpace(a.HomeDir)
 	switch {
-	case strings.TrimSpace(a.Name) == "" || strings.TrimSpace(a.Name) != a.Name || strings.Contains(a.Name, "/"):
-		return fmt.Errorf("%w: 账号名必填，且不能含首尾空白或 /", ErrInvalid)
-	case !slices.Contains([]string{KindOpencodeGo, KindCodex, KindGrok, KindAgy}, a.Kind):
-		return fmt.Errorf("%w: 账号 %s 的类型 %q 不在 opencode-go/codex/grok/agy 之内", ErrInvalid, a.Name, a.Kind)
-	case strings.TrimSpace(a.Machine) == "":
-		return fmt.Errorf("%w: 账号 %s 必须指定所在机器", ErrInvalid, a.Name)
-	case home == "":
-		return fmt.Errorf("%w: 账号 %s 必须指定凭据 HOME", ErrInvalid, a.Name)
-	case !(home == "~" || strings.HasPrefix(home, "~/") || path.IsAbs(home) || filepath.IsAbs(home)):
-		return fmt.Errorf("%w: 账号 %s 的凭据 HOME %q 必须是绝对路径或以 ~/ 开头", ErrInvalid, a.Name, a.HomeDir)
 	case !slices.Contains(AllowedIntervals, a.IntervalMinutes):
 		return fmt.Errorf("%w: 账号 %s 的探测间隔 %d 分钟不在 %v 之内", ErrInvalid, a.Name, a.IntervalMinutes, AllowedIntervals)
 	case a.WarnPercent <= 0 || a.WarnPercent >= a.LowPercent || a.LowPercent > 100:
@@ -155,37 +138,115 @@ func validate(a Account) error {
 	return nil
 }
 
-// Get 读一个账号的完整读面（定义 + 读数行 + 推导状态）。
-func (s *Service) Get(name string) (View, error) {
-	def, err := s.repo.Get(KindAccount, name)
-	if err != nil {
-		if errors.Is(err, schedclient.ErrNotFound) {
-			return View{}, fmt.Errorf("账号 %s: %w", name, ErrNotFound)
-		}
-		return View{}, fmt.Errorf("读账号 %s 定义失败: %w", name, err)
-	}
+// decodeAccount 解码账号行；B453 手填旧行（无指纹，plan Q20）返回 ok=false 并只告警一次。
+func decodeAccount(rec schedclient.Record) (Account, bool, error) {
 	var a Account
-	if err := json.Unmarshal(def.Body, &a); err != nil {
-		return View{}, fmt.Errorf("account/%s 解码失败: %w", name, err)
+	if err := json.Unmarshal(rec.Body, &a); err != nil {
+		return Account{}, false, fmt.Errorf("account/%s 解码失败: %w", rec.ID, err)
 	}
-	rec, _, err := s.readRecord(name)
-	if err != nil {
-		return View{}, err
+	a.ID = rec.ID
+	if a.Fingerprint == "" || !slices.Contains(knownKinds, a.Kind) {
+		if _, seen := legacyWarned.LoadOrStore(rec.ID, true); !seen {
+			logger().Warn("B453 手填账号登记已退役，可删（不再展示）", "id", rec.ID, "kind", a.Kind)
+		}
+		return Account{}, false, nil
 	}
-	refs, err := s.carriersOf(name)
-	if err != nil {
-		return View{}, err
-	}
-	v := newView(a, def.Version, rec, time.Now())
-	v.Carriers = refs
-	return v, nil
+	return a, true, nil
 }
 
-// List 列出全部账号（按名称排序）。没有定义行的读数行（孤儿）不出现。
-func (s *Service) List() ([]View, error) {
-	defs, err := s.repo.List(KindAccount)
+// definition 读一个账号定义行（按 id）。不存在或是退役旧行 → ErrNotFound。
+func (s *Service) definition(id string) (Account, int, error) {
+	rec, err := s.repo.Get(KindAccount, id)
 	if err != nil {
-		return nil, fmt.Errorf("列账号定义失败: %w", err)
+		if errors.Is(err, schedclient.ErrNotFound) {
+			return Account{}, 0, fmt.Errorf("账号 %s: %w", id, ErrNotFound)
+		}
+		return Account{}, 0, fmt.Errorf("读账号 %s 定义失败: %w", id, err)
+	}
+	a, ok, err := decodeAccount(rec)
+	if err != nil {
+		return Account{}, 0, err
+	}
+	if !ok {
+		return Account{}, 0, fmt.Errorf("账号 %s（B453 手填旧行）: %w", id, ErrNotFound)
+	}
+	return a, rec.Version, nil
+}
+
+// definitions 读全部有效账号定义（跳过退役旧行），按 id 索引，并带行版本。
+func (s *Service) definitions() (map[string]Account, map[string]int, error) {
+	recs, err := s.repo.List(KindAccount)
+	if err != nil {
+		return nil, nil, fmt.Errorf("列账号定义失败: %w", err)
+	}
+	defs, versions := make(map[string]Account, len(recs)), make(map[string]int, len(recs))
+	for _, r := range recs {
+		a, ok, err := decodeAccount(r)
+		if err != nil {
+			return nil, nil, err
+		}
+		if ok {
+			defs[a.ID], versions[a.ID] = a, r.Version
+		}
+	}
+	return defs, versions, nil
+}
+
+// resolve 把 ref（账号 id 或名字，plan Q15）解析成账号 id。名字查不到 → ErrNotFound。
+func (s *Service) resolve(ref string) (string, error) {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return "", fmt.Errorf("账号引用为空: %w", ErrNotFound)
+	}
+	if isAccountID(ref) {
+		return ref, nil
+	}
+	defs, _, err := s.definitions()
+	if err != nil {
+		return "", err
+	}
+	for id, a := range defs {
+		if a.Name == ref {
+			return id, nil
+		}
+	}
+	return "", fmt.Errorf("账号 %s: %w", ref, ErrNotFound)
+}
+
+// Get 读一个账号的完整读面（定义 + 读数行 + 推导状态 + 名下登录）。ref 是账号 id 或名字。
+func (s *Service) Get(ref string) (View, error) {
+	id, err := s.resolve(ref)
+	if err != nil {
+		return View{}, err
+	}
+	a, version, err := s.definition(id)
+	if err != nil {
+		return View{}, err
+	}
+	rec, _, err := s.readRecord(id)
+	if err != nil {
+		return View{}, err
+	}
+	logins, err := s.loginRows()
+	if err != nil {
+		return View{}, err
+	}
+	refs, err := s.referrerMap()
+	if err != nil {
+		return View{}, err
+	}
+	runs, err := s.discoveryTimes()
+	if err != nil {
+		return View{}, err
+	}
+	return newView(a, version, rec, logins, refs, runs, time.Now()), nil
+}
+
+// List 列出全部账号（按名称排序）。没有定义行的读数行（孤儿）不出现；B453 手填旧行不出现。
+func (s *Service) List() ([]View, error) {
+	defs, versions, err := s.definitions()
+	if err != nil {
+		return nil, err
 	}
 	readings, err := s.repo.List(KindReading)
 	if err != nil {
@@ -196,34 +257,135 @@ func (s *Service) List() ([]View, error) {
 		var rec ReadingRecord
 		if err := json.Unmarshal(r.Body, &rec); err != nil {
 			// 读数行是可重建的机写缓存：坏行按「无读数」展示，下次探测覆盖，不拖垮整张列表。
-			logger().Warn("账号读数行解码失败，按无读数展示", "name", r.ID, "version", r.Version, "cause", err)
+			logger().Warn("账号读数行解码失败，按无读数展示", "id", r.ID, "version", r.Version, "cause", err)
 			continue
 		}
 		byID[r.ID] = rec
 	}
+	logins, err := s.loginRows()
+	if err != nil {
+		return nil, err
+	}
+	refs, err := s.referrerMap()
+	if err != nil {
+		return nil, err
+	}
+	runs, err := s.discoveryTimes()
+	if err != nil {
+		return nil, err
+	}
 	now := time.Now()
 	out := make([]View, 0, len(defs))
-	for _, d := range defs {
-		var a Account
-		if err := json.Unmarshal(d.Body, &a); err != nil {
-			return nil, fmt.Errorf("account/%s 解码失败: %w", d.ID, err)
-		}
-		v := newView(a, d.Version, byID[d.ID], now)
-		if v.Carriers, err = s.carriersOf(a.Name); err != nil {
-			return nil, err
-		}
-		out = append(out, v)
+	for id, a := range defs {
+		out = append(out, newView(a, versions[id], byID[id], logins, refs, runs, now))
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Account.Name < out[j].Account.Name })
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Account.Name != out[j].Account.Name {
+			return out[i].Account.Name < out[j].Account.Name
+		}
+		return out[i].Account.ID < out[j].Account.ID
+	})
 	return out, nil
 }
 
-func newView(a Account, version int, rec ReadingRecord, now time.Time) View {
-	return View{Account: a, Version: version, State: Derive(a, rec, now), Stale: IsStale(rec, now),
-		RecoverAt: RecoverAt(a, rec, now), Record: rec}
+// newView 组装读面：名下登录（按 id 排序）、各登录与账号的引用载体、可探登录（plan Q10）。
+// 支持探测的账号没有可探登录 → 状态推导为「探测失败」，最近错误为「没有可用登录」——只在
+// 读面推导，不写读数行（plan Q10）。runs 是各机最近一轮发现时刻。
+func newView(a Account, version int, rec ReadingRecord, logins []LoginView, refs map[string][]string,
+	runs map[string]time.Time, now time.Time) View {
+	v := View{Account: a, Version: version, State: Derive(a, rec, now), Stale: IsStale(rec, now),
+		RecoverAt: RecoverAt(a, rec, now), Record: rec, Logins: []LoginView{}, Carriers: []string{}}
+	seen := map[string]bool{}
+	var own []Login
+	for _, lv := range logins {
+		if lv.Login.Account != a.ID {
+			continue
+		}
+		lv.Carriers = sortedCopy(refs[lv.Login.ID])
+		for _, c := range lv.Carriers {
+			if !seen[c] {
+				seen[c] = true
+				v.Carriers = append(v.Carriers, c)
+			}
+		}
+		v.Logins = append(v.Logins, lv)
+		own = append(own, lv.Login)
+	}
+	sort.Strings(v.Carriers)
+	if !SupportsProbe(a.Kind) {
+		return v
+	}
+	if pl, ok := ProbeLogin(own, runs, now); ok {
+		v.ProbeLogin = pl.ID
+		return v
+	}
+	v.State, v.RecoverAt = StateFail, nil
+	v.Record.LastError = &Problem{Category: CategoryNoLogin, Message: noProbeLoginMessage(own, runs, now)}
+	return v
 }
 
-// RecordProbe 把一次探测结果合并进读数行（所在机探测器调用）。
+// CategoryNoLogin 是「没有可用登录」的失败类别（读面推导，不写读数行）。
+const CategoryNoLogin = "no_login"
+
+// noProbeLoginMessage 说清为什么没有可探登录（人话，不含凭据）。
+func noProbeLoginMessage(own []Login, runs map[string]time.Time, now time.Time) string {
+	if len(own) == 0 {
+		return "没有可用登录：名下没有登录，在要用的机器上登录对应 CLI 后等发现挂上"
+	}
+	ok := 0
+	for _, l := range own {
+		if l.State == LoginOK {
+			ok++
+		}
+	}
+	if ok == 0 {
+		return "没有可用登录：名下登录都已过期或已失效，在所在机器重新登录后恢复探测"
+	}
+	return "没有可用登录：名下正常登录所在的机器最近 " + DiscoveryFreshFor.String() + " 内没有发现（可能离线）"
+}
+
+// ProbeLogin 选账号的「可探登录」（plan Q10）：状态正常、所在机最近一轮发现在 DiscoveryFreshFor
+// 之内（runs 里没有该机 = 不新鲜）的登录里 id 最小的一条。没有返回 false。全队对「谁来探」
+// 看到同一结论：首选失效或所在机离线，自然换下一条。
+func ProbeLogin(logins []Login, runs map[string]time.Time, now time.Time) (Login, bool) {
+	var best Login
+	found := false
+	for _, l := range logins {
+		if l.State != LoginOK {
+			continue
+		}
+		at, ok := runs[l.Machine]
+		if !ok || now.Sub(at) > DiscoveryFreshFor {
+			continue
+		}
+		if !found || l.ID < best.ID {
+			best, found = l, true
+		}
+	}
+	return best, found
+}
+
+// discoveryTimes 读各机最近一轮发现时刻（机器名 → at）。
+func (s *Service) discoveryTimes() (map[string]time.Time, error) {
+	runs, err := s.DiscoveryRuns()
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]time.Time, len(runs))
+	for _, r := range runs {
+		out[r.Machine] = r.At
+	}
+	return out, nil
+}
+
+func sortedCopy(in []string) []string {
+	out := append([]string{}, in...)
+	sort.Strings(out)
+	return out
+}
+
+// RecordProbe 把一次探测结果合并进读数行（所在机探测器调用）。name 是账号 id（名字也可，
+// 解析一次；探测器总传 id，不付扫描成本）。
 //
 // 合并规则：成功 → 替换读数、清失败与连续失败数；撞额度标记只在本次探测**开始**
 // 晚于标记时清除（防「探测发出 → 任务撞额度标记 → 旧探测返回抹掉新标记」）。
@@ -236,6 +398,9 @@ func (s *Service) RecordProbe(name string, o ProbeOutcome) error {
 	err := s.mergeReading(name, o.Writer, func(r *ReadingRecord) {
 		started, finished := o.StartedAt.UTC(), o.FinishedAt.UTC()
 		r.LastAttemptStartedAt, r.LastAttemptAt = &started, &finished
+		if o.Login != "" {
+			r.Login = o.Login
+		}
 		if o.Failure != nil {
 			p := *o.Failure
 			r.LastError = &p
@@ -254,11 +419,11 @@ func (s *Service) RecordProbe(name string, o ProbeOutcome) error {
 			"success", o.Reading != nil, "cause", err)
 		return err
 	}
-	logger().Info("写入账号探测结果", "name", name, "writer", o.Writer, "success", o.Reading != nil)
+	logger().Info("写入账号探测结果", "name", name, "writer", o.Writer, "login", o.Login, "success", o.Reading != nil)
 	return nil
 }
 
-// MarkQuota 给账号打撞额度标记（任务/检测撞额度时同步调用；段 3/4 接入调用方）。
+// MarkQuota 给账号打撞额度标记（任务/检测撞额度时同步调用）。name 是账号 id（B464 起；名字也可）。
 // 已有更晚的标记时保留更晚者。账号定义不存在返回 ErrNotFound。
 func (s *Service) MarkQuota(name string, m QuotaMark) error {
 	m.At = m.At.UTC()
@@ -279,12 +444,13 @@ func (s *Service) MarkQuota(name string, m QuotaMark) error {
 
 // mergeReading 是读数行唯一的写路径：读当前行 → mutate 合并本写者的字段 → 以读到的
 // 版本 CAS；冲突（对方刚写成功）则重读重试。行不存在按版本 0 新建。
-func (s *Service) mergeReading(name, writer string, mutate func(*ReadingRecord)) error {
-	if _, err := s.repo.Get(KindAccount, name); err != nil {
-		if errors.Is(err, schedclient.ErrNotFound) {
-			return fmt.Errorf("账号 %s: %w", name, ErrNotFound)
-		}
-		return fmt.Errorf("读账号 %s 定义失败: %w", name, err)
+func (s *Service) mergeReading(ref, writer string, mutate func(*ReadingRecord)) error {
+	name, err := s.resolve(ref)
+	if err != nil {
+		return err
+	}
+	if _, _, err := s.definition(name); err != nil {
+		return err
 	}
 	for attempt := 1; attempt <= maxCASAttempts; attempt++ {
 		rec, version, err := s.readRecord(name)
@@ -330,7 +496,8 @@ func (s *Service) readRecord(name string) (ReadingRecord, int, error) {
 	return rec, raw.Version, nil
 }
 
-// Derive 按读数行推导账号五档状态（spec S3，plan Q4 优先级）：
+// Derive 按读数行推导账号状态（spec S3，plan Q4 优先级）：
+//  0. kind 不支持额度探测（claude、第三方 key）→ na（plan Q11，不挡准入）；
 //  1. 有撞额度标记 → 无额度（持续到开始晚于标记的成功探测，探测失败不清）；
 //  2. 最近一次尝试失败（成功即清 LastError，故非空即「晚于最近成功」）→ 探测失败；
 //  3. 从无成功读数 → 未探测；
@@ -342,6 +509,8 @@ func (s *Service) readRecord(name string) (ReadingRecord, int, error) {
 // 准入、API、CLI 共用这一份推导（spec「单一推导函数」）。
 func Derive(a Account, rec ReadingRecord, now time.Time) State {
 	switch {
+	case !SupportsProbe(a.Kind):
+		return StateNA
 	case rec.QuotaMark != nil:
 		return StateOut
 	case rec.LastError != nil:
@@ -418,21 +587,18 @@ type Assessment struct {
 	RecoverAt *time.Time
 }
 
-// Assess 读一个账号的定义与读数行并推导状态与预计恢复（编制域统一准入判据调用）。
+// Assess 读一个账号（ref = id 或名字；准入热路径总传 id，不扫描）的定义与读数行并推导状态与预计恢复（编制域统一准入判据调用）。
 // 定义行不存在返回包 ErrNotFound 的错误；读数行缺席或坏行按「未探测」推导。
-func (s *Service) Assess(name string, now time.Time) (Assessment, error) {
-	def, err := s.repo.Get(KindAccount, name)
+func (s *Service) Assess(ref string, now time.Time) (Assessment, error) {
+	id, err := s.resolve(ref)
 	if err != nil {
-		if errors.Is(err, schedclient.ErrNotFound) {
-			return Assessment{}, fmt.Errorf("账号 %s: %w", name, ErrNotFound)
-		}
-		return Assessment{}, fmt.Errorf("读账号 %s 定义失败: %w", name, err)
+		return Assessment{}, err
 	}
-	var a Account
-	if err := json.Unmarshal(def.Body, &a); err != nil {
-		return Assessment{}, fmt.Errorf("account/%s 解码失败: %w", name, err)
+	a, _, err := s.definition(id)
+	if err != nil {
+		return Assessment{}, err
 	}
-	rec, _, err := s.readRecord(name)
+	rec, _, err := s.readRecord(id)
 	if err != nil {
 		return Assessment{}, err
 	}
@@ -461,6 +627,8 @@ func (st State) Label() string {
 		return "探测失败"
 	case StateNone:
 		return "未探测"
+	case StateNA:
+		return "不支持额度探测"
 	default:
 		return string(st)
 	}

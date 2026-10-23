@@ -2,10 +2,11 @@
 // 边界：只测纯函数——排序、窗口分档、底栏两模式取哪个窗口、同机判据、倒计时；
 // 渲染与色彩类落点由组件测试锁。
 import { describe, expect, it } from 'vitest'
-import type { AccountInput, AccountView, AccountWindowView } from '../../api/accounts'
+import type { AccountView, AccountWindowView, LoginView } from '../../api/accounts'
 import {
-  barWindows, byProblem, countdown, credentialMoved, entryText, failBrief, hotWindow, KIND_ORDER, recoverAt, sameMachine, statusPhrase, tightest,
-  toneClass, weeklyWindow, windowLabel, winTone,
+  barWindows, byProblem, countdown, dispatchHint, failBrief, homeText, hotWindow, KIND_ORDER, loginCommandText, loginCredText,
+  loginStateHint, loginStateLabel, machinesText, nextProbeText, quotaAccounts, recoverAt, sameMachine, statusPhrase, supportsProbe, tightest,
+  toneClass, updatedText, weeklyWindow, windowLabel, winTone,
 } from './model'
 
 const NOW = Date.parse('2026-10-22T00:00:00Z')
@@ -16,7 +17,7 @@ const win = (key: string, used: number, resetIn?: number, group?: string): Accou
 })
 function acct(name: string, state: string, windows?: AccountWindowView[], extra: Partial<AccountView> = {}): AccountView {
   return {
-    name, kind: 'codex', machine: 'm', home_dir: '~/h', interval_minutes: 15, warn_percent: 60, low_percent: 80,
+    id: `codex:${name}`, name, kind: 'codex', fingerprint: 'sha256:000000000000', logins: [], interval_minutes: 15, warn_percent: 60, low_percent: 80,
     version: 1, state, stale: false, carriers: [],
     ...(windows ? { reading: { windows, probed_at: iso(-60_000) } } : {}),
     ...extra,
@@ -112,46 +113,70 @@ describe('账号展示规则', () => {
     expect(recoverAt(acct('bad', 'out', undefined, { recover_at: 'not-a-time' }))).toBeNull()
   })
 
-  describe('保存后是否自动探测 credentialMoved（审查 m2 / 第 2 轮 N2）', () => {
-    // 编辑前：codex 账号，代理回显为打码值
-    const editing = acct('cx', 'ok', undefined, { kind: 'codex', machine: 'linux-01', home_dir: '~/h/cx', entry: 'tokens',
-      proxy: 'socks5://u:***@127.0.0.1:7897' })
-    // 原样回提交（对话框把回显值原样放进请求体）
-    const same: AccountInput = { kind: 'codex', machine: 'linux-01', home_dir: '~/h/cx', entry: 'tokens',
-      proxy: 'socks5://u:***@127.0.0.1:7897', interval_minutes: 15, warn_percent: 60, low_percent: 80 }
-    it('新建一律探测', () => expect(credentialMoved(null, same)).toBe(true))
-    it('原样回提交（代理仍是打码回显值）不探测', () => expect(credentialMoved(editing, same)).toBe(false))
-    it.each<[string, boolean, Partial<AccountInput>]>([
-      ['kind', true, { kind: 'grok' }],
-      ['所在机器', true, { machine: 'mac-mini' }],
-      ['HOME', true, { home_dir: '~/h/cx2' }],
-      ['条目', true, { entry: 'tokens2' }],
-      ['代理换成新值', true, { proxy: 'socks5://u:new@127.0.0.1:7897' }],
-      ['代理清空（改回沿用该机代理）', true, { proxy: undefined }],
-      ['探测间隔', false, { interval_minutes: 30 }],
-      ['预警线', false, { warn_percent: 50 }],
-      ['低额度线', false, { low_percent: 90 }],
-    ])('只改%s → 探测 %s', (_label, want, patch) => {
-      expect(credentialMoved(editing, { ...same, ...patch })).toBe(want)
-    })
+  it('登录状态词与提示：正常无提示；已过期只提示；已失效给恢复说明（S3）', () => {
+    expect(loginStateLabel('ok')).toBe('正常')
+    expect(loginStateHint('ok')).toBe('')
+    expect(loginStateLabel('expired')).toBe('已过期')
+    expect(loginStateHint('expired')).toContain('自行刷新')
+    expect(loginStateLabel('gone')).toBe('已失效')
+    expect(loginStateHint('gone')).toContain('重新登录后自动恢复')
   })
 
-  it('凭据位置一句话：opencode-go 条目空 = 自动、opencode.db = 登录账号、其他 = auth.json 同名条目（轮 5，spec r1.3）', () => {
-    const og = (entry?: string) => acct('og', 'ok', undefined, { kind: 'opencode-go', home_dir: '/root', ...(entry === undefined ? {} : { entry }) })
-    expect(entryText(og())).toBe('/root › 自动（auth.json › opencode-go，否则 opencode.db 登录账号）')
-    expect(entryText(og('opencode.db'))).toBe('/root › opencode.db 登录账号')
-    expect(entryText(og('opencode-go'))).toBe('/root › auth.json › opencode-go')
-    expect(entryText(acct('cx', 'ok', undefined, { kind: 'codex', home_dir: '~/h', entry: 'tokens' }))).toBe('~/h › auth.json › tokens')
-    expect(entryText(acct('ag', 'ok', undefined, { kind: 'agy', home_dir: '/root' }))).toBe('/root（agy CLI 自己的登录态）')
+  it('凭据时刻：有到期读到期/已到期；apikey 无到期读「key 不过期」；其余读变更时刻（S3）', () => {
+    const base: LoginView = { id: 'l', machine: 'm', home: '~', source: 's', fingerprint: 'sha256:0', state: 'ok', changed_at: iso(-H), carriers: [] }
+    expect(loginCredText({ ...base, expires_at: iso(2 * H) }, 'grok', NOW)).toMatch(/^到期 /)
+    expect(loginCredText({ ...base, expires_at: iso(-2 * H) }, 'grok', NOW)).toMatch(/^已于 .* 到期$/)
+    expect(loginCredText(base, 'apikey', NOW)).toBe('key 不过期')
+    expect(loginCredText(base, 'codex', NOW)).toBe('变更 1 小时前')
+    expect(homeText('~')).toBe('~（主 HOME）')
+    expect(homeText('~/.handoff/home/x')).toBe('~/.handoff/home/x')
   })
 
-  it('窗口名：agy 带模型组；四种 kind 固定顺序', () => {
+  it('重新登录命令：远端先 ssh 再执行，note 放括号；缺席为空串', () => {
+    expect(loginCommandText({ ssh: 'ssh root@linux-01', run: 'HOME=/h codex login' })).toBe('ssh root@linux-01 后执行：HOME=/h codex login')
+    expect(loginCommandText({ run: 'codex login', note: '无浏览器用 --device-auth' })).toBe('codex login（无浏览器用 --device-auth）')
+    expect(loginCommandText(undefined)).toBe('')
+  })
+
+  it('六组 kind：只有支持探测的进底栏；claude/apikey 是 na 且状态短语弱前景（S7）', () => {
+    expect(KIND_ORDER).toEqual(['opencode-go', 'codex', 'grok', 'agy', 'claude', 'apikey'])
+    expect(supportsProbe('opencode-go')).toBe(true)
+    expect(supportsProbe('claude')).toBe(false)
+    expect(supportsProbe('apikey')).toBe(false)
+    const accounts = [acct('a', 'ok'), acct('cl', 'na', undefined, { kind: 'claude' }), acct('k', 'na', undefined, { kind: 'apikey' })]
+    expect(quotaAccounts(accounts).map((x) => x.name)).toEqual(['a'])
+    expect(statusPhrase(accounts[1])).toEqual({ tone: 'q-mute', text: '不支持额度探测' })
+    expect(updatedText(accounts[1], NOW)).toBe('不支持额度探测')
+    expect(failBrief(acct('f', 'fail', undefined, { last_error: { category: 'no_login', message: '没有可用登录' } }))).toBe('没有可用登录')
+  })
+
+  it('账号机器一句话：登录去重、按登录顺序；无登录回「无登录」', () => {
+    const login = (id: string, machine: string): LoginView => ({ id, machine, home: '~', source: 's', fingerprint: 'sha256:0', state: 'ok', changed_at: iso(0), carriers: [] })
+    const a = acct('a', 'ok', undefined, { logins: [login('l1', 'linux-01'), login('l2', 'mac-mini'), login('l3', 'linux-01')] })
+    expect(machinesText(a)).toBe('linux-01 · mac-mini')
+    expect(machinesText(acct('b', 'ok'))).toBe('无登录')
+  })
+
+  it('派发提示：已失效暂停、已过期只提示、无额度/低额度暂停、na 照常、未探测额度未知', () => {
+    const login = (state: string): LoginView => ({ id: 'l', machine: 'linux-01', home: '~/.handoff/home/x', source: 's', fingerprint: 'sha256:0', state, changed_at: iso(0), carriers: [] })
+    const call = (a: AccountView, state = 'ok') => dispatchHint(a, login(state), NOW)!
+    expect(call(acct('a', 'ok'), 'gone')).toMatchObject({ paused: true, relogin: true })
+    expect(call(acct('a', 'ok'), 'gone').text).toContain('暂停派发：所用登录已失效')
+    expect(call(acct('a', 'ok'), 'expired')).toMatchObject({ paused: false, relogin: true })
+    expect(call(acct('a', 'out', [win('session', 100, 3 * H)], { recover_at: iso(3 * H) }))).toMatchObject({ paused: true })
+    expect(call(acct('a', 'low', [win('session', 82, 2 * H)], { recover_at: iso(2 * H) })).text).toContain('已用 82%')
+    expect(call(acct('a', 'na', undefined, { kind: 'claude' }))).toMatchObject({ paused: false })
+    expect(call(acct('a', 'fail', undefined, { last_error: { category: 'proxy', message: 'x' } })).paused).toBe(false)
+    expect(call(acct('a', 'none')).paused).toBe(false)
+  })
+
+  it('窗口名：agy 带模型组；六种 kind 固定顺序', () => {
     expect(windowLabel(win('session', 1))).toBe('会话 5h')
     expect(windowLabel(win('weekly', 1))).toBe('每周')
     expect(windowLabel(win('monthly', 1))).toBe('每月')
     expect(windowLabel(win('session', 1, undefined, 'Gemini'))).toBe('Gemini 5h')
     expect(windowLabel(win('weekly', 1, undefined, 'Claude/GPT'))).toBe('Claude/GPT 周')
-    expect(KIND_ORDER).toEqual(['opencode-go', 'codex', 'grok', 'agy'])
+    expect(KIND_ORDER).toHaveLength(6)
   })
 
   it('倒计时', () => {
@@ -159,6 +184,15 @@ describe('账号展示规则', () => {
     expect(countdown(30_000)).toBe('1m')
     expect(countdown(2 * H + 41 * 60_000)).toBe('2h41m')
     expect(countdown(98 * H)).toBe('4d 2h')
+  })
+
+  it('下次探测：倒计时「即将」时整句改「即将进行」，不出现「不晚于 即将 后」/「下次 即将 后」', () => {
+    const fail = acct('fail', 'fail', undefined, { last_attempt_at: iso(-20 * 60_000) })
+    expect(nextProbeText(fail, NOW)).toBe('失败后退避重试，即将进行')
+    const ok = acct('ok', 'ok', undefined, { last_attempt_at: iso(-20 * 60_000) })
+    expect(nextProbeText(ok, NOW)).toBe('下次探测即将进行')
+    const nextFail = acct('next-fail', 'fail', undefined, { last_attempt_at: iso(-60_000) })
+    expect(nextProbeText(nextFail, NOW)).toBe('失败后退避重试，不晚于 14m 后')
   })
 
   it('同机判据：名字相等；载体在本机别名时账号不在任何远端机上即算本机', () => {

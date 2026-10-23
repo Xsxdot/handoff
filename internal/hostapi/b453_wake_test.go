@@ -1,7 +1,7 @@
-// b453_wake_test.go —— B453 段 3 检测链：撞额度三类分类委托 quota（Q10/Q19）、检测回合
-// 算载体 HOME 凭据指纹（F15）、账号代理覆盖检测回合环境（Q6）。
+// b453_wake_test.go —— B453 段 3 检测链：撞额度三类分类委托 quota（Q10/Q19）、所选登录 kind
+// 缩小撞额度签名集合、代理覆盖检测回合环境（Q6）。B464 删载体 HOME 凭据指纹比对，相关断言随删。
 //
-// 边界：detectTurn 换成记录型替身，不起真实 CLI；指纹函数由测试注入（真实取材在 quota 测）。
+// 边界：detectTurn 换成记录型替身，不起真实 CLI。
 package hostapi
 
 import (
@@ -51,26 +51,17 @@ func captureDetectTurn(t *testing.T, env *[]string, err error) {
 	t.Cleanup(func() { detectTurn = old })
 }
 
-func TestWakeHomeFingerprintAndAccountProxy(t *testing.T) {
+func TestWakeHomeAccountKindAndProxy(t *testing.T) {
 	swapUserHomeDir(t, t.TempDir())
 	var env []string
 	captureDetectTurn(t, &env, errors.New("insufficient_quota"))
-	host := newProbeHost()
-	var gotKind, gotHome, gotEntry string
-	host.SetCredentialFingerprint(func(kind, home, entry string) (string, error) {
-		gotKind, gotHome, gotEntry = kind, home, entry
-		return "sha256:abcdefabcdef", nil
-	})
-	home := t.TempDir()
+	host := New()
 	reply, err := host.WakeHome(context.Background(), WakeRequest{
-		CLI: "opencode", HomeDir: home, Timeout: testWakeBudget,
-		AccountKind: "codex", AccountEntry: "tokens", Proxy: "socks5://127.0.0.1:7897",
+		CLI: "opencode", HomeDir: t.TempDir(), Timeout: testWakeBudget,
+		AccountKind: "codex", Proxy: "socks5://127.0.0.1:7897",
 	})
 	if err != nil {
 		t.Fatalf("WakeHome: %v", err)
-	}
-	if reply.Fingerprint != "sha256:abcdefabcdef" || gotKind != "codex" || gotEntry != "tokens" || gotHome != home {
-		t.Fatalf("指纹 = %q（kind=%q home=%q entry=%q），want 按所选账号 kind/条目在载体 HOME 里算", reply.Fingerprint, gotKind, gotHome, gotEntry)
 	}
 	if reply.Outcome != WakeQuota {
 		t.Fatalf("codex 账号 insufficient_quota 应判撞额度，得 %q", reply.Outcome)
@@ -80,31 +71,11 @@ func TestWakeHomeFingerprintAndAccountProxy(t *testing.T) {
 	}
 }
 
-func TestWakeHomeFingerprintFailureMeansNoCompare(t *testing.T) {
+func TestWakeHomeWithoutAccountKeepsEnv(t *testing.T) {
 	swapUserHomeDir(t, t.TempDir())
 	var env []string
 	captureDetectTurn(t, &env, nil)
-	host := newProbeHost()
-	host.SetCredentialFingerprint(func(string, string, string) (string, error) {
-		return "", errors.New("凭据文件缺失")
-	})
-	reply, err := host.WakeHome(context.Background(), WakeRequest{
-		CLI: "opencode", HomeDir: t.TempDir(), Timeout: testWakeBudget, AccountKind: "codex",
-	})
-	if err != nil || reply.Outcome != WakeReady || reply.Fingerprint != "" {
-		t.Fatalf("指纹算不出 = %+v/%v，want ready 且指纹空（不比对，不影响检测结局）", reply, err)
-	}
-}
-
-func TestWakeHomeWithoutAccountSkipsFingerprintAndKeepsEnv(t *testing.T) {
-	swapUserHomeDir(t, t.TempDir())
-	var env []string
-	captureDetectTurn(t, &env, nil)
-	host := newProbeHost()
-	host.SetCredentialFingerprint(func(string, string, string) (string, error) {
-		t.Error("未选账号不得算指纹")
-		return "", nil
-	})
+	host := New()
 	if _, err := host.WakeHome(context.Background(), WakeRequest{CLI: "opencode", HomeDir: t.TempDir(), Timeout: testWakeBudget}); err != nil {
 		t.Fatalf("WakeHome: %v", err)
 	}

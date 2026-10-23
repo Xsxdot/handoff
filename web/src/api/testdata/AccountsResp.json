@@ -1,11 +1,11 @@
 {
   "accounts": [
     {
+      "id": "opencode-go:3f9a1b2cc21e",
       "name": "og-main",
       "kind": "opencode-go",
-      "machine": "linux-01",
-      "home_dir": "/root/.handoff/home/mimo",
-      "entry": "opencode-go",
+      "label": "dev@example.com",
+      "fingerprint": "sha256:3f9a1b2cc21e",
       "interval_minutes": 15,
       "warn_percent": 60,
       "low_percent": 80,
@@ -21,6 +21,7 @@
           },
           {
             "key": "weekly",
+            "group": "Go",
             "used_percent": 58.4,
             "resets_at": "2026-08-15T12:30:00+08:00"
           },
@@ -35,19 +36,46 @@
         "probed_at": "2026-08-11T10:28:00+08:00"
       },
       "last_attempt_at": "2026-08-11T10:28:00+08:00",
+      "probe_login": "login-aa00000000000001",
+      "logins": [
+        {
+          "id": "login-aa00000000000001",
+          "machine": "linux-01",
+          "home": "~/.handoff/home/mimo",
+          "source": "opencode.db",
+          "fingerprint": "sha256:3f9a1b2cc21e",
+          "state": "ok",
+          "changed_at": "2026-08-11T09:30:00+08:00",
+          "expires_at": "2026-09-10T10:30:00+08:00",
+          "relogin": {
+            "ssh": "ssh dev@linux-01",
+            "run": "HOME=/home/dev/.handoff/home/mimo opencode console login"
+          },
+          "carriers": [
+            "mimo"
+          ]
+        },
+        {
+          "id": "login-aa00000000000002",
+          "machine": "mac-mini",
+          "home": "~",
+          "source": "opencode.db",
+          "fingerprint": "sha256:3f9a1b2cc21e",
+          "state": "gone",
+          "changed_at": "2026-08-11T09:30:00+08:00",
+          "carriers": []
+        }
+      ],
       "carriers": [
         "mimo"
       ]
     },
     {
-      "name": "og-team",
-      "kind": "opencode-go",
-      "machine": "linux-01",
-      "home_dir": "/root/.handoff/home/dp",
-      "entry": "opencode-go",
-      "interval_minutes": 15,
-      "warn_percent": 60,
-      "low_percent": 80,
+      "id": "apikey:deepseek:77d0c1e2a3b4",
+      "name": "deepseek-key-77d0",
+      "kind": "apikey",
+      "provider": "deepseek",
+      "fingerprint": "sha256:77d0c1e2a3b4",
       "version": 1,
       "state": "out",
       "stale": true,
@@ -68,17 +96,30 @@
       },
       "last_attempt_at": "2026-08-11T09:50:00+08:00",
       "recover_at": "2026-08-11T13:42:00+08:00",
+      "probe_login": "login-bb00000000000001",
+      "logins": [
+        {
+          "id": "login-bb00000000000001",
+          "machine": "linux-01",
+          "home": "~/.handoff/home/dp",
+          "source": "auth.json",
+          "fingerprint": "sha256:77d0c1e2a3b4",
+          "state": "ok",
+          "changed_at": "2026-08-11T09:30:00+08:00",
+          "carriers": [
+            "dp"
+          ]
+        }
+      ],
       "carriers": [
         "dp"
       ]
     },
     {
+      "id": "codex:e7a033d5c0aa",
       "name": "codex-plus",
       "kind": "codex",
-      "machine": "macbook-pro",
-      "home_dir": "~/.handoff/home/mbp-codex",
-      "entry": "tokens",
-      "proxy": "socks5://u:***@127.0.0.1:7897",
+      "fingerprint": "sha256:e7a033d5c0aa",
       "interval_minutes": 15,
       "warn_percent": 60,
       "low_percent": 80,
@@ -107,34 +148,63 @@
       },
       "last_attempt_at": "2026-08-11T10:29:00+08:00",
       "recover_at": "2026-08-11T12:18:00+08:00",
+      "probe_login": "login-cc00000000000001",
+      "logins": [
+        {
+          "id": "login-cc00000000000001",
+          "machine": "macbook-pro",
+          "home": "~/.handoff/home/mbp-codex",
+          "source": "auth.json",
+          "fingerprint": "sha256:e7a033d5c0aa",
+          "state": "ok",
+          "changed_at": "2026-08-11T09:30:00+08:00",
+          "proxy": "socks5://u:***@127.0.0.1:7897",
+          "relogin": {
+            "ssh": "ssh dev@macbook-pro",
+            "run": "HOME=/Users/dev/.handoff/home/mbp-codex codex login",
+            "remote_run": "HOME=/Users/dev/.handoff/home/mbp-codex codex login --device-auth"
+          },
+          "carriers": [
+            "mbp-codex",
+            "mbp-oc-codex"
+          ]
+        }
+      ],
       "carriers": [
         "mbp-codex",
         "mbp-oc-codex"
       ]
     },
     {
-      "name": "codex-spare",
+      "id": "codex:0b1c2d3e4f50",
+      "name": "codex-0b1c",
       "kind": "codex",
-      "machine": "linux-01",
-      "home_dir": "/root/.handoff/home/codex-spare",
-      "entry": "tokens",
+      "fingerprint": "sha256:0b1c2d3e4f50",
       "interval_minutes": 30,
       "warn_percent": 50,
       "low_percent": 90,
       "version": 1,
       "state": "none",
       "stale": false,
+      "logins": [
+        {
+          "id": "login-dd00000000000001",
+          "machine": "linux-01",
+          "home": "~/.handoff/home/codex-spare",
+          "source": "auth.json",
+          "fingerprint": "sha256:0b1c2d3e4f50",
+          "state": "gone",
+          "changed_at": "2026-08-11T09:30:00+08:00",
+          "carriers": []
+        }
+      ],
       "carriers": []
     },
     {
+      "id": "grok:5e6f70819a2b",
       "name": "grok-mbp",
       "kind": "grok",
-      "machine": "macbook-pro",
-      "home_dir": "~/.handoff/home/mbp-grok",
-      "entry": "https://auth.x.ai",
-      "interval_minutes": 15,
-      "warn_percent": 60,
-      "low_percent": 80,
+      "fingerprint": "sha256:5e6f70819a2b",
       "version": 1,
       "state": "fail",
       "stale": false,
@@ -143,54 +213,88 @@
         "category": "credential_expired",
         "message": "凭据已过期，等待 grok CLI 刷新"
       },
+      "probe_login": "login-ee00000000000001",
+      "logins": [
+        {
+          "id": "login-ee00000000000001",
+          "machine": "macbook-pro",
+          "home": "~/.handoff/home/mbp-grok",
+          "source": "auth.json",
+          "fingerprint": "sha256:5e6f70819a2b",
+          "state": "ok",
+          "changed_at": "2026-08-11T09:30:00+08:00",
+          "carriers": []
+        }
+      ],
       "carriers": []
     },
     {
-      "name": "agy-main",
+      "id": "claude:c1c1c1c1c1c1",
+      "name": "cl@example.com",
+      "kind": "claude",
+      "label": "cl@example.com",
+      "fingerprint": "sha256:c1c1c1c1c1c1",
+      "version": 1,
+      "state": "na",
+      "stale": false,
+      "logins": [
+        {
+          "id": "login-ff00000000000001",
+          "machine": "mac-mini",
+          "home": "~",
+          "source": "claude-auth",
+          "fingerprint": "sha256:c1c1c1c1c1c1",
+          "state": "expired",
+          "changed_at": "2026-08-11T09:30:00+08:00",
+          "carriers": [
+            "cl"
+          ]
+        }
+      ],
+      "carriers": [
+        "cl"
+      ]
+    },
+    {
+      "id": "agy:a9a9a9a9a9a9",
+      "name": "agy-a9a9",
       "kind": "agy",
-      "machine": "linux-01",
-      "home_dir": "/root/.handoff/home/agy",
+      "fingerprint": "sha256:a9a9a9a9a9a9",
       "interval_minutes": 15,
       "warn_percent": 60,
       "low_percent": 80,
       "version": 1,
-      "state": "ok",
+      "state": "fail",
       "stale": false,
-      "reading": {
-        "windows": [
-          {
-            "key": "session",
-            "group": "Gemini",
-            "used_percent": 22,
-            "resets_at": "2026-08-11T13:50:00+08:00"
-          },
-          {
-            "key": "weekly",
-            "group": "Gemini",
-            "used_percent": 35,
-            "resets_at": "2026-08-16T16:30:00+08:00"
-          },
-          {
-            "key": "session",
-            "group": "Claude/GPT",
-            "used_percent": 61,
-            "resets_at": "2026-08-11T12:35:00+08:00"
-          },
-          {
-            "key": "weekly",
-            "group": "Claude/GPT",
-            "used_percent": 48,
-            "resets_at": "2026-08-16T16:30:00+08:00"
-          }
-        ],
-        "plan_type": "Pro",
-        "fingerprint": "sha256:a91c6e04b2a8",
-        "probed_at": "2026-08-11T10:26:00+08:00"
+      "last_error": {
+        "category": "no_login",
+        "message": "没有可用登录：名下登录都已过期或已失效，在所在机器重新登录后恢复探测"
       },
-      "last_attempt_at": "2026-08-11T10:26:00+08:00",
-      "carriers": [
-        "agy"
-      ]
+      "logins": [
+        {
+          "id": "login-ab00000000000001",
+          "machine": "linux-01",
+          "home": "~",
+          "source": "antigravity-oauth-token",
+          "fingerprint": "sha256:a9a9a9a9a9a9",
+          "state": "expired",
+          "changed_at": "2026-08-11T09:30:00+08:00",
+          "carriers": []
+        }
+      ],
+      "carriers": []
+    }
+  ],
+  "discovery": [
+    {
+      "machine": "linux-01",
+      "self": true,
+      "at": "2026-08-11T10:29:30+08:00"
+    },
+    {
+      "machine": "macbook-pro",
+      "self": false,
+      "error": "列不出 ~/.handoff/home：permission denied"
     }
   ]
 }

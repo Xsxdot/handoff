@@ -4,7 +4,7 @@
 // 格式，以及检测结果写回载体状态的入站面。PutCarrier / admitInto 的四态接线与按位准入规则分别落在
 // scheduling.go，本文件集中维护状态迁移和用户可见的派生字符串。
 //
-// 边界：不探文件系统、不拉起 CLI——那是 hostapi.ProbeHome / WakeHome；本文件
+// 边界：不探文件系统、不拉起 CLI——那是 hostapi.WakeHome；本文件
 // 只拥有编制域数据（status / last_error）和由载体字段派生、对侧可见的字符串。
 package scheduling
 
@@ -96,26 +96,22 @@ type DetectEvidence struct {
 	// Quota = 检测回合撞额度（真额度耗尽，限速不算，plan Q10）。B453 起它不再改载体状态，
 	// 只决定标账号无额度（绑定了账号）还是把原因写进 last_error（未绑定），spec S4。
 	Quota bool
-	// Fingerprint 是载体 HOME 里按所选账号 kind/条目算出的凭据短指纹；空 = 未算或算不出
-	// （旧版目标机、未选账号、凭据缺失），写回后投影不比对（plan F15）。
-	Fingerprint string
 }
 
 // ErrDetectUnwired 是 Ticket 0 骨架哨兵：ApplyDetect 尚未按状态表写状态。
 // gateway 映射 503；实现票接线后正常路径不再返回它。
 var ErrDetectUnwired = errors.New("scheduling: 载体检测写状态尚未接线")
 
-// ApplyDetect 按「不可达优先、需登录次之、否则上线」的三态表把一次检测结果写进载体，
-// 并把本次算出的凭据指纹写回 cred_fingerprint。它读取 registry 当前版本并以一次 CAS
-// 写回；CAS、读取或解码失败都保留旧状态并返回带载体名上下文的错误。
+// ApplyDetect 按「不可达优先、需登录次之、否则上线」的三态表把一次检测结果写进载体。
+// 它读取 registry 当前版本并以一次 CAS 写回；CAS、读取或解码失败都保留旧状态并返回带
+// 载体名上下文的错误。（B453 的载体凭据指纹比对随 B464 删除：载体就跑在登录 HOME 里。）
 //
 // 撞额度（ev.Quota）不再是载体状态（spec S4）：载体按可达处理；绑定了账号的先给账号打
 // 撞额度标记（标记写失败 = 本次检测失败，载体不写，重检即可），未绑定或账号已删的把
 // detail 写进 last_error。online 且无额度原因时清空 LastError，其他状态原样保存 detail。
 func (s *Service) ApplyDetect(name string, ev DetectEvidence, detail string) (Carrier, error) {
 	statusLog().Info("开始写入载体检测", "name", name, "reachable", ev.Reachable,
-		"need_login", ev.NeedLogin, "quota", ev.Quota, "fingerprint_set", ev.Fingerprint != "",
-		"detail_bytes", len(detail))
+		"need_login", ev.NeedLogin, "quota", ev.Quota, "detail_bytes", len(detail))
 	rec, err := s.repo.Get(kindCarrier, name)
 	if err != nil {
 		statusLog().Error("读取载体检测目标失败", "name", name, "cause", err)
@@ -143,6 +139,9 @@ func (s *Service) ApplyDetect(name string, ev DetectEvidence, detail string) (Ca
 	default:
 		carrier.Status = StatusOnline
 	}
+	if ev.Reachable && ev.NeedLogin && !ev.Quota {
+		s.markDetectLoginFailed(carrier)
+	}
 	quotaToLastError := false
 	if carrier.Status == StatusOnline && ev.Quota {
 		marked, markErr := s.markDetectQuota(carrier, detail)
@@ -159,7 +158,6 @@ func (s *Service) ApplyDetect(name string, ev DetectEvidence, detail string) (Ca
 	default:
 		carrier.LastError = detail
 	}
-	carrier.CredFingerprint = ev.Fingerprint
 	body, err := json.Marshal(carrier)
 	if err != nil {
 		statusLog().Error("编码载体检测结果失败", "name", name, "version", rec.Version, "cause", err)
@@ -172,20 +170,45 @@ func (s *Service) ApplyDetect(name string, ev DetectEvidence, detail string) (Ca
 		return Carrier{}, fmt.Errorf("载体 %s 检测写入冲突: %w", name, err)
 	}
 	statusLog().Info("写入载体检测结果成功", "name", name, "version", version,
-		"previous_status", previous, "status", carrier.Status, "quota_to_last_error", quotaToLastError,
-		"fingerprint_set", carrier.CredFingerprint != "")
+		"previous_status", previous, "status", carrier.Status, "quota_to_last_error", quotaToLastError)
 	return carrier, nil
 }
 
-// markDetectQuota 给检测撞额度的载体所选账号打撞额度标记（spec S4、plan Q19）。返回
-// marked=false 表示没有可标的账号（未选、账号域未装配、账号已删），调用方把原因写进
-// last_error；标记写入失败返回错误。
+// markDetectLoginFailed 给检测得到「需要登录」的载体所选登录记失效证据（plan Q5：登录读作
+// 已过期，不挡派发；凭据变化后下一轮发现回正常）。未选登录、账号域未装配、登录已删 → 不记；
+// 证据写失败只告警——载体状态与最近错误照常写，检测结论不因证据写入失败而丢。
+func (s *Service) markDetectLoginFailed(c Carrier) {
+	loginID := strings.TrimSpace(c.Login)
+	if loginID == "" || s.accounts == nil {
+		return
+	}
+	if _, err := s.accounts.MarkLoginAuthFailed(loginID, time.Now(), "detect:"+c.Machine, "need_login"); err != nil {
+		if errors.Is(err, accounts.ErrNotFound) {
+			statusLog().Warn("检测需要登录但所选登录已不存在，不记失效证据", "name", c.Name, "login", loginID)
+			return
+		}
+		statusLog().Warn("检测需要登录：写登录失效证据失败", "name", c.Name, "login", loginID, "cause", err)
+	}
+}
+
+// markDetectQuota 给检测撞额度的载体所选登录所属账号打撞额度标记（spec S4、plan Q19；B464 起
+// 载体 → 登录 → 账号 id）。返回 marked=false 表示没有可标的账号（未选登录、账号域未装配、
+// 登录或账号已删），调用方把原因写进 last_error；标记写入失败返回错误。
 func (s *Service) markDetectQuota(c Carrier, detail string) (bool, error) {
-	account := strings.TrimSpace(c.Account)
-	if account == "" || s.accounts == nil {
+	loginID := strings.TrimSpace(c.Login)
+	if loginID == "" || s.accounts == nil {
 		return false, nil
 	}
-	err := s.accounts.MarkQuota(account, accounts.QuotaMark{
+	login, err := s.accounts.Login(loginID)
+	if err != nil {
+		if errors.Is(err, accounts.ErrNotFound) {
+			statusLog().Warn("检测撞额度但所选登录已不存在，原因写入载体最近错误", "name", c.Name, "login", loginID)
+			return false, nil
+		}
+		statusLog().Error("检测撞额度读取所选登录失败", "name", c.Name, "login", loginID, "cause", err)
+		return false, fmt.Errorf("载体 %s 检测撞额度，读取登录 %s 失败: %w", c.Name, loginID, err)
+	}
+	err = s.accounts.MarkQuota(login.Account, accounts.QuotaMark{
 		At: time.Now(), Carrier: c.Name, Machine: c.Machine,
 		Category: "quota_exhausted", Message: detail,
 	})
@@ -193,10 +216,10 @@ func (s *Service) markDetectQuota(c Carrier, detail string) (bool, error) {
 	case err == nil:
 		return true, nil
 	case errors.Is(err, accounts.ErrNotFound):
-		statusLog().Warn("检测撞额度但所选账号已不存在，原因写入载体最近错误", "name", c.Name, "account", account)
+		statusLog().Warn("检测撞额度但所选账号已不存在，原因写入载体最近错误", "name", c.Name, "account", login.Account)
 		return false, nil
 	default:
-		statusLog().Error("检测撞额度标记账号失败", "name", c.Name, "account", account, "cause", err)
-		return false, fmt.Errorf("载体 %s 检测撞额度，标记账号 %s 失败: %w", c.Name, account, err)
+		statusLog().Error("检测撞额度标记账号失败", "name", c.Name, "account", login.Account, "cause", err)
+		return false, fmt.Errorf("载体 %s 检测撞额度，标记账号 %s 失败: %w", c.Name, login.Account, err)
 	}
 }

@@ -218,7 +218,7 @@ func TestB439_4CoordinatorLaunchSelfNameCarrierIsLocal(t *testing.T) {
 	svc := mustScheduling(t, env.srv)
 	putOnlineCarrier(t, svc, scheduling.Carrier{
 		Name: "coord-carrier", Machine: b439SelfName, CLI: "opencode",
-		HomeDir: "/tmp/coord-home", Credential: scheduling.CredentialStandalone, MaxConcurrency: 1,
+		HomeDir: "/tmp/coord-home", MaxConcurrency: 1,
 	})
 	if err := svc.PutSquad(scheduling.Squad{
 		Name: "coord", Role: scheduling.RoleCoordinator,

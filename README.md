@@ -426,8 +426,10 @@ log states which path this run used.
 | `handoff reclaim` | Clean up managed worktrees left by terminal-state tasks (branches kept) | — |
 | `handoff gc` | Preview or delete terminal-task cache leaves (`tmp/<id8>` and `tasks/<id>/tmp`) and leftover managed worktrees on the target agentd | `--yes` (apply); `--force` (dirty trees only); `--json`; `--target` |
 | `handoff footprint` | Per-task process usage and this machine's process headroom | — |
-| `handoff account list` | Subscription accounts and their quota readings (registered in the console; needs `ledger.dsn`) | `--json` (one AccountView object per line, same shape as `GET /api/accounts`) |
-| `handoff account probe <name>` | Ask the account's own machine to probe it now and print the new reading | exit code 1 when the probe fails |
+| `handoff account list` | Accounts (identities) and their quota readings, each account row followed by its logins (machine:HOME, source, state, masked proxy, carriers); needs `ledger.dsn` | `--json` (one AccountView object per line, same shape as `GET /api/accounts`, incl. `logins`) |
+| `handoff account discover` | Ask the entry machine to discover logged-in identities now (all registered machines, or one with `--machine`); a failed machine is reported on its own row | `--machine <m>`; exit 0 all ok, 1 any machine failed |
+| `handoff account probe <name\|id>` | Ask the account's own machine to probe it now and print the new reading; the argument is an account name or account id | exit code 1 when the probe fails |
+| `handoff squad list` | List carriers and squads (one JSON object per line with `--json`; each row carries its CAS version). Carrier rows carry the account cell: `account · machine HOME`, or `无账号` / `-` (unselected) | `--json` |
 | `handoff status` | Is agentd usable, version, active tasks, executor liveness | `--target <name>`; `--json`; exit code 0=usable 1=unreachable |
 | `handoff upgrade` | Survey/upgrade this machine and all targets | `--now`; `--target <name>`; `--force`; `--rollback`; `--from <dir>` (local build) |
 | `handoff version` | Print the version (first line is the bare version, for scripts to compare) | — |
@@ -439,47 +441,48 @@ Global flags: `--agentd http://127.0.0.1:7777` (agentd address), `--target <name
 
 ## Accounts and Quota
 
-Carriers run on subscription accounts. handoff tracks four kinds — **opencode-go**,
-**codex**, **grok** and **agy** (Antigravity) — so dispatch can skip a carrier whose
-account is out of quota instead of failing mid-task. Accounts live in the shared ledger
-(`ledger.dsn` required), so every machine's console and CLI see the same list.
+An **account is an identity** (opencode-go / codex / grok / agy / claude / third-party API
+key); a **login is a credential location** = machine × HOME × source. Each machine's agentd
+scans its main HOME and `~/.handoff/home/*` and writes what it finds into the shared ledger
+(`ledger.dsn` required); identities are merged across machines, so every console and CLI see
+the same accounts. Keys never leave the machine — the ledger stores only the location and a
+short fingerprint.
 
-- **Register in the console**: dock ◔ → Accounts → "＋ 登记账号": name (unique,
-  immutable), kind, the machine the credentials live on, credential HOME, entry
-  (pre-filled per kind: opencode-go = automatic — the `opencode-go` API key in opencode's
-  `auth.json` if present, otherwise the account logged in to opencode on that HOME
-  (`opencode.db`); enter `opencode.db` to use only the login, or another name to use only
-  that `auth.json` entry; codex = `auth.json › tokens`, grok = `auth.json ›
-  https://auth.x.ai`; agy uses the agy CLI's own login, no entry), optional proxy, probe interval (5/10/15/30/60 min, default 15), warn line
-  (default 60%, color only) and low line (default 80%, pauses dispatch). Deleting an
-  account that a carrier still references is refused and names the carriers.
-- **Probing happens only on the account's own machine** (credentials never leave it; the
-  ledger stores only the location and a short fingerprint). opencode-go, codex and grok
-  read their HTTP usage endpoints with the stored key/token (read-only — tokens are never
-  refreshed; an opencode-go login is read from `opencode.db` read-only and calls the
-  console status endpoint with its token and org, so an expired login reports "re-login
-  to opencode on that machine"); agy runs `agy -p /usage` and is skipped on agy < 1.1.11, where `/usage` would
-  itself burn quota. "Probe now" from any console or `handoff account probe` is forwarded
-  to that machine.
-- **States**: ok / low (any window ≥ low line) / out (any window at 100%, the provider
-  says unavailable, or a task hit the quota — that mark lasts until the next *successful*
-  probe) / probe failed / not probed. The console footer shows every account's usage
-  (problem accounts first); mobile shows the same list under Settings.
-- **Carriers pick an account** (same machine only, optional) in Settings → Automation.
-  If the credentials in the carrier's HOME are not that account's, the row shows a red
-  "fingerprint mismatch" line — saving is allowed, dispatch is not blocked.
-- **Dispatch skips low/out accounts** at every admission point (squad, named carrier, card
-  dispatch, coordinator seat). Probe failed / not probed means unknown and still
-  dispatches. A refused named carrier says why, e.g. `载体 t453-agy 不可用：账号 agy-linux
-  低额度，预计 2d19h 后恢复`.
+- **Discover**: dock ◔ → Accounts shows the six kind groups, each account's logins, and
+  "last discovered x ago · Discover now" (per machine). CLI: `handoff account discover`.
+- **Add a login** in the console: pick machine + agent → it creates `~/.handoff/home/<dir>`
+  (0700) and prints the login command to run there → the wizard polls every 5s and offers
+  "I've logged in, check now". Closing it is fine; the timed discovery picks it up. Logins
+  already present in a machine's main HOME need no action — discovery finds them.
+- **Carriers pick a login** (same machine and compatible kind only; optional) in
+  Settings → Automation. HOME, credentials and proxy all come from the login. The last
+  option is "no account · main HOME" for free models that need no credentials. A legacy
+  carrier with neither is "unselected": it still dispatches but the row suggests picking
+  one, and saving it requires choosing (never silently becomes "no account").
+- **Proxy is set on the login**; every turn that uses that login (task, detection,
+  coordinator) goes through it, overriding proxy keys from the executor env file and the
+  machine environment (`NO_PROXY` is kept, localhost added if absent). No proxy = unchanged.
+- **Probing happens only on the login's own machine**, using the first healthy login whose
+  machine was discovered recently; opencode-go, codex and grok read their HTTP usage
+  endpoints (read-only — tokens are never refreshed; an opencode-go login is read from
+  `opencode.db` read-only and calls the console status endpoint with its token and org, so
+  an expired login reports "re-login to opencode on that machine"); agy runs `agy -p /usage`
+  and is skipped on agy < 1.1.11, where `/usage` would itself burn quota. "Probe now" and
+  `handoff account probe` are forwarded to that machine.
+- **States**: ok / low (any window ≥ low line) / out (any window at 100%, the provider says
+  unavailable, or a task hit the quota — that mark lasts until the next *successful* probe)
+  / probe failed / not probed. claude and third-party keys are `na` (no quota probing).
+- **Dispatch skips low/out accounts and logins that are gone** (credentials no longer found
+  by discovery) at every admission point (squad, named carrier, card dispatch, coordinator
+  seat). Expired logins are flagged red but still dispatch (the CLI may refresh them). Probe
+  failed / not probed means unknown and still dispatches. A refused named carrier says why,
+  e.g. `载体 mini 的登录已失效：mac-mini ~/.handoff/home/x` or `载体 t453-agy 不可用：账号
+  agy-linux 低额度，预计 2d19h 后恢复`.
 - **Hitting quota mid-task**: a read-only skilled task dispatched through a squad is
-  re-run on another member automatically (each account tried once) and `--wait` follows
-  the chain to the new task; a branch task stops in pending review with a `notice`
-  ticket (`--wait` exits 5; acknowledge with `--answer "已知悉"`) and its worktree kept.
-  429 rate limits and expired credentials are not treated as quota.
-- **Account proxy**: when set, the carrier's task, detection and coordinator turns use it,
-  overriding proxy keys from the executor env file and the machine environment
-  (`NO_PROXY` is kept, and gets localhost added if absent). No proxy = unchanged behavior.
+  re-run on another member automatically (each account tried once) and `--wait` follows the
+  chain to the new task; a branch task stops in pending review with a `notice` ticket
+  (`--wait` exits 5; acknowledge with `--answer "已知悉"`) and its worktree kept. 429 rate
+  limits and expired credentials are not treated as quota.
 - The carrier status "限额中" (quota) is retired; carriers are pending / online /
   unreachable, and stored "quota" reads as online.
 

@@ -13,6 +13,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"log/slog"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -37,6 +38,8 @@ type loginRow struct {
 	org       string // active_org_id；"-" 表示 NULL
 	expiryMs  *int64 // token_expiry；nil = 一小时后
 	wal       bool   // 写者以 WAL 打开且测试期间不关（模拟 opencode 正开着库）
+	noEmail   bool   // 旧版 account 表没有 email 列（m5 容错）
+	noExpiry  bool   // account 表没有 token_expiry 列（段 9 m-b：不得走无 email 分支）
 }
 
 // writeOpencodeDB 在 home 下建 opencode.db（opencode 1.19.3 的 account / account_state 表形状）。
@@ -64,9 +67,20 @@ func writeOpencodeDB(t *testing.T, home string, r loginRow) *sql.DB {
 	}
 	exec("CREATE TABLE IF NOT EXISTS session (id text PRIMARY KEY)") // 让库文件非空
 	if !r.noTables {
-		exec("CREATE TABLE `account` (`id` text PRIMARY KEY, `email` text NOT NULL, `url` text NOT NULL, " +
-			"`access_token` text NOT NULL, `refresh_token` text NOT NULL, `token_expiry` integer, " +
-			"`time_created` integer NOT NULL, `time_updated` integer NOT NULL)")
+		switch {
+		case r.noEmail:
+			exec("CREATE TABLE `account` (`id` text PRIMARY KEY, `url` text NOT NULL, " +
+				"`access_token` text NOT NULL, `refresh_token` text NOT NULL, `token_expiry` integer, " +
+				"`time_created` integer NOT NULL, `time_updated` integer NOT NULL)")
+		case r.noExpiry:
+			exec("CREATE TABLE `account` (`id` text PRIMARY KEY, `email` text NOT NULL, `url` text NOT NULL, " +
+				"`access_token` text NOT NULL, `refresh_token` text NOT NULL, " +
+				"`time_created` integer NOT NULL, `time_updated` integer NOT NULL)")
+		default:
+			exec("CREATE TABLE `account` (`id` text PRIMARY KEY, `email` text NOT NULL, `url` text NOT NULL, " +
+				"`access_token` text NOT NULL, `refresh_token` text NOT NULL, `token_expiry` integer, " +
+				"`time_created` integer NOT NULL, `time_updated` integer NOT NULL)")
+		}
 		exec("CREATE TABLE `account_state` (`id` integer PRIMARY KEY, `active_account_id` text, `active_org_id` text)")
 		id, token := r.id, r.token
 		if id == "" {
@@ -79,7 +93,16 @@ func writeOpencodeDB(t *testing.T, home string, r loginRow) *sql.DB {
 		if r.expiryMs != nil {
 			exp = *r.expiryMs
 		}
-		exec("INSERT INTO account VALUES (?, 'u@example.com', 'https://opencode.ai', ?, 'refresh-x', ?, 1, 1)", id, token, exp)
+		switch {
+		case r.noEmail:
+			exec("INSERT INTO account (id, url, access_token, refresh_token, token_expiry, time_created, time_updated) "+
+				"VALUES (?, 'https://opencode.ai', ?, 'refresh-x', ?, 1, 1)", id, token, exp)
+		case r.noExpiry:
+			exec("INSERT INTO account (id, email, url, access_token, refresh_token, time_created, time_updated) "+
+				"VALUES (?, 'u@example.com', 'https://opencode.ai', ?, 'refresh-x', 1, 1)", id, token)
+		default:
+			exec("INSERT INTO account VALUES (?, 'u@example.com', 'https://opencode.ai', ?, 'refresh-x', ?, 1, 1)", id, token, exp)
+		}
 		if !r.noState {
 			var actv, org any = id, r.org
 			if r.nullActv {
@@ -373,5 +396,27 @@ func TestOpencodeGoLoginDSNIsReadOnly(t *testing.T) {
 	}
 	if _, err := os.Stat(missing); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("只读 DSN 不得建库，得 %v", err)
+	}
+}
+
+// TestOpencodeGoLoginMissingTokenExpiryStaysCredentialMissing 锁 m-b：account 表缺 email 以外
+// 的列（token_expiry）不是「旧版无 email」，必须按凭据缺失报原错误，不走无 email 容错分支。
+func TestOpencodeGoLoginMissingTokenExpiryStaysCredentialMissing(t *testing.T) {
+	home := t.TempDir()
+	writeOpencodeDB(t, home, loginRow{noExpiry: true})
+	var logs strings.Builder
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	defer slog.SetDefault(prev)
+	_, err := readLoginAccount(home, testDBRelPath)
+	var f *Failure
+	if !errors.As(err, &f) || f.Category != CategoryCredentialMissing {
+		t.Fatalf("缺 token_expiry 列应按凭据缺失报，得 %v", err)
+	}
+	if !strings.Contains(f.Message, "no such column: token_expiry") {
+		t.Fatalf("失败文案应保留原列错误，得 %q", f.Message)
+	}
+	if strings.Contains(logs.String(), "无 email 列") {
+		t.Fatalf("缺 token_expiry 不得走无 email 容错分支，日志：%s", logs.String())
 	}
 }

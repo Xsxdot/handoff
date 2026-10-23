@@ -29,9 +29,9 @@ func newSeatCarrierFixture(t *testing.T) (*scheduling.Service, *ledgerapi.Facade
 	svc := scheduling.New(facadeRegistry{f: facade})
 	for _, c := range []scheduling.Carrier{
 		{Name: "A", Machine: "machine-A", CLI: "cli-A", HomeDir: "/home/A", Model: "model-A",
-			Credential: scheduling.CredentialStandalone, MaxConcurrency: 1},
+			MaxConcurrency: 1},
 		{Name: "B", Machine: "machine-B", CLI: "cli-B", HomeDir: "/home/B", Model: "model-B",
-			Credential: scheduling.CredentialStandalone, MaxConcurrency: 1},
+			MaxConcurrency: 1},
 	} {
 		putOnlineCarrier(t, svc, c)
 	}

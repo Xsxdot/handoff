@@ -320,7 +320,7 @@ func (s *Service) launchRound(card, extra string, spec keysclient.SessionSpec, r
 	}
 	ref := keysclient.SessionRef{
 		CLI: spec.CLI, SessionID: result.SessionID,
-		HomeDir: spec.HomeDir, Workdir: spec.Workdir, Model: spec.Model,
+		HomeDir: spec.HomeDir, Workdir: spec.Workdir, Model: spec.Model, Carrier: spec.Carrier,
 	}
 	s.mu.Lock()
 	s.sessions[card] = ref
@@ -344,6 +344,9 @@ func overlayResumeRef(ref keysclient.SessionRef, spec keysclient.SessionSpec) ke
 	}
 	if spec.Model != "" {
 		ref.Model = spec.Model
+	}
+	if spec.Carrier != "" {
+		ref.Carrier = spec.Carrier
 	}
 	return ref
 }

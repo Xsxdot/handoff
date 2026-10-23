@@ -1,10 +1,12 @@
-// account_api_test.go —— 账号 HTTP 面与所在机探测器的竖切回归（B453 段 1 首故事）。
+// account_api_test.go —— 账号 HTTP 面与所在机探测器的竖切回归（B453 段 1 首故事；B464 段 1 起
+// 账号由发现产生、探测走「可探登录」）。
 //
 // 职责：两台真 Server 共用一个 ledger.Store（模拟共享账本），走真实 Handler/鉴权/JSON
-// 与 forwardJSON，锁：入口机登记 → 立即探测转发到所在机 → 所在机探测器读本机凭据、
-// 调（httptest）额度接口、写读数行 → 任一机 GET 看到同一份读数；入口机不探测不写读数；
-// 所在机离线 502 且读数不变；转发到达非所在机 409；所在机探测器未运行 503；周期探测
-// 只探本机且到期账号。
+// 与 forwardJSON，锁：所在机发现器扫夹具 HOME 认出登录 → 入口机立即探测转发到可探登录所在机
+// → 所在机探测器读本机凭据、调（httptest）额度接口、写读数行 → 任一机 GET 看到同一份读数
+// （含登录与「上次发现」）；入口机不探测不写读数；所在机离线 502 且读数不变；转发到达非所在机
+// 409；所在机探测器未运行 503；PUT expect=0（手工登记）400。周期探测「只探本机可探登录且到期」
+// 随探测器迁入 accountwork（TestProberProbesOnlyLocalProbeLogin）。
 // 边界：额度接口是 httptest，凭据是临时 HOME 下的哨兵 auth.json；真实 opencode.ai 与
 // 真机网络归协调者 R1。
 package agentd
@@ -21,8 +23,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
 
+	"github.com/Xsxdot/handoff/internal/agentd/accountwork"
 	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/hostapi"
 	"github.com/Xsxdot/handoff/internal/ledger"
@@ -51,23 +53,63 @@ func fakeOpencodeGo(t *testing.T, calls *atomic.Int32) *httptest.Server {
 	}))
 }
 
-func acctHome(t *testing.T) string {
+// acctHome 建一个夹具主 HOME：auth.json 只有 opencode-go API key 条目（缺省为哨兵 key）。
+func acctHome(t *testing.T, key ...string) string {
 	t.Helper()
+	k := acctSentinelKey
+	if len(key) > 0 {
+		k = key[0]
+	}
 	home := t.TempDir()
 	path := filepath.Join(home, acctCredRel)
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte(`{"opencode-go":{"type":"api","key":"`+acctSentinelKey+`"}}`), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(`{"opencode-go":{"type":"api","key":"`+k+`"}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	return home
 }
 
+// acctQuota 是测试用额度适配注册表（只装 opencode-go，指向 base）。
+func acctQuota(base string) *quota.Registry {
+	return quota.NewRegistry(map[string]quota.Prober{
+		quota.KindOpencodeGo: &quota.OpencodeGo{BaseURL: base, CredRelPath: acctCredRel},
+	})
+}
+
+// discoverAs 以 machine 的身份对夹具主 HOME 跑一轮生产发现器（accountwork.Discoverer + 真 quota
+// 取材），写进 env 的账号域（共享账本）。返回本轮归并结果。
+func discoverAs(t *testing.T, env *schedEnv, machine, home string) accounts.ReconcileResult {
+	t.Helper()
+	d := accountwork.NewDiscoverer(accountwork.DiscovererConfig{
+		Accounts: env.srv.accounts.(*accounts.Service), Quota: acctQuota(""), Machine: machine,
+		MainHome: func() (string, error) { return home, nil },
+		Logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	res, err := d.RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("发现（%s）: %v", machine, err)
+	}
+	return res
+}
+
+// onlyAccount 断言本轮发现恰认出一条登录并返回其账号 id。
+func onlyAccount(t *testing.T, res accounts.ReconcileResult) string {
+	t.Helper()
+	if len(res.Logins) != 1 {
+		t.Fatalf("发现应恰认出一条登录，得 %+v", res.Logins)
+	}
+	return res.Logins[0].Account
+}
+
 // newAccountMachine 起一台挂共享账本 st 的 agentd（自名 name）。quotaBase 非空时
 // 装配所在机探测器（opencode-go 适配指向假接口）；空 = 本机无探测器。
+// 进程 HOME 先钉到空临时目录：任何把「~」展开的路径（探测器、检测）都碰不到本机真实凭据；
+// 要探测成功的用例再把 HOME 钉到自己的夹具主 HOME。
 func newAccountMachine(t *testing.T, name string, st *ledger.Store, targets map[string]config.Target, quotaBase string) *schedEnv {
 	t.Helper()
+	t.Setenv("HOME", t.TempDir())
 	dataStore, err := store.Open(t.TempDir() + "/handoff.db")
 	if err != nil {
 		t.Fatal(err)
@@ -79,11 +121,9 @@ func newAccountMachine(t *testing.T, name string, st *ledger.Store, targets map[
 	acc := accounts.New(srv.SchedulingRegistry())
 	srv.SetAccounts(acc)
 	if quotaBase != "" {
-		p := NewAccountProber(AccountProberConfig{
-			Accounts: acc,
-			Quota: quota.NewRegistry(map[string]quota.Prober{
-				quota.KindOpencodeGo: &quota.OpencodeGo{BaseURL: quotaBase, CredRelPath: acctCredRel},
-			}),
+		p := accountwork.NewProber(accountwork.ProberConfig{
+			Accounts:   acc,
+			Quota:      acctQuota(quotaBase),
 			IsSelf:     srv.IsSelfMachine,
 			Writer:     name,
 			ExpandHome: hostapi.ExpandHomePath,
@@ -97,7 +137,7 @@ func newAccountMachine(t *testing.T, name string, st *ledger.Store, targets map[
 	return &schedEnv{testAgentdEnv: &testAgentdEnv{srv: srv, ts: ts, st: dataStore, token: cfg.Token}, svc: mustScheduling(t, srv)}
 }
 
-// startProber 启动 env 上装配的探测器（扫描节拍保持 30s 缺省：登记前的首扫无账号，
+// startProber 启动 env 上装配的探测器（扫描节拍保持缺省：发现前的首扫无账号，
 // 测试时长内不会再扫，立即探测是唯一触发）。
 func startProber(t *testing.T, env *schedEnv) {
 	t.Helper()
@@ -127,20 +167,40 @@ func TestAccountProbeForwardToHostMachineWhichWritesReading(t *testing.T) {
 	startProber(t, b)
 	a := newAccountMachine(t, "a", st, map[string]config.Target{"b": {Addr: b.ts.URL, Token: testToken}}, "")
 	home := acctHome(t)
+	// 探测器把登录 HOME「~」按进程 HOME 展开：钉到夹具，测试绝不触碰本机真实主 HOME 的凭据。
+	t.Setenv("HOME", home)
+	id := onlyAccount(t, discoverAs(t, b, "b", home))
 
-	code, body := schedReq(t, a, http.MethodPut, "/api/accounts/og-b?expect=0",
-		`{"kind":"opencode-go","machine":"b","home_dir":"`+home+`"}`)
+	code, body := schedReq(t, a, http.MethodGet, "/api/accounts", "")
 	if code != http.StatusOK {
-		t.Fatalf("入口机登记: %d %s", code, body)
+		t.Fatalf("GET /api/accounts: %d %s", code, body)
 	}
-	v := decodeAccountView(t, body)
-	// opencode-go 缺省条目 = 自动（spec r1.3 / plan §8 r3 F9）：落空串，探测时选来源，不填 opencode-go
-	if v.Version != 1 || v.State != "none" || v.Entry != "" || v.IntervalMinutes != 15 ||
-		v.WarnPercent != 60 || v.LowPercent != 80 || v.Reading != nil || v.Carriers == nil {
-		t.Fatalf("登记回执缺省值/状态不符: %+v", v)
+	var listed proto.AccountsResp
+	if err := json.Unmarshal([]byte(body), &listed); err != nil {
+		t.Fatal(err)
+	}
+	if len(listed.Accounts) != 1 {
+		t.Fatalf("发现后应有一个账号: %s", body)
+	}
+	v := listed.Accounts[0]
+	if v.ID != id || v.Kind != "opencode-go" || v.Version != 1 || v.State != "none" || v.IntervalMinutes != 15 ||
+		v.WarnPercent != 60 || v.LowPercent != 80 || v.Reading != nil || v.Carriers == nil || len(v.Logins) != 1 ||
+		v.Logins[0].Machine != "b" || v.Logins[0].Home != "~" || v.Logins[0].Source != "auth.json" ||
+		v.Logins[0].State != "ok" || v.ProbeLogin != v.Logins[0].ID || !strings.HasPrefix(v.Name, "opencode-go-") {
+		t.Fatalf("发现建出的账号读面不符: %s", body)
+	}
+	var sawB bool
+	for _, d := range listed.Discovery {
+		if d.Machine == "b" && d.At != nil && !d.Self {
+			sawB = true
+		}
+	}
+	if !sawB {
+		t.Fatalf("入口机 a 应看到 b 的上次发现（self=false、at 在场）: %s", body)
 	}
 
-	code, body = schedReq(t, a, http.MethodPost, "/api/accounts/og-b/probe", "")
+	// 按名字立即探测（{ref} 收名字或 id）：转发到可探登录所在机 b。
+	code, body = schedReq(t, a, http.MethodPost, "/api/accounts/"+v.Name+"/probe", "")
 	if code != http.StatusOK {
 		t.Fatalf("入口机立即探测（转发到 b）: %d %s", code, body)
 	}
@@ -171,8 +231,8 @@ func TestAccountProbeForwardToHostMachineWhichWritesReading(t *testing.T) {
 			t.Fatal("API 响应泄露凭据")
 		}
 	}
-	// 读数行由所在机 b 写；定义行未被机写顶版本。
-	rec, err := a.srv.SchedulingRegistry().Get(accounts.KindReading, "og-b")
+	// 读数行由所在机 b 写、记下所用登录；定义行未被机写顶版本。
+	rec, err := a.srv.SchedulingRegistry().Get(accounts.KindReading, id)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,10 +240,10 @@ func TestAccountProbeForwardToHostMachineWhichWritesReading(t *testing.T) {
 	if err := json.Unmarshal(rec.Body, &rr); err != nil {
 		t.Fatal(err)
 	}
-	if rr.Writer != "b" || strings.Contains(string(rec.Body), acctSentinelKey) {
-		t.Fatalf("读数行写者应为所在机 b 且不含凭据: writer=%q", rr.Writer)
+	if rr.Writer != "b" || rr.Login != v.ProbeLogin || strings.Contains(string(rec.Body), acctSentinelKey) {
+		t.Fatalf("读数行写者应为所在机 b、记可探登录且不含凭据: writer=%q login=%q", rr.Writer, rr.Login)
 	}
-	def, err := a.srv.SchedulingRegistry().Get(accounts.KindAccount, "og-b")
+	def, err := a.srv.SchedulingRegistry().Get(accounts.KindAccount, id)
 	if err != nil || def.Version != 1 || strings.Contains(string(def.Body), acctSentinelKey) {
 		t.Fatalf("定义行应保持 v1 且不含凭据: v=%d err=%v", def.Version, err)
 	}
@@ -206,16 +266,14 @@ func TestAccountProbeForwardFailureModes(t *testing.T) {
 		"b": {Addr: b.ts.URL, Token: testToken},
 		"c": {Addr: deadURL, Token: testToken},
 	}, "")
-	home := acctHome(t)
-	for _, m := range []string{"a", "c"} {
-		code, body := schedReq(t, a, http.MethodPut, "/api/accounts/og-"+m+"?expect=0",
-			`{"kind":"opencode-go","machine":"`+m+`","home_dir":"`+home+`"}`)
-		if code != http.StatusOK {
-			t.Fatalf("登记 og-%s: %d %s", m, code, body)
-		}
+	// 两个不同身份：一个登录在 a（本机无探测器），一个在 c（离线）。
+	idA := onlyAccount(t, discoverAs(t, a, "a", acctHome(t, "sk-b464-machine-a")))
+	idC := onlyAccount(t, discoverAs(t, a, "c", acctHome(t, "sk-b464-machine-c")))
+	if idA == idC {
+		t.Fatal("不同 key 不得归并为同一账号")
 	}
 	// 所在机离线：502 点名机器，读数不变（仍未探测）。
-	code, body := schedReq(t, a, http.MethodPost, "/api/accounts/og-c/probe", "")
+	code, body := schedReq(t, a, http.MethodPost, "/api/accounts/"+idC+"/probe", "")
 	if code != http.StatusBadGateway || !strings.Contains(body, "c") {
 		t.Fatalf("所在机离线应 502: %d %s", code, body)
 	}
@@ -224,12 +282,12 @@ func TestAccountProbeForwardFailureModes(t *testing.T) {
 		t.Fatalf("离线转发失败不得落读数: %s", body)
 	}
 	// 本机账号但本机探测器未运行：503，不报成功空读数。
-	code, body = schedReq(t, a, http.MethodPost, "/api/accounts/og-a/probe", "")
+	code, body = schedReq(t, a, http.MethodPost, "/api/accounts/"+idA+"/probe", "")
 	if code != http.StatusServiceUnavailable || !strings.Contains(body, "探测器未运行") {
 		t.Fatalf("本机无探测器应 503: %d %s", code, body)
 	}
 	// 转发到达的机器不是所在机：409（不再外扇）。
-	req, err := http.NewRequest(http.MethodPost, b.ts.URL+"/api/accounts/og-c/probe", nil)
+	req, err := http.NewRequest(http.MethodPost, b.ts.URL+"/api/accounts/"+idC+"/probe", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -244,78 +302,42 @@ func TestAccountProbeForwardFailureModes(t *testing.T) {
 	if resp.StatusCode != http.StatusConflict || !strings.Contains(string(data), "所在机") {
 		t.Fatalf("转发到达非所在机应 409: %d %s", resp.StatusCode, data)
 	}
-	// 未知账号 404；校验失败 400；版本冲突 409。
+	// 名下登录全失效 → 没有可探登录 → 409（a 的 HOME 删掉 auth.json 再扫一轮）。
+	goneHome := acctHome(t, "sk-b464-machine-gone")
+	idGone := onlyAccount(t, discoverAs(t, a, "g", goneHome))
+	if err := os.Remove(filepath.Join(goneHome, acctCredRel)); err != nil {
+		t.Fatal(err)
+	}
+	discoverAs(t, a, "g", goneHome)
+	if code, body = schedReq(t, a, http.MethodPost, "/api/accounts/"+idGone+"/probe", ""); code != http.StatusConflict ||
+		!strings.Contains(body, "没有可用登录") {
+		t.Fatalf("无可探登录应 409: %d %s", code, body)
+	}
+	// 未知账号 404；手工登记（expect=0）400；校验失败 400；版本冲突 409；缺 expect 400。
 	if code, body = schedReq(t, a, http.MethodPost, "/api/accounts/nope/probe", ""); code != http.StatusNotFound {
 		t.Fatalf("未知账号应 404: %d %s", code, body)
 	}
-	if code, body = schedReq(t, a, http.MethodPut, "/api/accounts/bad?expect=0",
-		`{"kind":"claude","machine":"b","home_dir":"/x"}`); code != http.StatusBadRequest || !strings.Contains(body, "claude") {
-		t.Fatalf("未知 kind 应 400: %d %s", code, body)
+	if code, body = schedReq(t, a, http.MethodPut, "/api/accounts/"+idA+"?expect=0",
+		`{"interval_minutes":5}`); code != http.StatusBadRequest || !strings.Contains(body, "发现") {
+		t.Fatalf("expect=0（手工登记）应 400: %d %s", code, body)
 	}
-	if code, body = schedReq(t, a, http.MethodPut, "/api/accounts/bad?expect=0",
-		`{"kind":"opencode-go","machine":"b","home_dir":"/x","warn_percent":0}`); code != http.StatusBadRequest {
+	if code, body = schedReq(t, a, http.MethodPut, "/api/accounts/"+idA+"?expect=1",
+		`{"warn_percent":0}`); code != http.StatusBadRequest {
 		t.Fatalf("显式给 warn_percent:0 应 400（不得按缺省吞掉）: %d %s", code, body)
 	}
-	if code, body = schedReq(t, a, http.MethodPut, "/api/accounts/og-c?expect=0",
-		`{"kind":"opencode-go","machine":"c","home_dir":"/x"}`); code != http.StatusConflict {
-		t.Fatalf("重复新建应 409: %d %s", code, body)
+	if code, body = schedReq(t, a, http.MethodPut, "/api/accounts/"+idA+"?expect=7",
+		`{"interval_minutes":5}`); code != http.StatusConflict {
+		t.Fatalf("版本冲突应 409: %d %s", code, body)
 	}
-	if code, body = schedReq(t, a, http.MethodPut, "/api/accounts/og-c",
-		`{"kind":"opencode-go","machine":"c","home_dir":"/x"}`); code != http.StatusBadRequest {
+	if code, body = schedReq(t, a, http.MethodPut, "/api/accounts/"+idA,
+		`{"interval_minutes":5}`); code != http.StatusBadRequest {
 		t.Fatalf("缺 expect 应 400: %d %s", code, body)
+	}
+	if code, body = schedReq(t, a, http.MethodPut, "/api/accounts/"+idA+"?expect=1",
+		`{"interval_minutes":5}`); code != http.StatusOK || decodeAccountView(t, body).IntervalMinutes != 5 {
+		t.Fatalf("编辑间隔应 200 并生效: %d %s", code, body)
 	}
 	if calls.Load() != 0 {
 		t.Fatalf("以上路径都不应调额度接口，得 %d", calls.Load())
-	}
-}
-
-func TestAccountProberPeriodicProbesOnlyLocalDueAccounts(t *testing.T) {
-	var calls atomic.Int32
-	quotaSrv := fakeOpencodeGo(t, &calls)
-	st, err := ledger.Open(t.TempDir() + "/shared.db")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = st.Close() })
-	b := newAccountMachine(t, "b", st, nil, quotaSrv.URL)
-	home := acctHome(t)
-	for _, m := range []string{"b", "elsewhere"} {
-		code, body := schedReq(t, b, http.MethodPut, "/api/accounts/og-"+m+"?expect=0",
-			`{"kind":"opencode-go","machine":"`+m+`","home_dir":"`+home+`","interval_minutes":5}`)
-		if code != http.StatusOK {
-			t.Fatalf("登记 og-%s: %d %s", m, code, body)
-		}
-	}
-	p := b.srv.accountProber
-	p.scanEvery = 10 * time.Millisecond
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	p.Start(ctx)
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		v, err := b.srv.accounts.Get("og-b")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if v.Record.Reading != nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("周期探测未在 5s 内写入本机账号读数")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	// 再跑若干扫描周期：未到间隔（5 分钟）不得重探；他机账号永不探。
-	time.Sleep(100 * time.Millisecond)
-	p.Stop()
-	if calls.Load() != 1 {
-		t.Fatalf("到期判据失效：额度接口被调 %d 次，want 1", calls.Load())
-	}
-	other, err := b.srv.accounts.Get("og-elsewhere")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if other.Record.Reading != nil || other.Record.LastAttemptAt != nil {
-		t.Fatalf("他机账号不得被本机探测: %+v", other.Record)
 	}
 }

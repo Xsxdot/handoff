@@ -10,8 +10,8 @@ import (
 func TestPutCarrierLifecyclePreservesOrResetsStatus(t *testing.T) {
 	svc, _ := newRowsFixture(t)
 	carrier := scheduling.Carrier{Name: "c1", Machine: "m1", CLI: "opencode",
-		HomeDir: "~/.handoff/home/c1", Credential: scheduling.CredentialStandalone,
-		Status: scheduling.StatusOnline, LastError: "caller must not set state"}
+		HomeDir: "~/.handoff/home/c1",
+		Status:  scheduling.StatusOnline, LastError: "caller must not set state"}
 	if err := svc.PutCarrier(carrier, 0); err != nil {
 		t.Fatalf("新建载体: %v", err)
 	}
@@ -91,8 +91,7 @@ func TestApplyDetectUsesPriorityAndPreviousReachability(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			svc, _ := newRowsFixture(t)
-			carrier := scheduling.Carrier{Name: "c1", Machine: "m1", CLI: "opencode",
-				Credential: scheduling.CredentialStandalone}
+			carrier := scheduling.Carrier{Name: "c1", Machine: "m1", CLI: "opencode"}
 			if err := svc.PutCarrier(carrier, 0); err != nil {
 				t.Fatalf("登记载体: %v", err)
 			}
@@ -121,7 +120,7 @@ func TestAdmissionRequiresOnlineCarrierAndSeparatesNoHealthyFromNoSlot(t *testin
 	svc, _ := newRowsFixture(t)
 	for _, name := range []string{"pending", "unreachable", "online"} {
 		if err := svc.PutCarrier(scheduling.Carrier{Name: name, Machine: name + "-machine", CLI: "opencode",
-			Credential: scheduling.CredentialStandalone, MaxConcurrency: 1}, 0); err != nil {
+			MaxConcurrency: 1}, 0); err != nil {
 			t.Fatalf("登记 %s: %v", name, err)
 		}
 	}

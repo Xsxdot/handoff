@@ -13,7 +13,7 @@
 // 边界：没有数据源挂载时（单测或账本未启用）消费点读到 accounts=null，不自起轮询——
 // 一份数据只有一个拉取者，多个拉取者会让同一账号在不同面上读出不同时刻的读数。
 import { useCallback, useEffect, useState } from 'react'
-import { getAccounts, probeAccount, type AccountView } from '../../api/accounts'
+import { getAccounts, probeAccount, type AccountView, type DiscoveryView, type LoginView } from '../../api/accounts'
 import { usePoll } from '../data/usePoll'
 
 /** 轮询间隔（plan Q17：15–60s 内由执行者定）。读数本身每 5–60 分钟才变，30s 足够跟上立即探测之外的变化。 */
@@ -22,12 +22,14 @@ export const ACCOUNTS_POLL_MS = 30_000
 export interface AccountsSnapshot {
   /** null = 还没有任何一次成功读（或没有数据源）；[] = 已读到、空库。 */
   accounts: AccountView[] | null
+  /** 各机「上次发现」；随 GET /api/accounts 一起回来，账号页页头读它。 */
+  discovery: DiscoveryView[]
   /** 最近一次拉取失败的原因；成功后清空。断线时 accounts 保留旧值。 */
   errorText: string
   disconnected: boolean
 }
 
-let snapshot: AccountsSnapshot = { accounts: null, errorText: '', disconnected: false }
+let snapshot: AccountsSnapshot = { accounts: null, discovery: [], errorText: '', disconnected: false }
 let refreshFn: () => void = () => {}
 const subscribers = new Set<(s: AccountsSnapshot) => void>()
 
@@ -56,7 +58,7 @@ export function useAccountsSource(enabled: boolean): void {
   useEffect(() => {
     if (poll.data !== null) {
       console.debug('accounts.poll.success', { accounts: poll.data.accounts.length })
-      publish({ accounts: poll.data.accounts, errorText: '', disconnected: false })
+      publish({ accounts: poll.data.accounts, discovery: poll.data.discovery, errorText: '', disconnected: false })
     }
   }, [poll.data])
   useEffect(() => {
@@ -74,6 +76,8 @@ export interface AccountsApi extends AccountsSnapshot {
   probe: (name: string) => Promise<AccountView>
   /** 登记/编辑回执（PUT 返回的 AccountView）合入。 */
   apply: (view: AccountView) => void
+  /** 单条登录的回执（PUT 代理）合入它所属的账号。 */
+  applyLogin: (login: LoginView) => void
   /** 删除成功后把它从快照里拿掉。 */
   remove: (name: string) => void
 }
@@ -101,10 +105,14 @@ export function useAccounts(): AccountsApi {
   }, [])
   const refresh = useCallback(() => refreshFn(), [])
   const apply = useCallback((view: AccountView) => mergeAccount(view), [])
+  const applyLogin = useCallback((login: LoginView) => {
+    const owner = (snapshot.accounts ?? []).find((a) => a.logins.some((l) => l.id === login.id))
+    if (owner) mergeAccount({ ...owner, logins: owner.logins.map((l) => (l.id === login.id ? login : l)) })
+  }, [])
   const remove = useCallback((name: string) => {
     publish({ ...snapshot, accounts: (snapshot.accounts ?? []).filter((a) => a.name !== name) })
   }, [])
-  return { ...state, refresh, probe, apply, remove }
+  return { ...state, refresh, probe, apply, applyLogin, remove }
 }
 
 /** useNow 每 intervalMs 刷新一次的「现在」（倒计时文案用；与 orca 一样 30s 一跳）。 */
@@ -118,13 +126,13 @@ export function useNow(intervalMs = 30_000): number {
 }
 
 /** __setAccountsForTest 直接发布一份快照；只供组件测试，生产代码不得调用。 */
-export function __setAccountsForTest(accounts: AccountView[] | null): void {
-  publish({ accounts, errorText: '', disconnected: false })
+export function __setAccountsForTest(accounts: AccountView[] | null, discovery: DiscoveryView[] = []): void {
+  publish({ accounts, discovery, errorText: '', disconnected: false })
 }
 
 /** __resetAccountsStoreForTest 重置模块级状态；只供测试隔离。 */
 export function __resetAccountsStoreForTest(): void {
-  snapshot = { accounts: null, errorText: '', disconnected: false }
+  snapshot = { accounts: null, discovery: [], errorText: '', disconnected: false }
   refreshFn = () => {}
   subscribers.clear()
 }

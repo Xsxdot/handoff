@@ -192,7 +192,8 @@ func (a *Adapter) Start(ctx context.Context, req executor.StartReq) (err error) 
 	if err != nil {
 		selfExe = "handoff"
 	}
-	_, promptText, err := WriteTaskEnv(req.Task.Workdir(), req.TaskDir, req.Task.ID, req.PlanContent, sockPath, selfExe, req.Discipline)
+	// B464 Q8：token 源是载体所选登录 HOME（空 = 主 HOME），任务 HOME 只放单文件软链。
+	_, promptText, err := WriteTaskEnv(req.Task.Workdir(), req.TaskDir, req.Task.ID, req.PlanContent, sockPath, selfExe, req.Discipline, req.Task.HomeDir)
 	if err != nil {
 		rollback()
 		return fmt.Errorf("准备任务环境: %w", err)

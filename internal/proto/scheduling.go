@@ -17,22 +17,26 @@ type CoordinatorRebindReq struct {
 
 // CarrierView 是载体登记行（GET /api/squads 返回元素）。Version 是 registry
 // 行版本，CAS 编辑回路（GET 取版 → PUT ?expect=）的唯一权威来源。
+//
+// B464 A13：删 credential/account/account_mismatch；login/no_account 是载体的账号登录选择
+// （no_account 只在 true 时出现；两者都缺席 = 存量「未选账号登录」）；account_id/account_name/
+// login_state 是派生只读字段（所选登录所属账号与登录状态，读不到即缺席）；home_dir 是服务端
+// 按登录镜像的派生值。
 type CarrierView struct {
 	Name           string `json:"name"`
 	Machine        string `json:"machine"`
 	CLI            string `json:"cli"`
 	HomeDir        string `json:"home_dir"`
 	Model          string `json:"model,omitempty"`
-	Credential     string `json:"credential"`
 	MaxConcurrency int    `json:"max_concurrency,omitempty"`
 	Status         string `json:"status,omitempty"`     // B293：状态英文键（B453 起无 quota）；空=存量行未回填
 	LastError      string `json:"last_error,omitempty"` // 最近一次检测说明；不参与准入
 	Version        int    `json:"version"`
-	// Account 是所选账号名（B453 F13，omitempty：不选即缺席）。
-	Account string `json:"account,omitempty"`
-	// AccountMismatch 仅在载体 HOME 的凭据指纹与账号最近读数的指纹都在且不一致时为 true
-	// （键出现）；任一侧缺指纹不比对（键缺席）。只标红，不拦派发（spec S4）。
-	AccountMismatch bool `json:"account_mismatch,omitempty"`
+	Login          string `json:"login,omitempty"`
+	NoAccount      bool   `json:"no_account,omitempty"`
+	AccountID      string `json:"account_id,omitempty"`
+	AccountName    string `json:"account_name,omitempty"`
+	LoginState     string `json:"login_state,omitempty"`
 }
 
 // SquadMember 是小队成员的 wire 形状。MaxConcurrency=0（不限）以键缺席表达。
@@ -67,17 +71,18 @@ type RegistryRunningView struct {
 }
 
 // CarrierInput 是 PUT 载体的请求体。刻意不含 status / last_error / healthy：
-// 状态只由创建、home_dir 变更与检测写入，登记请求不得设置（B293 废止 PutCarrier 翻真）。
+// 状态只由创建、HOME 变更与检测写入，登记请求不得设置（B293 废止 PutCarrier 翻真）。
+//
+// B464 A14：删 home_dir/credential/account（请求体里出现也被忽略）；login 与 no_account 恰给
+// 一个，否则 400。HOME 由服务端按所选登录镜像。
 type CarrierInput struct {
 	Name           string `json:"name,omitempty"`
 	Machine        string `json:"machine"`
 	CLI            string `json:"cli"`
-	HomeDir        string `json:"home_dir"`
 	Model          string `json:"model,omitempty"`
-	Credential     string `json:"credential"`
 	MaxConcurrency int    `json:"max_concurrency,omitempty"`
-	// Account 是所选账号名（B453 F13）：空/缺席 = 不选。只能选载体同机的已登记账号。
-	Account string `json:"account,omitempty"`
+	Login          string `json:"login,omitempty"`
+	NoAccount      bool   `json:"no_account,omitempty"`
 }
 
 // SquadInput 是 PUT 小队的请求体。Members 为空合法（岔口四：先建空队再补成员）。
@@ -150,42 +155,24 @@ type CoordinatorAttachReleaseResp struct {
 	OK bool `json:"ok"`
 }
 
-// HomeProbeReq 是 POST /api/host/probe 的请求体。machine 走 query（?machine=），
-// 不进 body——转发基座靠 query 选路。Credential 空 = standalone。
-type HomeProbeReq struct {
-	CLI        string `json:"cli"`
-	Path       string `json:"path"`
-	Credential string `json:"credential,omitempty"`
-}
-
-// HomeProbeResp 是路径探测的三类结果。kind 只允许 empty / logged_in / occupied。
-type HomeProbeResp struct {
-	Kind   string `json:"kind"`
-	Detail string `json:"detail,omitempty"`
-}
-
 // HomeWakeReq 是 POST /api/host/wake 的请求体（本机唤起，供检测编排转发）。
+//
+// B464 W1：删 credential/fingerprint_kind/fingerprint_entry/account；login 是载体所选登录 id
+// （可缺席）——目标机在本机账号域查这条登录的 kind 与代理，只认所在机是本机的登录；代理串
+// （可能带密码）不过机间 wire。旧版协调机发来的已删键一律忽略。
 type HomeWakeReq struct {
-	CLI        string `json:"cli"`
-	HomeDir    string `json:"home_dir"`
-	Credential string `json:"credential,omitempty"`
-	Model      string `json:"model,omitempty"`
-	// FingerprintKind / FingerprintEntry 是载体所选账号的 kind 与凭据条目（B453 F15，可选）：
-	// 目标机据此在载体 HOME 里算凭据短指纹、缩小撞额度签名集合；缺席 = 不比对。
-	FingerprintKind  string `json:"fingerprint_kind,omitempty"`
-	FingerprintEntry string `json:"fingerprint_entry,omitempty"`
-	// Account 是所选账号名（B453，可选）：目标机在本机账号域里查它的代理，用于检测回合
-	// 出网——代理串（可能带密码）不过机间 wire。缺席 = 沿用目标机今天的环境。
-	Account string `json:"account,omitempty"`
+	CLI     string `json:"cli"`
+	HomeDir string `json:"home_dir"`
+	Model   string `json:"model,omitempty"`
+	Login   string `json:"login,omitempty"`
 }
 
 // HomeWakeResp 是本机唤起结局。outcome 只允许 ready / need_login / quota / unreachable；
-// quota 自 B453 起语义是「可达 + 撞额度」（F16），协调侧不再把载体写成限额中。
+// quota 自 B453 起语义是「可达 + 撞额度」（F16），协调侧不再把载体写成限额中。B464 W1 删
+// fingerprint。
 type HomeWakeResp struct {
 	Outcome string `json:"outcome"`
 	Detail  string `json:"detail,omitempty"`
-	// Fingerprint 是载体 HOME 凭据短指纹（B453 F15，可选）；缺席 = 未算或算不出（不比对）。
-	Fingerprint string `json:"fingerprint,omitempty"`
 }
 
 // CarrierDetectResp 是 POST /api/squads/carriers/{name}/detect 成功后的投影。
@@ -202,43 +189,134 @@ type CarrierRunCommandResp struct {
 	Command string `json:"command"`
 }
 
-// —— 账号与额度（B453，spec §8 F1–F11）——
+// —— 账号与额度（B453 F1–F11；B464 A1–A9 账号 = 身份、登录 = 凭据落点）——
 //
-// 账号 API 的 wire 形状。producer = agentd（GET/PUT /api/accounts、
-// POST /api/accounts/{name}/probe），consumer = 控制台、`handoff account` CLI、他机
-// agentd（立即探测转发）。`handoff account list --json` 每行即一个 AccountView（F11）。
-// 任何位置都不出现凭据值（F10）。
+// 账号 API 的 wire 形状。producer = agentd（GET/PUT/DELETE /api/accounts、
+// POST /api/accounts/{ref}/probe），consumer = 控制台、`handoff account` CLI、他机
+// agentd（立即探测转发）。`handoff account list --json` 每行即一个 AccountView（C1）。
+// 任何位置都不出现凭据值（F10）与原始身份材料：身份只以 sha256 短指纹出现。
 
-// AccountsResp 是 GET /api/accounts 的响应体（F1）。空库为 [] 不是 null。
+// AccountsResp 是 GET /api/accounts 的响应体（A1）。空库两者为 [] 不是 null。
 type AccountsResp struct {
-	Accounts []AccountView `json:"accounts"`
+	Accounts  []AccountView   `json:"accounts"`
+	Discovery []DiscoveryView `json:"discovery"`
 }
 
-// AccountView 是账号读面（F5）。proxy 若含 userinfo 密码，密码段打码为 ***（段 1 裁决 7；
-// PUT 收到与打码形式相同的值时服务端保留原值）。可缺席键：entry（agy）、proxy、reading（从无成功）、
-// last_attempt_at、last_error。state ∈ ok|low|out|fail|none（F6）；kind ∈
-// opencode-go|codex|grok|agy（F7）。carriers 是引用该账号的载体名，无引用为 []。
+// AccountView 是账号读面（A2）。id 由 kind（+ provider）+ 身份短指纹确定性导出；name 可改、全局
+// 唯一。可缺席键：provider（仅 apikey）、label、interval_minutes/warn_percent/low_percent
+// （不支持额度探测的 kind 缺席）、reading（从无成功）、last_attempt_at、last_error、recover_at、
+// probe_login（没有可探登录）。state ∈ ok|low|out|fail|none|na；kind ∈
+// opencode-go|codex|grok|agy|claude|apikey（A3）。logins 是名下登录，carriers 是引用名下任一登录
+// 的载体名，均无则为 []。
 type AccountView struct {
+	ID              string              `json:"id"`
 	Name            string              `json:"name"`
 	Kind            string              `json:"kind"`
-	Machine         string              `json:"machine"`
-	HomeDir         string              `json:"home_dir"`
-	Entry           string              `json:"entry,omitempty"`
-	Proxy           string              `json:"proxy,omitempty"`
-	IntervalMinutes int                 `json:"interval_minutes"`
-	WarnPercent     int                 `json:"warn_percent"`
-	LowPercent      int                 `json:"low_percent"`
+	Provider        string              `json:"provider,omitempty"`
+	Label           string              `json:"label,omitempty"`
+	Fingerprint     string              `json:"fingerprint"`
+	IntervalMinutes int                 `json:"interval_minutes,omitempty"`
+	WarnPercent     int                 `json:"warn_percent,omitempty"`
+	LowPercent      int                 `json:"low_percent,omitempty"`
 	Version         int                 `json:"version"`
 	State           string              `json:"state"`
 	Stale           bool                `json:"stale"`
 	Reading         *AccountReadingView `json:"reading,omitempty"`
 	LastAttemptAt   *time.Time          `json:"last_attempt_at,omitempty"`
 	LastError       *AccountProblemView `json:"last_error,omitempty"`
-	// RecoverAt 是预计离开低额度/无额度的时刻（审查第 1 轮 I2 增补，可选）：服务端按
-	// accounts.RecoverAt 推导——越线窗口全部重置即最晚那个；不阻挡、撞额度标记/接口明示
-	// 不可用、或任一越线窗口缺重置时刻 → 缺席（恢复时刻未知）。界面直接读它，不另算。
-	RecoverAt *time.Time `json:"recover_at,omitempty"`
-	Carriers  []string   `json:"carriers"`
+	// RecoverAt 是预计离开低额度/无额度的时刻（可选）：服务端按 accounts.RecoverAt 推导——越线
+	// 窗口全部重置即最晚那个；不阻挡、撞额度标记/接口明示不可用、或任一越线窗口缺重置时刻 →
+	// 缺席（恢复时刻未知）。界面直接读它，不另算。
+	RecoverAt  *time.Time  `json:"recover_at,omitempty"`
+	ProbeLogin string      `json:"probe_login,omitempty"`
+	Logins     []LoginView `json:"logins"`
+	Carriers   []string    `json:"carriers"`
+}
+
+// LoginView 是一条登录（A4）：机器、HOME（`~` 或 `~/.handoff/home/<dir>`）、凭据来源名、身份短
+// 指纹、状态（ok|expired|gone）、最近变更时刻、使用它的载体（无则 []）。可缺席：expires_at、
+// proxy（密码段打码）、relogin（重新登录命令；B464 段 3）。
+type LoginView struct {
+	ID          string        `json:"id"`
+	Machine     string        `json:"machine"`
+	Home        string        `json:"home"`
+	Source      string        `json:"source"`
+	Fingerprint string        `json:"fingerprint"`
+	State       string        `json:"state"`
+	ChangedAt   time.Time     `json:"changed_at"`
+	ExpiresAt   *time.Time    `json:"expires_at,omitempty"`
+	Proxy       string        `json:"proxy,omitempty"`
+	Relogin     *LoginCommand `json:"relogin,omitempty"`
+	Carriers    []string      `json:"carriers"`
+}
+
+// LoginCommand 是「在这台机器的这个 HOME 下重新登录」的命令（B464 A4/A11）：run 带
+// `HOME=<登录 HOME 绝对路径>` 前缀；remote_run 是同一 HOME 下给远端/无浏览器机器的变体
+// （同样带 HOME 前缀，仅 codex 这类有设备登录方式的 kind 给出）；ssh 只在目标机是入口机能
+// 直连的远端时给出（relay 目标与本机缺席）；note 是各 CLI 的补充做法。
+type LoginCommand struct {
+	SSH       string `json:"ssh,omitempty"`
+	Run       string `json:"run"`
+	RemoteRun string `json:"remote_run,omitempty"`
+	Note      string `json:"note,omitempty"`
+}
+
+// LoginHomeReq 是 POST /api/logins/home 的请求体（A11）：agent ∈ opencode|codex|grok|agy|claude，
+// dir 是新 HOME 的目录名（只允许 [a-z0-9-]，建在目标机的 ~/.handoff/home/ 下）。
+type LoginHomeReq struct {
+	Agent string `json:"agent"`
+	Dir   string `json:"dir"`
+}
+
+// LoginHomeResp 是 POST /api/logins/home 的响应（A11）：home 是机器无关写法
+// `~/.handoff/home/<dir>`；command 是给人在该机执行的登录命令。
+type LoginHomeResp struct {
+	Home    string       `json:"home"`
+	Command LoginCommand `json:"command"`
+}
+
+// LoginCheckReq 是 POST /api/logins/check 的请求体（A12）：home 只接受 `~` 或
+// `~/.handoff/home/<dir>`（防借发现读任意路径）。
+type LoginCheckReq struct {
+	Home string `json:"home"`
+}
+
+// LoginCheckItem 是检查结果里的一条已识别登录（A12）：识别到新身份时 new_account=true，
+// account_logins 是该账号当前登录总数。
+type LoginCheckItem struct {
+	Login         string `json:"login"`
+	Account       string `json:"account"`
+	AccountName   string `json:"account_name"`
+	NewAccount    bool   `json:"new_account"`
+	AccountLogins int    `json:"account_logins"`
+}
+
+// LoginCheckResp 是 POST /api/logins/check 的响应（A12）：尚未识别为 [] 不是 null。
+type LoginCheckResp struct {
+	Logins []LoginCheckItem `json:"logins"`
+}
+
+// MachineDiscoverResult 是一台机器在一轮「立即发现」里的结果（A10）：单机失败只表现在这一行，
+// 整体仍 200。
+type MachineDiscoverResult struct {
+	Machine string     `json:"machine"`
+	OK      bool       `json:"ok"`
+	Error   string     `json:"error,omitempty"`
+	At      *time.Time `json:"at,omitempty"`
+}
+
+// AccountDiscoverResp 是 POST /api/accounts/discover 的响应（A10）。
+type AccountDiscoverResp struct {
+	Machines []MachineDiscoverResult `json:"machines"`
+}
+
+// DiscoveryView 是一台机器的「上次发现」（A5）。self = 是否应答本请求的机器；at 缺席 = 从未
+// 发现；error 是最近一轮的问题摘要（位置与类别，不含凭据）。
+type DiscoveryView struct {
+	Machine string     `json:"machine"`
+	Self    bool       `json:"self"`
+	At      *time.Time `json:"at,omitempty"`
+	Error   string     `json:"error,omitempty"`
 }
 
 // AccountReadingView 是最近一次成功读数（F8）。windows 无窗口时为 []。
@@ -260,7 +338,7 @@ type AccountExtraUsageView struct {
 	Unlimited bool     `json:"unlimited,omitempty"`
 }
 
-// AccountDeleteRefusal 是 DELETE /api/accounts/{name} 因被载体引用拒删时的 409 体（F3）。
+// AccountDeleteRefusal 是 DELETE /api/accounts/{ref} 因名下登录被载体引用拒删时的 409 体（A7）。
 type AccountDeleteRefusal struct {
 	Error    string   `json:"error"`
 	Carriers []string `json:"carriers"`
@@ -281,14 +359,17 @@ type AccountProblemView struct {
 	Message  string `json:"message"`
 }
 
-// AccountInput 是 PUT /api/accounts/{name}?expect= 的请求体（F9）。名称取路径；
-// 不含 state/reading/version。三项数值用指针区分「缺席 = 取缺省」与「给了 0」。
+// LoginProxyInput 是 PUT /api/logins/{id}/proxy 的请求体（A9）：proxy 必给，空串 = 清除；打码
+// 回填（读面里的 `user:***@host`）= 保留原值。
+type LoginProxyInput struct {
+	Proxy *string `json:"proxy"`
+}
+
+// AccountInput 是 PUT /api/accounts/{ref}?expect= 的请求体（A6）。账号只由发现产生：expect=0
+// 一律 400。三项数值用指针区分「缺席 = 保留现值」与「给了 0」（交校验）；name 空 = 不改，
+// 非空即改名（唯一、禁 `:`/`/`，撞名 409）。
 type AccountInput struct {
-	Kind            string `json:"kind"`
-	Machine         string `json:"machine"`
-	HomeDir         string `json:"home_dir"`
-	Entry           string `json:"entry,omitempty"`
-	Proxy           string `json:"proxy,omitempty"`
+	Name            string `json:"name,omitempty"`
 	IntervalMinutes *int   `json:"interval_minutes,omitempty"`
 	WarnPercent     *int   `json:"warn_percent,omitempty"`
 	LowPercent      *int   `json:"low_percent,omitempty"`

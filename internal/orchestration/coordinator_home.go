@@ -3,13 +3,14 @@
 // 见 internal/agentd/coordinator_sessionref.go）。
 //
 // 职责：
-//   - 协调者无头 Launch/Resume 运行前按写入白名单供给隔离 HOME（config.yaml、AGENTS.md、skills/、缺失凭据）；
+//   - 协调者无头 Launch/Resume 运行前按写入白名单供给载体 HOME（config.yaml、AGENTS.md、skills/）；
+//     B464 起绝不复制凭据——载体 HOME 即所选登录的 HOME，凭据只由人在该 HOME 登录产生；
 //   - Launch/Wake 自动化入口将 carrier 登记 HomeDir 规范化为展开后的绝对路径；
 //   - attach 定位的 shell 命令拼装提供安全引用（ShellQuote）。
 //
 // 边界：
 //   - 只服务协调者无头 Launch/Resume 与 attach ref，绝不被 WakeHome 调用；
-//   - 严禁整树同步或 RemoveAll，不触碰 .local/share/opencode 下除单个表内凭据外的其他文件（尤其 session db）。
+//   - 严禁整树同步或 RemoveAll，不触碰 .local/share/opencode 下任何文件（凭据与 session db）。
 package orchestration
 
 import (
@@ -25,16 +26,14 @@ import (
 	"github.com/Xsxdot/handoff/internal/executor"
 	"github.com/Xsxdot/handoff/internal/hostapi"
 	"github.com/Xsxdot/handoff/internal/keysclient"
-	"github.com/Xsxdot/handoff/internal/toolchain"
 )
 
 type coordinatorHomeSupplier struct {
-	currentConfig  func() *config.Config
-	userHomeDir    func() (string, error)
-	expandHomeDir  func(string) (string, error)
-	credentialPath func(string) (string, bool)
-	profileFor     func(cli string) (executor.Profile, error)
-	loadRules      func(mainHome, cli string) (rules, skills []executor.ProfileFile, err error)
+	currentConfig func() *config.Config
+	userHomeDir   func() (string, error)
+	expandHomeDir func(string) (string, error)
+	profileFor    func(cli string) (executor.Profile, error)
+	loadRules     func(mainHome, cli string) (rules, skills []executor.ProfileFile, err error)
 }
 
 func (p coordinatorHomeSupplier) Prepare(spec keysclient.SessionSpec) (string, error) {
@@ -55,17 +54,25 @@ func (p coordinatorHomeSupplier) Prepare(spec keysclient.SessionSpec) (string, e
 	if !filepath.IsAbs(targetHome) {
 		return "", fmt.Errorf("协调者供给 HOME 未展开为绝对路径: %q", targetHome)
 	}
-	if err := rejectCoordinatorHomeSymlinks(targetHome); err != nil {
-		slog.Default().Error("检查协调者隔离 HOME 白名单失败", "cli", spec.CLI,
-			"target", targetHome, "cause", err)
-		return "", err
-	}
 	if p.userHomeDir == nil {
 		return "", errors.New("协调者供给缺少主 HOME 读取函数")
 	}
 	mainHome, err := p.userHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("读取主 HOME: %w", err)
+	}
+	// B464 S8/Q9：目标展开后就是主 HOME（含经软链的同路径）时整段跳过写入——
+	// 同源同目标，写 .handoff/config.yaml、provider 配置、规则与 skills 只会改写
+	// agentd 自己的活配置与主 HOME 规则文件。只做展开与校验，不做任何写入。
+	if sameHomePath(targetHome, mainHome) {
+		slog.Default().Info("协调者供给目标即主 HOME，跳过全部写入", "cli", spec.CLI,
+			"target", targetHome)
+		return targetHome, nil
+	}
+	if err := rejectCoordinatorHomeSymlinks(targetHome); err != nil {
+		slog.Default().Error("检查协调者隔离 HOME 白名单失败", "cli", spec.CLI,
+			"target", targetHome, "cause", err)
+		return "", err
 	}
 	if p.currentConfig == nil {
 		return "", errors.New("协调者供给缺少活配置读取函数")
@@ -91,9 +98,6 @@ func (p coordinatorHomeSupplier) Prepare(spec keysclient.SessionSpec) (string, e
 	}
 	slog.Default().Info("写入协调者隔离配置完成", "path", configPath)
 
-	if err := copyMissingCoordinatorCredential(mainHome, targetHome, spec.CLI, p.credentialPath); err != nil {
-		return "", err
-	}
 	if err := projectCoordinatorProviderConfig(mainHome, targetHome); err != nil {
 		return "", err
 	}
@@ -112,11 +116,10 @@ func (p coordinatorHomeSupplier) Prepare(spec keysclient.SessionSpec) (string, e
 		return "", err
 	}
 	rep, err := prof.Prepare(context.Background(), executor.ProfileReq{
-		HomeDir:    targetHome,
-		Isolated:   true,
-		Credential: executor.CredentialMainHomeSync,
-		Rules:      rules,
-		Skills:     skills,
+		HomeDir:  targetHome,
+		Isolated: true,
+		Rules:    rules,
+		Skills:   skills,
 	})
 	if err != nil {
 		return "", err
@@ -137,11 +140,10 @@ func NewCoordinatorPrepareHome(currentConfig func() *config.Config, providers *e
 	loadRules func(mainHome, cli string) ([]executor.ProfileFile, []executor.ProfileFile, error),
 ) func(keysclient.SessionSpec) (string, error) {
 	supplier := coordinatorHomeSupplier{
-		currentConfig:  currentConfig,
-		userHomeDir:    os.UserHomeDir,
-		expandHomeDir:  hostapi.ExpandHomePath,
-		credentialPath: toolchain.CredRelPathFor,
-		loadRules:      loadRules,
+		currentConfig: currentConfig,
+		userHomeDir:   os.UserHomeDir,
+		expandHomeDir: hostapi.ExpandHomePath,
+		loadRules:     loadRules,
 		profileFor: func(cli string) (executor.Profile, error) {
 			base := filepath.Base(cli)
 			if providers == nil {
@@ -188,6 +190,18 @@ func projectCoordinatorConfig(cfg *config.Config) (config.Config, error) {
 	return projected, nil
 }
 
+// sameHomePath 报告两个 HOME 路径是否指向同一个目录：先按 EvalSymlinks 展开后
+// 比较（/Users/x 与经软链的同路径算同一个），解析失败（路径不存在等）才退回
+// Clean 字面比较。
+func sameHomePath(a, b string) bool {
+	ra, ea := filepath.EvalSymlinks(a)
+	rb, eb := filepath.EvalSymlinks(b)
+	if ea == nil && eb == nil {
+		return ra == rb
+	}
+	return filepath.Clean(a) == filepath.Clean(b)
+}
+
 // rejectCoordinatorHomeSymlinks 只检查隔离 HOME 根和供给白名单中的路径。
 // 不向上遍历文件系统祖先：那会把主机卷别名或其他无关路径误当成隔离 HOME 的风险，
 // 而真正需要防护的是即将被 MkdirAll/WriteFile 使用的白名单路径不能跟随链接越界。
@@ -201,14 +215,6 @@ func rejectCoordinatorHomeSymlinks(targetHome string) error {
 		filepath.Join(targetHome, ".config", "opencode", "AGENTS.md"),
 		filepath.Join(targetHome, ".config", "opencode", "skills"),
 		filepath.Join(targetHome, ".config", "opencode", "opencode.jsonc"),
-		filepath.Join(targetHome, ".local"),
-		filepath.Join(targetHome, ".local", "share"),
-		filepath.Join(targetHome, ".local", "share", "opencode"),
-		filepath.Join(targetHome, ".local", "share", "opencode", "auth.json"),
-		filepath.Join(targetHome, ".grok"),
-		filepath.Join(targetHome, ".grok", "auth.json"),
-		filepath.Join(targetHome, ".codex"),
-		filepath.Join(targetHome, ".codex", "auth.json"),
 	}
 	for _, path := range paths {
 		info, err := os.Lstat(path)
@@ -337,58 +343,6 @@ func hasConfigObjectKey(data []byte, key string) bool {
 		}
 		from = k
 	}
-}
-
-// copyMissingCoordinatorCredential 仅拷贝该 CLI 缺失的单文件登录凭据。
-// 为什么不用整树同步：隔离 HOME 不依赖主 HOME 的生命周期，也不会通过 symlink 越出白名单；
-// 整树同步会覆盖隔离侧已有的 session 数据库或运行状态。因此仅复制白名单内的缺失凭据。
-func copyMissingCoordinatorCredential(mainHome, targetHome, cli string,
-	credentialPath func(string) (string, bool)) error {
-	if credentialPath == nil {
-		return nil
-	}
-	rel, ok := credentialPath(filepath.Base(cli))
-	if !ok || rel == "" || filepath.IsAbs(rel) {
-		return nil
-	}
-	source := filepath.Join(mainHome, rel)
-	info, err := os.Lstat(source)
-	if errors.Is(err, os.ErrNotExist) {
-		slog.Default().Warn("协调者主 HOME 缺少表内凭据，跳过供给", "cli", cli, "source", source)
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("stat 主 HOME 凭据 %q: %w", source, err)
-	}
-	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
-		return fmt.Errorf("主 HOME 凭据不是普通文件 %q", source)
-	}
-	destination := filepath.Join(targetHome, rel)
-	if existing, statErr := os.Lstat(destination); statErr == nil {
-		if existing.Mode()&os.ModeSymlink != 0 || !existing.Mode().IsRegular() {
-			return fmt.Errorf("隔离凭据目标不是普通文件 %q", destination)
-		}
-		slog.Default().Info("协调者隔离凭据已存在，保留原文件", "cli", cli, "target", destination,
-			"mode", existing.Mode().String())
-		return nil
-	} else if !errors.Is(statErr, os.ErrNotExist) {
-		return fmt.Errorf("检查隔离凭据 %q: %w", destination, statErr)
-	}
-	if err := os.MkdirAll(filepath.Dir(destination), 0o700); err != nil {
-		return fmt.Errorf("创建隔离凭据父目录 %q: %w", filepath.Dir(destination), err)
-	}
-	data, err := os.ReadFile(source)
-	if err != nil {
-		return fmt.Errorf("读取主 HOME 凭据 %q: %w", source, err)
-	}
-	if err := os.WriteFile(destination, data, info.Mode().Perm()); err != nil {
-		return fmt.Errorf("写隔离凭据 %q: %w", destination, err)
-	}
-	if err := os.Chmod(destination, info.Mode().Perm()); err != nil {
-		return fmt.Errorf("设置隔离凭据权限 %q: %w", destination, err)
-	}
-	slog.Default().Info("协调者缺失凭据已供给", "cli", cli, "target", destination)
-	return nil
 }
 
 // NormalizeCoordinatorSpec 将 SessionSpec.HomeDir 展开为绝对路径。

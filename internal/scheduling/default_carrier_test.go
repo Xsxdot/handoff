@@ -19,7 +19,7 @@ func TestDefaultCarrierRoundtrip(t *testing.T) {
 	if err := svc.SetDefaultCarrier(""); !errors.Is(err, scheduling.ErrNoDefault) {
 		t.Fatalf("空名写入必须 ErrNoDefault，实得 %v", err)
 	}
-	putOnlineCarrier(t, svc, scheduling.Carrier{Name: "muse", Machine: "local", CLI: "opencode", Credential: scheduling.CredentialStandalone})
+	putOnlineCarrier(t, svc, scheduling.Carrier{Name: "muse", Machine: "local", CLI: "opencode"})
 	if err := svc.SetDefaultCarrier("muse"); err != nil {
 		t.Fatalf("SetDefaultCarrier: %v", err)
 	}

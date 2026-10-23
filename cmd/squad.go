@@ -229,16 +229,29 @@ func init() {
 	rootCmd.AddCommand(squadCmd)
 }
 
-// carrierAccountCell 是载体行的「账号」列（B453 S4）：所选账号名；载体 HOME 凭据指纹与
-// 账号读数指纹不一致时注明（只提示，不拦派发）；未选为 -。
+// carrierAccountCell 是载体行的「账号」列（B453 S4；B464 起载体 → 登录 → 账号）：所选登录的
+// 账号名 · 机器 HOME（plan S9；HOME 镜像为空 = 主 HOME，显示 ~），登录已失效时注明；
+// 「无账号」与未选（存量未迁移）分开显示。
 func carrierAccountCell(c proto.CarrierView) string {
-	if c.Account == "" {
+	switch {
+	case c.NoAccount:
+		return "无账号"
+	case c.Login == "":
 		return "-"
 	}
-	if c.AccountMismatch {
-		return c.Account + "（凭据指纹不符）"
+	name := c.AccountName
+	if name == "" {
+		name = c.Login
 	}
-	return c.Account
+	home := c.HomeDir
+	if strings.TrimSpace(home) == "" {
+		home = "~"
+	}
+	cell := name + " · " + c.Machine + " " + home
+	if c.LoginState == "gone" {
+		cell += "（登录已失效）"
+	}
+	return cell
 }
 
 // parseSquadMember 解析一个完整 --member 值。StringArray 保留空格、斜杠和中文

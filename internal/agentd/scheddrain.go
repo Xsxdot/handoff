@@ -505,7 +505,7 @@ func (s *Server) runOnCoordinatorCarrier(plan coordinatorCarrierPlan) (keystone.
 	}
 	spec := keysclient.SessionSpec{
 		CLI: binding.Executor, HomeDir: carrier.HomeDir, Model: binding.Model,
-		Workdir: plan.workdir(),
+		Workdir: plan.workdir(), Carrier: binding.Carrier,
 	}
 	normalized, err := orchestration.NormalizeCoordinatorSpec(spec)
 	if err != nil {
@@ -699,6 +699,7 @@ func (s *Server) wakeCoordinatorRoundID(ctx context.Context, card string,
 	}
 	spec := keysclient.SessionSpec{
 		CLI: cli, HomeDir: bearing.HomeDir, Model: bearing.Model, Workdir: bearing.Workdir,
+		Carrier: binding.Carrier,
 	}
 	normalized, err := orchestration.NormalizeCoordinatorSpec(spec)
 	if err != nil {

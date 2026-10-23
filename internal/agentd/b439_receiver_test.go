@@ -17,8 +17,8 @@ func TestB439SelfNameCarrierMachineAdmitted(t *testing.T) {
 	env.srv.conf().Name = "linux-01"
 	putOnlineCarrier(t, mustScheduling(t, env.srv), scheduling.Carrier{
 		Name: "self-box", Machine: "linux-01", CLI: "fake", HomeDir: "",
-		Credential: scheduling.CredentialStandalone, MaxConcurrency: 1,
-		Status: scheduling.StatusOnline,
+		MaxConcurrency: 1,
+		Status:         scheduling.StatusOnline,
 	})
 	rr := postDispatch(t, env.srv, dispatchBody(env.projectID,
 		`,"carrier":"self-box","target":"linux-01","executor":"fake","home_dir":""`))

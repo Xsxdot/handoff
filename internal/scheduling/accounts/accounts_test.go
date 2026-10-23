@@ -1,6 +1,7 @@
 package accounts_test
 
-// accounts_test.go —— 账号定义/读数两行写入的承重回归（B453 段 1，plan Q1/V3）。
+// accounts_test.go —— 账号定义/读数两行写入的承重回归（B453 段 1，plan Q1/V3；B464 起账号由
+// 发现建，夹具经 Reconcile 播种，人写只剩阈值/间隔编辑）。
 //
 // 职责：锁「人写定义」与「机写读数/撞额度标记」物理上不同行、互不顶版本、并发下
 // 两侧字段都不丢；锁连带规则「探测开始时刻晚于标记才清标记」「失败保留旧读数与标记」。
@@ -76,11 +77,25 @@ var base = time.Date(2026, 10, 22, 8, 0, 0, 0, time.UTC)
 
 func at(sec int) time.Time { return base.Add(time.Duration(sec) * time.Second) }
 
-func newAccount() accounts.Account {
-	return accounts.Account{
-		Name: "og-linux", Kind: accounts.KindOpencodeGo, Machine: "linux-01", HomeDir: "/root",
-		IntervalMinutes: 15, WarnPercent: 60, LowPercent: 80,
+// ogID 是夹具账号的确定性 id（seedAccount 经发现归并建出）。
+const ogID = "opencode-go:aaaa11112222"
+
+// seedAccount 以一次发现归并建出夹具账号（B464：账号只由发现建）并返回其定义。
+func seedAccount(t *testing.T, svc *accounts.Service) accounts.Account {
+	t.Helper()
+	// 发现时刻取 now 而不是固定 base：可探登录要求所在机发现在 DiscoveryFreshFor 内，
+	// 固定 base 会让这两个用例在作者写下的时点之后必然过期（时间炸弹，与产品行为无关）。
+	if _, err := svc.Reconcile(accounts.Discovery{Machine: "linux-01", At: time.Now(), Homes: []accounts.ScannedHome{
+		{Home: "~", HomeAbs: "/root", Logins: []accounts.FoundLogin{
+			{Kind: accounts.KindOpencodeGo, Source: "opencode.db", Fingerprint: "sha256:aaaa11112222"}}},
+	}}); err != nil {
+		t.Fatalf("播种账号: %v", err)
 	}
+	v, err := svc.Get(ogID)
+	if err != nil {
+		t.Fatalf("读播种账号: %v", err)
+	}
+	return v.Account
 }
 
 func successAt(started, finished int, used float64) accounts.ProbeOutcome {
@@ -94,17 +109,14 @@ func successAt(started, finished int, used float64) accounts.ProbeOutcome {
 
 func TestMergeProbeAndMarkSeparateRowsDoNotBumpDefinition(t *testing.T) {
 	svc := accounts.New(newMem())
-	v, err := svc.Put(newAccount(), 0)
-	if err != nil || v != 1 {
-		t.Fatalf("新建账号: v=%d err=%v", v, err)
-	}
-	if err := svc.RecordProbe("og-linux", successAt(0, 1, 30)); err != nil {
+	acct := seedAccount(t, svc)
+	if err := svc.RecordProbe(ogID, successAt(0, 1, 30)); err != nil {
 		t.Fatalf("写读数: %v", err)
 	}
-	if err := svc.MarkQuota("og-linux", accounts.QuotaMark{At: at(2), Task: "t1", Category: "quota_exhausted"}); err != nil {
+	if err := svc.MarkQuota(ogID, accounts.QuotaMark{At: at(2), Task: "t1", Category: "quota_exhausted"}); err != nil {
 		t.Fatalf("写标记: %v", err)
 	}
-	view, err := svc.Get("og-linux")
+	view, err := svc.Get(ogID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,12 +124,12 @@ func TestMergeProbeAndMarkSeparateRowsDoNotBumpDefinition(t *testing.T) {
 		t.Fatalf("机写不得顶高定义行版本：version=%d", view.Version)
 	}
 	// 人持 version=1 编辑：不因读数/标记写入而冲突。
-	edited := newAccount()
+	edited := acct
 	edited.IntervalMinutes = 30
 	if v, err := svc.Put(edited, 1); err != nil || v != 2 {
 		t.Fatalf("人持旧读到的版本编辑应成功: v=%d err=%v", v, err)
 	}
-	view, _ = svc.Get("og-linux")
+	view, _ = svc.Get(ogID)
 	if view.Account.IntervalMinutes != 30 || view.Record.Reading == nil ||
 		view.Record.Reading.Windows[0].UsedPercent != 30 || view.Record.QuotaMark == nil {
 		t.Fatalf("人写定义抹掉了机写字段或反之: %+v", view)
@@ -129,20 +141,18 @@ func TestMergeProbeAndMarkSeparateRowsDoNotBumpDefinition(t *testing.T) {
 
 func TestMergeProbeClearsMarkOnlyWhenStartedAfterMark(t *testing.T) {
 	svc := accounts.New(newMem())
-	if _, err := svc.Put(newAccount(), 0); err != nil {
+	seedAccount(t, svc)
+	if err := svc.RecordProbe(ogID, successAt(0, 1, 20)); err != nil {
 		t.Fatal(err)
 	}
-	if err := svc.RecordProbe("og-linux", successAt(0, 1, 20)); err != nil {
-		t.Fatal(err)
-	}
-	if err := svc.MarkQuota("og-linux", accounts.QuotaMark{At: at(10), Task: "t1"}); err != nil {
+	if err := svc.MarkQuota(ogID, accounts.QuotaMark{At: at(10), Task: "t1"}); err != nil {
 		t.Fatal(err)
 	}
 	// 探测发出（9）早于标记（10）、返回（11）晚于标记：旧探测不得抹新标记。
-	if err := svc.RecordProbe("og-linux", successAt(9, 11, 25)); err != nil {
+	if err := svc.RecordProbe(ogID, successAt(9, 11, 25)); err != nil {
 		t.Fatal(err)
 	}
-	view, _ := svc.Get("og-linux")
+	view, _ := svc.Get(ogID)
 	if view.Record.QuotaMark == nil || view.State != accounts.StateOut {
 		t.Fatalf("开始早于标记的探测抹掉了标记: %+v", view.Record)
 	}
@@ -150,20 +160,20 @@ func TestMergeProbeClearsMarkOnlyWhenStartedAfterMark(t *testing.T) {
 		t.Fatalf("读数仍应更新: %+v", view.Record.Reading)
 	}
 	// 探测失败：不清标记，保留旧读数。
-	if err := svc.RecordProbe("og-linux", accounts.ProbeOutcome{StartedAt: at(20), FinishedAt: at(21),
+	if err := svc.RecordProbe(ogID, accounts.ProbeOutcome{StartedAt: at(20), FinishedAt: at(21),
 		Failure: &accounts.Problem{Category: "network", Message: "断网"}}); err != nil {
 		t.Fatal(err)
 	}
-	view, _ = svc.Get("og-linux")
+	view, _ = svc.Get(ogID)
 	if view.Record.QuotaMark == nil || view.Record.Reading == nil || view.Record.Reading.Windows[0].UsedPercent != 25 ||
 		view.Record.LastError == nil || view.Record.FailureStreak != 1 {
 		t.Fatalf("失败应保留旧读数与标记并记失败: %+v", view.Record)
 	}
 	// 开始晚于标记的成功探测：清标记、清失败。
-	if err := svc.RecordProbe("og-linux", successAt(30, 31, 40)); err != nil {
+	if err := svc.RecordProbe(ogID, successAt(30, 31, 40)); err != nil {
 		t.Fatal(err)
 	}
-	view, _ = svc.Get("og-linux")
+	view, _ = svc.Get(ogID)
 	if view.Record.QuotaMark != nil || view.Record.LastError != nil || view.Record.FailureStreak != 0 {
 		t.Fatalf("开始晚于标记的成功探测应清标记与失败: %+v", view.Record)
 	}
@@ -185,9 +195,7 @@ func TestMergeRefusesOrphanReading(t *testing.T) {
 func TestConcurrentHumanProbeMarkerKeepAllFields(t *testing.T) {
 	const n = 50
 	svc := accounts.New(newMem())
-	if _, err := svc.Put(newAccount(), 0); err != nil {
-		t.Fatal(err)
-	}
+	seedAccount(t, svc)
 	intervals := []int{5, 10, 15, 30, 60}
 	var wg sync.WaitGroup
 	var humanConflicts int
@@ -202,7 +210,7 @@ func TestConcurrentHumanProbeMarkerKeepAllFields(t *testing.T) {
 	go func() { // 人：每轮 GET 取版本 → PUT
 		defer wg.Done()
 		for i := 0; i < n; i++ {
-			view, err := svc.Get("og-linux")
+			view, err := svc.Get(ogID)
 			if err != nil {
 				record(err)
 				return
@@ -221,7 +229,7 @@ func TestConcurrentHumanProbeMarkerKeepAllFields(t *testing.T) {
 	go func() { // 探测器：开始时刻 2i
 		defer wg.Done()
 		for i := 0; i < n; i++ {
-			if err := svc.RecordProbe("og-linux", successAt(2*i, 2*i, float64(i))); err != nil {
+			if err := svc.RecordProbe(ogID, successAt(2*i, 2*i, float64(i))); err != nil {
 				record(err)
 				return
 			}
@@ -230,7 +238,7 @@ func TestConcurrentHumanProbeMarkerKeepAllFields(t *testing.T) {
 	go func() { // 标记者：标记时刻 2i+1
 		defer wg.Done()
 		for i := 0; i < n; i++ {
-			if err := svc.MarkQuota("og-linux", accounts.QuotaMark{At: at(2*i + 1), Task: fmt.Sprintf("t%d", i)}); err != nil {
+			if err := svc.MarkQuota(ogID, accounts.QuotaMark{At: at(2*i + 1), Task: fmt.Sprintf("t%d", i)}); err != nil {
 				record(err)
 				return
 			}
@@ -240,7 +248,7 @@ func TestConcurrentHumanProbeMarkerKeepAllFields(t *testing.T) {
 	if len(errs) > 0 || humanConflicts > 0 {
 		t.Fatalf("并发写出错（人侧冲突 %d 次）: %v", humanConflicts, errs)
 	}
-	view, err := svc.Get("og-linux")
+	view, err := svc.Get(ogID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -282,18 +290,16 @@ func TestMergeReadingCASConflictRetriesKeepBothSides(t *testing.T) {
 	marker := accounts.New(mem)
 	reg := &conflictingRegistry{memRegistry: mem, n: 3}
 	reg.interleave = func(round int) {
-		if err := marker.MarkQuota("og-linux", accounts.QuotaMark{At: at(100 + round), Task: fmt.Sprintf("m%d", round)}); err != nil {
+		if err := marker.MarkQuota(ogID, accounts.QuotaMark{At: at(100 + round), Task: fmt.Sprintf("m%d", round)}); err != nil {
 			t.Fatalf("标记者写入: %v", err)
 		}
 	}
 	prober := accounts.New(reg)
-	if _, err := prober.Put(newAccount(), 0); err != nil {
-		t.Fatal(err)
-	}
-	if err := prober.RecordProbe("og-linux", successAt(10, 20, 42)); err != nil {
+	seedAccount(t, accounts.New(mem))
+	if err := prober.RecordProbe(ogID, successAt(10, 20, 42)); err != nil {
 		t.Fatalf("前 3 次冲突后应重读重试成功，得 %v", err)
 	}
-	v, err := prober.Get("og-linux")
+	v, err := prober.Get(ogID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -310,11 +316,11 @@ func TestMergeReadingCASConflictRetriesKeepBothSides(t *testing.T) {
 
 	// 冲突超出预算：返回 ErrRetryExhausted，读数不落、错误不被吞
 	reg.n, reg.puts = 1<<30, 0
-	err = prober.RecordProbe("og-linux", successAt(200, 210, 7))
+	err = prober.RecordProbe(ogID, successAt(200, 210, 7))
 	if !errors.Is(err, accounts.ErrRetryExhausted) {
 		t.Fatalf("连续冲突超出预算应返回 ErrRetryExhausted，得 %v", err)
 	}
-	if v, _ := prober.Get("og-linux"); v.Record.Reading.Windows[0].UsedPercent != 42 {
+	if v, _ := prober.Get(ogID); v.Record.Reading.Windows[0].UsedPercent != 42 {
 		t.Fatalf("预算耗尽的写不应落库，得 %+v", v.Record.Reading)
 	}
 }

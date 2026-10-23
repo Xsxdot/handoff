@@ -31,10 +31,11 @@ import (
 // loginQueryTimeout 是读 opencode.db 的上限：库被 opencode 写锁住时 busy_timeout 等到这里为止。
 const loginQueryTimeout = 5 * time.Second
 
-// loginAccount 是 opencode.db 里的当前登录账号。token/org 是凭据，只交出网与抹除，不落日志。
+// loginAccount 是 opencode.db 里的当前登录账号。token/org 是凭据，只交出网与抹除，不落日志；
+// email 只用于登录行的可读 label（自动起名），不进身份材料（身份仍是 id/org）。
 type loginAccount struct {
-	id, org, token string
-	expiry         *time.Time // token_expiry；NULL = 未知（不按过期处理）
+	id, org, token, email string
+	expiry                *time.Time // token_expiry；NULL = 未知（不按过期处理）
 }
 
 func (l loginAccount) expired(now time.Time) bool { return l.expiry != nil && !l.expiry.After(now) }
@@ -76,9 +77,17 @@ func readLoginAccount(home, rel string) (loginAccount, error) {
 	case !active.Valid || strings.TrimSpace(active.String) == "":
 		return loginAccount{}, fail(CategoryCredentialMissing, "%s 无登录账号（当前没有选中的账号，在该机运行 opencode 登录账号）", path)
 	}
-	var token sql.NullString
+	var token, email sql.NullString
 	var expiry sql.NullInt64
-	err = db.QueryRowContext(ctx, "SELECT access_token, token_expiry FROM account WHERE id = ?", active.String).Scan(&token, &expiry)
+	err = db.QueryRowContext(ctx, "SELECT access_token, token_expiry, email FROM account WHERE id = ?", active.String).Scan(&token, &expiry, &email)
+	// 旧版 opencode.db 的 account 表没有 email 列（email 只喂 label，不是身份材料）：退回两列查询，
+	// 身份与登录照常认出，label 留空（最终审查第 2 轮 m5）。只认 email 缺列：其他列缺（如 token_expiry）
+	// 是库形状不认识，必须走下方原错误分支按凭据缺失上报（段 9 m-b）。
+	if err != nil && !errors.Is(err, sql.ErrNoRows) && strings.Contains(err.Error(), "no such column: email") {
+		log().Warn("opencode.db 的 account 表无 email 列，登录照常认出但 label 留空", "path", path)
+		email = sql.NullString{}
+		err = db.QueryRowContext(ctx, "SELECT access_token, token_expiry FROM account WHERE id = ?", active.String).Scan(&token, &expiry)
+	}
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		return loginAccount{}, fail(CategoryCredentialMissing, "%s 无登录账号（当前账号在 account 表里不存在）", path)
@@ -87,7 +96,8 @@ func readLoginAccount(home, rel string) (loginAccount, error) {
 	case !token.Valid || strings.TrimSpace(token.String) == "":
 		return loginAccount{}, fail(CategoryCredentialInvalid, "%s 的当前登录账号缺少 access_token，在该机运行 opencode 重新登录", path)
 	}
-	acc := loginAccount{id: active.String, org: strings.TrimSpace(org.String), token: token.String}
+	acc := loginAccount{id: active.String, org: strings.TrimSpace(org.String), token: token.String,
+		email: strings.TrimSpace(email.String)}
 	if expiry.Valid {
 		t := time.UnixMilli(expiry.Int64)
 		acc.expiry = &t
@@ -98,6 +108,11 @@ func readLoginAccount(home, rel string) (loginAccount, error) {
 // loginDSN 是探测器打开 opencode.db 的唯一 DSN：file: URI + mode=ro，驱动以 SQLITE_OPEN_URI
 // 打开——只读连接（写语句报 SQLITE_READONLY）、库不存在不建库；WAL 下照常读到最新提交。
 // handoff 不写 opencode.db（spec r1.3），这一条由 TestOpencodeGoLoginDSNIsReadOnly 锁住。
+//
+// 为什么不用 immutable=1：immutable 告诉 SQLite 库文件永不改变，连接会跳过 WAL 与共享内存
+// 索引，未 checkpoint 的已提交事务（opencode 正在运行时很常见）就读不到——Q5 会据此把刚刷新的
+// 登录误判成「凭据变化/过期」。mode=ro 会碰 -shm，但它只是 WAL 协调用的共享索引，不是凭据，
+// 只读连接也不改写库内容；两害相权取能读到最新提交的 mode=ro。
 func loginDSN(path string) string {
 	return (&url.URL{Scheme: "file", Path: filepath.ToSlash(path), RawQuery: "mode=ro&_pragma=busy_timeout(3000)"}).String()
 }
@@ -162,4 +177,33 @@ func ParseOpencodeGoConsoleStatus(status int, body []byte) (Snapshot, error) {
 		return Snapshot{}, fail(CategoryParse, "access.meters 里没有可计的窗口（fiveHour/week/month 的 limit 都为 0 或缺）：%s", snippet(body))
 	}
 	return out, nil
+}
+
+// loginRefreshInfo 尽力读当前登录账号行的 refresh_token 是否非空与 time_updated（R0-4 列名）。
+// 读不出（旧 schema、库被锁）按「可自刷新、变更时刻未知」处理——宁可少标「已过期」也不误报
+// （plan Q5）。不交出任何列值。
+func loginRefreshInfo(home, rel, accountID string) (bool, *time.Time) {
+	path := filepath.Join(home, rel)
+	db, err := sql.Open("sqlite", loginDSN(path))
+	if err != nil {
+		return true, nil
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	ctx, cancel := context.WithTimeout(context.Background(), loginQueryTimeout)
+	defer cancel()
+	var hasRefresh sql.NullBool
+	var updated sql.NullInt64
+	err = db.QueryRowContext(ctx, "SELECT refresh_token IS NOT NULL AND trim(refresh_token) <> '', time_updated FROM account WHERE id = ?",
+		accountID).Scan(&hasRefresh, &updated)
+	if err != nil {
+		log().Debug("opencode.db 读 refresh/time_updated 失败，按可自刷新处理", "path", path, "cause", err)
+		return true, nil
+	}
+	var at *time.Time
+	if updated.Valid && updated.Int64 > 0 {
+		t := epochToTime(float64(updated.Int64))
+		at = &t
+	}
+	return !hasRefresh.Valid || hasRefresh.Bool, at
 }

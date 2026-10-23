@@ -86,7 +86,7 @@ func mustBody(t *testing.T, f *ledgerapi.Facade, kind, id string) []byte {
 func TestRowsCarryVersionsForCASLock(t *testing.T) {
 	svc, facade := newRowsFixture(t)
 	c1 := scheduling.Carrier{Name: "c1", Machine: "m1", CLI: "opencode",
-		Credential: scheduling.CredentialStandalone, MaxConcurrency: 2}
+		MaxConcurrency: 2}
 	if err := svc.PutCarrier(c1, 0); err != nil {
 		t.Fatalf("登记载体: %v", err)
 	}
@@ -113,8 +113,7 @@ func TestRowsCarryVersionsForCASLock(t *testing.T) {
 	if !strings.Contains(raw, `"max_concurrency":2`) {
 		t.Fatalf("max_concurrency=2 应显式出现：%s", raw)
 	}
-	z := scheduling.Carrier{Name: "z", Machine: "m", CLI: "cli",
-		Credential: scheduling.CredentialMainHomeSync}
+	z := scheduling.Carrier{Name: "z", Machine: "m", CLI: "cli", NoAccount: true}
 	if err := svc.PutCarrier(z, 0); err != nil {
 		t.Fatalf("登记零上限载体: %v", err)
 	}
@@ -144,7 +143,6 @@ func TestSquadRowsLegacyMembersRoundtripThroughRegistry(t *testing.T) {
 	for _, name := range []string{"c1", "c2"} {
 		if err := svc.PutCarrier(scheduling.Carrier{
 			Name: name, Machine: "m1", CLI: "opencode",
-			Credential: scheduling.CredentialStandalone,
 		}, 0); err != nil {
 			t.Fatalf("登记载体 %s: %v", name, err)
 		}
@@ -265,14 +263,14 @@ func TestQueueSnapshotMatchesDrainOrder(t *testing.T) {
 func TestPutValidationWrapsErrInvalid(t *testing.T) {
 	svc, _ := newRowsFixture(t)
 	carrierIncomplete := svc.PutCarrier(scheduling.Carrier{Name: "", Machine: "m",
-		CLI: "opencode", Credential: scheduling.CredentialStandalone}, 0)
+		CLI: "opencode"}, 0)
 	if !errors.Is(carrierIncomplete, scheduling.ErrInvalid) {
 		t.Fatalf("载体登记不完整应包 ErrInvalid，得 %v", carrierIncomplete)
 	}
-	credentialOut := svc.PutCarrier(scheduling.Carrier{Name: "c", Machine: "m",
-		CLI: "opencode", Credential: "boss"}, 0)
-	if !errors.Is(credentialOut, scheduling.ErrInvalid) {
-		t.Fatalf("凭据来源词表外应包 ErrInvalid，得 %v", credentialOut)
+	bothChosen := svc.PutCarrier(scheduling.Carrier{Name: "c", Machine: "m",
+		CLI: "opencode", Login: "login-x", NoAccount: true}, 0)
+	if !errors.Is(bothChosen, scheduling.ErrInvalid) {
+		t.Fatalf("登录与无账号同给应包 ErrInvalid，得 %v", bothChosen)
 	}
 	squadBlank := svc.PutSquad(scheduling.Squad{Name: "  ", Role: scheduling.RoleExecutor}, 0)
 	if !errors.Is(squadBlank, scheduling.ErrInvalid) {
@@ -291,34 +289,27 @@ func TestPutValidationWrapsErrInvalid(t *testing.T) {
 	}
 }
 
-// TestPutCarrierDefaultsCredentialAndRequiresKnownMachine 锁 B334：空凭据落
-// standalone；注入 known-machines 后，本机别名与表内键可通过，未知机器包
-// ErrInvalid。未注入时（本文件其它用例）不拦远程名，避免单测绑 agentd 配置。
-func TestPutCarrierDefaultsCredentialAndRequiresKnownMachine(t *testing.T) {
+// TestPutCarrierRequiresKnownMachine 锁 B334：注入 known-machines 后，本机别名与
+// 表内键可通过，未知机器包 ErrInvalid（B464 删凭据来源词表，原「空凭据落 standalone」断言随删）。未注入时（本文件其它用例）不拦远程名，避免单测绑 agentd 配置。
+func TestPutCarrierRequiresKnownMachine(t *testing.T) {
 	svc, _ := newRowsFixture(t)
 	svc.SetKnownMachines(func(name string) bool { return name == "linux-01" })
 
 	if err := svc.PutCarrier(scheduling.Carrier{Name: "local-cli", Machine: "本机", CLI: "grok"}, 0); err != nil {
 		t.Fatalf("本机+空凭据应通过: %v", err)
 	}
-	got, err := svc.Carrier("local-cli")
-	if err != nil {
+	if _, err := svc.Carrier("local-cli"); err != nil {
 		t.Fatalf("读本机载体: %v", err)
-	}
-	if got.Credential != scheduling.CredentialStandalone {
-		t.Fatalf("空凭据应落 standalone，得 %q", got.Credential)
 	}
 
 	if err := svc.PutCarrier(scheduling.Carrier{
 		Name: "runner", Machine: "linux-01", CLI: "opencode",
-		Credential: scheduling.CredentialStandalone,
 	}, 0); err != nil {
 		t.Fatalf("targets 内机器应通过: %v", err)
 	}
 
 	unknown := svc.PutCarrier(scheduling.Carrier{
 		Name: "ghost", Machine: "ghost-box", CLI: "opencode",
-		Credential: scheduling.CredentialStandalone,
 	}, 0)
 	if !errors.Is(unknown, scheduling.ErrInvalid) || !strings.Contains(unknown.Error(), "ghost-box") ||
 		!strings.Contains(unknown.Error(), "targets") {

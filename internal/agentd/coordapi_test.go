@@ -160,7 +160,7 @@ func seedCoordinatorSquad(t *testing.T, env *ledgerEnv) {
 	svc := mustScheduling(t, env.srv)
 	putOnlineCarrier(t, svc, scheduling.Carrier{Name: "c1", Machine: "local",
 		CLI: "opencode", HomeDir: "/home/coordinator",
-		Credential: scheduling.CredentialStandalone, Status: scheduling.StatusOnline})
+		Status: scheduling.StatusOnline})
 	if err := svc.PutSquad(scheduling.Squad{Name: "coord", Role: scheduling.RoleCoordinator,
 		Members: []scheduling.SquadMember{{Carrier: "c1", MaxConcurrency: 1}}}, 0); err != nil {
 		t.Fatalf("登记协调者小队: %v", err)
@@ -394,7 +394,7 @@ func TestCoordLaunchNoSquadActionableError(t *testing.T) {
 	env, _ := newCoordEnv(t)
 	svc := mustScheduling(t, env.srv)
 	putOnlineCarrier(t, svc, scheduling.Carrier{Name: "e1", Machine: "local",
-		CLI: "opencode", Credential: scheduling.CredentialStandalone,
+		CLI:    "opencode",
 		Status: scheduling.StatusOnline})
 	if err := svc.PutSquad(scheduling.Squad{Name: "exec", Role: scheduling.RoleExecutor,
 		Members: []scheduling.SquadMember{{Carrier: "e1"}}}, 0); err != nil {
@@ -418,8 +418,8 @@ func TestCoordLaunchAmbiguousSquadConflict(t *testing.T) {
 	env, _ := newCoordEnv(t)
 	svc := mustScheduling(t, env.srv)
 	for _, c := range []scheduling.Carrier{
-		{Name: "c1", Machine: "m1", CLI: "opencode", Credential: scheduling.CredentialStandalone, Status: scheduling.StatusOnline},
-		{Name: "c2", Machine: "m2", CLI: "opencode", Credential: scheduling.CredentialStandalone, Status: scheduling.StatusOnline},
+		{Name: "c1", Machine: "m1", CLI: "opencode", Status: scheduling.StatusOnline},
+		{Name: "c2", Machine: "m2", CLI: "opencode", Status: scheduling.StatusOnline},
 	} {
 		putOnlineCarrier(t, svc, c)
 	}
@@ -656,7 +656,7 @@ func TestCoordLaunchRejectsRemoteCarrier(t *testing.T) {
 	svc := mustScheduling(t, env.srv)
 	putOnlineCarrier(t, svc, scheduling.Carrier{
 		Name: "remote-carrier", Machine: "linux-01", CLI: "opencode",
-		HomeDir: "/home/coordinator", Credential: scheduling.CredentialStandalone,
+		HomeDir:        "/home/coordinator",
 		MaxConcurrency: 1, Status: scheduling.StatusOnline,
 	})
 	if err := svc.PutSquad(scheduling.Squad{
@@ -828,8 +828,8 @@ func TestCoordStatusQuotesHomePathWithSpaces(t *testing.T) {
 	env, _ := newCoordEnv(t)
 	c1 := scheduling.Carrier{
 		Name: "c1", Machine: "local", CLI: "opencode",
-		HomeDir:    "/home/coord docs",
-		Credential: scheduling.CredentialStandalone, Status: scheduling.StatusOnline,
+		HomeDir: "/home/coord docs",
+		Status:  scheduling.StatusOnline,
 	}
 	putOnlineCarrier(t, mustScheduling(t, env.srv), c1)
 	squad := scheduling.Squad{

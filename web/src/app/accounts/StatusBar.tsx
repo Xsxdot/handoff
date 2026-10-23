@@ -18,7 +18,7 @@ import { errorMessage } from '../lib/format'
 import { useWebPrefs } from '../settings/useWebPrefs'
 import { usageModeOf } from '../settings/webPrefs'
 import {
-  barWindows, byProblem, extraUsageText, failBrief, KIND_ORDER, kindMeta, resetAt, tightest, updatedText, type UsageMode,
+  accountPlace, barWindows, byProblem, extraUsageText, failBrief, KIND_ORDER, kindMeta, quotaAccounts, resetAt, tightest, updatedText, type UsageMode,
 } from './model'
 import { DetailNote, KindIcon, Pct, QBar, REFRESH_ICON, Reset, Summary, WinsFull, WinsInline } from './QuotaBits'
 import { useAccounts, useNow } from './store'
@@ -70,7 +70,7 @@ function SidePanel({ a, now, onBack, onManage }: { a: AccountView; now: number; 
       {extra && <div className="sp-line"><span>额外额度</span><span className="q-mono">{extra}</span></div>}
       {a.state === 'none' && <div className="sp-note">尚未探测。保存后由所在机 agentd 探测一次。</div>}
       {a.last_error && a.state !== 'none' && <div className="sp-note">△ {a.last_error.message}{a.state === 'fail' && a.reading && <><br />显示的是旧读数</>}</div>}
-      <div className="sp-line"><span>所在机器</span><span>{a.machine}</span></div>
+      <div className="sp-line"><span>所在机器</span><span>{accountPlace(a).machine}</span></div>
       <div className="sp-sec"><div className="sp-sec-t">使用此账号的载体</div><div className="q-mono">{a.carriers.length ? a.carriers.join('、') : <span className="q-mute">无</span>}</div></div>
       <button type="button" className="sp-act" disabled={probing} onClick={() => void run()}>{probing ? '探测中…' : '立即探测'}</button>
       {error && <p role="alert" className="sp-err">探测失败：{error}</p>}
@@ -95,7 +95,8 @@ export function UsageStatusBar({ onManage }: { onManage: (name?: string) => void
   const popRef = useRef<HTMLDivElement>(null)
   const sideRef = useRef<HTMLDivElement>(null)
 
-  const sorted = accounts ? byProblem(accounts) : []
+  // 底栏与使用量弹层只列支持额度探测的 kind（claude / 第三方 API key 的 na 不进）。
+  const sorted = accounts ? byProblem(quotaAccounts(accounts)) : []
   const selected = sorted.find((a) => a.name === current)
 
   const close = useCallback(() => { setOpen(false); setCurrent('') }, [])
@@ -190,12 +191,12 @@ export function UsageStatusBar({ onManage }: { onManage: (name?: string) => void
     }
     if (mode === 'compact') {
       return <button key={a.name} className={`up-row${on}`} {...common}>
-        <span className="up-r1"><span className="up-name">{a.name}</span><span className="up-mach">{a.machine}</span><span className="up-val"><Summary a={a} now={now} order="tail" /></span><span className="up-chev">›</span></span>
+        <span className="up-r1"><span className="up-name">{a.name}</span><span className="up-mach">{accountPlace(a).machine}</span><span className="up-val"><Summary a={a} now={now} order="tail" /></span><span className="up-chev">›</span></span>
       </button>
     }
     const hasWins = (a.reading?.windows.length ?? 0) > 0
     return <button key={a.name} className={`up-row d${on}`} {...common}>
-      <span className="up-r1"><span className="up-name">{a.name}</span><span className="up-mach">{a.machine}</span><span className="up-note"><DetailNote a={a} now={now} /></span><span className="up-chev">›</span></span>
+      <span className="up-r1"><span className="up-name">{a.name}</span><span className="up-mach">{accountPlace(a).machine}</span><span className="up-note"><DetailNote a={a} now={now} /></span><span className="up-chev">›</span></span>
       {hasWins && <span className="up-r2"><WinsInline a={a} /></span>}
     </button>
   }
@@ -207,7 +208,7 @@ export function UsageStatusBar({ onManage }: { onManage: (name?: string) => void
       <footer ref={barRef} data-testid="usage-statusbar" className="usage-statusbar" title="使用量" onClick={onBarClick}>
         <span className="sb-lead">已用</span>
         <div ref={segsRef} className="sb-segs">
-          {sorted.length === 0 && <span>还没有登记账号</span>}
+          {sorted.length === 0 && <span>还没有可探测额度的账号</span>}
           {sorted.map((a, i) => (
             <button key={a.name} type="button" className="sb-seg" data-acct={a.name} data-testid={`sb-seg-${a.name}`} hidden={hiddenFrom >= 0 && i >= hiddenFrom}>
               <KindIcon kind={a.kind} /><span className="sb-name">{a.name}</span><span className="sb-val"><BarReading a={a} mode={mode} now={now} /></span>
@@ -226,7 +227,7 @@ export function UsageStatusBar({ onManage }: { onManage: (name?: string) => void
               <button type="button" role="tab" aria-selected={mode === 'compact'} onClick={() => setMode('compact')}>精简</button>
             </div>
             <div className={`up-list ${mode}`}>
-              {sorted.length === 0 && <p className="up-empty">还没有登记账号。到「账号」页登记后，这里显示各账号额度。</p>}
+              {sorted.length === 0 && <p className="up-empty">还没有可探测额度的账号。到「账号与额度」页新增登录后，这里显示额度。</p>}
               {kinds.map((kind) => {
                 const list = sorted.filter((a) => a.kind === kind)
                 if (list.length === 0) return null

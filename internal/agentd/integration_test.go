@@ -112,7 +112,7 @@ func newIntegEnvCfg(t *testing.T, script []fake.Step, cfgMut func(*config.Config
 	svc := agentd.SetupAutomationForTest(t, srv, led)
 	putOnlineCarrierForInteg(t, svc, scheduling.Carrier{
 		Name: "muse", Machine: "local", CLI: "fake",
-		HomeDir: "", Credential: scheduling.CredentialStandalone,
+		HomeDir:        "",
 		MaxConcurrency: 0, Status: scheduling.StatusOnline,
 	})
 	if err := svc.SetDefaultCarrier("muse"); err != nil {
@@ -756,8 +756,7 @@ func TestDispatchExecutorStartFailureReturnsReason(t *testing.T) {
 	t.Cleanup(func() { _ = led.Close() })
 	srv.SetLedger(led)
 	svc := agentd.SetupAutomationForTest(t, srv, led)
-	if err := svc.PutCarrier(scheduling.Carrier{Name: "muse", Machine: "local", CLI: "opencode",
-		Credential: scheduling.CredentialStandalone}, 0); err != nil {
+	if err := svc.PutCarrier(scheduling.Carrier{Name: "muse", Machine: "local", CLI: "opencode"}, 0); err != nil {
 		t.Fatalf("预置默认载体: %v", err)
 	}
 	if _, err := svc.ApplyDetect("muse", scheduling.DetectEvidence{Reachable: true}, ""); err != nil {

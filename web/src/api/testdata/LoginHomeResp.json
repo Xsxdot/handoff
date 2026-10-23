@@ -1,0 +1,8 @@
+{
+  "home": "~/.handoff/home/cx-abcd",
+  "command": {
+    "ssh": "ssh dev@linux-01",
+    "run": "HOME=/home/dev/.handoff/home/cx-abcd codex login",
+    "remote_run": "HOME=/home/dev/.handoff/home/cx-abcd codex login --device-auth"
+  }
+}

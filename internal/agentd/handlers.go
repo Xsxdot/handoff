@@ -650,7 +650,7 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 		LocalBaseBranch:    req.LocalBaseBranch,
 		Worktree:           req.Worktree, NewWorktree: req.NewWorktree, BaseCommit: req.BaseCommit,
 		Mode:         req.Mode,
-		Account:      acct.Name,
+		Account:      acct.Account,
 		AccountKind:  acct.Kind,
 		AccountProxy: acct.Proxy,
 		RerunOf:      req.RerunOf,

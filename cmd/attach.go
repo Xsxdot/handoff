@@ -64,23 +64,10 @@ var attachCmd = &cobra.Command{
 
 // sshHostFromTarget 把配置 target 换算成 ssh 目标（pull 用的远程 git 地址换算点）。
 //
-// 规则：取 Addr 冒号前段（Addr 形如 devbox:7777，ssh 目标是主机名，不含 agentd
-// 端口）；User 非空时返回 user@host，否则只返回 host（与历史行为一致）。
-//
-// 为什么只服务 pull：attach 已改为走 agentd 的 render 流（复用 agentd 连接与
-// 鉴权），不再拼 ssh；只有 pull 仍需要把 Targets[target] 换算成 ssh 目标来做
-// git-over-ssh 同步。user 字段让 ssh 用户名可配置——本机用户名与远程不一致
-// （如本机 alice 连远端 sycm）时，裸 host 的 ssh 会直接 Permission denied。
-func sshHostFromTarget(t config.Target) string {
-	host := t.Addr
-	if i := strings.IndexByte(host, ':'); i >= 0 {
-		host = host[:i]
-	}
-	if t.User != "" {
-		return t.User + "@" + host
-	}
-	return host
-}
+// 规则与实现在 internal/config.SSHHost（B464 Q18 下沉为共用：新增登录的 relogin 也用它），
+// 这里保留同名包装以固定 pull 的调用点与既有测试；attach 已改走 agentd 的 render 流，
+// 不再拼 ssh。
+func sshHostFromTarget(t config.Target) string { return config.SSHHost(t) }
 
 // runAttach 连上任务的实况流并打印到 stdout，直到流结束或用户 Ctrl+C。
 //

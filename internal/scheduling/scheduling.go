@@ -18,7 +18,6 @@ import (
 	"os"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/Xsxdot/handoff/internal/schedclient"
 	"github.com/Xsxdot/handoff/internal/scheduling/accounts"
@@ -43,33 +42,31 @@ var QueueKinds = []string{KindLaunchQueue, KindIgnitionQueue}
 // 耗尽以 ErrRetryExhausted 外露，验收翻红先查预算再查语义。
 const maxCASAttempts = 8
 
-// CredentialSource 是载体的凭据来源两值（spec §3）。
-type CredentialSource string
-
-const (
-	CredentialStandalone   CredentialSource = "standalone"     // 独立账号
-	CredentialMainHomeSync CredentialSource = "main_home_sync" // 主 HOME 认证态同步
-)
-
 // Carrier 是一台机器上一个可领活的 CLI 档案（spec §3 载体实体归并后的形状）。
 // Status 是唯一的运行状态真相：新建或 HOME 改变为 pending，检测可迁移到
 // online/unreachable（B453 退役 quota，读时归一为 online）；LastError 保存最近一次
 // 非 online 结果的说明，或未绑定账号时检测撞额度的原因。
-// Account 是所选账号名（同机、可空，B453 S4）；CredFingerprint 是最近一次检测在载体 HOME
-// 里算出的凭据短指纹（机写，登记请求不得设置），与账号读数指纹比对标红、不拦派发。
+//
+// 账号登录（B464 S6，plan Q3/L10）：Login 是所选登录 id，NoAccount = 「无账号 · 主 HOME」；
+// 新建/编辑经 HTTP 契约面必须二选一，两者都缺只出现在存量未迁移行（读作「未选账号登录」，
+// 照常可派发）。HomeDir 只由服务端按所选登录写入（镜像）：主 HOME 登录与无账号写 ""，其余
+// 写登录的 `~/.handoff/home/<dir>`；登录不变时原串保留。B453 的 credential/account/
+// cred_fingerprint 键读到即忽略、不再写。
 type Carrier struct {
-	Name            string           `json:"name"`
-	Machine         string           `json:"machine"`
-	CLI             string           `json:"cli"`
-	HomeDir         string           `json:"home_dir"`
-	Model           string           `json:"model,omitempty"`
-	Credential      CredentialSource `json:"credential"`
-	MaxConcurrency  int              `json:"max_concurrency,omitempty"` // 物理位；0 = 不设上限
-	Status          CarrierStatus    `json:"status,omitempty"`
-	LastError       string           `json:"last_error,omitempty"` // 最近一次检测说明；不参与准入
-	Account         string           `json:"account,omitempty"`
-	CredFingerprint string           `json:"cred_fingerprint,omitempty"`
+	Name           string        `json:"name"`
+	Machine        string        `json:"machine"`
+	CLI            string        `json:"cli"`
+	HomeDir        string        `json:"home_dir"`
+	Model          string        `json:"model,omitempty"`
+	MaxConcurrency int           `json:"max_concurrency,omitempty"` // 物理位；0 = 不设上限
+	Status         CarrierStatus `json:"status,omitempty"`
+	LastError      string        `json:"last_error,omitempty"` // 最近一次检测说明；不参与准入
+	Login          string        `json:"login,omitempty"`
+	NoAccount      bool          `json:"no_account,omitempty"`
 }
+
+// LoginChosen 报告载体是否已做账号登录选择（选了登录或「无账号 · 主 HOME」）。
+func (c Carrier) LoginChosen() bool { return strings.TrimSpace(c.Login) != "" || c.NoAccount }
 
 // SquadRole 区分两种不混编的小队。
 type SquadRole string
@@ -233,25 +230,27 @@ func IsLocalMachine(machine string) bool {
 // PutCarrier 以 CAS 写载体定义（expect=0 新建）。新建时忽略输入状态并落
 // pending；更新时 HOME 变化会清掉旧错误并回到 pending，HOME 未变则保留旧
 // 状态。这避免登记请求伪造上线，也避免编辑无关字段抹掉检测结果。
+//
+// 账号登录（B464 S6）：选了登录 → 校验登录存在、与载体同机、kind 与 CLI 兼容，HomeDir 按登录
+// 镜像（登录不变时保留原串）；无账号 → HomeDir 写 ""；两者同给 → ErrInvalid。两者都不给是存量
+// 形态（编制域内部调用与未迁移行），HomeDir 原样——HTTP 契约面另行拒收（plan A14）。
 func (s *Service) PutCarrier(c Carrier, expect int) error {
 	if strings.TrimSpace(c.Name) == "" || strings.TrimSpace(c.Machine) == "" || strings.TrimSpace(c.CLI) == "" {
 		statusLog().Error("载体登记校验失败", "name", c.Name, "expect", expect, "cause", "name/machine/cli 必填")
 		return fmt.Errorf("%w: 载体登记不完整：name/machine/cli 必填", ErrInvalid)
 	}
-	if strings.TrimSpace(string(c.Credential)) == "" {
-		c.Credential = CredentialStandalone
-	}
-	if c.Credential != CredentialStandalone && c.Credential != CredentialMainHomeSync {
-		statusLog().Error("载体登记校验失败", "name", c.Name, "expect", expect, "cause", "credential 来源非法")
-		return fmt.Errorf("%w: 载体 %s 的凭据来源只能是 standalone 或 main_home_sync", ErrInvalid, c.Name)
+	c.Login = strings.TrimSpace(c.Login)
+	if c.Login != "" && c.NoAccount {
+		statusLog().Error("载体登记校验失败", "name", c.Name, "expect", expect, "cause", "login 与 no_account 同给")
+		return fmt.Errorf("%w: 载体 %s 只能二选一：选一条账号登录，或「无账号 · 主 HOME」", ErrInvalid, c.Name)
 	}
 	if err := s.checkKnownMachine(c.Name, c.Machine, expect); err != nil {
 		return err
 	}
-	if err := s.checkCarrierAccount(c, expect); err != nil {
+	login, err := s.checkCarrierLogin(c, expect)
+	if err != nil {
 		return err
 	}
-	c.CredFingerprint = "" // 机写字段：登记请求不得设置，更新时按下方规则沿用旧值
 	if _, squadErr := s.Squad(c.Name); squadErr == nil {
 		if err := CrossKindConflict(true); err != nil {
 			statusLog().Error("载体登记跨 kind 冲突", "name", c.Name, "expect", expect, "cause", err)
@@ -262,10 +261,8 @@ func (s *Service) PutCarrier(c Carrier, expect int) error {
 		return squadErr
 	}
 	homeChanged := false
-	if expect == 0 {
-		c.Status = StatusPending
-		c.LastError = ""
-	} else {
+	var previous *Carrier
+	if expect > 0 {
 		rec, err := s.repo.Get(kindCarrier, c.Name)
 		if err != nil {
 			statusLog().Error("读取载体旧记录失败", "name", c.Name, "expect", expect, "cause", err)
@@ -274,17 +271,19 @@ func (s *Service) PutCarrier(c Carrier, expect int) error {
 			}
 			return fmt.Errorf("载体 %s 读取旧记录失败: %w", c.Name, err)
 		}
-		var previous Carrier
-		if err := json.Unmarshal(rec.Body, &previous); err != nil {
+		var prev Carrier
+		if err := json.Unmarshal(rec.Body, &prev); err != nil {
 			statusLog().Error("解码载体旧记录失败", "name", c.Name, "expect", expect, "version", rec.Version, "cause", err)
 			return fmt.Errorf("载体 %s/%d 解码失败: %w", c.Name, rec.Version, err)
 		}
+		previous = &prev
+	}
+	c.HomeDir = mirrorHome(c, login, previous)
+	if expect == 0 {
+		c.Status = StatusPending
+		c.LastError = ""
+	} else {
 		homeChanged = previous.HomeDir != c.HomeDir
-		if !homeChanged && previous.Account == c.Account {
-			// 指纹是「这个 HOME 里的凭据是不是所选账号」的检测结论：HOME 或账号一变它就
-			// 不再对应，清空等下一次检测，免得旧指纹把新绑定误标红或误放过。
-			c.CredFingerprint = previous.CredFingerprint
-		}
 		if homeChanged {
 			c.Status = StatusPending
 			c.LastError = ""
@@ -296,7 +295,7 @@ func (s *Service) PutCarrier(c Carrier, expect int) error {
 		}
 	}
 	statusLog().Info("写入载体", "name", c.Name, "expect", expect, "home_changed", homeChanged,
-		"status", c.Status, "last_error_bytes", len(c.LastError))
+		"status", c.Status, "last_error_bytes", len(c.LastError), "login", c.Login, "no_account", c.NoAccount)
 	body, err := json.Marshal(c)
 	if err != nil {
 		statusLog().Error("编码载体失败", "name", c.Name, "expect", expect, "cause", err)
@@ -307,39 +306,74 @@ func (s *Service) PutCarrier(c Carrier, expect int) error {
 		statusLog().Error("写入载体失败", "name", c.Name, "expect", expect, "version", version, "cause", err)
 		return err
 	}
+	if !c.LoginChosen() {
+		statusLog().Warn("载体未选账号登录（存量形态），照常可派发", "name", c.Name, "machine", c.Machine)
+	}
 	statusLog().Info("写入载体成功", "name", c.Name, "expect", expect, "version", version,
 		"home_changed", homeChanged, "status", c.Status, "machine", c.Machine,
-		"credential", string(c.Credential), "home_empty", strings.TrimSpace(c.HomeDir) == "")
+		"login", c.Login, "no_account", c.NoAccount, "home_empty", strings.TrimSpace(c.HomeDir) == "")
 	return nil
 }
 
-// checkCarrierAccount 校验载体所选账号（spec S4）：可不选；选了必须是已登记账号，且账号
-// 所在机与载体同机（凭据只在所在机，跨机绑定的代理与指纹都没有意义）。
-func (s *Service) checkCarrierAccount(c Carrier, expect int) error {
-	name := strings.TrimSpace(c.Account)
-	if name == "" {
-		return nil
+// mirrorHome 是载体 HomeDir 的唯一写规则（plan Q3）：选了登录 → 登录不变保留原串（存量载体可能
+// 存了绝对路径，改串会让 HOME 判变 → pending、并让排队中的冻结绑定物理比对失败），否则主 HOME
+// 登录写 ""、其余写登录的 home；无账号 → ""；都没选 → 请求里的原值（存量形态）。
+func mirrorHome(c Carrier, login *accounts.Login, previous *Carrier) string {
+	switch {
+	case login != nil:
+		if previous != nil && previous.Login == c.Login {
+			return previous.HomeDir
+		}
+		if login.IsMainHome() {
+			return ""
+		}
+		return login.Home
+	case c.NoAccount:
+		return ""
+	default:
+		return c.HomeDir
+	}
+}
+
+// checkCarrierLogin 校验载体所选登录（spec S6、plan V10）：没选返回 nil；选了必须存在、与载体
+// 同机（凭据与 HOME 只在所在机有意义）、kind 与载体 CLI 兼容（opencode → opencode-go/apikey，
+// 其余一一对应）。返回读到的登录供镜像 HOME。
+func (s *Service) checkCarrierLogin(c Carrier, expect int) (*accounts.Login, error) {
+	if c.Login == "" {
+		return nil, nil
 	}
 	if s.accounts == nil {
-		statusLog().Error("载体登记校验失败", "name", c.Name, "account", name, "expect", expect, "cause", "账号域未装配")
-		return fmt.Errorf("%w: 载体 %s 选了账号 %s，但本机未装配账号功能（需挂共享账本）", ErrInvalid, c.Name, name)
+		statusLog().Error("载体登记校验失败", "name", c.Name, "login", c.Login, "expect", expect, "cause", "账号域未装配")
+		return nil, fmt.Errorf("%w: 载体 %s 选了账号登录 %s，但本机未装配账号功能（需挂共享账本）", ErrInvalid, c.Name, c.Login)
 	}
-	a, err := s.accounts.Assess(name, time.Now())
+	l, err := s.accounts.Login(c.Login)
 	if err != nil {
 		if errors.Is(err, accounts.ErrNotFound) {
-			statusLog().Warn("载体登记校验失败", "name", c.Name, "account", name, "expect", expect, "cause", "账号不存在")
-			return fmt.Errorf("%w: 载体 %s 选的账号 %s 不存在，请先在账号页登记", ErrInvalid, c.Name, name)
+			statusLog().Warn("载体登记校验失败", "name", c.Name, "login", c.Login, "expect", expect, "cause", "登录不存在")
+			return nil, fmt.Errorf("%w: 载体 %s 选的账号登录 %s 不存在（先在该机登录，等发现挂上）", ErrInvalid, c.Name, c.Login)
 		}
-		statusLog().Error("载体登记读取账号失败", "name", c.Name, "account", name, "expect", expect, "cause", err)
-		return fmt.Errorf("载体 %s 读取账号 %s 失败: %w", c.Name, name, err)
+		statusLog().Error("载体登记读取登录失败", "name", c.Name, "login", c.Login, "expect", expect, "cause", err)
+		return nil, fmt.Errorf("载体 %s 读取账号登录 %s 失败: %w", c.Name, c.Login, err)
 	}
-	if !samePhysicalMachine(a.Account.Machine, c.Machine) {
-		statusLog().Warn("载体登记校验失败", "name", c.Name, "account", name, "carrier_machine", c.Machine,
-			"account_machine", a.Account.Machine, "expect", expect, "cause", "账号不在载体同机")
-		return fmt.Errorf("%w: 载体 %s 在 %s 上，账号 %s 在 %s 上；载体只能选同机账号", ErrInvalid,
-			c.Name, c.Machine, name, a.Account.Machine)
+	if !s.sameMachine(l.Machine, c.Machine) {
+		statusLog().Warn("载体登记校验失败", "name", c.Name, "login", c.Login, "carrier_machine", c.Machine,
+			"login_machine", l.Machine, "expect", expect, "cause", "登录不在载体同机")
+		return nil, fmt.Errorf("%w: 载体 %s 在 %s 上，登录 %s 在 %s 上；载体只能选同机登录", ErrInvalid,
+			c.Name, c.Machine, c.Login, l.Machine)
 	}
-	return nil
+	if !accounts.Compatible(c.CLI, l.Kind) {
+		statusLog().Warn("载体登记校验失败", "name", c.Name, "login", c.Login, "cli", c.CLI,
+			"login_kind", l.Kind, "expect", expect, "cause", "kind 与 CLI 不兼容")
+		return nil, fmt.Errorf("%w: 载体 %s 的执行器 %s 不能用 %s 类登录 %s（可用：%v）", ErrInvalid,
+			c.Name, c.CLI, l.Kind, c.Login, accounts.CompatibleKinds(c.CLI))
+	}
+	return &l, nil
+}
+
+// sameMachine 报告两处机器值是否同一台：字面相同，或都按本机判据是本机（自名 vs 省略）。
+func (s *Service) sameMachine(a, b string) bool {
+	a, b = strings.TrimSpace(a), strings.TrimSpace(b)
+	return a == b || (s.isLocalMachine(a) && s.isLocalMachine(b))
 }
 
 // DeleteCarrier 以 CAS 语义删除未入队载体。
@@ -473,7 +507,7 @@ func (s *Service) AdmitCarrier(name string) (Binding, error) {
 	}
 	if err := s.requireUsable(c); err != nil {
 		statusLog().Warn("scheduling.admit_carrier.error", "carrier", c.Name, "status", c.Status,
-			"account", c.Account, "error_kind", admissionErrorKind(err), "cause", err)
+			"login", c.Login, "error_kind", admissionErrorKind(err), "cause", err)
 		return Binding{}, err
 	}
 	_, carrierKey := OccupancyKeys("", c.Name)
@@ -665,14 +699,14 @@ func (s *Service) SelectWhere(req IgnitionRequest, accept func(Carrier) bool) (B
 		unusable, usableErr := s.usability(carrier)
 		if usableErr != nil {
 			logger.Error("冻结身份选择读取载体账号失败", "carrier", carrier.Name,
-				"account", carrier.Account, "error_kind", "account_read", "cause", usableErr)
+				"login", carrier.Login, "error_kind", "account_read", "cause", usableErr)
 			return Binding{}, usableErr
 		}
 		if unusable != nil {
 			logger.Info("冻结身份选择跳过不可用载体", "carrier", carrier.Name,
 				"member_key", OccupancyMemberKey(q.Name, carrier.Name),
 				"carrier_key", OccupancyCarrierKey(carrier.Name), "status", carrier.Status,
-				"account", carrier.Account, "reason", unusable.String(), "error_kind", "carrier_unusable")
+				"login", carrier.Login, "reason", unusable.String(), "error_kind", "carrier_unusable")
 			skipped = append(skipped, unusable.String())
 			continue
 		}
@@ -766,7 +800,7 @@ func (s *Service) AdmitFrozen(binding Binding) (Binding, error) {
 		return Binding{}, err
 	}
 	if err := s.requireUsable(carrier); err != nil {
-		logger.Warn("冻结载体不可用", "status", carrier.Status, "account", carrier.Account,
+		logger.Warn("冻结载体不可用", "status", carrier.Status, "login", carrier.Login,
 			"error_kind", admissionErrorKind(err), "cause", err)
 		return Binding{}, err
 	}
@@ -890,7 +924,7 @@ func (s *Service) AdmitSeatCarrier(squad, carrier string) (Binding, error) {
 		return Binding{}, err
 	}
 	if err := s.requireUsable(c); err != nil {
-		logger.Warn("冻结载体不可用", "status", c.Status, "account", c.Account,
+		logger.Warn("冻结载体不可用", "status", c.Status, "login", c.Login,
 			"error_kind", admissionErrorKind(err), "cause", err)
 		return Binding{}, err
 	}

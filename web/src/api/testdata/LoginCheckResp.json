@@ -1,0 +1,18 @@
+{
+  "logins": [
+    {
+      "login": "login-aa00000000000001",
+      "account": "opencode-go:3f9a1b2cc21e",
+      "account_name": "og-main",
+      "new_account": false,
+      "account_logins": 2
+    },
+    {
+      "login": "login-0102030405060708",
+      "account": "codex:0b1c2d3e4f50",
+      "account_name": "cx@example.com",
+      "new_account": true,
+      "account_logins": 1
+    }
+  ]
+}

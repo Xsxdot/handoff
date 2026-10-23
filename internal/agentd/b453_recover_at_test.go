@@ -17,10 +17,8 @@ import (
 func TestB453AccountViewRecoverAtFollowsDomainRule(t *testing.T) {
 	env, svc := newSingleAccountMachine(t)
 	for _, name := range []string{"cx-low", "cx-mark", "cx-ok"} {
-		if code, body := schedReq(t, env, http.MethodPut, "/api/accounts/"+name+"?expect=0",
-			`{"kind":"codex","machine":"a","home_dir":"~/`+name+`"}`); code != http.StatusOK {
-			t.Fatalf("登记 %s: %d %s", name, code, body)
-		}
+		// B464：账号只由发现建（label = name，自动名即 name）；各在一台机上，互不影响登录状态。
+		putTestLogin(t, env.srv.SchedulingRegistry(), svc, name, "m-"+name, "", "")
 	}
 	now := time.Now().UTC()
 	in2h, in5d := now.Add(2*time.Hour).Truncate(time.Second), now.Add(5*24*time.Hour).Truncate(time.Second)

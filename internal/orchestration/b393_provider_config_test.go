@@ -20,7 +20,6 @@ import (
 	"github.com/Xsxdot/handoff/internal/executor"
 	"github.com/Xsxdot/handoff/internal/executor/opencode"
 	"github.com/Xsxdot/handoff/internal/keysclient"
-	"github.com/Xsxdot/handoff/internal/toolchain"
 )
 
 // TestB393PrepareProjectsProviderConfig 锁 R3.3：投影必须把主 HOME 的 opencode
@@ -96,9 +95,8 @@ func TestB393PrepareViaSupplierProjectsProviderConfig(t *testing.T) {
 		currentConfig: func() *config.Config {
 			return &config.Config{Token: "agentd-live", DataDir: t.TempDir()}
 		},
-		userHomeDir:    func() (string, error) { return mainHome, nil },
-		expandHomeDir:  func(string) (string, error) { return targetDir, nil },
-		credentialPath: toolchain.CredRelPathFor,
+		userHomeDir:   func() (string, error) { return mainHome, nil },
+		expandHomeDir: func(string) (string, error) { return targetDir, nil },
 		profileFor: func(cli string) (executor.Profile, error) {
 			return opencode.New(nil).Profile(), nil
 		},

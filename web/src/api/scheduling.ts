@@ -9,21 +9,23 @@ export interface CarrierView {
   cli: string
   home_dir: string
   model?: string
-  credential: string
   max_concurrency?: number
   status?: CarrierStatus
   last_error?: string
   version: number
-  /** B453 F13：所选账号名；不选即缺席。 */
-  account?: string
-  /** B453 F13：载体 HOME 凭据指纹与账号读数指纹不一致时为 true（仅 true 时出现）。 */
-  account_mismatch?: boolean
+  /** B464 A13：所选登录 id；未选（存量未迁移）或无账号时缺席。home_dir 是服务端按登录写的镜像。 */
+  login?: string
+  /** B464 A13：「无账号 · 主 HOME」，仅 true 时出现。 */
+  no_account?: boolean
+  /** B464 A13：派生只读——所选登录的账号 id / 名与登录状态。 */
+  account_id?: string
+  account_name?: string
+  login_state?: string
 }
 
 // B453：载体状态去掉 quota（限额中退役，额度改看所选账号）；检测结局 WakeOutcome 仍保留
 // quota（F16：机间 wire 值，语义「可达 + 撞额度」）。
 export type CarrierStatus = 'pending' | 'online' | 'unreachable'
-export type ProbeKind = 'empty' | 'logged_in' | 'occupied'
 export type WakeOutcome = 'ready' | 'need_login' | 'quota' | 'unreachable'
 
 export interface SquadView {
@@ -50,16 +52,15 @@ export interface RegistryRunningView {
   count: number
 }
 
+/** B464 A14：login 与 no_account 恰给一个，否则 400；HOME 由服务端按所选登录镜像。 */
 export interface CarrierInput {
   name?: string
   machine: string
   cli: string
-  home_dir: string
   model?: string
-  credential: string
   max_concurrency?: number
-  /** B453 F13：所选账号名；空/缺席 = 不选（只能选同机账号）。 */
-  account?: string
+  login?: string
+  no_account?: boolean
 }
 
 export interface SquadInput {
@@ -170,20 +171,12 @@ export const putSquad = (name: string, expect: number, input: SquadInput) =>
     omitZeroSquadConcurrency(input),
   )
 
-/** 探测目标机路径；machine 走 query，不进 body。本函数不改写 kind。 */
-export const probeHome = (input: HomeProbeReq) => {
-  const q = input.machine ? `?machine=${encodeURIComponent(input.machine)}` : ''
-  const body: HomeProbeReq = { cli: input.cli, path: input.path }
-  if (input.credential) body.credential = input.credential
-  return postJSON<HomeProbeResp>(`/api/host/probe${q}`, body)
-}
-
 /** 本机/目标机有时限唤起；machine 走 query。控制台不应直接调，检测编排才用。 */
 export const wakeHome = (input: HomeWakeReq) => {
   const q = input.machine ? `?machine=${encodeURIComponent(input.machine)}` : ''
   const body: HomeWakeReq = { cli: input.cli, home_dir: input.home_dir }
-  if (input.credential) body.credential = input.credential
   if (input.model) body.model = input.model
+  if (input.login) body.login = input.login
   return postJSON<HomeWakeResp>(`/api/host/wake${q}`, body)
 }
 
@@ -207,42 +200,18 @@ export const CARRIER_STATUS_LABEL: Record<CarrierStatus, string> = {
   unreachable: '不可达',
 }
 
-/** 登记弹窗默认 HOME 串；空名字返回空串。与 scheduling.DefaultHomeDir 同一格式。 */
-export function defaultHomeDir(name: string): string {
-  const trimmed = name.trim()
-  return trimmed ? `~/.handoff/home/${trimmed}` : ''
-}
-
-export interface HomeProbeReq {
-  cli: string
-  path: string
-  credential?: string
-  machine?: string
-}
-
-export interface HomeProbeResp {
-  kind: ProbeKind
-  detail?: string
-}
-
 export interface HomeWakeReq {
   cli: string
   home_dir: string
-  credential?: string
   model?: string
   machine?: string
-  /** B453 F15：所选账号的 kind / 凭据条目（目标机据此算凭据指纹）。 */
-  fingerprint_kind?: string
-  fingerprint_entry?: string
-  /** B453：所选账号名（目标机在本机查代理，代理串不过 wire）。 */
-  account?: string
+  /** B464 W1：所选登录 id（目标机在本机查 kind 与代理，代理串不过 wire）。 */
+  login?: string
 }
 
 export interface HomeWakeResp {
   outcome: WakeOutcome
   detail?: string
-  /** B453 F15：载体 HOME 凭据短指纹；缺席 = 未算或算不出。 */
-  fingerprint?: string
 }
 
 export interface CarrierDetectResp {

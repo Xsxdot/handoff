@@ -100,7 +100,7 @@ func (s *Server) routeOrdinaryDispatch(req dispatchRequest) (dispatchLanding, er
 		}}, nil
 	case scheduling.ReceiverSquad:
 		// B453 F14：重跑链排除谓词与亲和谓词分开组合——亲和改写文案只认亲和本身
-		exclude := rerunExclusion(req.ExcludeAccounts)
+		exclude := s.rerunExclusion(req.ExcludeAccounts)
 		b, err := s.scheduling.SelectWhere(scheduling.IgnitionRequest{
 			Squad: resolved.Name, Model: req.Model, Actor: "dispatch",
 		}, andAccept(accept, exclude.accept))

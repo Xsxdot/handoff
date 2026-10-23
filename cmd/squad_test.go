@@ -366,11 +366,15 @@ func TestSquadSetEditLoopUsesReadVersion(t *testing.T) {
 	}
 }
 
-// TestSquadListShowsCarrierAccount 锁 B453 S4：表格载体行带所选账号名，指纹不符时注明；
-// --json 载体行原样带 account / account_mismatch（同 GET /api/squads 形状）。
+// TestSquadListShowsCarrierAccount 锁 B453 S4（B464 起载体 → 登录 → 账号）：表格载体行带所选登录
+// 的账号名，登录已失效时注明；「无账号」与未选（存量未迁移）分开；--json 载体行原样带
+// login / account_name / login_state（同 GET /api/squads 形状）。
 func TestSquadListShowsCarrierAccount(t *testing.T) {
 	dir := t.TempDir()
-	fixture := `{"carriers":[{"name":"c1","machine":"m1","cli":"codex","home_dir":"/h","credential":"standalone","version":1,"account":"cx-m1","account_mismatch":true},{"name":"c2","machine":"m1","cli":"opencode","home_dir":"/h2","credential":"standalone","version":1}],"squads":[],"running":[]}`
+	fixture := `{"carriers":[` +
+		`{"name":"c1","machine":"m1","cli":"codex","home_dir":"~/.handoff/home/cx","version":1,"login":"login-0123456789abcdef","account_id":"codex:3f9a1b2cc21e","account_name":"cx-m1","login_state":"gone"},` +
+		`{"name":"c2","machine":"m1","cli":"opencode","home_dir":"/h2","version":1},` +
+		`{"name":"c3","machine":"m1","cli":"agy","home_dir":"","version":1,"no_account":true}],"squads":[],"running":[]}`
 	stubSquadAgentd(t, dir, http.StatusOK, fixture, nil)
 	out, _, err := runLedgerCLI(t, dir, "squad", "list")
 	if err != nil {
@@ -382,12 +386,16 @@ func TestSquadListShowsCarrierAccount(t *testing.T) {
 	for _, line := range strings.Split(out, "\n") {
 		switch {
 		case strings.Contains(line, "c1"):
-			if !strings.Contains(line, "cx-m1") || !strings.Contains(line, "指纹不符") {
-				t.Fatalf("c1 行应带账号名与指纹不符注记：%q", line)
+			if !strings.Contains(line, "cx-m1") || !strings.Contains(line, "登录已失效") {
+				t.Fatalf("c1 行应带账号名与登录已失效注记：%q", line)
 			}
 		case strings.Contains(line, "c2"):
 			if strings.Contains(line, "cx-m1") || !strings.HasSuffix(strings.TrimSpace(line), "-") {
-				t.Fatalf("未选账号的载体行账号列应为 -：%q", line)
+				t.Fatalf("未选账号登录的载体行账号列应为 -：%q", line)
+			}
+		case strings.Contains(line, "c3"):
+			if !strings.HasSuffix(strings.TrimSpace(line), "无账号") {
+				t.Fatalf("无账号载体行账号列应为「无账号」：%q", line)
 			}
 		}
 	}
@@ -395,7 +403,9 @@ func TestSquadListShowsCarrierAccount(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(nonEmptyLines(out2)[0], `"account":"cx-m1"`) || !strings.Contains(nonEmptyLines(out2)[0], `"account_mismatch":true`) {
-		t.Fatalf("--json 载体行应带 account/account_mismatch：%s", out2)
+	first := nonEmptyLines(out2)[0]
+	if !strings.Contains(first, `"login":"login-0123456789abcdef"`) || !strings.Contains(first, `"account_name":"cx-m1"`) ||
+		!strings.Contains(first, `"login_state":"gone"`) || strings.Contains(first, "account_mismatch") {
+		t.Fatalf("--json 载体行应带 login/account_name/login_state：%s", out2)
 	}
 }

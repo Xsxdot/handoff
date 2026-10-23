@@ -23,10 +23,13 @@ var ErrSessionNotFound = errors.New("keysclient: 会话不存在")
 // SessionSpec 是一次无头拉起的会话规格。HomeDir 是隔离 HOME 档案：协调者
 // 全套（全局规则/skill/MCP/账本凭据），与执行者的干净 HOME 相反（spec §4.3）。
 type SessionSpec struct {
-	CLI     string   // opencode / claude / ...
-	HomeDir string   // 隔离 HOME 根；空 = 主 HOME（协调者载体禁空，由配置审核保证）
-	Model   string   // 协调者模型独立配置（载体属性）
-	Workdir string   // 会话工作目录（项目位置根）
+	CLI     string // opencode / claude / ...
+	HomeDir string // 隔离 HOME 根；空 = 主 HOME（协调者载体禁空，由配置审核保证）
+	Model   string // 协调者模型独立配置（载体属性）
+	Workdir string // 会话工作目录（项目位置根）
+	// Carrier 是本次回合所用载体名（B464 I2）：协调者回合按它取该载体所选登录的代理，
+	// 不再靠（CLI, HOME）反查——同一 HOME 可有多条登录。零值 = 旧调用方没给，回落反查。
+	Carrier string
 	Env     []string // 追加环境变量 KEY=VALUE（已解析已展开；值不得进日志）
 }
 
@@ -40,6 +43,8 @@ type SessionRef struct {
 	HomeDir   string `json:"home_dir,omitempty"`
 	Workdir   string `json:"workdir,omitempty"`
 	Model     string `json:"model,omitempty"`
+	// Carrier 是续接会话所用载体名（B464 I2，语义同 SessionSpec.Carrier）；零值兼容旧引用。
+	Carrier string `json:"carrier,omitempty"`
 	// Env 是本回合追加给子进程的环境 KEY=VALUE（与 SessionSpec.Env 对称；B435.2 R plan Q2 甲）。
 	// 由 Runner 实现方按回合填写（agentd coordinatorRunner.Resume 填 HANDOFF 席位对），
 	// 不是会话持久属性，故 json:"-" 不落盘、不进 wire；值不得进日志。

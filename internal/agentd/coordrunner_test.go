@@ -15,7 +15,6 @@ import (
 	"github.com/Xsxdot/handoff/internal/keysclient"
 	"github.com/Xsxdot/handoff/internal/ledger"
 	ledgerapi "github.com/Xsxdot/handoff/internal/ledger/api"
-	"github.com/Xsxdot/handoff/internal/toolchain"
 )
 
 // installCoordinatorFakeCLI 往 PATH 装一个记录 argv 与 HOME 的假 opencode，返回捕获文件路径。
@@ -73,7 +72,7 @@ func TestCoordinatorRunnerPassesPreparedHomeToSubprocess(t *testing.T) {
 		}
 		return targetDir, nil
 	}
-	h := hostapi.NewWithCredentialPathFor(toolchain.CredRelPathFor)
+	h := hostapi.New()
 	runner := testCoordRunner(h, prepareHome)
 
 	res, err := runner.Launch(keysclient.SessionSpec{
@@ -186,7 +185,7 @@ func TestB435ResumeTurnInjectsSeatEnv(t *testing.T) {
 	b435UnsetSeatEnv(t)
 	capture := installCoordinatorFakeCLI(t)
 	home := t.TempDir()
-	runner := testCoordRunner(hostapi.NewWithCredentialPathFor(toolchain.CredRelPathFor),
+	runner := testCoordRunner(hostapi.New(),
 		func(keysclient.SessionSpec) (string, error) { return home, nil })
 	workdir := t.TempDir()
 	if _, err := runner.Resume(keysclient.SessionRef{
@@ -225,7 +224,7 @@ func TestB435LaunchTurnHasNoPartialSeatEnv(t *testing.T) {
 	b435UnsetSeatEnv(t)
 	capture := installCoordinatorFakeCLI(t)
 	home := t.TempDir()
-	runner := testCoordRunner(hostapi.NewWithCredentialPathFor(toolchain.CredRelPathFor),
+	runner := testCoordRunner(hostapi.New(),
 		func(keysclient.SessionSpec) (string, error) { return home, nil })
 	if _, err := runner.Launch(keysclient.SessionSpec{
 		CLI: "opencode", HomeDir: home, Workdir: t.TempDir(),
@@ -261,7 +260,7 @@ func TestB444ResidentResumeHasNoSeatEnv(t *testing.T) {
 	}
 	rooms := collab.New(ledgerapi.New(st))
 	home := t.TempDir()
-	runner := testCoordRunnerWithResidents(hostapi.NewWithCredentialPathFor(toolchain.CredRelPathFor),
+	runner := testCoordRunnerWithResidents(hostapi.New(),
 		func(keysclient.SessionSpec) (string, error) { return home, nil }, rooms.IsPushResidentSession)
 	if _, err := runner.Resume(keysclient.SessionRef{
 		CLI: "opencode", SessionID: "ses_resident", HomeDir: home, Workdir: t.TempDir(),
@@ -295,7 +294,7 @@ func TestB444ResumeResidentLookupErrorFailsRound(t *testing.T) {
 	cause := errors.New("账本读超时")
 	ref := keysclient.SessionRef{CLI: "opencode", SessionID: "ses_x", HomeDir: home, Workdir: t.TempDir()}
 	prepare := func(keysclient.SessionSpec) (string, error) { return home, nil }
-	h := hostapi.NewWithCredentialPathFor(toolchain.CredRelPathFor)
+	h := hostapi.New()
 	failing := testCoordRunnerWithResidents(h, prepare, func(string) (bool, error) { return false, cause })
 	if _, err := failing.Resume(ref, "resume"); !errors.Is(err, cause) {
 		t.Fatalf("驻场判定读失败应让本轮失败并带原因，得 %v", err)

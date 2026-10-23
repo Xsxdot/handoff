@@ -7,13 +7,11 @@ import {
   attachCoordinator,
   getCoordinatorStatus,
   getQueue,
-  defaultHomeDir,
   detectCarrier,
   deleteCarrier,
   getCarrierRunCommand,
   getSquads,
   launchCoordinator,
-  probeHome,
   putCarrier,
   putSquad,
   releaseCoordinator,
@@ -49,14 +47,13 @@ describe('scheduling fetch seam', () => {
   it('serializes CAS writes and preserves zero/omitted optional fields', async () => {
     const fetchMock = mockFetchJSON({ name: 'carrier-a', version: 4 })
     await putCarrier('carrier a/特殊', 3, {
-      name: 'carrier a', machine: 'local', cli: 'opencode', home_dir: '/h',
-      credential: 'standalone', max_concurrency: 0,
+      name: 'carrier a', machine: 'local', cli: 'opencode', login: 'login-0123456789abcdef', max_concurrency: 0,
     })
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
     expect(url).toBe('/api/squads/carriers/carrier%20a%2F%E7%89%B9%E6%AE%8A?expect=3')
     expect(init.method).toBe('PUT')
     expect(JSON.parse(String(init.body))).toEqual({
-      name: 'carrier a', machine: 'local', cli: 'opencode', home_dir: '/h', credential: 'standalone',
+      name: 'carrier a', machine: 'local', cli: 'opencode', login: 'login-0123456789abcdef',
     })
 
     const squadFetchMock = mockFetchJSON({ name: 'squad-a', version: 1 })
@@ -106,16 +103,7 @@ describe('scheduling fetch seam', () => {
     expect(JSON.parse(String((releaseFetchMock.mock.calls[0][1] as RequestInit).body))).toEqual({ active: false })
   })
 
-  it('serializes B293 probe/detect/run-command without splicing commands', async () => {
-    const probeMock = mockFetchJSON({ kind: 'empty' })
-    await probeHome({ cli: 'codex', path: '~/.handoff/home/x', credential: 'standalone', machine: 'linux-01' })
-    const [probeURL, probeInit] = probeMock.mock.calls[0] as [string, RequestInit]
-    expect(probeURL).toBe('/api/host/probe?machine=linux-01')
-    expect(probeInit.method).toBe('POST')
-    expect(JSON.parse(String(probeInit.body))).toEqual({
-      cli: 'codex', path: '~/.handoff/home/x', credential: 'standalone',
-    })
-
+  it('serializes B293 detect/run-command without splicing commands', async () => {
     const detectMock = mockFetchJSON({ name: 'c a/特', status: 'pending', version: 1 })
     await detectCarrier('c a/特')
     expect(detectMock.mock.calls[0][0]).toBe('/api/squads/carriers/c%20a%2F%E7%89%B9/detect')
@@ -138,9 +126,7 @@ describe('scheduling fetch seam', () => {
     )
   })
 
-  it('locks default HOME string and status labels', () => {
-    expect(defaultHomeDir('mbp-opencode')).toBe('~/.handoff/home/mbp-opencode')
-    expect(defaultHomeDir('  ')).toBe('')
+  it('locks status labels', () => {
     expect(CARRIER_STATUS_LABEL.pending).toBe('未上线')
     expect(CARRIER_STATUS_LABEL.online).toBe('已上线')
     // B453：「限额中」退役（spec S4 / Q12），词表只剩三态，前后端同一份。

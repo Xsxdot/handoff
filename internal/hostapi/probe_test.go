@@ -1,7 +1,7 @@
-// probe_test.go —— ProbeHome/WakeHome 声明缝的本机文件系统与进程边界测试。
+// probe_test.go —— WakeHome 声明缝的本机文件系统与进程边界测试。
 //
-// 职责：锁定目标 HOME 展开、只读探测、main_home_sync 供给，以及 WakeHome
-// 经 RunTurn 发 DetectPrompt（B295）。测试只使用临时目录和受控假 CLI，
+// 职责：锁定目标 HOME 展开、检测永不复制凭据（B464），以及 WakeHome 经
+// RunTurn 发 DetectPrompt（B295）。测试只使用临时目录和受控假 CLI，
 // 不代表真实 CLI/Windows 真机验收。
 // 边界：跨机 HTTP 编排由 agentd 测试覆盖，真实回合留给协调者真机清单。
 package hostapi
@@ -20,8 +20,8 @@ import (
 //
 // 用例断言的是**判定结果**（ready / need_login / …），不是延迟；假 CLI 秒回，
 // 1s 预算在「全量 go test ./...」的并行负载下会翻车（2026-09-19 实测：
-// TestWakeHomeSuppliesMainCredentialBeforeTurn / TestWakeHomeReadyRequiresTurnOutputNotCredFile
-// 全量跑红、单跑绿）。放到 10s：只有真挂死才会走到超时分支。
+// TestWakeHomeReadyRequiresTurnOutputNotCredFile 全量跑红、单跑绿）。放到 10s：
+// 只有真挂死才会走到超时分支。
 // 断言超时语义的用例（TestWakeHomeHonorsTimeoutViaRunTurn）仍用自己的短预算，不受影响。
 const testWakeBudget = 10 * time.Second
 
@@ -30,128 +30,6 @@ func swapUserHomeDir(t *testing.T, home string) {
 	old := userHomeDir
 	userHomeDir = func() (string, error) { return home, nil }
 	t.Cleanup(func() { userHomeDir = old })
-}
-
-func newProbeHost() *Host {
-	return NewWithCredentialPathFor(func(name string) (string, bool) {
-		if name != "opencode" {
-			return "", false
-		}
-		return ".local/share/opencode/auth.json", true
-	})
-}
-
-func TestProbeHomeEmptyPathUsesMainHome(t *testing.T) {
-	mainHome := t.TempDir()
-	swapUserHomeDir(t, mainHome)
-	auth := filepath.Join(mainHome, ".local/share/opencode/auth.json")
-	if err := os.MkdirAll(filepath.Dir(auth), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(auth, []byte("token"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	h := newProbeHost()
-	got, err := h.ProbeHome(context.Background(), ProbeRequest{Path: "", CLI: "opencode"})
-	if err != nil || got.Kind != ProbeLoggedIn {
-		t.Fatalf("空 path 应打到主 HOME 凭据: %+v/%v", got, err)
-	}
-	isolated := filepath.Join(mainHome, ".handoff", "home")
-	if _, err := os.Stat(isolated); !os.IsNotExist(err) {
-		t.Fatalf("空 path 不得创建隔离 HOME 根: %v", err)
-	}
-}
-
-func TestProbeHomeClassifiesFilesystemWithoutWriting(t *testing.T) {
-	mainHome := t.TempDir()
-	swapUserHomeDir(t, mainHome)
-	h := newProbeHost()
-
-	missing := filepath.Join(t.TempDir(), "missing")
-	got, err := h.ProbeHome(context.Background(), ProbeRequest{Path: missing, CLI: "opencode"})
-	if err != nil || got.Kind != ProbeEmpty {
-		t.Fatalf("不存在路径 = %+v/%v，want empty/nil", got, err)
-	}
-	empty := filepath.Join(t.TempDir(), "empty")
-	if err := os.Mkdir(empty, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	got, err = h.ProbeHome(context.Background(), ProbeRequest{Path: empty, CLI: "opencode"})
-	if err != nil || got.Kind != ProbeEmpty {
-		t.Fatalf("空目录 = %+v/%v，want empty/nil", got, err)
-	}
-	occupied := filepath.Join(t.TempDir(), "occupied")
-	if err := os.Mkdir(occupied, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	sentinel := filepath.Join(occupied, "keep.txt")
-	if err := os.WriteFile(sentinel, []byte("keep"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	got, err = h.ProbeHome(context.Background(), ProbeRequest{Path: occupied, CLI: "opencode"})
-	if err != nil || got.Kind != ProbeOccupied {
-		t.Fatalf("非空无凭据 = %+v/%v，want occupied/nil", got, err)
-	}
-	auth := filepath.Join(occupied, ".local/share/opencode/auth.json")
-	if err := os.MkdirAll(filepath.Dir(auth), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(auth, []byte("token"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	got, err = h.ProbeHome(context.Background(), ProbeRequest{Path: occupied, CLI: "opencode"})
-	if err != nil || got.Kind != ProbeLoggedIn {
-		t.Fatalf("命中凭据 = %+v/%v，want logged_in/nil", got, err)
-	}
-	if data, err := os.ReadFile(sentinel); err != nil || string(data) != "keep" {
-		t.Fatalf("ProbeHome 不得改写已有文件: %q/%v", data, err)
-	}
-}
-
-func TestProbeHomeMainHomeSyncReadsButDoesNotCopy(t *testing.T) {
-	mainHome := t.TempDir()
-	swapUserHomeDir(t, mainHome)
-	auth := filepath.Join(mainHome, ".local/share/opencode/auth.json")
-	if err := os.MkdirAll(filepath.Dir(auth), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(auth, []byte("token"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	target := filepath.Join(t.TempDir(), "carrier-home")
-	if err := os.Mkdir(target, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	got, err := newProbeHost().ProbeHome(context.Background(), ProbeRequest{
-		Path: target, CLI: "opencode", Credential: "main_home_sync",
-	})
-	if err != nil || got.Kind != ProbeLoggedIn {
-		t.Fatalf("主 HOME 同步探测 = %+v/%v，want logged_in/nil", got, err)
-	}
-	entries, err := os.ReadDir(target)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(entries) != 0 {
-		t.Fatalf("ProbeHome 不得复制文件，目录条目 = %v", entries)
-	}
-}
-
-func TestProbeHomeExpandsTildeOnTargetHomeAndNoFile判据IsOccupied(t *testing.T) {
-	mainHome := t.TempDir()
-	swapUserHomeDir(t, mainHome)
-	target := filepath.Join(mainHome, ".handoff/home/c1")
-	if err := os.MkdirAll(target, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(target, "note"), []byte("x"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	h := NewWithCredentialPathFor(func(string) (string, bool) { return "", false })
-	got, err := h.ProbeHome(context.Background(), ProbeRequest{Path: "~/.handoff/home/c1", CLI: "claude"})
-	if err != nil || got.Kind != ProbeOccupied {
-		t.Fatalf("无文件判据/波浪号 = %+v/%v，want occupied/nil", got, err)
-	}
 }
 
 func installFakeCLIFail(t *testing.T, stderr string) {
@@ -164,31 +42,63 @@ func installFakeCLIFail(t *testing.T, stderr string) {
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
-func TestWakeHomeSuppliesMainCredentialBeforeTurn(t *testing.T) {
+// TestWakeHomeNeverCopiesCredential 锁 B464 V15 的检测半边：检测在载体（登录）HOME 原样跑，
+// 前后主 HOME 与载体 HOME 的凭据文件集合与 mtime 不变；载体 HOME 不存在时不 mkdir 造空 HOME，
+// 直接报需要登录并点名路径（不把「登录已失效」伪装成别的）。
+func TestWakeHomeNeverCopiesCredential(t *testing.T) {
 	mainHome := t.TempDir()
 	swapUserHomeDir(t, mainHome)
-	auth := filepath.Join(mainHome, ".local/share/opencode/auth.json")
-	if err := os.MkdirAll(filepath.Dir(auth), 0o700); err != nil {
-		t.Fatal(err)
+	writeCred := func(home, content string) string {
+		t.Helper()
+		p := filepath.Join(home, ".local/share/opencode/auth.json")
+		if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		old := time.Now().Add(-time.Hour)
+		if err := os.Chtimes(p, old, old); err != nil {
+			t.Fatal(err)
+		}
+		return p
 	}
-	if err := os.WriteFile(auth, []byte("token"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	mainCred := writeCred(mainHome, "main-token")
 	installFakeCLI(t)
 	capture := withArgvCapture(t)
-	target := filepath.Join(t.TempDir(), "carrier-home")
-	got, err := newProbeHost().WakeHome(context.Background(), WakeRequest{
-		CLI: "opencode", HomeDir: target, Credential: "main_home_sync", Timeout: testWakeBudget,
-	})
+
+	missing := filepath.Join(t.TempDir(), "gone-home")
+	got, err := New().WakeHome(context.Background(), WakeRequest{CLI: "opencode", HomeDir: missing, Timeout: testWakeBudget})
+	if err != nil || got.Outcome != WakeNeedLogin || !strings.Contains(got.Detail, missing) {
+		t.Fatalf("HOME 不存在应报需要登录并点名路径：%+v/%v", got, err)
+	}
+	if _, err := os.Stat(missing); !os.IsNotExist(err) {
+		t.Fatalf("检测不得创建载体 HOME，stat err=%v", err)
+	}
+
+	login := t.TempDir()
+	loginCred := writeCred(login, "login-token")
+	before := snapshotTree(t, mainHome, login)
+	got, err = New().WakeHome(context.Background(), WakeRequest{CLI: "opencode", HomeDir: login, Timeout: testWakeBudget})
 	if err != nil || got.Outcome != WakeReady {
 		t.Fatalf("WakeHome = %+v/%v，want ready/nil", got, err)
 	}
-	copied, err := os.ReadFile(filepath.Join(target, ".local/share/opencode/auth.json"))
-	if err != nil || string(copied) != "token" {
-		t.Fatalf("凭据未按原文供给: %q/%v", copied, err)
+	if after := snapshotTree(t, mainHome, login); after[mainCred] != before[mainCred] || after[loginCred] != before[loginCred] {
+		t.Fatalf("检测前后凭据 mtime 变了：before=%v after=%v", before, after)
 	}
-	if _, err := os.Stat(filepath.Join(target, ".config", "opencode", "skills")); !os.IsNotExist(err) {
-		t.Fatalf("供给不得搬技能树，stat err=%v", err)
+	for path := range snapshotTree(t, login) {
+		if strings.HasSuffix(path, "auth.json") && path != loginCred {
+			t.Fatalf("检测在登录 HOME 里多出凭据文件 %s", path)
+		}
+	}
+	foundHome := false
+	for _, l := range readLines(t, capture) {
+		if l == "env:HOME="+login {
+			foundHome = true
+		}
+	}
+	if !foundHome {
+		t.Fatalf("检测回合 HOME 应为登录 HOME，got %v", readLines(t, capture))
 	}
 	joined := strings.Join(readArgvLines(t, capture), "\n")
 	if strings.Contains(joined, "--version") {
@@ -198,15 +108,21 @@ func TestWakeHomeSuppliesMainCredentialBeforeTurn(t *testing.T) {
 		!strings.Contains(joined, "json") || !strings.Contains(joined, "ping") {
 		t.Fatalf("检测 argv 应走 RunTurn ping: %q", joined)
 	}
-	foundHome := false
-	for _, l := range readLines(t, capture) {
-		if l == "env:HOME="+target {
-			foundHome = true
-		}
+}
+
+// snapshotTree 记录若干根下全部普通文件的 mtime（凭据不再复制的文件集合 + mtime 判据）。
+func snapshotTree(t *testing.T, roots ...string) map[string]time.Time {
+	t.Helper()
+	out := map[string]time.Time{}
+	for _, root := range roots {
+		_ = filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+			if err == nil && info.Mode().IsRegular() && !strings.Contains(path, "argv") {
+				out[path] = info.ModTime()
+			}
+			return nil
+		})
 	}
-	if !foundHome {
-		t.Fatalf("检测回合 HOME 应为目标目录，got %v", readLines(t, capture))
-	}
+	return out
 }
 
 func TestWakeHomeOccupiedNeverOverwrites(t *testing.T) {
@@ -229,8 +145,8 @@ func TestWakeHomeOccupiedNeverOverwrites(t *testing.T) {
 	if err := os.WriteFile(keep, []byte("keep"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := newProbeHost().WakeHome(context.Background(), WakeRequest{
-		CLI: "opencode", HomeDir: target, Credential: "main_home_sync", Timeout: testWakeBudget,
+	if _, err := New().WakeHome(context.Background(), WakeRequest{
+		CLI: "opencode", HomeDir: target, Timeout: testWakeBudget,
 	}); err != nil {
 		t.Fatalf("occupied 唤起不应因供给失败: %v", err)
 	}
@@ -249,7 +165,7 @@ func TestWakeHomeHonorsTimeoutViaRunTurn(t *testing.T) {
 	withArgvCapture(t)
 	t.Setenv("FAKECLI_SLEEP", "30")
 	started := time.Now()
-	got, err := newProbeHost().WakeHome(context.Background(), WakeRequest{
+	got, err := New().WakeHome(context.Background(), WakeRequest{
 		CLI: "opencode", HomeDir: t.TempDir(), Timeout: 300 * time.Millisecond,
 	})
 	if err != nil {
@@ -282,7 +198,7 @@ func TestWakeHomeUnsupportedCLIWritesUnreachableNotReady(t *testing.T) {
 	swapUserHomeDir(t, t.TempDir())
 	isolateEmptyPATH(t)
 	rejectDetectTurn(t)
-	got, err := newProbeHost().WakeHome(context.Background(), WakeRequest{
+	got, err := New().WakeHome(context.Background(), WakeRequest{
 		CLI: "grok", HomeDir: t.TempDir(), Timeout: testWakeBudget,
 	})
 	if err != nil {
@@ -307,7 +223,7 @@ func TestWakeHomeUnsupportedCLIPathReadySkipsTurn(t *testing.T) {
 	}
 	t.Setenv("PATH", binDir)
 	rejectDetectTurn(t)
-	got, err := newProbeHost().WakeHome(context.Background(), WakeRequest{
+	got, err := New().WakeHome(context.Background(), WakeRequest{
 		CLI: "grok", HomeDir: t.TempDir(), Timeout: testWakeBudget,
 	})
 	if err != nil || got.Outcome != WakeReady {
@@ -327,7 +243,7 @@ func TestWakeHomeUnsupportedCLIFallbackDirReadySkipsTurn(t *testing.T) {
 		t.Fatal(err)
 	}
 	rejectDetectTurn(t)
-	got, err := newProbeHost().WakeHome(context.Background(), WakeRequest{
+	got, err := New().WakeHome(context.Background(), WakeRequest{
 		CLI: "grok", HomeDir: t.TempDir(), Timeout: testWakeBudget,
 	})
 	if err != nil || got.Outcome != WakeReady {
@@ -346,7 +262,7 @@ func TestWakeHomeReadyRequiresTurnOutputNotCredFile(t *testing.T) {
 	if err := os.WriteFile(auth, []byte("token"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	got, err := newProbeHost().WakeHome(context.Background(), WakeRequest{
+	got, err := New().WakeHome(context.Background(), WakeRequest{
 		CLI: "opencode", HomeDir: target, Timeout: testWakeBudget,
 	})
 	if err != nil {
@@ -362,6 +278,9 @@ func TestWakeHomeZeroTimeoutUsesDetectDefaultAndWorkdirIsHome(t *testing.T) {
 	installFakeCLI(t)
 	withArgvCapture(t)
 	target := filepath.Join(t.TempDir(), "carrier-home")
+	if err := os.MkdirAll(target, 0o700); err != nil { // B464：检测不再 mkdir 载体 HOME
+		t.Fatal(err)
+	}
 	var captured TurnRequest
 	old := detectTurn
 	detectTurn = func(h *Host, ctx context.Context, req TurnRequest) (TurnReply, error) {
@@ -370,7 +289,7 @@ func TestWakeHomeZeroTimeoutUsesDetectDefaultAndWorkdirIsHome(t *testing.T) {
 	}
 	t.Cleanup(func() { detectTurn = old })
 
-	got, err := newProbeHost().WakeHome(context.Background(), WakeRequest{
+	got, err := New().WakeHome(context.Background(), WakeRequest{
 		CLI: "opencode", HomeDir: target, Timeout: 0,
 	})
 	if err != nil || got.Outcome != WakeReady {

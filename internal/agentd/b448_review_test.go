@@ -46,14 +46,14 @@ func b448TwoMemberSquad(t *testing.T, p *b448Pair) scheduling.Binding {
 	}
 	if err := p.a.sched.PutCarrier(scheduling.Carrier{
 		Name: b448Carrier, Machine: b448MachineB, CLI: "opencode", Model: b448ModelX,
-		HomeDir: b448HomeX, Credential: scheduling.CredentialStandalone, MaxConcurrency: 1,
+		HomeDir: b448HomeX, MaxConcurrency: 1,
 		Status: scheduling.StatusOnline,
 	}, xVersion); err != nil {
 		t.Fatalf("给 X 配模型: %v", err)
 	}
 	putOnlineCarrier(t, p.a.sched, scheduling.Carrier{
 		Name: b448CarrierY, Machine: b448MachineB, CLI: "opencode", Model: b448ModelY,
-		HomeDir: b448HomeY, Credential: scheduling.CredentialStandalone, MaxConcurrency: 1,
+		HomeDir: b448HomeY, MaxConcurrency: 1,
 	})
 	rows, err := p.a.sched.SquadRows()
 	if err != nil {
