@@ -26,3 +26,126 @@
 - 生产只读读数（`handoff account list --json`，版本 50333816e846）：13 个账号，定义行全部 version=1；`opencode-go-54ce`（spec 写作 opencode-54ce，SC2）kind opencode-go、state fail、2 条登录（linux-01、macbook-pro）、无载体引用。
 - 基线测试：`go test ./internal/scheduling/accounts/ ./internal/agentd/accountwork/ ./internal/proto/` ok；`go test ./internal/agentd/ -run 'Account|Login|B453|B464'` ok；`go test ./cmd/ -run Account` ok；`npx vitest run src/app/accounts src/api/contract.test.ts src/app/settings/SchedulingPage.test.tsx` 7 文件 144 例全过。
 - 放弃方案：忽略字段放 `Account` body + 全队同批换版（旧二进制三处写者整行写回会抹掉，无测试能红；三台升级不原子）；字段放登录行（忽略是账号级）；复用 `PUT /api/accounts/{ref}` 带 `ignored`（混两种 CAS、缺席/false 歧义）；新增 `state=ignored`（多处 switch 要登记）；前端逐消费点 filter（漏一处即 bug，改在 store 分区）；收 `.q-inline` gap（余 1px 且被复用）；删除连带删忽略行（删除→重建即抹掉忽略）。
+
+## implement 段 A
+
+- 2026-10-23 段 A 执行（基线 `621c0465`，分支 `cards/B467-charter-1`；只改 plan §6 段 A 允许文件集，未碰 `web/src/app/**`）。
+- `web/node_modules` 开工时缺席，先跑 `npm ci --no-audit --no-fund`（290 packages，1s）；未改 package-lock。
+- 先红→绿（每步都先看到断言红再实现）：
+  - 账号域：`TestIgnoreMarkLifecycleAndDiscoveryNeverUndoesIt` 初跑编译红（缺 `IgnoreMark/KindIgnore/Ignore`），空壳后断言红（`忽略后读面应带 at/by: <nil>`）；实现后绿。锁：忽略行与定义行分离、忽略后 `ProbeLogin` 空且 `State` 不被改成 fail、被引用拒并含「不能忽略」、忽略/恢复幂等、发现（新登录/登录 gone/补 label）、改名、删除重建都不改忽略、坏行按已忽略。
+  - 编制域：三支初跑红（`载体 c 不可用：账号 opencode-go-1111 低额度` 等）；实现 `checkCarrierLogin` 拒绝、迁移剔除、准入放行后绿。
+  - 探测器：初跑编译红（缺 `ErrIgnored`），加哨兵后断言红（`得 账号没有可用登录…`）；实现后绿（已忽略到期不调 quota、`ProbeNow` 返 `ErrIgnored`、恢复后 scan 探到）。
+  - API/wire：初跑编译红（proto 无 `ignored`）；加类型后断言红（`忽略: 404`）；实现两条路由、probe 409、投影后绿。夹具经 `-update` 重生成 `web/src/api/testdata/AccountsResp.json`。
+  - 前端契约：`AccountView.ignored 可缺席` 先红（`expected undefined to be defined`），补 TS 类型/调用与夹具后 70/70 绿。
+  - CLI：先红（表格无「已忽略」），`renderAccountTable` 覆盖状态列后绿。
+- 自主决定（均在 plan §9 授权内）：`ReferencedError` 加 `Action` 字段（删除为空、忽略为「忽略」）复用同形 409；`Assessment.Ignored` 用 bool；`Get` 单读忽略行、`List` 一次 `List(account_ignore)`；迁移剔除后为零且剔除前非零走规则 4 + 原因「同 HOME 的兼容登录属已忽略账号」；探测器 `scan` 显式跳过 `Ignored`（不只依赖 `ProbeLogin` 空）。
+
+段 A 验收命令原始输出（2026-10-23，本工作树）：
+
+```
+$ gofmt -l internal cmd
+[exit=0]
+$ go vet ./...
+[exit=0]
+$ go test ./internal/scheduling/... ./internal/agentd/... ./internal/proto/... ./cmd/...
+ok  	github.com/Xsxdot/handoff/internal/scheduling	277.6s
+ok  	github.com/Xsxdot/handoff/internal/scheduling/accounts	0.045s
+ok  	github.com/Xsxdot/handoff/internal/scheduling/internal/logging	0.002s
+ok  	github.com/Xsxdot/handoff/internal/agentd	277.772s
+ok  	github.com/Xsxdot/handoff/internal/agentd/accountwork	0.372s
+ok  	github.com/Xsxdot/handoff/internal/proto	0.011s
+ok  	github.com/Xsxdot/handoff/cmd	140.416s
+[exit=0]
+```
+
+```
+$ cd web && npx vitest run src/api/contract.test.ts && npx tsc -b
+ Test Files  1 passed (1)
+      Tests  70 passed (70)
+[exit=0]
+$ npx tsc -b
+[exit=0]
+```
+
+```
+$ go test ./...
+ok  	github.com/Xsxdot/handoff	0.535s
+ok  	github.com/Xsxdot/handoff/cmd	(cached)
+ok  	github.com/Xsxdot/handoff/internal/agentd	260.200s
+ok  	github.com/Xsxdot/handoff/internal/agentd/accountwork	(cached)
+ok  	github.com/Xsxdot/handoff/internal/approval	(cached)
+ok  	github.com/Xsxdot/handoff/internal/approval/internal/decision	(cached)
+ok  	github.com/Xsxdot/handoff/internal/buildinfo	(cached)
+ok  	github.com/Xsxdot/handoff/internal/client	(cached)
+ok  	github.com/Xsxdot/handoff/internal/collab	(cached)
+?   	github.com/Xsxdot/handoff/internal/collab/client	[no test files]
+?   	github.com/Xsxdot/handoff/internal/collab/cursor	[no test files]
+ok  	github.com/Xsxdot/handoff/internal/collab/room	(cached)
+ok  	github.com/Xsxdot/handoff/internal/config	(cached)
+ok  	github.com/Xsxdot/handoff/internal/diag	(cached)
+ok  	github.com/Xsxdot/handoff/internal/discipline	(cached)
+ok  	github.com/Xsxdot/handoff/internal/dropdir	(cached)
+ok  	github.com/Xsxdot/handoff/internal/envfile	(cached)
+ok  	github.com/Xsxdot/handoff/internal/executor	(cached)
+ok  	github.com/Xsxdot/handoff/internal/executor/agy	(cached)
+ok  	github.com/Xsxdot/handoff/internal/executor/claudecode	(cached)
+ok  	github.com/Xsxdot/handoff/internal/executor/codex	(cached)
+ok  	github.com/Xsxdot/handoff/internal/executor/fake	(cached)
+ok  	github.com/Xsxdot/handoff/internal/executor/grok	(cached)
+ok  	github.com/Xsxdot/handoff/internal/executor/opencode	(cached)
+ok  	github.com/Xsxdot/handoff/internal/executor/rawtap	(cached)
+ok  	github.com/Xsxdot/handoff/internal/executor/turn	(cached)
+ok  	github.com/Xsxdot/handoff/internal/hostapi	(cached)
+ok  	github.com/Xsxdot/handoff/internal/initflow	(cached)
+?   	github.com/Xsxdot/handoff/internal/keysclient	[no test files]
+ok  	github.com/Xsxdot/handoff/internal/keystone	(cached)
+ok  	github.com/Xsxdot/handoff/internal/launcher	(cached)
+ok  	github.com/Xsxdot/handoff/internal/ledger	(cached)
+ok  	github.com/Xsxdot/handoff/internal/ledger/api	(cached)
+ok  	github.com/Xsxdot/handoff/internal/ledgermirror	(cached)
+ok  	github.com/Xsxdot/handoff/internal/ledgerstep	(cached)
+ok  	github.com/Xsxdot/handoff/internal/localsync	(cached)
+ok  	github.com/Xsxdot/handoff/internal/logx	(cached)
+ok  	github.com/Xsxdot/handoff/internal/mobilecore	(cached)
+ok  	github.com/Xsxdot/handoff/internal/orchestration	(cached)
+?   	github.com/Xsxdot/handoff/internal/orchestration/internal/cacheplan	[no test files]
+ok  	github.com/Xsxdot/handoff/internal/p2p	(cached)
+?   	github.com/Xsxdot/handoff/internal/p2p/p2ptest	[no test files]
+ok  	github.com/Xsxdot/handoff/internal/pathenv	(cached)
+ok  	github.com/Xsxdot/handoff/internal/permgate	(cached)
+ok  	github.com/Xsxdot/handoff/internal/prochost	(cached)
+ok  	github.com/Xsxdot/handoff/internal/projectid	(cached)
+ok  	github.com/Xsxdot/handoff/internal/proto	(cached)
+ok  	github.com/Xsxdot/handoff/internal/proxycfg	(cached)
+?   	github.com/Xsxdot/handoff/internal/ptyapi	[no test files]
+ok  	github.com/Xsxdot/handoff/internal/ptyhost	(cached)
+ok  	github.com/Xsxdot/handoff/internal/ptyhost/engine	(cached)
+ok  	github.com/Xsxdot/handoff/internal/ptyhost/hostproc	(cached)
+ok  	github.com/Xsxdot/handoff/internal/ptyhost/sessdir	(cached)
+ok  	github.com/Xsxdot/handoff/internal/ptyhost/wire	(cached)
+ok  	github.com/Xsxdot/handoff/internal/ptytestroot	(cached)
+ok  	github.com/Xsxdot/handoff/internal/quota	(cached)
+ok  	github.com/Xsxdot/handoff/internal/relay	(cached)
+ok  	github.com/Xsxdot/handoff/internal/release	(cached)
+?   	github.com/Xsxdot/handoff/internal/schedclient	[no test files]
+ok  	github.com/Xsxdot/handoff/internal/scheduling	(cached)
+ok  	github.com/Xsxdot/handoff/internal/scheduling/accounts	(cached)
+ok  	github.com/Xsxdot/handoff/internal/scheduling/internal/logging	(cached)
+ok  	github.com/Xsxdot/handoff/internal/selfupdate	(cached)
+ok  	github.com/Xsxdot/handoff/internal/service	(cached)
+ok  	github.com/Xsxdot/handoff/internal/skill	(cached)
+ok  	github.com/Xsxdot/handoff/internal/store	(cached)
+ok  	github.com/Xsxdot/handoff/internal/targetclient	(cached)
+ok  	github.com/Xsxdot/handoff/internal/termseq	(cached)
+ok  	github.com/Xsxdot/handoff/internal/testhttp	(cached)
+ok  	github.com/Xsxdot/handoff/internal/testperm	(cached)
+ok  	github.com/Xsxdot/handoff/internal/toolchain	(cached)
+ok  	github.com/Xsxdot/handoff/internal/upgrade	(cached)
+ok  	github.com/Xsxdot/handoff/internal/webui	(cached)
+ok  	github.com/Xsxdot/handoff/internal/workspace	(cached)
+ok  	github.com/Xsxdot/handoff/internal/workspace/internal/gitproc	(cached)
+?   	github.com/Xsxdot/handoff/web/node_modules/flatted/golang/pkg/flatted	[no test files]
+[exit=0]
+```
+
+- 环境敏感：本次全量绿，未触发 `CLAUDE_CODE_SESSION_ID` / 嵌套工作树敏感用例。

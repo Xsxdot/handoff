@@ -18,6 +18,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/Xsxdot/handoff/internal/schedclient"
 	"github.com/Xsxdot/handoff/internal/scheduling/accounts"
@@ -366,6 +367,22 @@ func (s *Service) checkCarrierLogin(c Carrier, expect int) (*accounts.Login, err
 			"login_kind", l.Kind, "expect", expect, "cause", "kind 与 CLI 不兼容")
 		return nil, fmt.Errorf("%w: 载体 %s 的执行器 %s 不能用 %s 类登录 %s（可用：%v）", ErrInvalid,
 			c.Name, c.CLI, l.Kind, c.Login, accounts.CompatibleKinds(c.CLI))
+	}
+	// B467 Q6：所选登录所属账号已忽略 → 拒（含「登录没变、只改模型/并发」的编辑）。忽略后账号
+	// 不再探测、界面也不再展示，允许继续选它只会留一个用户看不见的边角态。
+	a, err := s.accounts.Assess(l.Account, time.Now())
+	if err != nil {
+		if errors.Is(err, accounts.ErrNotFound) {
+			return &l, nil // 账号行缺失同「未选账号登录」先例，交给准入放行
+		}
+		statusLog().Error("载体登记校验读取账号失败", "name", c.Name, "login", c.Login,
+			"account", l.Account, "expect", expect, "cause", err)
+		return nil, fmt.Errorf("载体 %s 读取登录所属账号 %s 失败: %w", c.Name, l.Account, err)
+	}
+	if a.Ignored {
+		statusLog().Warn("载体登记校验失败", "name", c.Name, "login", c.Login,
+			"account", l.Account, "account_name", a.Account.Name, "expect", expect, "cause", "账号已忽略")
+		return nil, fmt.Errorf("%w: 账号 %s 已忽略，先在账号页恢复", ErrInvalid, a.Account.Name)
 	}
 	return &l, nil
 }

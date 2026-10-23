@@ -128,8 +128,8 @@ HOME × 来源；一个账号可以有多机多登录，凭据各自独立。密
 关系，定时发现会兜底挂上；主 HOME 里已有的登录不用加。
 
     handoff account discover           # 让全部机器（或 --machine 一台）立即发现；任一失败退出 1
-    handoff account list               # 表格：账号行（名称/类型/状态/窗口已用/最近重置/上次探测/说明）+ 其下登录行（机器:HOME/来源/状态/打码代理/所用载体）
-    handoff account list --json        # 一行一个账号对象（与 GET /api/accounts 元素同形，含 logins）
+    handoff account list               # 表格：账号行（名称/类型/状态/窗口已用/最近重置/上次探测/说明）+ 其下登录行（机器:HOME/来源/状态/打码代理/所用载体）；已忽略账号照列、状态列「已忽略」
+    handoff account list --json        # 一行一个账号对象（与 GET /api/accounts 元素同形，含 logins；已忽略账号带 ignored{at,by}）
     handoff account probe <名称>       # 让可探登录所在机立即探测一次并打印新读数；探测失败退出码 1
 
 - **状态五档**：正常 / 低额度（任一窗口 ≥ 低额度线，缺省 80%）/ 无额度（任一窗口 100%、接口明示不可用、或被任务撞额度标记——标记持续到下一次**成功**探测）/ 探测失败 / 未探测。claude 与第三方 key 是 `na`（不支持额度探测）。预警线（缺省 60%）只变色，不影响派发。

@@ -132,6 +132,14 @@ func (s *Service) usability(c Carrier) (*Unusable, error) {
 		statusLog().Error("准入读取载体账号失败", "carrier", c.Name, "login", loginID, "account", login.Account, "cause", err)
 		return nil, fmt.Errorf("载体 %s 的账号 %s 读取失败: %w", c.Name, login.Account, err)
 	}
+	if a.Ignored {
+		// B467 Q5：已忽略账号不再探测、读数冻结。继续按冻结读数判会让一个冻在低额度的账号
+		// 永久挡住载体；拒绝派发则把一个两端都已拦过的边角态（忽略与保存并发 / 旧二进制写入）
+		// 变成派发故障。与「登录或账号已删 → 放行」同一先例。
+		statusLog().Warn("载体所选登录的账号已忽略，按未选账号登录准入", "carrier", c.Name, "login", loginID,
+			"account", login.Account, "state", a.State)
+		return nil, nil
+	}
 	if !a.State.Blocks() {
 		return nil, nil
 	}

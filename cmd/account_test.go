@@ -110,6 +110,39 @@ func TestAccountListTableColumns(t *testing.T) {
 	}
 }
 
+// TestAccountListShowsIgnored 锁 B467 C3/C4：已忽略账号照列、状态列「已忽略」，--json 带
+// ignored 键（其余列与行结构照旧）。
+func TestAccountListShowsIgnored(t *testing.T) {
+	dir := t.TempDir()
+	resp := sampleAccounts(t)
+	resp.Accounts[0].Ignored = &proto.AccountIgnoreView{At: time.Now().Add(-time.Hour).UTC().Truncate(time.Second), By: "linux-01"}
+	raw, _ := json.Marshal(resp)
+	stubSquadAgentd(t, dir, http.StatusOK, string(raw), nil)
+
+	out, errOut, err := runLedgerCLI(t, dir, "account", "list")
+	if err != nil {
+		t.Fatalf("account list: %v\nstderr=%s", err, errOut)
+	}
+	if !strings.Contains(out, "已忽略") || !strings.Contains(out, "og-linux") {
+		t.Fatalf("已忽略账号应照列且状态列为「已忽略」:\n%s", out)
+	}
+
+	out, errOut, err = runLedgerCLI(t, dir, "account", "list", "--json")
+	if err != nil {
+		t.Fatalf("account list --json: %v\nstderr=%s", err, errOut)
+	}
+	var got proto.AccountView
+	if err := json.Unmarshal([]byte(nonEmptyLines(out)[0]), &got); err != nil {
+		t.Fatalf("解码首行: %v", err)
+	}
+	if got.Ignored == nil || got.Ignored.By != "linux-01" || got.Ignored.At.IsZero() {
+		t.Fatalf("--json 已忽略账号应带 ignored{at,by}: %s", out)
+	}
+	if !strings.Contains(out, `"ignored"`) {
+		t.Fatalf("--json 应含 ignored 键: %s", out)
+	}
+}
+
 func TestAccountProbeExitCodes(t *testing.T) {
 	views := sampleAccounts(t).Accounts
 	cases := []struct {

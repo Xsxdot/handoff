@@ -76,6 +76,12 @@ export interface LoginView {
   carriers: string[]
 }
 
+/** B467 A13：账号的已忽略标记；在场 ⇔ 已忽略，at 是忽略时刻、by 是写入机自名。 */
+export interface AccountIgnoreView {
+  at: string
+  by: string
+}
+
 /** B464 A5：一台机器的「上次发现」；at 缺席 = 从未发现。 */
 export interface DiscoveryView {
   machine: string
@@ -105,6 +111,8 @@ export interface AccountView {
   recover_at?: string
   /** B464：读数来源的可探登录 id；无正常登录时缺席。 */
   probe_login?: string
+  /** B467 A13：已忽略标记；键缺席 = 未忽略（没有 null/{} 形态）。 */
+  ignored?: AccountIgnoreView
   logins: LoginView[]
   carriers: string[]
 }
@@ -180,6 +188,14 @@ export const putAccount = (name: string, expect: number, input: AccountInput) =>
 /** F3：按 CAS 版本删除；被引用时抛 ApiError(409)，body 为 AccountDeleteRefusal。 */
 export const deleteAccount = (name: string, expect: number) =>
   request<{ name: string; version: number }>(`${path(name)}?expect=${expect}`, { method: 'DELETE' })
+
+/** B467 A16：忽略账号（无请求体、无 expect、幂等），返回带 ignored 的 AccountView。 */
+export const ignoreAccount = (name: string) =>
+  request<AccountView>(`${path(name)}/ignore`, { method: 'PUT' })
+
+/** B467 A18：恢复账号（无请求体、无 expect、幂等），返回不带 ignored 的 AccountView。 */
+export const restoreAccount = (name: string) =>
+  request<AccountView>(`${path(name)}/ignore`, { method: 'DELETE' })
 
 /** F4：立即探测（入口机转发到可探登录所在机），返回本次探测后的 AccountView（失败写在 last_error）。 */
 export const probeAccount = (name: string) =>

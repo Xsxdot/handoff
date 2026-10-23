@@ -239,7 +239,15 @@ func (s *Service) Get(ref string) (View, error) {
 	if err != nil {
 		return View{}, err
 	}
-	return newView(a, version, rec, logins, refs, runs, time.Now()), nil
+	mark, ignored, err := s.ignoreMark(id)
+	if err != nil {
+		return View{}, err
+	}
+	var markPtr *IgnoreMark
+	if ignored {
+		markPtr = &mark
+	}
+	return newView(a, version, rec, logins, refs, runs, markPtr, time.Now()), nil
 }
 
 // List 列出全部账号（按名称排序）。没有定义行的读数行（孤儿）不出现；B453 手填旧行不出现。
@@ -274,10 +282,18 @@ func (s *Service) List() ([]View, error) {
 	if err != nil {
 		return nil, err
 	}
+	marks, err := s.ignoreMarks()
+	if err != nil {
+		return nil, err
+	}
 	now := time.Now()
 	out := make([]View, 0, len(defs))
 	for id, a := range defs {
-		out = append(out, newView(a, versions[id], byID[id], logins, refs, runs, now))
+		var markPtr *IgnoreMark
+		if mark, ok := marks[id]; ok {
+			markPtr = &mark
+		}
+		out = append(out, newView(a, versions[id], byID[id], logins, refs, runs, markPtr, now))
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Account.Name != out[j].Account.Name {
@@ -292,9 +308,9 @@ func (s *Service) List() ([]View, error) {
 // 支持探测的账号没有可探登录 → 状态推导为「探测失败」，最近错误为「没有可用登录」——只在
 // 读面推导，不写读数行（plan Q10）。runs 是各机最近一轮发现时刻。
 func newView(a Account, version int, rec ReadingRecord, logins []LoginView, refs map[string][]string,
-	runs map[string]time.Time, now time.Time) View {
+	runs map[string]time.Time, ignored *IgnoreMark, now time.Time) View {
 	v := View{Account: a, Version: version, State: Derive(a, rec, now), Stale: IsStale(rec, now),
-		RecoverAt: RecoverAt(a, rec, now), Record: rec, Logins: []LoginView{}, Carriers: []string{}}
+		RecoverAt: RecoverAt(a, rec, now), Record: rec, Logins: []LoginView{}, Carriers: []string{}, Ignored: ignored}
 	seen := map[string]bool{}
 	var own []Login
 	for _, lv := range logins {
@@ -312,6 +328,11 @@ func newView(a Account, version int, rec ReadingRecord, logins []LoginView, refs
 		own = append(own, lv.Login)
 	}
 	sort.Strings(v.Carriers)
+	if v.Ignored != nil {
+		// 已忽略：不只展示隐藏，探测也被挡住——没有可探登录，但**不**改写成 fail/no_login：
+		// State 仍是读数推导的结果（Q4：不新增状态值），冻结读数供准入边角态放行（Q5）。
+		return v
+	}
 	if !SupportsProbe(a.Kind) {
 		return v
 	}
@@ -585,6 +606,8 @@ type Assessment struct {
 	Account   Account
 	State     State
 	RecoverAt *time.Time
+	// Ignored 为 true = 账号已忽略（B467）：准入按「未选账号登录」放行。
+	Ignored bool
 }
 
 // Assess 读一个账号（ref = id 或名字；准入热路径总传 id，不扫描）的定义与读数行并推导状态与预计恢复（编制域统一准入判据调用）。
@@ -602,7 +625,11 @@ func (s *Service) Assess(ref string, now time.Time) (Assessment, error) {
 	if err != nil {
 		return Assessment{}, err
 	}
-	return Assessment{Account: a, State: Derive(a, rec, now), RecoverAt: RecoverAt(a, rec, now)}, nil
+	_, ignored, err := s.ignoreMark(id)
+	if err != nil {
+		return Assessment{}, err
+	}
+	return Assessment{Account: a, State: Derive(a, rec, now), RecoverAt: RecoverAt(a, rec, now), Ignored: ignored}, nil
 }
 
 // IsStale 报告最近成功读数是否已过期（> 30 分钟）。只是展示标记，不参与状态与准入。

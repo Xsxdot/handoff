@@ -1034,6 +1034,17 @@ describe('账号 wire（B453 F1–F9 / B464 A1–A6）', () => {
     expect(discover.machines[1].error).toContain('连接被拒绝')
     expect(discover.machines[1]).not.toHaveProperty('at')
   })
+  it('AccountView.ignored 可缺席（B467 A13）：在场带 at/by，未忽略账号键缺席', () => {
+    const resp: AccountsResp = accountsRespFixture as AccountsResp
+    const byName = new Map(resp.accounts.map((a: AccountView) => [a.name, a]))
+    const ignored = byName.get('codex-0b1c')!
+    expect(ignored.ignored).toBeDefined()
+    expect(ignored.ignored!.at).toMatch(/^2026-/)
+    expect(ignored.ignored!.by).toBe('linux-01')
+    // 键缺席 ≠ null/{}：未忽略的账号不得有 ignored 键。
+    expect(Object.prototype.hasOwnProperty.call(byName.get('og-main')!, 'ignored')).toBe(false)
+    expect(Object.prototype.hasOwnProperty.call(byName.get('grok-mbp')!, 'ignored')).toBe(false)
+  })
   it('AccountDeleteRefusal 列出引用载体（F3）', () => {
     const refusal: AccountDeleteRefusal = accountDeleteRefusalFixture
     expect(refusal.carriers).toEqual(['mbp-codex', 'mbp-oc-codex'])

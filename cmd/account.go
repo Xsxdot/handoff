@@ -171,7 +171,10 @@ func renderAccountTable(out io.Writer, views []proto.AccountView, now time.Time)
 	fmt.Fprintln(w, "名称\t类型\t状态\t窗口已用\t最近重置\t上次探测\t说明")
 	for _, v := range views {
 		state := accountStateLabel[v.State]
-		if state == "" {
+		if v.Ignored != nil {
+			// B467 C4：已忽略不是新的 state 值（词表不变），只是表格里更醒目的展示。
+			state = "已忽略"
+		} else if state == "" {
 			state = v.State
 		}
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", v.Name, v.Kind, state,

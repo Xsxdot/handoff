@@ -1051,8 +1051,10 @@ func accountsRespSample(now time.Time) AccountsResp {
 		LastAttemptAt: at(-time.Minute), RecoverAt: at(time.Hour + 48*time.Minute), ProbeLogin: proxied.ID,
 		Logins: []LoginView{proxied}, Carriers: []string{"mbp-codex", "mbp-oc-codex"},
 	}, {
+		// B467 A13：已忽略账号——ignored{at,by} 在场（未忽略账号键缺席，见其余行）。
 		ID: "codex:0b1c2d3e4f50", Name: "codex-0b1c", Kind: "codex", Fingerprint: "sha256:0b1c2d3e4f50",
 		IntervalMinutes: 30, WarnPercent: 50, LowPercent: 90, Version: 1, State: "none",
+		Ignored: &AccountIgnoreView{At: now.Add(-90 * time.Minute), By: "linux-01"},
 		Logins: []LoginView{login("login-dd00000000000001", "linux-01", "~/.handoff/home/codex-spare", "auth.json",
 			"sha256:0b1c2d3e4f50", "gone")},
 		Carriers: []string{},

@@ -21,12 +21,18 @@ import (
 var ErrReferenced = errors.New("accounts: 账号仍被载体引用")
 
 // ReferencedError 携带引用该账号名下登录的载体名（排序），gateway 据此回 409 与 carriers 列表。
+// Action 是被拒的人动作（"忽略"；空 = 删除），只影响文案——两者拦法相同但用户看到的话不同。
 type ReferencedError struct {
 	Account  string
 	Carriers []string
+	Action   string
 }
 
 func (e *ReferencedError) Error() string {
+	if e.Action == "忽略" {
+		return fmt.Sprintf("不能忽略账号 %s：名下登录仍被载体 %s 引用，先在载体里改选其他账号登录",
+			e.Account, strings.Join(e.Carriers, "、"))
+	}
 	return fmt.Sprintf("账号 %s 仍被载体 %s 引用，先在载体里改选其他账号登录", e.Account, strings.Join(e.Carriers, "、"))
 }
 

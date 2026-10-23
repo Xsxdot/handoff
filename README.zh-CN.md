@@ -242,7 +242,7 @@ handoff dispatch --target devbox --new-worktree plan.md
 | `handoff reclaim` | 回收终态任务残留的 managed worktree（不删分支） | — |
 | `handoff gc` | 预览或清理目标 agentd 上终态任务的缓存叶子（`tmp/<id8>` 与 `tasks/<id>/tmp`）和残留 managed 工作树 | `--yes` 执行；`--force` 仅脏树；`--json`；`--target` |
 | `handoff footprint` | 各任务进程占用与本机进程余量 | — |
-| `handoff account list` | 账号（身份）与额度读数，账号行下逐条登录行（机器:HOME、来源、状态、打码代理、所用载体）；需 `ledger.dsn` | `--json`（一行一个账号对象，与 `GET /api/accounts` 元素同形，含 `logins`） |
+| `handoff account list` | 账号（身份）与额度读数，账号行下逐条登录行（机器:HOME、来源、状态、打码代理、所用载体）；已忽略账号照列、状态列「已忽略」；需 `ledger.dsn` | `--json`（一行一个账号对象，与 `GET /api/accounts` 元素同形，含 `logins`；已忽略账号带 `ignored{at,by}`） |
 | `handoff account discover` | 让入口机立即发现已登录身份（缺省全部已登记机器，`--machine` 指定一台）；失败机器单独一行报错 | `--machine <机器>`；全成功退出 0、任一失败退出 1 |
 | `handoff account probe <名称或 id>` | 让账号所在机立即探测一次并打印新读数；参数可为账号名称或账号 id | 探测失败退出码 1 |
 | `handoff squad list` | 列出载体与小队（`--json` 一行一对象；各行带 CAS 版本）。载体行的账号格为 `账号 · 机器 HOME`，或 `无账号` / `-`（未选） | `--json` |

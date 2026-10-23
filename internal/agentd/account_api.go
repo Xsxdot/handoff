@@ -38,12 +38,15 @@ import (
 //   - MarkQuota：任务回合撞额度（quota_rerun.go）；
 //   - Login：载体所选登录 → kind/代理/所属账号（检测链、派发快照、协调者代理，account_carrier.go）；
 //   - DiscoveryRuns：GET /api/accounts 的「上次发现」；
-//   - SetLoginProxy：PUT /api/logins/{id}/proxy（A9）。
+//   - SetLoginProxy：PUT /api/logins/{id}/proxy（A9）；
+//   - Ignore/Restore：PUT/DELETE /api/accounts/{ref}/ignore（B467 A16/A18）。
 type AccountsClient interface {
 	List() ([]accounts.View, error)
 	Get(ref string) (accounts.View, error)
 	Put(a accounts.Account, expect int) (int, error)
 	Delete(ref string, expect int) error
+	Ignore(ref, by string) (accounts.View, error)
+	Restore(ref string) (accounts.View, error)
 	// MarkQuota 给账号打撞额度标记（B453 S6/S7：任务回合撞额度，见 quota_rerun.go）。
 	MarkQuota(id string, m accounts.QuotaMark) error
 	Login(id string) (accounts.Login, error)
@@ -65,6 +68,8 @@ func (s *Server) registerAccountRoutes(api *http.ServeMux) {
 	api.HandleFunc("GET /api/accounts", s.withAccounts(s.handleAccountsGet))
 	api.HandleFunc("PUT /api/accounts/{ref}", s.withAccounts(s.handleAccountPut))
 	api.HandleFunc("DELETE /api/accounts/{ref}", s.withAccounts(s.handleAccountDelete))
+	api.HandleFunc("PUT /api/accounts/{ref}/ignore", s.withAccounts(s.handleAccountIgnore))
+	api.HandleFunc("DELETE /api/accounts/{ref}/ignore", s.withAccounts(s.handleAccountRestore))
 	api.HandleFunc("POST /api/accounts/{ref}/probe", s.withAccounts(s.handleAccountProbe))
 	api.HandleFunc("PUT /api/logins/{id}/proxy", s.withAccounts(s.handleLoginProxyPut))
 	s.registerLoginRoutes(api)
@@ -255,6 +260,49 @@ func (s *Server) handleAccountDelete(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, proto.SquadPutResp{Name: ref, Version: expect})
 }
 
+// handleAccountIgnore PUT /api/accounts/{ref}/ignore（A16）：无请求体、无 expect、幂等；成功
+// 200 AccountView（带 ignored）。by = 本机自名（空由账号域写 local）。被载体引用 → 409
+// {error,carriers}，error 含「不能忽略」（A17）。账号不存在 404（A19）。
+func (s *Server) handleAccountIgnore(w http.ResponseWriter, r *http.Request) {
+	ref := r.PathValue("ref")
+	by := s.conf().Name
+	v, err := s.accounts.Ignore(ref, by)
+	if err != nil {
+		var refErr *accounts.ReferencedError
+		switch {
+		case errors.As(err, &refErr):
+			s.log.Warn("忽略账号被拒：仍被载体引用", "ref", ref, "carriers", refErr.Carriers)
+			writeJSON(w, http.StatusConflict, proto.AccountDeleteRefusal{Error: err.Error(), Carriers: refErr.Carriers})
+		case errors.Is(err, accounts.ErrNotFound):
+			writeErr(w, http.StatusNotFound, err)
+		default:
+			s.log.Error("忽略账号失败", "ref", ref, "by", by, "cause", err)
+			writeErr(w, http.StatusInternalServerError, err)
+		}
+		return
+	}
+	s.log.Info("忽略账号成功", "id", v.Account.ID, "name", v.Account.Name, "by", by)
+	writeJSON(w, http.StatusOK, s.accountView(v))
+}
+
+// handleAccountRestore DELETE /api/accounts/{ref}/ignore（A18）：无请求体、无 expect、幂等；
+// 成功 200 AccountView（ignored 键缺席）；账号不存在 404（A19）。
+func (s *Server) handleAccountRestore(w http.ResponseWriter, r *http.Request) {
+	ref := r.PathValue("ref")
+	v, err := s.accounts.Restore(ref)
+	if err != nil {
+		if errors.Is(err, accounts.ErrNotFound) {
+			writeErr(w, http.StatusNotFound, err)
+			return
+		}
+		s.log.Error("恢复账号失败", "ref", ref, "cause", err)
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	s.log.Info("恢复账号成功", "id", v.Account.ID, "name", v.Account.Name)
+	writeJSON(w, http.StatusOK, s.accountView(v))
+}
+
 // accountFromInput 在现值上套用请求：键缺席 = 保留现值；给了 0 原样交校验（「给了 0」必须被
 // 识别，不能当缺省吞掉）。发现字段一律取现值。
 func accountFromInput(cur accounts.Account, in proto.AccountInput) accounts.Account {
@@ -291,6 +339,12 @@ func (s *Server) handleAccountProbe(w http.ResponseWriter, r *http.Request) {
 		}
 		s.log.Error("立即探测：读账号失败", "ref", ref, "cause", err)
 		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	if v.Ignored != nil {
+		err := fmt.Errorf("%w：账号 %s 已忽略，先在账号页恢复", accountwork.ErrIgnored, v.Account.Name)
+		s.log.Warn("立即探测被拒：账号已忽略", "id", v.Account.ID, "name", v.Account.Name)
+		writeErr(w, http.StatusConflict, err)
 		return
 	}
 	if !accounts.SupportsProbe(v.Account.Kind) {
@@ -384,6 +438,9 @@ func (s *Server) accountView(v accounts.View) proto.AccountView {
 		Version: v.Version, State: string(v.State), Stale: v.Stale,
 		LastAttemptAt: utcPtr(rec.LastAttemptAt), RecoverAt: utcPtr(v.RecoverAt), ProbeLogin: v.ProbeLogin,
 		Logins: make([]proto.LoginView, 0, len(v.Logins)), Carriers: append([]string{}, v.Carriers...),
+	}
+	if ig := v.Ignored; ig != nil {
+		out.Ignored = &proto.AccountIgnoreView{At: ig.At.UTC(), By: ig.By}
 	}
 	for _, lv := range v.Logins {
 		out.Logins = append(out.Logins, s.loginView(lv))

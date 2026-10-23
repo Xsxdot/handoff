@@ -227,10 +227,19 @@ type AccountView struct {
 	// RecoverAt 是预计离开低额度/无额度的时刻（可选）：服务端按 accounts.RecoverAt 推导——越线
 	// 窗口全部重置即最晚那个；不阻挡、撞额度标记/接口明示不可用、或任一越线窗口缺重置时刻 →
 	// 缺席（恢复时刻未知）。界面直接读它，不另算。
-	RecoverAt  *time.Time  `json:"recover_at,omitempty"`
-	ProbeLogin string      `json:"probe_login,omitempty"`
-	Logins     []LoginView `json:"logins"`
-	Carriers   []string    `json:"carriers"`
+	RecoverAt  *time.Time `json:"recover_at,omitempty"`
+	ProbeLogin string     `json:"probe_login,omitempty"`
+	// Ignored 是可缺席键（B467 A13）：在场 ⇔ 已忽略，形状 {"at": RFC3339, "by": 机器名}；
+	// 未忽略时键缺席（没有 null / {} / 布尔形态）。state 词表不变（A14）。
+	Ignored  *AccountIgnoreView `json:"ignored,omitempty"`
+	Logins   []LoginView        `json:"logins"`
+	Carriers []string           `json:"carriers"`
+}
+
+// AccountIgnoreView 是已忽略标记（B467 A13）：at 是忽略时刻（UTC），by 是写入时入口 agentd 自名。
+type AccountIgnoreView struct {
+	At time.Time `json:"at"`
+	By string    `json:"by"`
 }
 
 // LoginView 是一条登录（A4）：机器、HOME（`~` 或 `~/.handoff/home/<dir>`）、凭据来源名、身份短

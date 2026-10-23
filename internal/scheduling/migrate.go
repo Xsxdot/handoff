@@ -47,6 +47,10 @@ func (s *Service) MigrateCarrierLogins(logins []accounts.Login, isSelf func(stri
 		return nil, fmt.Errorf("迁移存量载体：列载体失败: %w", err)
 	}
 	mainAbs, mainErr := expandHome("~")
+	ignored, err := s.ignoredAccounts()
+	if err != nil {
+		return nil, err
+	}
 	var out []MigrationResult
 	for _, row := range rows {
 		c := row.Carrier
@@ -64,7 +68,7 @@ func (s *Service) MigrateCarrierLogins(logins []accounts.Login, isSelf func(stri
 			out = append(out, res)
 			continue
 		}
-		res := decideMigration(c, abs, mainErr == nil && samePath(abs, mainAbs), logins)
+		res := decideMigration(c, abs, mainErr == nil && samePath(abs, mainAbs), logins, ignored)
 		if res.Login != "" || res.NoAccount {
 			if werr := s.writeMigration(c.Name, row.Version, res); werr != nil {
 				res.Reason = "写入未成（下轮再试）：" + werr.Error()
@@ -81,15 +85,23 @@ func (s *Service) MigrateCarrierLogins(logins []accounts.Login, isSelf func(stri
 	return out, nil
 }
 
-// decideMigration 是 §5 四条规则的纯判定（不写库）。
-func decideMigration(c Carrier, homeAbs string, isMainHome bool, logins []accounts.Login) MigrationResult {
-	var match []accounts.Login
+// decideMigration 是 §5 四条规则的纯判定（不写库）。ignored 是已忽略账号 id 集合：这样的登录
+// 先被剔除（B467 Q7，writeMigration 不经 PutCarrier，Q6 的校验管不到它）。剔除后为零而剔除前
+// 非零 → 留作未选（Rule 4），不落到规则 3 的 no_account——人忽略一个账号不等于替人选了「无账号」。
+func decideMigration(c Carrier, homeAbs string, isMainHome bool, logins []accounts.Login,
+	ignored map[string]bool) MigrationResult {
+	var compatible, match []accounts.Login
 	for _, l := range logins {
 		if l.State != accounts.LoginGone && accounts.Compatible(c.CLI, l.Kind) && samePath(l.HomeAbs, homeAbs) {
-			match = append(match, l)
+			compatible = append(compatible, l)
+			if !ignored[l.Account] {
+				match = append(match, l)
+			}
 		}
 	}
 	switch {
+	case len(match) == 0 && len(compatible) > 0:
+		return MigrationResult{Carrier: c.Name, Rule: 4, Reason: "同 HOME 的兼容登录属已忽略账号，留作未选"}
 	case len(match) == 1:
 		return MigrationResult{Carrier: c.Name, Rule: 1, Login: match[0].ID, Reason: "同机同 HOME 恰一条兼容登录"}
 	case len(match) > 1:
@@ -102,6 +114,24 @@ func decideMigration(c Carrier, homeAbs string, isMainHome bool, logins []accoun
 	default:
 		return MigrationResult{Carrier: c.Name, Rule: 4, Reason: "HOME 里没有兼容登录，留作未选"}
 	}
+}
+
+// ignoredAccounts 返回已忽略账号的 id 集合（只读账号域读面，不碰忽略行）。
+func (s *Service) ignoredAccounts() (map[string]bool, error) {
+	out := map[string]bool{}
+	if s.accounts == nil {
+		return out, nil
+	}
+	views, err := s.accounts.List()
+	if err != nil {
+		return nil, fmt.Errorf("迁移存量载体：读已忽略账号失败: %w", err)
+	}
+	for _, v := range views {
+		if v.Ignored != nil {
+			out[v.Account.ID] = true
+		}
+	}
+	return out, nil
 }
 
 // pickByModel 是 plan Q14：模型 `opencode-go/…` → 唯一的 opencode-go 登录；`<provider>/…` →

@@ -51,6 +51,9 @@ var ErrNoProbeLogin = errors.New("账号没有可用登录")
 // ErrProbeUnsupported 表示账号 kind 不支持额度探测（claude、第三方 key，plan Q11）。
 var ErrProbeUnsupported = errors.New("账号类型不支持额度探测")
 
+// ErrIgnored 表示账号已被忽略（B467）：忽略即不探测，恢复后下一轮扫描才重新探。
+var ErrIgnored = errors.New("账号已忽略")
+
 // ErrStopped 表示探测器未启动或已停止。
 var ErrStopped = errors.New("账号探测器未运行")
 
@@ -168,6 +171,9 @@ func (p *Prober) scan(ctx context.Context) {
 		if !accounts.SupportsProbe(v.Account.Kind) {
 			continue // na：不调 quota（未注册 kind 在 quota 里是错误，na 不是）
 		}
+		if v.Ignored != nil {
+			continue // 已忽略：读面已无可探登录；显式跳过让「不探测」不依赖读面细节
+		}
 		login, ok := probeLoginOf(v)
 		if !ok || !p.cfg.IsSelf(login.Machine) || !probeDue(v, now) {
 			continue
@@ -280,6 +286,10 @@ func (p *Prober) ProbeNow(ctx context.Context, ref string) (accounts.View, error
 	v, err := p.cfg.Accounts.Get(ref)
 	if err != nil {
 		return accounts.View{}, err
+	}
+	if v.Ignored != nil {
+		p.log.Info("立即探测被拒：账号已忽略", "account", v.Account.ID, "name", v.Account.Name)
+		return accounts.View{}, fmt.Errorf("%w：账号 %s 已忽略，先在账号页恢复", ErrIgnored, v.Account.Name)
 	}
 	if !accounts.SupportsProbe(v.Account.Kind) {
 		return accounts.View{}, fmt.Errorf("%w：账号 %s 是 %s", ErrProbeUnsupported, v.Account.Name, v.Account.Kind)

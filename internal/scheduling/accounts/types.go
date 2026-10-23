@@ -22,6 +22,8 @@ const (
 	KindReading      = "account_reading"
 	KindLogin        = "account_login"
 	KindDiscoveryRun = "discovery_run"
+	// KindIgnore 是账号级「已忽略」标记（B467 L11）：id = 账号 id，行在 ⇔ 已忽略。
+	KindIgnore = "account_ignore"
 )
 
 // 账号类型（B453 F7 + B464 A3，冻结）。claude/apikey 不支持额度探测（kinds.go）。
@@ -62,6 +64,13 @@ type Account struct {
 	LowPercent      int       `json:"low_percent,omitempty"`
 	CreatedBy       string    `json:"created_by"`
 	CreatedAt       time.Time `json:"created_at"`
+}
+
+// IgnoreMark 是忽略标记的 body（B467 L12）：行在 ⇔ 已忽略；恢复 = 删行。
+// At 是忽略时刻（UTC）；By 是写入时入口 agentd 自名（空写 "local"）。
+type IgnoreMark struct {
+	At time.Time `json:"at"`
+	By string    `json:"by"`
 }
 
 // LoginState 是登录状态（plan L7，冻结）。expired 是证据型（plan Q5，见 discover.go stateOf）。
@@ -230,4 +239,6 @@ type View struct {
 	// ProbeLogin 是当前「可探登录」的 id（plan Q10：正常 + 所在机发现新鲜 + id 最小）；空 = 没有
 	// （na 账号恒空）。支持探测的账号没有可探登录时读面推导为「探测失败 · 没有可用登录」。
 	ProbeLogin string
+	// Ignored 非空 = 账号已忽略（B467 L11–L13）：探测器不探、界面不展示；nil = 未忽略。
+	Ignored *IgnoreMark
 }
