@@ -908,6 +908,10 @@ func (s *Server) handleDone(w http.ResponseWriter, r *http.Request) { … }</div
 </div>
 
 <!-- B453：控制台底栏（额度条），mock 与账号页共用 -->
+<!-- B464（fork b464-accounts）：账号 = 厂商侧身份（按身份去重，名字自动起、可改），登录 = 账号在某机某 HOME 的一份凭据
+     （一账号多登录、同机载体可共用、代理挂在登录上）；各机 agentd 自动发现主 HOME 与 ~/.handoff/home/* 里的登录；
+     账号页「＋ 新增登录」三步弹窗替代 B453 手填登记表单；新增 Claude 组（不支持额度探测，不进底栏）；
+     设置·自动化载体弹窗改为 机器 → 执行器 → 账号登录，HOME / 凭据 / 代理由登录决定。底栏与弹层的「机器」列改为账号的登录所在机器。 -->
 <script src="shared/accounts.js" data-root=""></script>
 <script>HandoffAccounts.mountStatusBar();</script>
 </body>

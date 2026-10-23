@@ -291,11 +291,11 @@
       : a.status === 'fail' ? `<div class="anote">△ ${a.error}${a.goodAgo != null ? `<br>显示的是 ${A.ago(a.goodAgo)}的读数` : ''}</div>` : '';
     return `
       <div class="acct-row${open ? ' open' : ''}">
-        <button type="button" class="l1" data-row="${a.name}"><span class="r1"><span class="nm">${a.name}</span><span class="mc">${a.machine}</span><span class="val">${A.detailNote(a)}</span><span class="chev">›</span></span>${a.quota ? `<span class="r2">${A.winsInline(a)}</span>` : ''}</button>
+        <button type="button" class="l1" data-row="${a.name}"><span class="r1"><span class="nm">${a.name}</span><span class="mc">${A.machinesText(a)}</span><span class="val">${A.detailNote(a)}</span><span class="chev">›</span></span>${a.quota ? `<span class="r2">${A.winsInline(a)}</span>` : ''}</button>
         <div class="more" ${open ? '' : 'hidden'}>
           ${a.quota ? A.winsCompact(a) : ''}
           ${note}
-          <div class="l3"><span class="grow">${A.KINDS[a.kind].name}${a.planType ? ' · ' + a.planType : ''} · ${A.updatedText(a)}</span><button class="probe-btn" data-probe="${a.name}">立即探测</button></div>
+          <div class="l3"><span class="grow">${A.KINDS[a.kind].name}${a.planType ? ' · ' + a.planType : ''} · ${A.updatedText(a)}</span>${a.status === 'na' ? '' : `<button class="probe-btn" data-probe="${a.name}">立即探测</button>`}</div>
         </div>
       </div>`;
   }
