@@ -365,6 +365,9 @@ func ddlStatements(pg bool) []string {
 			`CREATE INDEX IF NOT EXISTS idx_session_renamed_session_seq
 				ON card_events((payload->>'session'), seq)
 				WHERE card_id IS NULL AND type = 'session_renamed'`,
+			`CREATE INDEX IF NOT EXISTS idx_resident_round_session_seq
+				ON card_events((payload->>'session'), seq DESC)
+				WHERE card_id IS NULL AND type = 'resident_round'`,
 			`CREATE TABLE IF NOT EXISTS workflows (
 				name TEXT NOT NULL, version INT NOT NULL, definition JSONB NOT NULL,
 				created_at TIMESTAMPTZ NOT NULL, PRIMARY KEY (name, version))`,
@@ -571,6 +574,9 @@ func ddlStatements(pg bool) []string {
 			`CREATE INDEX IF NOT EXISTS idx_session_renamed_session_seq
 				ON card_events(json_extract(payload, '$.session'), seq)
 				WHERE card_id IS NULL AND type = 'session_renamed'`,
+			`CREATE INDEX IF NOT EXISTS idx_resident_round_session_seq
+				ON card_events(json_extract(payload, '$.session'), seq DESC)
+				WHERE card_id IS NULL AND type = 'resident_round'`,
 			`CREATE TABLE IF NOT EXISTS workflows (
 				name TEXT NOT NULL, version INTEGER NOT NULL, definition TEXT NOT NULL,
 				created_at TEXT NOT NULL, PRIMARY KEY (name, version))`,

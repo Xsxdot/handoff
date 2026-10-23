@@ -49,6 +49,7 @@ func TestOpenCreatesSchema(t *testing.T) {
 	for _, index := range []string{
 		"idx_room_messages_card_seq", "idx_session_projection_card_seq", "idx_needs_events_card_seq",
 		"idx_session_created_id_seq", "idx_session_structure_session_seq",
+		"idx_resident_round_session_seq",
 	} {
 		if err := s.db.QueryRow(`SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?`, index).Scan(&indexName); err != nil {
 			t.Fatalf("B409 范围读取索引 %s 不存在: %v", index, err)

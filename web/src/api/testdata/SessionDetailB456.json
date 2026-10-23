@@ -27,6 +27,13 @@
             "tone": "failed"
           },
           {
+            "seq": 5,
+            "source": "dispatched",
+            "summary": "执行任务已派发",
+            "time": "2026-01-01T00:00:00Z",
+            "tone": "neutral"
+          },
+          {
             "seq": 7,
             "source": "task_mirrored",
             "summary": "出现待处理权限请求",

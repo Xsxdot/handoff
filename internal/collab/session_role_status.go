@@ -56,6 +56,12 @@ func ApplySessionTaskObservations(detail *proto.SessionDetail, observations map[
 			applyCoordinatorObservation(detail, role.CardID, role.TaskID, basis, "unknown", role.Reason)
 			continue
 		}
+		if role.Basis.TaskType == "delivery_failed" {
+			// Task snapshots describe task lifecycle, not whether this specific
+			// ticket answer reached the executor. Keep the explicit delivery error
+			// until a newer task_mirrored lifecycle event replaces its ledger basis.
+			continue
+		}
 		coordinatorState, coordinatorReason := "unknown", "任务快照不能证明协调者仍在运行"
 		priorState := role.State
 		basis := role.Basis
@@ -257,9 +263,13 @@ func sessionRoleStatus(summary proto.SessionSummary, read client.RoleActivityRea
 		if member.Kind != proto.SessionMemberResident {
 			continue
 		}
+		residentRoundsAllowed := member.DriverMode == proto.ResidentDriverPush
 		recent := make([]proto.SessionRoleActivity, 0, len(read.SessionEvents))
 		for _, event := range read.SessionEvents {
 			if event.Actor != member.Identity {
+				continue
+			}
+			if event.Type == "resident_round" && (!residentRoundsAllowed || event.CreatedAt.Before(member.ResidentSatAt)) {
 				continue
 			}
 			if activity, ok := roleActivity(event); ok {
@@ -278,13 +288,26 @@ func sessionRoleStatus(summary proto.SessionSummary, read client.RoleActivityRea
 		count := 0
 		for _, event := range read.SessionEvents {
 			if event.Actor == member.Identity {
+				if event.Type == "resident_round" && (!residentRoundsAllowed || event.CreatedAt.Before(member.ResidentSatAt)) {
+					continue
+				}
 				if _, ok := roleActivity(event); ok {
 					count++
 				}
 			}
 		}
-		status.Roles = append(status.Roles, proto.SessionRole{ID: "resident:" + member.Identity, Kind: "resident", Identity: member.Identity,
-			State: "unknown", Conclusion: "没有驻场者运行记录", Recent: recent, MoreActivity: len(read.SessionEvents) >= 100 || count > 5, TicketRefs: []proto.SessionTicketRef{}})
+		resident := proto.SessionRole{ID: "resident:" + member.Identity, Kind: "resident", Identity: member.Identity,
+			State: "unknown", Conclusion: "没有可观测的驻场者回合记录", Recent: recent,
+			MoreActivity: read.SessionEventsTruncated || len(read.SessionEvents) >= 100 || count > 5, TicketRefs: []proto.SessionTicketRef{}}
+		if residentRoundsAllowed {
+			if round, ok := latestResidentRound(read.SessionEvents, member.Identity, member.ResidentSatAt); ok {
+				resident.State = round.state
+				resident.Since = validTime(round.at, observedAt)
+				resident.Conclusion = round.conclusion
+				resident.Reason = round.reason
+			}
+		}
+		status.Roles = append(status.Roles, resident)
 	}
 	for _, card := range summary.Cards {
 		events := byCard[card.CardID]
@@ -304,7 +327,7 @@ func sessionRoleStatus(summary proto.SessionSummary, read client.RoleActivityRea
 				TaskID: event.SourceTask, Target: event.SourceTarget, State: state, Since: validTime(event.CreatedAt, observedAt), Conclusion: conclusion,
 				Recent: recentRoleEvents(events, event.SourceTarget, event.SourceTask, truncated[card.CardID]), TicketRefs: []proto.SessionTicketRef{},
 				Basis: proto.SessionRoleBasis{Source: "task_mirrored", Seq: event.Seq, TaskID: event.SourceTask, DispatchSeq: dispatch.Seq, TaskType: payload.TaskType, At: event.CreatedAt.UTC()}}
-			if failed, ok := latestUndeliveredTaskEvent(events, event.SourceTarget, event.SourceTask); ok {
+			if failed, ok := latestUndeliveredTaskEvent(events, event.SourceTarget, event.SourceTask); ok && failed.SourceSeq >= event.SourceSeq {
 				executor.State = "exception"
 				executor.Since = validTime(failed.CreatedAt, observedAt)
 				executor.Conclusion = deliveryFailureSummary(failed.Payload)
@@ -407,6 +430,78 @@ func sessionRoleStatus(summary proto.SessionSummary, read client.RoleActivityRea
 	return status
 }
 
+type residentRoundProjection struct {
+	state, conclusion, reason string
+	at                        time.Time
+}
+
+type residentRoundEventPayload struct {
+	Identity string `json:"identity"`
+	RoundID  string `json:"round_id"`
+	Phase    string `json:"phase"`
+	Reason   string `json:"reason"`
+}
+
+// latestResidentRound chooses the latest-started round for this resident, then
+// only accepts its explicitly correlated end/fail outcome.
+func latestResidentRound(events []proto.LedgerEvent, identity string, seatedAt time.Time) (residentRoundProjection, bool) {
+	type facts struct {
+		start proto.LedgerEvent
+		end   *proto.LedgerEvent
+		fail  *proto.LedgerEvent
+	}
+	rounds := map[string]*facts{}
+	for i := range events {
+		ev := events[i]
+		if ev.Type != "resident_round" || ev.CreatedAt.Before(seatedAt) {
+			continue
+		}
+		var payload residentRoundEventPayload
+		if json.Unmarshal(ev.Payload, &payload) != nil || payload.Identity != identity || payload.RoundID == "" {
+			continue
+		}
+		fact := rounds[payload.RoundID]
+		if fact == nil {
+			fact = &facts{}
+			rounds[payload.RoundID] = fact
+		}
+		switch payload.Phase {
+		case "start":
+			if fact.start.Seq == 0 || ev.Seq > fact.start.Seq {
+				fact.start = ev
+			}
+		case "end":
+			copy := ev
+			if fact.end == nil || ev.Seq > fact.end.Seq {
+				fact.end = &copy
+			}
+		case "fail":
+			copy := ev
+			if fact.fail == nil || ev.Seq > fact.fail.Seq {
+				fact.fail = &copy
+			}
+		}
+	}
+	var latest *facts
+	for _, fact := range rounds {
+		if fact.start.Seq > 0 && (latest == nil || fact.start.Seq > latest.start.Seq) {
+			latest = fact
+		}
+	}
+	if latest == nil {
+		return residentRoundProjection{}, false
+	}
+	result := residentRoundProjection{state: "running", conclusion: "最近观测到驻场者回合开始，尚未观测到结束", at: latest.start.CreatedAt}
+	if latest.end != nil && latest.end.Seq > latest.start.Seq && (latest.fail == nil || latest.end.Seq > latest.fail.Seq) {
+		result.state, result.conclusion, result.at = "idle", "驻场者本轮已结束", latest.end.CreatedAt
+	} else if latest.fail != nil && latest.fail.Seq > latest.start.Seq {
+		var payload residentRoundEventPayload
+		_ = json.Unmarshal(latest.fail.Payload, &payload)
+		result.state, result.conclusion, result.reason, result.at = "exception", "驻场者本轮失败", strings.TrimSpace(payload.Reason), latest.fail.CreatedAt
+	}
+	return result, true
+}
+
 type roleMirrorPayload struct {
 	TaskType string          `json:"task_type"`
 	Payload  json.RawMessage `json:"payload"`
@@ -433,7 +528,7 @@ func taskRoleState(typ string) (string, string) {
 	case "delivery_failed":
 		return "exception", "工单应答未送达执行者"
 	case "ticket_answered":
-		return "unknown", "协调者已提交工单答复"
+		return "unknown", "工单答复已记录"
 	case "archived":
 		return "idle", "执行任务已归档"
 	default:
@@ -528,6 +623,8 @@ func currentSeatEvent(events []proto.LedgerEvent, identity string, wakeSeq int64
 func roleActivity(ev proto.LedgerEvent) (proto.SessionRoleActivity, bool) {
 	activity := proto.SessionRoleActivity{Seq: ev.Seq, Time: ev.CreatedAt.UTC(), Tone: "neutral", Source: ev.Type}
 	switch ev.Type {
+	case "dispatched":
+		activity.Summary = "执行任务已派发"
 	case "task_mirrored":
 		p := taskMirrorPayload(ev.Payload)
 		_, summary := taskRoleState(p.TaskType)
@@ -543,7 +640,7 @@ func roleActivity(ev proto.LedgerEvent) (proto.SessionRoleActivity, bool) {
 			activity.Summary = "执行任务提出需要答复的问题"
 			activity.Tone = "needs_you"
 		case "ticket_answered":
-			activity.Summary = "协调者已提交工单答复"
+			activity.Summary = "工单答复已记录"
 		case "delivery_failed":
 			activity.Summary = deliveryFailureSummary(ev.Payload)
 			activity.Tone = "failed"
@@ -579,6 +676,26 @@ func roleActivity(ev proto.LedgerEvent) (proto.SessionRoleActivity, bool) {
 		activity.Summary = strings.TrimSpace(p.Body)
 		if len([]rune(activity.Summary)) > 100 {
 			activity.Summary = string([]rune(activity.Summary)[:100]) + "…"
+		}
+	case "resident_round":
+		var p residentRoundEventPayload
+		if json.Unmarshal(ev.Payload, &p) != nil || p.Identity == "" || p.RoundID == "" {
+			return activity, false
+		}
+		activity.Source = "resident_round"
+		switch p.Phase {
+		case "start":
+			activity.Summary = "驻场者回合已开始"
+		case "end":
+			activity.Summary = "驻场者回合已结束"
+		case "fail":
+			activity.Summary = "驻场者回合失败"
+			activity.Tone = "failed"
+			if p.Reason != "" {
+				activity.Summary += ": " + p.Reason
+			}
+		default:
+			return activity, false
 		}
 	default:
 		return activity, false

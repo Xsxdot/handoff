@@ -19,6 +19,8 @@ var pinnedDDLFingerprints = map[int]string{
 	1: "d84335016f3b445a7f1fd0fbdf4c3429ba4a1efc9a0eb6b464d64b0ef350c011",
 	// 2：B444 session_residents push 列与 sessions.home_project 内联建列（合并 B444 与版本闸时升）。
 	2: "45d616138bb8939124aaa2034b09a50600a02b7c4976d0f2dfda20281ba02d48",
+	// 3：B456 resident_round 按 session+identity 查询的部分索引。
+	3: "cf4412170e9255dfaa882c8f4a31259f9205963ca4fcb22519c9f17e959d0642",
 }
 
 func ddlFingerprint() string {

@@ -294,6 +294,12 @@ func TestB444SessionDetailResidentDriverKeys(t *testing.T) {
 	pushSession := b435Session(t, env)
 	b444SitPush(t, env, pushSession, "linux-01")
 	deskSession := b435Session(t, env)
+	if _, err := env.srv.rooms.RecordResidentRound(deskSession, o2Resident, "stale-push-round", "start", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.srv.rooms.RecordResidentRound(deskSession, o2Resident, "stale-push-round", "fail", "stale push failure"); err != nil {
+		t.Fatal(err)
+	}
 	o2SitResident(t, env, deskSession, o2Resident, o2DesktopSession, o2CLISession, "")
 
 	residentMember := func(session string) map[string]json.RawMessage {
@@ -332,6 +338,20 @@ func TestB444SessionDetailResidentDriverKeys(t *testing.T) {
 			t.Fatalf("旧 desktop 驻场成员不得出现 %s 键（缺失 ≠ 空值），得 %v", key, desk)
 		}
 	}
+	code, body := ledgerGet(t, env.testAgentdEnv, "/api/sessions/"+deskSession)
+	var detail proto.SessionDetail
+	if code != http.StatusOK || json.Unmarshal([]byte(body), &detail) != nil {
+		t.Fatalf("desktop SessionDetail: %d %s", code, body)
+	}
+	for _, role := range detail.RoleStatus.Roles {
+		if role.Kind == "resident" && role.Identity == o2Resident {
+			if role.State != "unknown" {
+				t.Fatalf("desktop resident has no round lifecycle source and must remain unknown: %+v", role)
+			}
+			return
+		}
+	}
+	t.Fatalf("desktop resident role absent from role_status: %s", body)
 }
 
 // A1.9 失败可见：准入满 → 认领留在飞、水位不越过、会话里系统指针行存在且多轮不刷屏（≤1）；名额恢复后
@@ -386,6 +406,12 @@ func TestB444ResidentResumeFailurePointsOnce(t *testing.T) {
 	session := b435Session(t, env)
 	b444SitPush(t, env, session, "local")
 	drainAutomation(t, env)
+	if _, err := env.srv.rooms.RecordResidentRound(session, b444Identity, "resident-old-fail", "start", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.srv.rooms.RecordResidentRound(session, b444Identity, "resident-old-fail", "fail", "older resume error"); err != nil {
+		t.Fatal(err)
+	}
 	runner.setResumeErr(errors.New("b444 载体不可达"))
 
 	seq := sendSessionMessage(t, env.srv.rooms, session, "user:tester", "载体坏了", nil, 0)
@@ -408,6 +434,14 @@ func TestB444ResidentResumeFailurePointsOnce(t *testing.T) {
 	if refs, _ := runner.snapshot(); len(refs) != 1 {
 		t.Fatalf("驻场续轮失败不得重建（Launch），得 resume %d", len(refs))
 	}
+	assertResidentRoleState(t, env, session, "exception")
+
+	// A distinct later human event opens a new real producer round; successful
+	// end must supersede the older failure instead of leaving a stale exception.
+	runner.setResumeErr(nil)
+	sendSessionMessage(t, env.srv.rooms, session, "user:tester", "恢复后继续", nil, 0)
+	drainAutomation(t, env)
+	assertResidentRoleState(t, env, session, "idle")
 }
 
 // A1.9 归档会话：在途消息在会话归档后 → 零回合、标 seen（水位越过，不活锁）、零认领。

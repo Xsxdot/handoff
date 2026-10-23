@@ -267,6 +267,21 @@ func (s *Service) SessionDetailContext(ctx context.Context, id string) (detail p
 		log().Warn("会话角色投影失败：读取最近房间消息", "session", session.ID, "cause", err)
 		return proto.SessionDetail{}, err
 	}
+	var residentRounds []proto.LedgerEvent
+	var residentRoundsTruncated bool
+	for _, member := range detail.Summary.Members {
+		if member.Kind != proto.SessionMemberResident || member.Identity == "" {
+			continue
+		}
+		residentRounds, residentRoundsTruncated, err = s.lc.SessionResidentRoundEventsContext(ctx, session.ID, member.Identity, 100)
+		if err != nil {
+			log().Warn("会话角色投影失败：读取当前驻场者回合事实", "session", session.ID, "identity", member.Identity, "cause", err)
+			return proto.SessionDetail{}, err
+		}
+		break
+	}
+	activityRead.SessionEvents = append(activityRead.SessionEvents, residentRounds...)
+	activityRead.SessionEventsTruncated = residentRoundsTruncated
 	var ticketRead client.RoleTicketRead
 	ticketRead, err = s.lc.SessionRoleTicketsContext(ctx, session.Cards, 500)
 	if err != nil {
@@ -280,6 +295,23 @@ func (s *Service) SessionDetailContext(ctx context.Context, id string) (detail p
 	}
 	detail.RoleStatus = sessionRoleStatus(detail.Summary, activityRead, ticketRead, time.Now().UTC())
 	return detail, nil
+}
+
+// RecordResidentRound adds one correlated push-resident lifecycle fact to the
+// existing session event stream; claim rows remain infrastructure, not role state.
+func (s *Service) RecordResidentRound(sessionID, identity, roundID, phase, reason string) (int64, error) {
+	if !room.IsSessionRoom(sessionID) {
+		return 0, fmt.Errorf("%q 不是会话房间: %w", sessionID, ErrNoRoom)
+	}
+	if _, _, err := proto.ParseMemberIdentity(identity); err != nil {
+		return 0, fmt.Errorf("驻场者身份 %q 无效: %w", identity, ErrResidentIdentity)
+	}
+	seq, err := s.lc.RecordResidentRound(sessionID, identity, roundID, phase, reason)
+	if err != nil {
+		log().Error("驻场者回合事实写入失败", "session", sessionID, "identity", identity, "round_id", roundID, "phase", phase, "cause", err)
+		return 0, err
+	}
+	return seq, nil
 }
 
 // ArchiveSession 显式归档会话；归档后只读。卡的终态不等于会话结束。
@@ -696,7 +728,7 @@ func (s *Service) sessionMembers(session proto.Session, byCard map[string]proto.
 		members = append(members, proto.SessionMember{
 			Identity: resident.Identity, Kind: proto.SessionMemberResident, Status: status, LastActive: lastActive,
 			DriverMode: resident.DriverMode, Carrier: resident.Carrier,
-			CarrierMachine: resident.CarrierMachine, Model: resident.Model,
+			CarrierMachine: resident.CarrierMachine, Model: resident.Model, ResidentSatAt: resident.SatAt,
 		})
 	}
 	for _, cardID := range session.Cards {

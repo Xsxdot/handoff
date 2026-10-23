@@ -1,0 +1,544 @@
+
+> web@0.0.0 test
+> vitest run --run src/app/rooms/SessionRoleStatusBar.test.tsx -t keeps every exception chip visible
+
+
+ RUN  v4.1.10 /Users/xushixin/.codex/worktrees/e113/handoff/web
+
+ ❯ src/app/rooms/SessionRoleStatusBar.test.tsx (12 tests | 1 failed | 11 skipped) 1127ms
+     × keeps every exception chip visible when the real density fitter compresses and folds other roles 1126ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/app/rooms/SessionRoleStatusBar.test.tsx > SessionRoleStatusBar ticket snapshots > keeps every exception chip visible when the real density fitter compresses and folds other roles
+AssertionError: expected false to be true // Object.is equality
+
+Ignored nodes: comments, script, style
+[36m<html>[39m
+  [36m<head />[39m
+  [36m<body>[39m
+    [36m<div>[39m
+      [36m<div[39m
+        [33mclass[39m=[32m"role-status"[39m
+      [36m>[39m
+        [36m<div[39m
+          [33maria-label[39m=[32m"会话角色状态"[39m
+          [33mclass[39m=[32m"role-strip"[39m
+          [33mrole[39m=[32m"region"[39m
+        [36m>[39m
+          [36m<div[39m
+            [33mclass[39m=[32m"strip-lead"[39m
+          [36m>[39m
+            [36m<button[39m
+              [33maria-label[39m=[32m"需要你处理 1 件事，打开待处理事项"[39m
+              [33mclass[39m=[32m"need-cta"[39m
+              [33mtitle[39m=[32m"需要你处理：协调者 · B456"[39m
+              [33mtype[39m=[32m"button"[39m
+            [36m>[39m
+              [36m<span[39m
+                [33maria-hidden[39m=[32m"true"[39m
+                [33mclass[39m=[32m"st-ic"[39m
+              [36m>[39m
+                [36m<svg[39m
+                  [33maria-hidden[39m=[32m"true"[39m
+                  [33mfocusable[39m=[32m"false"[39m
+                  [33mviewBox[39m=[32m"0 0 16 16"[39m
+                [36m>[39m
+                  [36m<path[39m
+                    [33md[39m=[32m"M2.1 3.1h11.8v8H7.1l-3.3 2v-2H2.1z"[39m
+                    [33mfill[39m=[32m"none"[39m
+                    [33mstroke[39m=[32m"currentColor"[39m
+                    [33mstroke-linejoin[39m=[32m"round"[39m
+                    [33mstroke-width[39m=[32m"1.6"[39m
+                  [36m/>[39m
+                  [36m<circle[39m
+                    [33mcx[39m=[32m"5.2"[39m
+                    [33mcy[39m=[32m"7.1"[39m
+                    [33mfill[39m=[32m"currentColor"[39m
+                    [33mr[39m=[32m".65"[39m
+                  [36m/>[39m
+                  [36m<circle[39m
+                    [33mcx[39m=[32m"8"[39m
+                    [33mcy[39m=[32m"7.1"[39m
+                    [33mfill[39m=[32m"currentColor"[39m
+                    [33mr[39m=[32m".65"[39m
+                  [36m/>[39m
+                  [36m<circle[39m
+                    [33mcx[39m=[32m"10.8"[39m
+                    [33mcy[39m=[32m"7.1"[39m
+                    [33mfill[39m=[32m"currentColor"[39m
+                    [33mr[39m=[32m".65"[39m
+                  [36m/>[39m
+                [36m</svg>[39m
+              [36m</span>[39m
+              [0m需要你处理[0m
+              [36m<b>[39m
+                [0m1[0m
+              [36m</b>[39m
+            [36m</button>[39m
+            [36m<button[39m
+              [33mclass[39m=[32m"banner s-need "[39m
+              [33mtitle[39m=[32m"协调者 · B456 · 需要你 · 时间未记录 · 有 1 项需要你处理"[39m
+              [33mtype[39m=[32m"button"[39m
+            [36m>[39m
+              [36m<span[39m
+                [33maria-hidden[39m=[32m"true"[39m
+                [33mclass[39m=[32m"st-ic"[39m
+              [36m>[39m
+                [36m<svg[39m
+                  [33maria-hidden[39m=[32m"true"[39m
+                  [33mfocusable[39m=[32m"false"[39m
+                  [33mviewBox[39m=[32m"0 0 16 16"[39m
+                [36m>[39m
+                  [36m<path[39m
+                    [33md[39m=[32m"M2.1 3.1h11.8v8H7.1l-3.3 2v-2H2.1z"[39m
+                    [33mfill[39m=[32m"none"[39m
+                    [33mstroke[39m=[32m"currentColor"[39m
+                    [33mstroke-linejoin[39m=[32m"round"[39m
+                    [33mstroke-width[39m=[32m"1.6"[39m
+                  [36m/>[39m
+                  [36m<circle[39m
+                    [33mcx[39m=[32m"5.2"[39m
+                    [33mcy[39m=[32m"7.1"[39m
+                    [33mfill[39m=[32m"currentColor"[39m
+                    [33mr[39m=[32m".65"[39m
+                  [36m/>[39m
+                  [36m<circle[39m
+                    [33mcx[39m=[32m"8"[39m
+                    [33mcy[39m=[32m"7.1"[39m
+                    [33mfill[39m=[32m"currentColor"[39m
+                    [33mr[39m=[32m".65"[39m
+                  [36m/>[39m
+                  [36m<circle[39m
+                    [33mcx[39m=[32m"10.8"[39m
+                    [33mcy[39m=[32m"7.1"[39m
+                    [33mfill[39m=[32m"currentColor"[39m
+                    [33mr[39m=[32m".65"[39m
+                  [36m/>[39m
+                [36m</svg>[39m
+              [36m</span>[39m
+              [36m<span[39m
+                [33mclass[39m=[32m"banner-text"[39m
+              [36m>[39m
+                [0m协调者 · B456[0m
+                [0m：[0m
+                [0m有 1 项需要你处理[0m
+              [36m</span>[39m
+            [36m</button>[39m
+          [36m</div>[39m
+          [36m<div[39m
+            [33mclass[39m=[32m"strip-roster"[39m
+          [36m>[39m
+            [36m<div[39m
+              [33mclass[39m=[32m"chips"[39m
+            [36m>[39m
+              [36m<button[39m
+                [33maria-label[39m=[32m"协调者 · B456，需要你，时间未记录。查看详情"[39m
+                [33mclass[39m=[32m"chip s-need  "[39m
+                [33mdata-role-chip[39m=[32m"coordinator:B456"[39m
+                [33mdata-state[39m=[32m"needs_you"[39m
+                [33mhidden[39m=[32m""[39m
+                [33mtitle[39m=[32m"协调者 · B456 · 需要你 · 时间未记录 · 有 1 项需要你处理"[39m
+                [33mtype[39m=[32m"button"[39m
+              [36m>[39m
+                [36m<span[39m
+                  [33maria-hidden[39m=[32m"true"[39m
+                  [33mclass[39m=[32m"av"[39m
+                [36m>[39m
+                  [0m协[0m
+                  [36m<span[39m
+                    [33mclass[39m=[32m"badge"[39m
+                  [36m>[39m
+                    [36m<span[39m
+                      [33mclass[39m=[32m"st-ic"[39m
+                    [36m>[39m
+                      [36m<svg[39m
+                        [33maria-hidden[39m=[32m"true"[39m
+                        [33mfocusable[39m=[32m"false"[39m
+                        [33mviewBox[39m=[32m"0 0 16 16"[39m
+                      [36m>[39m
+                        [36m<path[39m
+                          [33md[39m=[32m"M2.1 3.1h11.8v8H7.1l-3.3 2v-2H2.1z"[39m
+                          [33mfill[39m=[32m"none"[39m
+                          [33mstroke[39m=[32m"currentColor"[39m
+                          [33mstroke-linejoin[39m=[32m"round"[39m
+                          [33mstroke-width[39m=[32m"1.6"[39m
+                        [36m/>[39m
+                        [36m<circle[39m
+                          [33mcx[39m=[32m"5.2"[39m
+                          [33mcy[39m=[32m"7.1"[39m
+                          [33mfill[39m=[32m"currentColor"[39m
+                          [33mr[39m=[32m".65"[39m
+                        [36m/>[39m
+                        [36m<circle[39m
+                          [33mcx[39m=[32m"8"[39m
+                          [33mcy[39m=[32m"7.1"[39m
+                          [33mfill[39m=[32m"currentColor"[39m
+                          [33mr[39m=[32m".65"[39m
+                        [36m/>[39m
+                        [36m<circle[39m
+                          [33mcx[39m=[32m"10.8"[39m
+                          [33mcy[39m=[32m"7.1"[39m
+                          [33mfill[39m=[32m"currentColor"[39m
+                          [33mr[39m=[32m".65"[39m
+                        [36m/>[39m
+                      [36m</svg>[39m
+                    [36m</span>[39m
+                  [36m</span>[39m
+                [36m</span>[39m
+                [36m<span[39m
+                  [33maria-hidden[39m=[32m"true"[39m
+                  [33mclass[39m=[32m"chip-tag"[39m
+                [36m>[39m
+                  [0m56[0m
+                [36m</span>[39m
+                [36m<span[39m
+                  [33mclass[39m=[32m"chip-name"[39m
+                [36m>[39m
+                  [0m协调者 · B456[0m
+                [36m</span>[39m
+                [36m<span[39m
+                  [33mclass[39m=[32m"chip-state"[39m
+                [36m>[39m
+                  [0m需要你[0m
+                [36m</span>[39m
+                [36m<span[39m
+                  [33mclass[39m=[32m"chip-dur"[39m
+                [36m>[39m
+                  [0m时间未记录[0m
+                [36m</span>[39m
+              [36m</button>[39m
+              [36m<button[39m
+                [33maria-label[39m=[32m"协调者 · E1，异常，时间未记录。查看详情"[39m
+                [33mclass[39m=[32m"chip s-err nodur"[39m
+                [33mdata-role-chip[39m=[32m"coordinator:E1"[39m
+                [33mdata-state[39m=[32m"exception"[39m
+                [33mtitle[39m=[32m"协调者 · E1 · 异常 · 时间未记录 · 第一项接续异常"[39m
+                [33mtype[39m=[32m"button"[39m
+              [36m>[39m
+                [36m<span[39m
+                  [33maria-hidden[39m=[32m"true"[39m
+                  [33mclass[39m=[32m"av"[39m
+                [36m>[39m
+                  [0m协[0m
+                  [36m<span[39m
+                    [33mclass[39m=[32m"badge"[39m
+                  [36m>[39m
+                    [36m<span[39m
+                      [33mclass[39m=[32m"st-ic"[39m
+                    [36m>[39m
+                      [0m▲[0m
+                    [36m</span>[39m
+                  [36m</span>[39m
+                [36m</span>[39m
+                [36m<span[39m
+                  [33maria-hidden[39m=[32m"true"[39m
+                  [33mclass[39m=[32m"chip-tag"[39m
+                [36m>[39m
+                  [0mE1[0m
+                [36m</span>[39m
+                [36m<span[39m
+                  [33mclass[39m=[32m"chip-name"[39m
+                [36m>[39m
+                  [0m协调者 · E1[0m
+                [36m</span>[39m
+                [36m<span[39m
+                  [33mclass[39m=[32m"chip-state"[39m
+                [36m>[39m
+                  [0m异常[0m
+                [36m</span>[39m
+                [36m<span[39m
+                  [33mclass[39m=[32m"chip-dur"[39m
+                [36m>[39m
+                  [0m时间未记录[0m
+                [36m</span>[39m
+              [36m</button>[39m
+              [36m<button[39m
+                [33maria-label[39m=[32m"协调者 · E2，异常，时间未记录。查看详情"[39m
+                [33mclass[39m=[32m"chip s-err nodur"[39m
+                [33mdata-role-chip[39m=[32m"coordinator:E2"[39m
+                [33mdata-state[39m=[32m"exception"[39m
+                [33mhidden[39m=[32m""[39m
+                [33mtitle[39m=[32m"协调者 · E2 · 异常 · 时间未记录 · 第二项接续异常"[39m
+                [33mtype[39m=[32m"button"[39m
+              [36m>[39m
+                [36m<span[39m
+                  [33maria-hidden[39m=[32m"true"[39m
+                  [33mclass[39m=[32m"av"[39m
+                [36m>[39m
+                  [0m协[0m
+                  [36m<span[39m
+                    [33mclass[39m=[32m"badge"[39m
+                  [36m>[39m
+                    [36m<span[39m
+                      [33mclass[39m=[32m"st-ic"[39m
+                    [36m>[39m
+                      [0m▲[0m
+                    [36m</span>[39m
+                  [36m</span>[39m
+                [36m</span>[39m
+                [36m<span[39m
+                  [33maria-hidden[39m=[32m"true"[39m
+                  [33mclass[39m=[32m"chip-tag"[39m
+                [36m>[39m
+                  [0mE2[0m
+                [36m</span>[39m
+                [36m<span[39m
+                  [33mclass[39m=[32m"chip-name"[39m
+                [36m>[39m
+                  [0m协调者 · E2[0m
+                [36m</span>[39m
+                [36m<span[39m
+                  [33mclass[39m=[32m"chip-state"[39m
+                [36m>[39m
+                  [0m异常[0m
+                [36m</span>[39m
+                [36m<span[39m
+                  [33mclass[39m=[32m"chip-dur"[39m
+                [36m>[39m
+                  [0m时间未记录[0m
+                [36m</span>[39m
+              [36m</button>[39m
+              [36m<button[39m
+                [33maria-label[39m=[32m"执行者 · wait-1，等待中，时间未记录。查看详情"[39m
+                [33mclass[39m=[32m"chip s-wait nodur mini"[39m
+                [33mdata-role-chip[39m=[32m"executor:wait-1"[39m
+                [33mdata-state[39m=[32m"waiting"[39m
+                [33mhidden[39m=[32m""[39m
+                [33mtitle[39m=[32m"执行者 · wait-1 · 等待中 · 时间未记录 · 有一项需要你决定"[39m
+                [33mtype[39m=[32m"button"[39m
+              [36m>[39m
+                [36m<span[39m
+                  [33maria-hidden[39m=[32m"true"[39m
+                  [33mclass[39m=[32m"av"[39m
+                [36m>[39m
+                  [0m执[0m
+                  [36m<span[39m
+                    [33mclass[39m=[32m"badge"[39m
+                  [36m>[39m
+                    [36m<span[39m
+                      [33mclass[39m=[32m"st-ic"[39m
+                    [36m>[39m
+                      [0m◷[0m
+                    [36m</span>[39m
+                  [36m</span>[39m
+                [36m</span>[39m
+                [36m<span[39m
+                  [33maria-hidden[39m=[32m"true"[39m
+                  [33mclass[39m=[32m"chip-tag"[39m
+                [36m>[39m
+                  [0m-1[0m
+                [36m</span>[39m
+                [36m<span[39m
+                  [33mclass[39m=[32m"chip-name"[39m
+                [36m>[39m
+                  [0m执行者 · wait-1[0m
+                [36m</span>[39m
+                [36m<span[39m
+                  [33mclass[39m=[32m"chip-state"[39m
+                [36m>[39m
+                  [0m等待中[0m
+                [36m</span>[39m
+                [36m<span[39m
+                  [33mclass[39m=[32m"chip-dur"[39m
+                [36m>[39m
+                  [0m时间未记录[0m
+                [36m</span>[39m
+              [36m</button>[39m
+              [36m<button[39m
+                [33maria-label[39m=[32m"执行者 · run-1，运行中，时间未记录。查看详情"[39m
+                [33mclass[39m=[32m"chip s-run mini nodur"[39m
+                [33mdata-role-chip[39m=[32m"executor:run-1"[39m
+                [33mdata-state[39m=[32m"running"[39m
+                [33mhidden[39m=[32m""[39m
+                [33mtitle[39m=[32m"执行者 · run-1 · 运行中 · 时间未记录 · 有一项需要你决定"[39m
+                [33mtype[39m=[32m"button"[39m
+              [36m>[39m
+                [36m<span[39m
+                  [33maria-hidden[39m=[32m"true"[39m
+                  [33mclass[39m=[32m"av"[39m
+                [36m>[39m
+                  [0m执[0m
+                  [36m<span[39m
+                    [33mclass[39m=[32m"badge"[39m
+                  [36m>[39m
+                    [36m<span[39m
+                      [33mclass[39m=[32m"st-ic"[39m
+                    [36m>[39m
+                      [0m●[0m
+                    [36m</span>[39m
+                  [36m</span>[39m
+                [36m</span>[39m
+                [36m<span[39m
+                  [33maria-hidden[39m=[32m"true"[39m
+                  [33mclass[39m=[32m"chip-tag"[39m
+                [36m>[39m
+                  [0m-1[0m
+                [36m</span>[39m
+                [36m<span[39m
+                  [33mclass[39m=[32m"chip-name"[39m
+                [36m>[39m
+                  [0m执行者 · run-1[0m
+                [36m</span>[39m
+                [36m<span[39m
+                  [33mclass[39m=[32m"chip-state"[39m
+                [36m>[39m
+                  [0m运行中[0m
+                [36m</span>[39m
+                [36m<span[39m
+                  [33mclass[39m=[32m"chip-dur"[39m
+                [36m>[39m
+                  [0m时间未记录[0m
+                [36m</span>[39m
+              [36m</button>[39m
+              [36m<button[39m
+                [33maria-label[39m=[32m"执行者 · idle-1，空闲，时间未记录。查看详情"[39m
+                [33mclass[39m=[32m"chip s-idle mini nodur"[39m
+                [33mdata-role-chip[39m=[32m"executor:idle-1"[39m
+                [33mdata-state[39m=[32m"idle"[39m
+                [33mhidden[39m=[32m""[39m
+                [33mtitle[39m=[32m"执行者 · idle-1 · 空闲 · 时间未记录 · 有一项需要你决定"[39m
+                [33mtype[39m=[32m"button"[39m
+              [36m>[39m
+                [36m<span[39m
+                  [33maria-hidden[39m=[32m"true"[39m
+                  [33mclass[39m=[32m"av"[39m
+                [36m>[39m
+                  [0m执[0m
+                  [36m<span[39m
+                    [33mclass[39m=[32m"badge"[39m
+                  [36m>[39m
+                    [36m<span[39m
+                      [33mclass[39m=[32m"st-ic"[39m
+                    [36m>[39m
+                      [0m○[0m
+                    [36m</span>[39m
+                  [36m</span>[39m
+                [36m</span>[39m
+                [36m<span[39m
+                  [33maria-hidden[39m=[32m"true"[39m
+                  [33mclass[39m=[32m"chip-tag"[39m
+                [36m>[39m
+                  [0m-1[0m
+                [36m</span>[39m
+                [36m<span[39m
+                  [33mclass[39m=[32m"chip-name"[39m
+                [36m>[39m
+                  [0m执行者 · idle-1[0m
+                [36m</span>[39m
+                [36m<span[39m
+                  [33mclass[39m=[32m"chip-state"[39m
+                [36m>[39m
+                  [0m空闲[0m
+                [36m</span>[39m
+                [36m<span[39m
+                  [33mclass[39m=[32m"chip-dur"[39m
+                [36m>[39m
+                  [0m时间未记录[0m
+                [36m</span>[39m
+              [36m</button>[39m
+              [36m<button[39m
+                [33maria-label[39m=[32m"执行者 · unknown-，未知，时间未记录。查看详情"[39m
+                [33mclass[39m=[32m"chip s-unk mini nodur"[39m
+                [33mdata-role-chip[39m=[32m"executor:unknown-1"[39m
+                [33mdata-state[39m=[32m"unknown"[39m
+                [33mhidden[39m=[32m""[39m
+                [33mtitle[39m=[32m"执行者 · unknown- · 未知 · 时间未记录 · 有一项需要你决定"[39m
+                [33mtype[39m=[32m"button"[39m
+              [36m>[39m
+                [36m<span[39m
+                  [33maria-hidden[39m=[32m"true"[39m
+                  [33mclass[39m=[32m"av"[39m
+                [36m>[39m
+                  [0m执[0m
+                  [36m<span[39m
+                    [33mclass[39m=[32m"badge"[39m
+                  [36m>[39m
+                    [36m<span[39m
+                      [33mclass[39m=[32m"st-ic"[39m
+                    [36m>[39m
+                      [0m◌[0m
+                    [36m</span>[39m
+                  [36m</span>[39m
+                [36m</span>[39m
+                [36m<span[39m
+                  [33maria-hidden[39m=[32m"true"[39m
+                  [33mclass[39m=[32m"chip-tag"[39m
+                [36m>[39m
+                  [0m-1[0m
+                [36m</span>[39m
+                [36m<span[39m
+                  [33mclass[39m=[32m"chip-name"[39m
+                [36m>[39m
+                  [0m执行者 · unknown-[0m
+                [36m</span>[39m
+                [36m<span[39m
+                  [33mclass[39m=[32m"chip-state"[39m
+                [36m>[39m
+                  [0m未知[0m
+                [36m</span>[39m
+                [36m<span[39m
+                  [33mclass[39m=[32m"chip-dur"[39m
+                [36m>[39m
+                  [0m时间未记录[0m
+                [36m</span>[39m
+              [36m</button>[39m
+            [36m</div>[39m
+            [36m<button[39m
+              [33maria-expanded[39m=[32m"false"[39m
+              [33maria-haspopup[39m=[32m"true"[39m
+              [33maria-label[39m=[32m"还有 6 个角色，查看全部"[39m
+              [33mclass[39m=[32m"more"[39m
+              [33mtype[39m=[32m"button"[39m
+            [36m>[39m
+              [0m+[0m
+              [0m6[0m
+              [36m<span[39m
+                [33maria-hidden[39m=[32m"true"[39m
+                [33mclass[39m=[32m"more-dot err"[39m
+              [36m/>[39m
+              [36m<span[39m
+                [33maria-hidden[39m=[32m"true"[39m
+                [33mclass[39m=[32m"more-dot need"[39m
+              [36m/>[39m
+            [36m</button>[39m
+          [36m</div>[39m
+          [36m<span[39m
+            [33mclass[39m=[32m"observation-time"[39m
+          [36m>[39m
+            [0m最后观测 [0m
+            [0m3:05:00 PM[0m
+          [36m</span>[39m
+        [36m</div>[39m
+      [36m</div>[39m
+    [36m</div>[39m
+  [36m</body>[39m
+[36m</html>[39m
+
+- Expected
++ Received
+
+- true
++ false
+
+ ❯ src/app/rooms/SessionRoleStatusBar.test.tsx:71:90
+     69|       const errors = chips.filter((chip) => chip.dataset.state === 'ex…
+     70|       expect(errors).toHaveLength(2)
+     71|       expect(errors.every((chip) => !chip.hidden && !chip.classList.co…
+       |                                                                                          ^
+     72|       expect(chips.some((chip) => chip.hidden && chip.dataset.state !=…
+     73|     })
+ ❯ runWithExpensiveErrorDiagnosticsDisabled node_modules/@testing-library/dom/dist/config.js:47:12
+ ❯ checkCallback node_modules/@testing-library/dom/dist/wait-for.js:124:77
+ ❯ Timeout.checkRealTimersCallback node_modules/@testing-library/dom/dist/wait-for.js:118:16
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 11 skipped (12)
+   Start at  18:50:06
+   Duration  1.86s (transform 133ms, setup 78ms, import 208ms, tests 1.13s, environment 348ms)
+
+
+Mutation test exit status: 1 (expected nonzero)

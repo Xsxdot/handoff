@@ -2,7 +2,7 @@
 
 ## 偏离与自主决定
 
-按已批准的 `docs/superpowers/plans/b456-plan.md` 与 spec r4 实现前端 consumer，没有改变冻结的状态词表、服务边界或数据所有权。将组件与样式拆到 `SessionRoleStatusBar.tsx` 和 `session-role-status.css`，是计划授权范围内的文件组织决定。待处理事项只以 `ticket_refs` 作候选，并逐 task 读取现有 `fetchTaskDetail` 后按 task/ticket 精确匹配；没有添加 API 或第二份待办状态机。系统实际观测到执行人身份无法处理当前会话权限的额外分支仍由后端状态和当前读取权限决定，前端不自造 assignee。
+本轮决定：按已批准的 `docs/superpowers/plans/b456-plan.md` 与 spec r4，只补组件行为证据、修复其真实 Hook 依赖并把原型索引 r3 事实更新为已批准 r4；没有越权改变状态词表、服务边界、数据所有权或后端。将组件与样式拆到 `SessionRoleStatusBar.tsx` 和 `session-role-status.css`，是计划授权范围内的文件组织决定。待处理事项只以 `ticket_refs` 作候选，并逐 task 读取现有 `fetchTaskDetail` 后按 task/ticket 精确匹配；没有添加 API 或第二份待办状态机。系统实际观测到执行人身份无法处理当前会话权限的额外分支仍由后端状态和当前读取权限决定，前端不自造 assignee。
 
 ## 实现范围
 
@@ -72,3 +72,12 @@
 角色详情与工单抽屉分别保存其触发元素；从“全部角色”菜单打开详情时，详情关闭后焦点归还到菜单入口。弹层切换仅在新顶层打开时自动聚焦，不在工单关闭时将焦点重置到详情关闭按钮；关闭工单恢复到详情内的入口，随后关闭详情恢复到状态条原始入口。新增连续两次 Esc 的行为反例。
 
 验证：`SessionRoleStatusBar.test.tsx` 与 `SessionTab.test.tsx` 共 2 个文件、29 项测试通过；Node 24 `npm run typecheck`、`npm run build` 与 `git diff --check` 通过。Build 保留既有 bundle 大于 500 kB 提示。
+
+
+## I4 行为锁与 Hook 依赖收口
+
+新增真实组件反例：以 `clientWidth`/`offsetWidth` 注入浏览器布局测量，运行实际 density fitter，确认窄宽挤压下异常 chip 保持可见且不进入 `+N`，普通角色折叠后 `+N` 仍显示需要处理的 urgency 点；跨状态顺序覆盖 needs_you→exception→waiting→running→idle→unknown；归档已加载票据时关闭 actionable CTA 并禁用抽屉内回答，同时保留只读内容。异常折叠唯一 mutant（移除 exception fold guard）使布局测试失败，恢复 guard 后通过；原始输出保存在 `b456-exception-fold-red.log` 与 `b456-exception-fold-green.log`。
+
+本轮 ESLint 报出的六个 exhaustive-deps 警告通过稳定空角色数组、memoized 派生集合/票据数据、补全 refs 与焦点关闭回调依赖消除；未禁用规则或改变业务语义。原型索引已将 B456 状态由草案 r3 更正为用户批准 r4，并链接批准版说明。
+
+最终本轮定向验证：`SessionRoleStatusBar.test.tsx`、`SessionTab.test.tsx` 共 2 个文件、32 项通过；目标文件 ESLint 0 warnings；Node 24 `npm run typecheck` 与 `npm run build` 通过（保留既有 >500 kB chunk 体积提示）；`git diff --check` 通过。未运行全量 Web suite 或浏览器验收，留主会话复跑。

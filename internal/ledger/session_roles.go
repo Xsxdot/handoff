@@ -13,7 +13,7 @@ import (
 )
 
 // SessionRoleActivityContext returns a bounded latest-facts window for the supplied cards.
-// It does not replay the ledger stream; each card contributes at most limit+1 rows.
+// Ordinary comments and unrelated card/task histories are excluded at the query boundary.
 func (s *Store) SessionRoleActivityContext(ctx context.Context, cardIDs []string, limit int) ([]Event, []string, error) {
 	cardIDs = uniqueSorted(cardIDs)
 	if limit <= 0 || limit > 200 {
@@ -22,52 +22,17 @@ func (s *Store) SessionRoleActivityContext(ctx context.Context, cardIDs []string
 	if len(cardIDs) == 0 {
 		return []Event{}, []string{}, nil
 	}
+	const cardBatchSize = 400
+	const mandatoryFactsPerCard = 6 // dispatch + wake + two seat boundaries + current raw/lifecycle mirrors
 	var events []Event
 	var truncated []string
-	truncatedSeen := map[string]bool{}
-	for start := 0; start < len(cardIDs); start += 400 {
-		end := start + 400
+	for start := 0; start < len(cardIDs); start += cardBatchSize {
+		end := start + cardBatchSize
 		if end > len(cardIDs) {
 			end = len(cardIDs)
 		}
 		chunk := cardIDs[start:end]
-		placeholders := strings.TrimSuffix(strings.Repeat("?,", len(chunk)), ",")
-		args := make([]any, 0, len(chunk)+1)
-		for _, id := range chunk {
-			args = append(args, id)
-		}
-		args = append(args, limit+1)
-		commentKey := `json_extract(payload, '$.dedupe_key')`
-		dispatchTarget := `json_extract(d.payload, '$.target')`
-		dispatchTask := `json_extract(d.payload, '$.task_id')`
-		mirrorTaskType := `json_extract(m.payload, '$.task_type')`
-		if s.dialect != dialectSQLite {
-			commentKey = `payload->>'dedupe_key'`
-			dispatchTarget = `d.payload->>'target'`
-			dispatchTask = `d.payload->>'task_id'`
-			mirrorTaskType = `m.payload->>'task_type'`
-		}
-		query := `WITH ranked AS (SELECT seq, card_id, type, actor, payload, source_target, source_task, source_seq, created_at,
-				ROW_NUMBER() OVER (PARTITION BY card_id ORDER BY seq DESC) AS rn,
-				CASE WHEN type = 'dispatched' THEN ROW_NUMBER() OVER (PARTITION BY card_id, type ORDER BY seq DESC) ELSE 0 END AS dispatch_rn,
-				CASE WHEN type = 'comment' THEN ROW_NUMBER() OVER (PARTITION BY card_id, type ORDER BY seq DESC) ELSE 0 END AS wake_rn,
-				CASE WHEN type IN ('driver_seat_bound','driver_takeover') THEN ROW_NUMBER() OVER (PARTITION BY card_id, type ORDER BY seq DESC) ELSE 0 END AS seat_rn
-				FROM card_events WHERE card_id IN (` + placeholders + `)
-				AND type IN ('comment','dispatched','task_mirrored','room_message','needs_human','needs_cleared','status_moved','driver_seat_bound','driver_takeover')
-				AND (type <> 'comment' OR ` + commentKey + ` LIKE 'wake_round:%'))
-			SELECT seq, card_id, type, actor, payload, source_target, source_task, source_seq, created_at, rn FROM ranked
-			WHERE rn <= ? OR (type = 'dispatched' AND dispatch_rn = 1) OR (type = 'comment' AND wake_rn = 1)
-			OR (type IN ('driver_seat_bound','driver_takeover') AND seat_rn = 1)
-			OR (type = 'task_mirrored' AND seq = (SELECT m.seq FROM card_events m WHERE m.card_id = ranked.card_id AND m.type = 'task_mirrored'
-				AND m.source_target = (SELECT ` + dispatchTarget + ` FROM card_events d WHERE d.card_id = ranked.card_id AND d.type = 'dispatched' ORDER BY d.seq DESC LIMIT 1)
-				AND m.source_task = (SELECT ` + dispatchTask + ` FROM card_events d WHERE d.card_id = ranked.card_id AND d.type = 'dispatched' ORDER BY d.seq DESC LIMIT 1)
-				ORDER BY m.source_seq DESC LIMIT 1))
-			OR (type = 'task_mirrored' AND seq = (SELECT m.seq FROM card_events m WHERE m.card_id = ranked.card_id AND m.type = 'task_mirrored'
-				AND m.source_target = (SELECT ` + dispatchTarget + ` FROM card_events d WHERE d.card_id = ranked.card_id AND d.type = 'dispatched' ORDER BY d.seq DESC LIMIT 1)
-				AND m.source_task = (SELECT ` + dispatchTask + ` FROM card_events d WHERE d.card_id = ranked.card_id AND d.type = 'dispatched' ORDER BY d.seq DESC LIMIT 1)
-				AND ` + mirrorTaskType + ` IN ('permission_request','question','ticket_answered','completed','turn_failed','failed','archived','delivery_failed')
-				ORDER BY m.source_seq DESC LIMIT 1))
-			ORDER BY card_id, seq DESC`
+		query, args := buildSessionRoleActivityQuery(s.dialect, chunk, limit)
 		stage, err := s.timedReadQuery(ctx, query, args, func(rows *sql.Rows) (int, int64, error) {
 			count := 0
 			var resultBytes int64
@@ -77,30 +42,102 @@ func (s *Store) SessionRoleActivityContext(ctx context.Context, cardIDs []string
 				var sourceSeq sql.NullInt64
 				var raw string
 				var createdAt any
-				var rank int
-				if err := rows.Scan(&ev.Seq, &cardID, &ev.Type, &ev.Actor, &raw, &sourceTarget, &sourceTask, &sourceSeq, &createdAt, &rank); err != nil {
+				var rank, cardTotal int
+				if err := rows.Scan(&ev.Seq, &cardID, &ev.Type, &ev.Actor, &raw, &sourceTarget, &sourceTask, &sourceSeq, &createdAt, &rank, &cardTotal); err != nil {
 					return count, 0, err
 				}
 				ev.CardID, ev.SourceTarget, ev.SourceTask, ev.SourceSeq = cardID.String, sourceTarget.String, sourceTask.String, sourceSeq.Int64
 				ev.Payload, ev.CreatedAt = json.RawMessage(raw), toTime(createdAt)
 				events = append(events, ev)
 				resultBytes += int64(len(raw))
-				if rank > limit {
-					if !truncatedSeen[ev.CardID] {
-						truncated = append(truncated, ev.CardID)
-						truncatedSeen[ev.CardID] = true
-					}
+				if cardTotal > limit && !containsString(truncated, ev.CardID) {
+					truncated = append(truncated, ev.CardID)
 				}
 				count++
 			}
 			return count, resultBytes, rows.Err()
 		})
 		if err != nil {
+			log().Error("读取角色动态失败", append(diag.Attrs(ctx), "cards", len(chunk), "limit", limit,
+				"max_rows_per_card", limit+mandatoryFactsPerCard, "error_class", readErrorClass(err, stage.failedStage),
+				"failed_stage", stage.failedStage, "cause", err)...)
 			return nil, nil, fmt.Errorf("读取角色动态卡范围 %d..%d: %w", start, end, err)
 		}
-		_ = stage
+		log().Debug("读取角色动态完成", append(append(diag.Attrs(ctx), "cards", len(chunk), "limit", limit,
+			"max_rows_per_card", limit+mandatoryFactsPerCard, "truncated_cards", len(truncated)), stage.logAttrs()...)...)
 	}
 	return events, truncated, nil
+}
+
+func containsString(values []string, value string) bool {
+	for _, candidate := range values {
+		if candidate == value {
+			return true
+		}
+	}
+	return false
+}
+
+// buildSessionRoleActivityQuery constructs one card-scoped window query. latest dispatch and
+// the two current-task mirror facts are computed once as CTEs, never by correlated per-row lookups.
+func buildSessionRoleActivityQuery(dialect dialect, cardIDs []string, limit int) (string, []any) {
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(cardIDs)), ",")
+	commentKey := `json_extract(e.payload, '$.dedupe_key')`
+	dispatchTarget, dispatchTask := `d.payload->>'target'`, `d.payload->>'task_id'`
+	mirrorTaskType := `m.payload->>'task_type'`
+	if dialect == dialectSQLite {
+		dispatchTarget, dispatchTask = `json_extract(d.payload, '$.target')`, `json_extract(d.payload, '$.task_id')`
+		mirrorTaskType = `json_extract(m.payload, '$.task_type')`
+	} else {
+		commentKey = `e.payload->>'dedupe_key'`
+	}
+	query := `WITH dispatch_ranked AS (
+			SELECT d.card_id, d.seq, ` + dispatchTarget + ` AS target, ` + dispatchTask + ` AS task,
+				ROW_NUMBER() OVER (PARTITION BY d.card_id ORDER BY d.seq DESC) AS rn
+			FROM card_events d WHERE d.card_id IN (` + placeholders + `) AND d.type='dispatched'
+		), current_dispatch AS (
+			SELECT card_id, seq, target, task FROM dispatch_ranked WHERE rn=1
+		), current_mirror_ranked AS (
+			SELECT m.card_id, m.seq, m.source_seq,
+				ROW_NUMBER() OVER (PARTITION BY m.card_id ORDER BY m.source_seq DESC) AS raw_rn,
+				MAX(CASE WHEN ` + mirrorTaskType + ` IN ('permission_request','question','ticket_answered','completed','turn_failed','failed','archived','delivery_failed') THEN m.source_seq END)
+					OVER (PARTITION BY m.card_id) AS latest_lifecycle_seq
+			FROM card_events m JOIN current_dispatch d ON d.card_id=m.card_id
+				AND d.target=m.source_target AND d.task=m.source_task
+			WHERE m.type='task_mirrored'
+		), role_ranked AS (
+			SELECT e.seq, e.card_id, e.type, e.actor, e.payload, e.source_target, e.source_task, e.source_seq, e.created_at,
+				ROW_NUMBER() OVER (PARTITION BY e.card_id ORDER BY e.seq DESC) AS rn,
+				COUNT(*) OVER (PARTITION BY e.card_id) AS card_total,
+				CASE WHEN e.type='comment' THEN ROW_NUMBER() OVER (PARTITION BY e.card_id, e.type ORDER BY e.seq DESC) ELSE 0 END AS wake_rn,
+				CASE WHEN e.type IN ('driver_seat_bound','driver_takeover') THEN ROW_NUMBER() OVER (PARTITION BY e.card_id, e.type ORDER BY e.seq DESC) ELSE 0 END AS seat_rn
+			FROM card_events e WHERE e.card_id IN (` + placeholders + `)
+				AND e.type IN ('comment','dispatched','task_mirrored','room_message','needs_human','needs_cleared','status_moved','driver_seat_bound','driver_takeover')
+				AND (e.type <> 'comment' OR ` + commentKey + ` LIKE 'wake_round:%')
+		), mandatory(card_id, seq) AS (
+			SELECT card_id, seq FROM current_dispatch
+			UNION SELECT card_id, seq FROM role_ranked WHERE type='comment' AND wake_rn=1
+			UNION SELECT card_id, seq FROM role_ranked WHERE type IN ('driver_seat_bound','driver_takeover') AND seat_rn=1
+			UNION SELECT card_id, seq FROM current_mirror_ranked WHERE raw_rn=1
+			UNION SELECT card_id, seq FROM current_mirror_ranked WHERE source_seq=latest_lifecycle_seq AND latest_lifecycle_seq IS NOT NULL
+		)
+		SELECT r.seq, r.card_id, r.type, r.actor, r.payload, r.source_target, r.source_task, r.source_seq, r.created_at, r.rn, r.card_total
+		FROM role_ranked r LEFT JOIN mandatory k ON k.card_id=r.card_id AND k.seq=r.seq
+		WHERE r.rn <= ? OR k.seq IS NOT NULL ORDER BY r.card_id, r.seq DESC`
+	// The card list occurs once in dispatch_ranked and once in role_ranked.
+	queryArgs := make([]any, 0, 2*len(cardIDs)+1)
+	queryArgs = append(queryArgs, cardIDsToAny(cardIDs)...)
+	queryArgs = append(queryArgs, cardIDsToAny(cardIDs)...)
+	queryArgs = append(queryArgs, limit)
+	return query, queryArgs
+}
+
+func cardIDsToAny(ids []string) []any {
+	values := make([]any, len(ids))
+	for i, id := range ids {
+		values[i] = id
+	}
+	return values
 }
 
 // SessionRoleTicketsContext reads only the open-ticket projection rows for the supplied cards.

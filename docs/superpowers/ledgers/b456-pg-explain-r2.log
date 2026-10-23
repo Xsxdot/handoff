@@ -1,0 +1,234 @@
+B456 R2 — root fresh PostgreSQL companion / EXPLAIN ANALYZE evidence
+2026-10-23 Asia/Taipei; isolated review database, per-test disposable schema.
+Activity/ticket: go test ./internal/ledger -run TestSessionRole.*Postgres -count=1 -v
+Resident after final identity scope change: go test ./internal/ledger -run ^TestSessionResidentRoundPostgresTwin$ -count=1 -v
+LEDGER_TEST_PG_DSN supplied through protected local file; credential omitted.
+Execution Time is database plan execution; bounded_query elapsed also includes client/network.
+
+    session_roles_pg_test.go:127: EXPLAIN_ANALYZE rows=500
+        Sort  (cost=28.85..28.85 rows=1 width=232) (actual time=2.347..2.356 rows=101 loops=1)
+          Sort Key: r.card_id, r.seq DESC
+          Sort Method: quicksort  Memory: 45kB
+          Buffers: shared hit=56
+          CTE current_dispatch
+            ->  Subquery Scan on dispatch_ranked  (cost=9.97..10.01 rows=1 width=104) (actual time=0.059..0.061 rows=1 loops=1)
+                  Filter: (dispatch_ranked.rn = 1)
+                  Buffers: shared hit=16
+                  ->  WindowAgg  (cost=9.97..10.00 rows=1 width=112) (actual time=0.058..0.059 rows=1 loops=1)
+                        Run Condition: (row_number() OVER (?) <= 1)
+                        Buffers: shared hit=16
+                        ->  Sort  (cost=9.97..9.98 rows=1 width=72) (actual time=0.054..0.054 rows=1 loops=1)
+                              Sort Key: d.seq DESC
+                              Sort Method: quicksort  Memory: 25kB
+                              Buffers: shared hit=16
+                              ->  Bitmap Heap Scan on card_events d  (cost=4.29..9.96 rows=1 width=72) (actual time=0.021..0.049 rows=1 loops=1)
+                                    Recheck Cond: (card_id = 'P1'::text)
+                                    Filter: (type = 'dispatched'::text)
+                                    Rows Removed by Filter: 502
+                                    Heap Blocks: exact=13
+                                    Buffers: shared hit=16
+                                    ->  Bitmap Index Scan on idx_events_card  (cost=0.00..4.29 rows=2 width=0) (actual time=0.016..0.016 rows=503 loops=1)
+                                          Index Cond: (card_id = 'P1'::text)
+                                          Buffers: shared hit=3
+          CTE current_mirror_ranked
+            ->  WindowAgg  (cost=8.34..8.39 rows=1 width=64) (actual time=0.611..0.655 rows=500 loops=1)
+                  Buffers: shared hit=18
+                  ->  WindowAgg  (cost=8.34..8.36 rows=1 width=88) (actual time=0.286..0.430 rows=500 loops=1)
+                        Buffers: shared hit=18
+                        ->  Sort  (cost=8.34..8.34 rows=1 width=80) (actual time=0.283..0.302 rows=500 loops=1)
+                              Sort Key: m.card_id, m.source_seq DESC
+                              Sort Method: quicksort  Memory: 99kB
+                              Buffers: shared hit=18
+                              ->  Nested Loop  (cost=0.27..8.33 rows=1 width=80) (actual time=0.015..0.152 rows=500 loops=1)
+                                    Buffers: shared hit=18
+                                    ->  CTE Scan on current_dispatch d_1  (cost=0.00..0.02 rows=1 width=96) (actual time=0.000..0.001 rows=1 loops=1)
+                                    ->  Index Scan using idx_session_projection_card_seq on card_events m  (cost=0.27..8.30 rows=1 width=144) (actual time=0.012..0.109 rows=500 loops=1)
+                                          Index Cond: (card_id = d_1.card_id)
+                                          Filter: ((type = 'task_mirrored'::text) AND (d_1.target = source_target) AND (d_1.task = source_task))
+                                          Buffers: shared hit=18
+          CTE role_ranked
+            ->  WindowAgg  (cost=10.05..10.09 rows=1 width=248) (actual time=0.817..0.902 rows=501 loops=1)
+                  Buffers: shared hit=16
+                  ->  WindowAgg  (cost=10.05..10.07 rows=1 width=232) (actual time=0.550..0.701 rows=501 loops=1)
+                        Buffers: shared hit=16
+                        ->  Sort  (cost=10.05..10.05 rows=1 width=224) (actual time=0.548..0.567 rows=501 loops=1)
+                              Sort Key: e.seq DESC
+                              Sort Method: quicksort  Memory: 122kB
+                              Buffers: shared hit=16
+                              ->  WindowAgg  (cost=10.02..10.04 rows=1 width=224) (actual time=0.283..0.404 rows=501 loops=1)
+                                    Buffers: shared hit=16
+                                    ->  Sort  (cost=10.02..10.02 rows=1 width=216) (actual time=0.279..0.298 rows=501 loops=1)
+                                          Sort Key: e.type, e.seq DESC
+                                          Sort Method: quicksort  Memory: 119kB
+                                          Buffers: shared hit=16
+                                          ->  Bitmap Heap Scan on card_events e  (cost=4.31..10.01 rows=1 width=216) (actual time=0.040..0.127 rows=501 loops=1)
+                                                Recheck Cond: (card_id = 'P1'::text)
+                                                Filter: ((type = ANY ('{comment,dispatched,task_mirrored,room_message,needs_human,needs_cleared,status_moved,driver_seat_bound,driver_takeover}'::text[])) AND ((type <> 'comment'::text) OR ((payload ->> 'dedupe_key'::text) ~~ 'wake_round:%'::text)))
+                                                Rows Removed by Filter: 2
+                                                Heap Blocks: exact=13
+                                                Buffers: shared hit=16
+                                                ->  Bitmap Index Scan on idx_events_card  (cost=0.00..4.29 rows=2 width=0) (actual time=0.022..0.022 rows=503 loops=1)
+                                                      Index Cond: (card_id = 'P1'::text)
+                                                      Buffers: shared hit=3
+          ->  Hash Right Join  (cost=0.20..0.35 rows=1 width=232) (actual time=2.223..2.270 rows=101 loops=1)
+                Hash Cond: ((current_dispatch.card_id = r.card_id) AND (current_dispatch.seq = r.seq))
+                Filter: ((r.rn <= '100'::bigint) OR (current_dispatch.seq IS NOT NULL))
+                Rows Removed by Filter: 400
+                Buffers: shared hit=50
+                ->  HashAggregate  (cost=0.16..0.21 rows=5 width=40) (actual time=0.933..0.935 rows=2 loops=1)
+                      Group Key: current_dispatch.card_id, current_dispatch.seq
+                      Batches: 1  Memory Usage: 24kB
+                      Buffers: shared hit=34
+                      ->  Append  (cost=0.00..0.14 rows=5 width=40) (actual time=0.061..0.929 rows=3 loops=1)
+                            Buffers: shared hit=34
+                            ->  CTE Scan on current_dispatch  (cost=0.00..0.02 rows=1 width=40) (actual time=0.060..0.061 rows=1 loops=1)
+                                  Buffers: shared hit=16
+                            ->  CTE Scan on role_ranked  (cost=0.00..0.03 rows=1 width=40) (actual time=0.037..0.037 rows=0 loops=1)
+                                  Filter: ((type = 'comment'::text) AND (wake_rn = 1))
+                                  Rows Removed by Filter: 501
+                            ->  CTE Scan on role_ranked role_ranked_1  (cost=0.00..0.03 rows=1 width=40) (actual time=0.046..0.046 rows=0 loops=1)
+                                  Filter: ((type = ANY ('{driver_seat_bound,driver_takeover}'::text[])) AND (seat_rn = 1))
+                                  Rows Removed by Filter: 501
+                            ->  CTE Scan on current_mirror_ranked  (cost=0.00..0.02 rows=1 width=40) (actual time=0.612..0.759 rows=1 loops=1)
+                                  Filter: (raw_rn = 1)
+                                  Rows Removed by Filter: 499
+                                  Buffers: shared hit=18
+                            ->  CTE Scan on current_mirror_ranked current_mirror_ranked_1  (cost=0.00..0.02 rows=1 width=40) (actual time=0.001..0.024 rows=1 loops=1)
+                                  Filter: ((latest_lifecycle_seq IS NOT NULL) AND (source_seq = latest_lifecycle_seq))
+                                  Rows Removed by Filter: 499
+                ->  Hash  (cost=0.02..0.02 rows=1 width=232) (actual time=1.283..1.284 rows=501 loops=1)
+                      Buckets: 1024  Batches: 1  Memory Usage: 118kB
+                      Buffers: shared hit=16
+                      ->  CTE Scan on role_ranked r  (cost=0.00..0.02 rows=1 width=232) (actual time=0.819..1.131 rows=501 loops=1)
+                            Buffers: shared hit=16
+        Planning:
+          Buffers: shared hit=181
+        Planning Time: 0.982 ms
+        Execution Time: 3.146 ms
+    session_roles_pg_test.go:160: bounded_query rows=500 returned=101 elapsed=25.328458ms
+    session_roles_pg_test.go:127: EXPLAIN_ANALYZE rows=2000
+        Sort  (cost=62.89..62.89 rows=1 width=232) (actual time=9.079..9.094 rows=102 loops=1)
+          Sort Key: r.card_id, r.seq DESC
+          Sort Method: quicksort  Memory: 45kB
+          Buffers: shared hit=186
+          CTE current_dispatch
+            ->  Subquery Scan on dispatch_ranked  (cost=26.96..27.00 rows=1 width=104) (actual time=0.248..0.251 rows=1 loops=1)
+                  Filter: (dispatch_ranked.rn = 1)
+                  Buffers: shared hit=60
+                  ->  WindowAgg  (cost=26.96..26.99 rows=1 width=112) (actual time=0.246..0.249 rows=1 loops=1)
+                        Run Condition: (row_number() OVER (?) <= 1)
+                        Buffers: shared hit=60
+                        ->  Sort  (cost=26.96..26.97 rows=1 width=72) (actual time=0.240..0.242 rows=1 loops=1)
+                              Sort Key: d.seq DESC
+                              Sort Method: quicksort  Memory: 25kB
+                              Buffers: shared hit=60
+                              ->  Bitmap Heap Scan on card_events d  (cost=4.34..26.95 rows=1 width=72) (actual time=0.073..0.237 rows=1 loops=1)
+                                    Recheck Cond: (card_id = 'P1'::text)
+                                    Filter: (type = 'dispatched'::text)
+                                    Rows Removed by Filter: 2002
+                                    Heap Blocks: exact=51
+                                    Buffers: shared hit=60
+                                    ->  Bitmap Index Scan on idx_events_card  (cost=0.00..4.34 rows=8 width=0) (actual time=0.061..0.061 rows=2003 loops=1)
+                                          Index Cond: (card_id = 'P1'::text)
+                                          Buffers: shared hit=9
+          CTE current_mirror_ranked
+            ->  WindowAgg  (cost=8.34..8.39 rows=1 width=64) (actual time=2.693..2.866 rows=2000 loops=1)
+                  Buffers: shared hit=66
+                  ->  WindowAgg  (cost=8.34..8.37 rows=1 width=88) (actual time=1.399..2.002 rows=2000 loops=1)
+                        Buffers: shared hit=66
+                        ->  Sort  (cost=8.34..8.35 rows=1 width=80) (actual time=1.396..1.469 rows=2000 loops=1)
+                              Sort Key: m.card_id, m.source_seq DESC
+                              Sort Method: quicksort  Memory: 345kB
+                              Buffers: shared hit=66
+                              ->  Nested Loop  (cost=0.28..8.33 rows=1 width=80) (actual time=0.021..0.641 rows=2000 loops=1)
+                                    Buffers: shared hit=66
+                                    ->  CTE Scan on current_dispatch d_1  (cost=0.00..0.02 rows=1 width=96) (actual time=0.000..0.001 rows=1 loops=1)
+                                    ->  Index Scan using idx_session_projection_card_seq on card_events m  (cost=0.28..8.30 rows=1 width=144) (actual time=0.018..0.478 rows=2000 loops=1)
+                                          Index Cond: (card_id = d_1.card_id)
+                                          Filter: ((type = 'task_mirrored'::text) AND (d_1.target = source_target) AND (d_1.task = source_task))
+                                          Buffers: shared hit=66
+          CTE role_ranked
+            ->  WindowAgg  (cost=27.10..27.13 rows=1 width=248) (actual time=2.929..3.274 rows=2001 loops=1)
+                  Buffers: shared hit=60
+                  ->  WindowAgg  (cost=27.10..27.12 rows=1 width=232) (actual time=1.881..2.467 rows=2001 loops=1)
+                        Buffers: shared hit=60
+                        ->  Sort  (cost=27.10..27.10 rows=1 width=224) (actual time=1.879..1.956 rows=2001 loops=1)
+                              Sort Key: e.seq DESC
+                              Sort Method: quicksort  Memory: 439kB
+                              Buffers: shared hit=60
+                              ->  WindowAgg  (cost=27.06..27.09 rows=1 width=224) (actual time=0.827..1.323 rows=2001 loops=1)
+                                    Buffers: shared hit=60
+                                    ->  Sort  (cost=27.06..27.07 rows=1 width=216) (actual time=0.823..0.900 rows=2001 loops=1)
+                                          Sort Key: e.type, e.seq DESC
+                                          Sort Method: quicksort  Memory: 424kB
+                                          Buffers: shared hit=60
+                                          ->  Bitmap Heap Scan on card_events e  (cost=4.36..27.05 rows=1 width=216) (actual time=0.071..0.392 rows=2001 loops=1)
+                                                Recheck Cond: (card_id = 'P1'::text)
+                                                Filter: ((type = ANY ('{comment,dispatched,task_mirrored,room_message,needs_human,needs_cleared,status_moved,driver_seat_bound,driver_takeover}'::text[])) AND ((type <> 'comment'::text) OR ((payload ->> 'dedupe_key'::text) ~~ 'wake_round:%'::text)))
+                                                Rows Removed by Filter: 2
+                                                Heap Blocks: exact=51
+                                                Buffers: shared hit=60
+                                                ->  Bitmap Index Scan on idx_events_card  (cost=0.00..4.34 rows=8 width=0) (actual time=0.055..0.055 rows=2003 loops=1)
+                                                      Index Cond: (card_id = 'P1'::text)
+                                                      Buffers: shared hit=9
+          ->  Hash Right Join  (cost=0.20..0.35 rows=1 width=232) (actual time=8.776..9.035 rows=102 loops=1)
+                Hash Cond: ((current_dispatch.card_id = r.card_id) AND (current_dispatch.seq = r.seq))
+                Filter: ((r.rn <= '100'::bigint) OR (current_dispatch.seq IS NOT NULL))
+                Rows Removed by Filter: 1899
+                Buffers: shared hit=186
+                ->  HashAggregate  (cost=0.16..0.21 rows=5 width=40) (actual time=3.974..3.976 rows=3 loops=1)
+                      Group Key: current_dispatch.card_id, current_dispatch.seq
+                      Batches: 1  Memory Usage: 24kB
+                      Buffers: shared hit=126
+                      ->  Append  (cost=0.00..0.14 rows=5 width=40) (actual time=0.250..3.967 rows=3 loops=1)
+                            Buffers: shared hit=126
+                            ->  CTE Scan on current_dispatch  (cost=0.00..0.02 rows=1 width=40) (actual time=0.249..0.250 rows=1 loops=1)
+                                  Buffers: shared hit=60
+                            ->  CTE Scan on role_ranked  (cost=0.00..0.03 rows=1 width=40) (actual time=0.161..0.161 rows=0 loops=1)
+                                  Filter: ((type = 'comment'::text) AND (wake_rn = 1))
+                                  Rows Removed by Filter: 2001
+                            ->  CTE Scan on role_ranked role_ranked_1  (cost=0.00..0.03 rows=1 width=40) (actual time=0.201..0.201 rows=0 loops=1)
+                                  Filter: ((type = ANY ('{driver_seat_bound,driver_takeover}'::text[])) AND (seat_rn = 1))
+                                  Rows Removed by Filter: 2001
+                            ->  CTE Scan on current_mirror_ranked  (cost=0.00..0.02 rows=1 width=40) (actual time=2.695..3.255 rows=1 loops=1)
+                                  Filter: (raw_rn = 1)
+                                  Rows Removed by Filter: 1999
+                                  Buffers: shared hit=66
+                            ->  CTE Scan on current_mirror_ranked current_mirror_ranked_1  (cost=0.00..0.02 rows=1 width=40) (actual time=0.071..0.095 rows=1 loops=1)
+                                  Filter: ((latest_lifecycle_seq IS NOT NULL) AND (source_seq = latest_lifecycle_seq))
+                                  Rows Removed by Filter: 1999
+                ->  Hash  (cost=0.02..0.02 rows=1 width=232) (actual time=4.795..4.796 rows=2001 loops=1)
+                      Buckets: 2048 (originally 1024)  Batches: 1 (originally 1)  Memory Usage: 454kB
+                      Buffers: shared hit=60
+                      ->  CTE Scan on role_ranked r  (cost=0.00..0.02 rows=1 width=232) (actual time=2.932..4.197 rows=2001 loops=1)
+                            Buffers: shared hit=60
+        Planning:
+          Buffers: shared hit=36
+        Planning Time: 0.655 ms
+        Execution Time: 9.694 ms
+    session_roles_pg_test.go:160: bounded_query rows=2000 returned=102 elapsed=20.652583ms
+--- PASS: TestSessionRoleActivityPostgresTwinAndExplain (32.23s)
+--- PASS: TestSessionRoleTicketsPostgresTwinIsCardScoped (3.82s)
+
+Final resident round companion (session + current identity):
+        Limit  (cost=0.28..15.39 rows=1 width=251) (actual time=0.034..0.036 rows=2 loops=1)
+          Buffers: shared hit=5
+          ->  Index Scan using idx_resident_round_session_seq on card_events  (cost=0.28..15.39 rows=1 width=251) (actual time=0.034..0.034 rows=2 loops=1)
+                Index Cond: ((payload ->> 'session'::text) = 'session:1'::text)
+                Filter: ((payload ->> 'identity'::text) = 'agent:coord'::text)
+                Rows Removed by Filter: 120
+                Buffers: shared hit=5
+        Planning:
+          Buffers: shared hit=88
+        Planning Time: 0.300 ms
+        Execution Time: 0.051 ms
+--- PASS: TestSessionResidentRoundPostgresTwin (16.47s)
+PASS
+
+Final isolated PostgreSQL v2 → v3 / missing-index upgrade companion:
+Command: go test ./internal/ledger -run ^TestB456PostgresSchemaVersionTwoInstallsResidentRoundIndex$ -count=1 -v
+2026/10/23 19:23:21 INFO 账本 schema 已升到当前版本 version=3
+2026/10/23 19:23:24 INFO 账本 schema 已升到当前版本 version=3
+--- PASS: TestB456PostgresSchemaVersionTwoInstallsResidentRoundIndex (4.84s)
+PASS
+    session_roles_pg_test.go:112: schema upgrade old_marker=2 new_marker=3 index_installed=true schema=b456_role_1792754599945234000

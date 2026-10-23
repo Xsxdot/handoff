@@ -1,6 +1,6 @@
 // SessionRoleStatusBar consumes bounded role facts and existing task/room APIs.
 // It never infers liveness, duplicates ticket state, or claims a wake succeeded.
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { MouseEvent, ReactNode } from 'react'
 import { fetchTaskDetail, replyTicket } from '../../api/client'
@@ -16,6 +16,8 @@ type ResolvedTicket = { ticket: Ticket; ref: SessionRoleTicketRef; role: Session
 type TicketFailure = { taskId: string; error: string }
 type TicketState = { resolved: ResolvedTicket[]; failures: TicketFailure[]; verifiedTaskIds: string[]; loading: boolean }
 type Density = { miniIds: string[]; noDurationIds: string[]; foldedIds: string[] }
+
+const EMPTY_ROLES: SessionRoleStatus[] = []
 
 const stateLabel: Record<SessionRoleStatus['state'], string> = {
   needs_you: '需要你', exception: '异常', waiting: '等待中', running: '运行中', idle: '空闲', unknown: '未知',
@@ -69,7 +71,7 @@ export function SessionRoleStatusBar({ sessionId, projection, archived, summary,
   onOpenCard?: (cardId: string) => void
   onRefresh?: () => void
 }) {
-  const rawRoles = projection?.roles ?? []
+  const rawRoles = projection?.roles ?? EMPTY_ROLES
   const observedAt = projection?.observed_at ?? ''
   const refs = useMemo(() => rawRoles.flatMap((role) => (role.ticket_refs ?? []).map((ref) => ({ ref, role }))), [rawRoles])
   const refSignature = refs.map(({ ref }) => refKey(ref)).join('|')
@@ -92,15 +94,15 @@ export function SessionRoleStatusBar({ sessionId, projection, archived, summary,
   const ticketDialogRef = useRef<HTMLElement | null>(null)
   const focusedDialogRef = useRef<'role' | 'ticket' | null>(null)
 
-  function closeRole() {
+  const closeRole = useCallback(() => {
     setOpenRole(null)
     requestAnimationFrame(() => roleRestoreFocusRef.current?.focus())
-  }
-  function closeTicketDrawer() {
+  }, [])
+  const closeTicketDrawer = useCallback(() => {
     focusedDialogRef.current = openRole ? 'role' : null
     setTicketOpen(false)
     requestAnimationFrame(() => ticketRestoreFocusRef.current?.focus())
-  }
+  }, [openRole])
 
   const ticketVersion = `${projection?.observed_at ?? ''}|${refSignature}`
   useEffect(() => {
@@ -136,12 +138,12 @@ export function SessionRoleStatusBar({ sessionId, projection, archived, summary,
       })
     })
     return () => { cancelled = true }
-  }, [sessionId, ticketVersion])
+  }, [sessionId, ticketVersion, refs])
 
-  const candidateKeys = new Set(refs.map(({ ref }) => refKey(ref)))
-  const failedTasks = new Set(ticketState.failures.map((failure) => failure.taskId))
-  const verifiedTasks = new Set(ticketState.verifiedTaskIds)
-  const liveTicketState = ticketState.resolved.filter((item) => candidateKeys.has(refKey(item.ref)) && verifiedTasks.has(item.ticket.task_id) && !failedTasks.has(item.ticket.task_id))
+  const candidateKeys = useMemo(() => new Set(refs.map(({ ref }) => refKey(ref))), [refs])
+  const failedTasks = useMemo(() => new Set(ticketState.failures.map((failure) => failure.taskId)), [ticketState.failures])
+  const verifiedTasks = useMemo(() => new Set(ticketState.verifiedTaskIds), [ticketState.verifiedTaskIds])
+  const liveTicketState = useMemo(() => ticketState.resolved.filter((item) => candidateKeys.has(refKey(item.ref)) && verifiedTasks.has(item.ticket.task_id) && !failedTasks.has(item.ticket.task_id)), [ticketState.resolved, candidateKeys, verifiedTasks, failedTasks])
   const roles = useMemo(() => rawRoles.map((role) => {
     if (unavailable) return { ...role, state: 'unknown' as const, conclusion: '状态信息暂不可确认', can_request_wake: false }
     const matching = liveTicketState.filter((item) => item.role.id === role.id)
@@ -246,7 +248,7 @@ export function SessionRoleStatusBar({ sessionId, projection, archived, summary,
     }
     document.addEventListener('keydown', onKeyDown, true)
     return () => document.removeEventListener('keydown', onKeyDown, true)
-  }, [openRole, ticketOpen])
+  }, [openRole, ticketOpen, closeTicketDrawer, closeRole])
 
   useEffect(() => {
     const layer = ticketOpen ? 'ticket' : openRole ? 'role' : null

@@ -393,6 +393,118 @@ func TestSessionRoleStatusHTTPWire(t *testing.T) {
 	}
 }
 
+func TestSessionRoleDeliveryFailureRecoveryHTTP(t *testing.T) {
+	env := newRoomsEnv(t)
+	session := mustConsoleSession(t, env, "送达失败恢复")
+	card := seedCard(t, env, "已恢复任务")
+	if code, body := ledgerPost(t, env.testAgentdEnv, "/api/sessions/"+session.ID+"/cards", fmt.Sprintf(`{"card":%q}`, card.ID)); code != http.StatusOK {
+		t.Fatalf("拉卡: %d %s", code, body)
+	}
+	if err := env.ledger.BindSeat(card.ID, "cli:agent#b456-recovery", proto.SeatSourceBind, ledger.SeatBearing{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := env.ledger.RecordDispatchAndLinkTask(card.ID, ledger.DispatchSnapshot{Target: "", TaskID: "task-b456-recovery", Purpose: "implement"}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := env.st.CreateTask(&proto.Task{ID: "task-b456-recovery", Target: "", State: proto.TaskStateRunning, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	for i, typ := range []string{"permission_request", "ticket_answered", "delivery_failed"} {
+		payload := []byte(`{"ticket_id":"ticket-b456-recovery"}`)
+		if typ == "delivery_failed" {
+			payload = []byte(`{"ticket_id":"ticket-b456-recovery","reason":"first delivery failed"}`)
+		}
+		if _, err := env.ledger.AppendMirroredEvent(card.ID, ledger.MirroredEvent{Target: "", Task: "task-b456-recovery", SourceSeq: int64(i + 1), Type: typ, Payload: payload, CreatedAt: time.Now().UTC().Add(-time.Duration(3-i) * time.Minute)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	code, body := ledgerGet(t, env.testAgentdEnv, "/api/sessions/"+session.ID)
+	if code != http.StatusOK {
+		t.Fatalf("SessionDetail: %d %s", code, body)
+	}
+	var detail proto.SessionDetail
+	if err := json.Unmarshal([]byte(body), &detail); err != nil {
+		t.Fatal(err)
+	}
+	var executorRole *proto.SessionRole
+	for i := range detail.RoleStatus.Roles {
+		role := &detail.RoleStatus.Roles[i]
+		if role.Kind == "executor" && role.CardID == card.ID {
+			executorRole = role
+			break
+		}
+	}
+	if executorRole == nil || executorRole.State != "exception" || !strings.Contains(executorRole.Conclusion, "first delivery failed") {
+		t.Fatalf("未恢复的真实 delivery_failed 必须优先于 running task snapshot：executor=%+v", executorRole)
+	}
+	var coordinator *proto.SessionRole
+	for i := range detail.RoleStatus.Roles {
+		role := &detail.RoleStatus.Roles[i]
+		if role.Kind == "coordinator" && role.CardID == card.ID {
+			coordinator = role
+			break
+		}
+	}
+	if coordinator == nil || coordinator.State != "exception" {
+		t.Fatalf("未恢复的 delivery_failed 应让协调者看到失败；coordinator=%+v", coordinator)
+	}
+	// A later explicit lifecycle event on the same task clears the delivery error.
+	if _, err := env.ledger.AppendMirroredEvent(card.ID, ledger.MirroredEvent{Target: "", Task: "task-b456-recovery", SourceSeq: 4, Type: "completed",
+		Payload: []byte(`{"summary":"recovered"}`), CreatedAt: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.st.UpdateTaskState("task-b456-recovery", proto.TaskStateWaitingReview); err != nil {
+		t.Fatal(err)
+	}
+	code, body = ledgerGet(t, env.testAgentdEnv, "/api/sessions/"+session.ID)
+	if code != http.StatusOK {
+		t.Fatalf("恢复后 SessionDetail: %d %s", code, body)
+	}
+	if err := json.Unmarshal([]byte(body), &detail); err != nil {
+		t.Fatal(err)
+	}
+	for i := range detail.RoleStatus.Roles {
+		role := &detail.RoleStatus.Roles[i]
+		if role.Kind == "executor" && role.CardID == card.ID && role.State != "idle" {
+			t.Fatalf("较新 completed lifecycle 必须解除 delivery_failed：%+v", role)
+		}
+		if role.Kind == "coordinator" && role.CardID == card.ID && role.State != "waiting" {
+			t.Fatalf("completed 回合应让协调者待接续：%+v", role)
+		}
+	}
+	// A later dispatch is the next genuine task boundary; prior delivery failure
+	// facts must remain historical activity and cannot define the new executor.
+	if _, _, err := env.ledger.RecordDispatchAndLinkTask(card.ID, ledger.DispatchSnapshot{Target: "", TaskID: "task-b456-recovery-next", Purpose: "continue"}); err != nil {
+		t.Fatal(err)
+	}
+	nextAt := time.Now().UTC()
+	if err := env.st.CreateTask(&proto.Task{ID: "task-b456-recovery-next", Target: "", State: proto.TaskStateRunning, CreatedAt: nextAt, UpdatedAt: nextAt}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.ledger.AppendMirroredEvent(card.ID, ledger.MirroredEvent{Target: "", Task: "task-b456-recovery-next", SourceSeq: 1, Type: "progress", Payload: []byte(`{"task_type":"progress"}`), CreatedAt: nextAt}); err != nil {
+		t.Fatal(err)
+	}
+	code, body = ledgerGet(t, env.testAgentdEnv, "/api/sessions/"+session.ID)
+	if code != http.StatusOK {
+		t.Fatalf("新派发 SessionDetail: %d %s", code, body)
+	}
+	if err := json.Unmarshal([]byte(body), &detail); err != nil {
+		t.Fatal(err)
+	}
+	var nextExecutor *proto.SessionRole
+	for i := range detail.RoleStatus.Roles {
+		role := &detail.RoleStatus.Roles[i]
+		if role.Kind == "executor" && role.CardID == card.ID {
+			nextExecutor = role
+			break
+		}
+	}
+	if nextExecutor == nil || nextExecutor.TaskID != "task-b456-recovery-next" || nextExecutor.State != "running" {
+		t.Fatalf("较新派发及当前 task snapshot 必须解除旧 delivery failure: %+v", nextExecutor)
+	}
+}
+
 func TestSessionRoleTicketLimitFailsClosedOverHTTP(t *testing.T) {
 	env := newRoomsEnv(t)
 	session := mustConsoleSession(t, env, "超限工单详情")
@@ -517,6 +629,12 @@ func TestB456BrowserHarness(t *testing.T) {
 		{Permission: "申请执行需要人工确认的写操作"},
 		{Finish: executor.Result{OK: true, Summary: "answers received; fixture task complete"}},
 	})
+	deliveryRetry := os.Getenv("B456_BROWSER_HARNESS_DELIVERY_RETRY") == "1"
+	if deliveryRetry {
+		// This fake adapter error affects only the first browser-approved permission
+		// reply. The event poller clears it after observing the genuine failure event.
+		fakeAdapter.SetPermError(errors.New("B456 harness: simulated first permission delivery failure"))
+	}
 	mgr := newManagerForServer(t, env.srv, map[string]executor.Adapter{"fake": fakeAdapter})
 	repo := initTestRepo(t)
 	projectID := registerTestProject(t, mgr, repo)
@@ -580,6 +698,9 @@ func TestB456BrowserHarness(t *testing.T) {
 				}
 				for _, event := range events {
 					_, _ = env.ledger.AppendMirroredEvent(card.ID, ledger.MirroredEvent{Target: task.Target, Task: task.ID, SourceSeq: event.Seq, Type: string(event.Type), Payload: event.Payload, CreatedAt: event.CreatedAt})
+					if deliveryRetry && event.Type == proto.EventTypeDeliveryFailed {
+						fakeAdapter.SetPermError(nil)
+					}
 					seq = event.Seq
 				}
 			}
@@ -667,6 +788,9 @@ func TestB456BrowserHarness(t *testing.T) {
 		Cards     []seededCard `json:"cards"`
 		Evidence  string       `json:"evidence"`
 	}{env.ts.URL, env.token, session.ID, cards, "The genuine task script runs Permission #1, Question, Permission #2, then Finish. The first permission remains pending for browser approval; answer the question before denying the second permission with a reason, because the real reply route sends that reason as guidance to the executor. GET /api/tasks/{taskID} verifies the initial full pending ticket and GET /api/sessions/{sessionID} asserts the same ticket ref plus permission activity. A poller reads local events via Manager.EventsFromAsc and copies producer facts to ledger.AppendMirroredEvent. Completed/wake-failure visual roles are explicitly seeded mirror fixtures, not producer runs."}
+	if deliveryRetry {
+		manifest.Evidence += " Delivery-failure mode injects one fake adapter transport error after the first permission answer has been persisted; the genuine delivery_failed event remains visible, then the poller clears the injected error. The ticket is already answered and is no longer pending; recovery uses the existing POST /api/tasks/{taskID}/resume to redeliver the answered item, not a same-ticket reply retry. No external command is executed."
+	}
 	raw, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
 		t.Fatal(err)

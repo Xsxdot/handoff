@@ -1,0 +1,12 @@
+
+> web@0.0.0 test
+> vitest run --run src/app/rooms/SessionRoleStatusBar.test.tsx -t keeps every exception chip visible
+
+
+ RUN  v4.1.10 /Users/xushixin/.codex/worktrees/e113/handoff/web
+
+
+ Test Files  1 passed (1)
+      Tests  1 passed | 11 skipped (12)
+   Start at  18:54:25
+   Duration  1.27s (transform 147ms, setup 140ms, import 234ms, tests 142ms, environment 652ms)

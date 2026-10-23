@@ -88,7 +88,7 @@ func TestTaskMirrorRecentSummariesKeepTicketAndFailureMeaning(t *testing.T) {
 	}{
 		{"permission", "permission_request", `{"ticket_id":"t1"}`, "出现待处理权限请求", "needs_you"},
 		{"question", "question", `{"ticket_id":"t2"}`, "执行任务提出需要答复的问题", "needs_you"},
-		{"answered", "ticket_answered", `{"ticket_id":"t1"}`, "协调者已提交工单答复", "neutral"},
+		{"answered", "ticket_answered", `{"ticket_id":"t1"}`, "工单答复已记录", "neutral"},
 		{"delivery failure", "delivery_failed", `{"ticket_id":"t1","reason":"pipe closed"}`, "工单应答未送达执行者: pipe closed", "failed"},
 		{"turn failure", "turn_failed", `{"fail_reason":"agent exited"}`, "执行回合明确失败: agent exited", "failed"},
 	}

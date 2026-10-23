@@ -54,12 +54,17 @@ func TestB464ResidentRoundCarriesSeatCarrierToLoginProxy(t *testing.T) {
 	}, &fakeCoordNarrator{}, env.srv.autoLedger, attachLocator{}))
 
 	resident := proto.SessionResident{
-		Session: "session:464", Identity: "agent:coord", DriverMode: proto.ResidentDriverPush,
+		Session: "", Identity: "agent:coord", DriverMode: proto.ResidentDriverPush,
 		PushCLI: "opencode", PushSession: "ses_b464_carrier", Carrier: "coord-b", CarrierMachine: self,
 		HomeDir: home, Workdir: t.TempDir(), Model: "b464-model",
 	}
+	session, err := env.srv.rooms.CreateSession("B464 resident round", "agent:coord", "agent:coord")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resident.Session = session.ID
 	if _, err := env.srv.wakeResidentRound(context.Background(), resident, proto.Session{},
-		[]keystone.WakeEvent{{Kind: keystone.WakeMessage, Summary: "继续"}}); err != nil {
+		[]keystone.WakeEvent{{Kind: keystone.WakeMessage, Summary: "继续"}}, "b464-round"); err != nil {
 		t.Fatalf("驻场续轮: %v", err)
 	}
 	if got, ok := envValue(rec.resume.Env, "HTTPS_PROXY"); !ok || got != proxyB {

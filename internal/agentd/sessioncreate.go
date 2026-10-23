@@ -30,6 +30,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/ledger"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/scheduling"
+	"github.com/google/uuid"
 )
 
 // 编排层的请求校验哨兵：一律 400、零写入。
@@ -271,6 +272,10 @@ func (s *Server) launchSessionResidentOn(ctx context.Context, sessionID, squad, 
 			}
 			s.log.Info("驻场者已坐下（首轮在途），开始拉起首轮", "session", sessionID, "identity", identity,
 				"carrier", sat.Carrier, "carrier_machine", sat.CarrierMachine)
+			roundID := uuid.NewString()
+			if _, err := s.rooms.RecordResidentRound(sessionID, identity, roundID, "start", ""); err != nil {
+				return zeroRound, fmt.Errorf("记录驻场者首轮开始事实: %w", err)
+			}
 			result, err := s.keystone.LaunchForResident(ctx, round.spec, keystone.ResidentBrief{
 				Session: sessionID, Agent: squad, Title: session.Title, Cards: session.Cards,
 			})
@@ -285,9 +290,17 @@ func (s *Server) launchSessionResidentOn(ctx context.Context, sessionID, squad, 
 				}
 			}
 			if err != nil {
+				if _, factErr := s.rooms.RecordResidentRound(sessionID, identity, roundID, "fail", err.Error()); factErr != nil {
+					s.log.Error("首轮失败事实写入失败", "session", sessionID, "identity", identity, "round_id", roundID, "cause", factErr)
+				}
 				s.keystone.ForgetResident(sessionID)
 				s.standInflightResident(sessionID, identity, err)
 				return result, err
+			}
+			if _, factErr := s.rooms.RecordResidentRound(sessionID, identity, roundID, "end", ""); factErr != nil {
+				// The actual round succeeded. Keep that result and leave the persisted
+				// start as the last observed fact rather than inventing a failure.
+				s.log.Error("首轮结束事实写入失败", "session", sessionID, "identity", identity, "round_id", roundID, "cause", factErr)
 			}
 			sat.PushSession = result.SessionID
 			return result, nil

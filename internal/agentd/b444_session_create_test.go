@@ -8,16 +8,19 @@
 package agentd
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"regexp"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/Xsxdot/handoff/internal/keysclient"
 	"github.com/Xsxdot/handoff/internal/keystone"
@@ -336,12 +339,12 @@ func TestB444SessionCreateResidentFailureThenRetry(t *testing.T) {
 	if len(pointers) != 1 || !strings.Contains(pointers[0], "resident launch") {
 		t.Fatalf("会话里应恰一条指路重试的系统指针行，得 %q", pointers)
 	}
-
 	runner.setLaunchErr(nil)
 	code, raw := ledgerPost(t, env.testAgentdEnv, "/api/sessions/"+resp.ID+"/resident/launch", `{"squad":"coord"}`)
 	if code != http.StatusOK {
 		t.Fatalf("重试叫驻场者应 200，得 %d %s", code, raw)
 	}
+	assertResidentRoleState(t, env, resp.ID, "idle")
 	var outcome proto.SessionResidentOutcome
 	if err := json.Unmarshal([]byte(raw), &outcome); err != nil || outcome.Identity != b444Identity {
 		t.Fatalf("重试响应应带 identity: %s err=%v", raw, err)
@@ -359,6 +362,75 @@ func TestB444SessionCreateResidentFailureThenRetry(t *testing.T) {
 	if launches, _, _ := runner.snapshot(); len(launches) != 2 {
 		t.Fatalf("409/404 不得拉起载体：Launch 应恰 2 次，得 %d", len(launches))
 	}
+}
+
+func TestB456ResidentRoundHTTPStartThenEnd(t *testing.T) {
+	env, runner := newB444CreateEnv(t, true)
+	session, err := env.srv.rooms.CreateSession("B456 resident phase", consoleMember, consoleMember)
+	if err != nil {
+		t.Fatal(err)
+	}
+	started, release := make(chan struct{}), make(chan struct{})
+	runner.onLaunch = func(string) { close(started); <-release }
+	type response struct {
+		code int
+		body string
+		err  error
+	}
+	result := make(chan response, 1)
+	request, err := http.NewRequest(http.MethodPost, env.testAgentdEnv.ts.URL+"/api/sessions/"+session.ID+"/resident/launch", bytes.NewBufferString(`{"squad":"coord"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer "+env.testAgentdEnv.token)
+	request.Header.Set("Content-Type", "application/json")
+	go func() {
+		resp, err := http.DefaultClient.Do(request)
+		if err != nil {
+			result <- response{err: err}
+			return
+		}
+		defer resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		result <- response{code: resp.StatusCode, body: string(body), err: err}
+	}()
+	select {
+	case <-started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("resident Launch never reached producer")
+	}
+	assertResidentRoleState(t, env, session.ID, "running")
+	close(release)
+	select {
+	case got := <-result:
+		if got.err != nil || got.code != http.StatusOK {
+			t.Fatalf("resident launch: code=%d body=%s err=%v", got.code, got.body, got.err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("resident Launch did not return")
+	}
+	assertResidentRoleState(t, env, session.ID, "idle")
+}
+
+func assertResidentRoleState(t *testing.T, env *ledgerEnv, sessionID, want string) {
+	t.Helper()
+	code, raw := ledgerGet(t, env.testAgentdEnv, "/api/sessions/"+sessionID)
+	if code != http.StatusOK {
+		t.Fatalf("SessionDetail resident state: %d %s", code, raw)
+	}
+	var detail proto.SessionDetail
+	if err := json.Unmarshal([]byte(raw), &detail); err != nil {
+		t.Fatal(err)
+	}
+	for _, role := range detail.RoleStatus.Roles {
+		if role.Kind == "resident" && role.Identity == b444Identity {
+			if role.State != want {
+				t.Fatalf("resident state want %s got %+v", want, role)
+			}
+			return
+		}
+	}
+	t.Fatalf("resident role %s absent: %s", b444Identity, raw)
 }
 
 // A2.5 HTTP 改名（Q6）：群主改名 200 + timeline renamed；expect_title 不符 409 且标题不变；非群主非驻场者

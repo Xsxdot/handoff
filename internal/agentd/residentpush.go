@@ -38,6 +38,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/orchestration"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/scheduling"
+	"github.com/google/uuid"
 )
 
 // residentClaimPrefix 是驻场唤醒在 wake_claims.card 列里的键前缀：`resident:<会话房间 id>`。卡号不含冒号
@@ -218,7 +219,8 @@ func (s *Server) consumeResidentBatch(ctx context.Context, session string, batch
 		return 0, nil, nil
 	}
 	stopRenew := s.startWakeClaimRenewal(key, claimed)
-	result, wakeErr := s.wakeResidentRound(ctx, r, sess, evs)
+	roundID := uuid.NewString()
+	result, wakeErr := s.wakeResidentRound(ctx, r, sess, evs, roundID)
 	stopRenew()
 	if wakeErr != nil {
 		s.log.Error("驻场者续轮失败", "session", session, "identity", identity, "event_count", len(evs), "cause", wakeErr)
@@ -247,7 +249,7 @@ func (s *Server) consumeResidentBatch(ctx context.Context, session string, batch
 // 的特判：coordinatorRunner.Resume 注入的是驻场载体自己的 cli/会话对，驻场者按简报用 --agent 发言，
 // 该对不对应任何卡席位，不会被当作席位身份落账。
 func (s *Server) wakeResidentRound(ctx context.Context, r proto.SessionResident, sess proto.Session,
-	evs []keystone.WakeEvent) (keystone.RoundResult, error) {
+	evs []keystone.WakeEvent, roundID string) (keystone.RoundResult, error) {
 	var zero keystone.RoundResult
 	kind, agent, err := proto.ParseMemberIdentity(r.Identity)
 	if err != nil || kind != proto.IdentityKindAgent {
@@ -275,11 +277,23 @@ func (s *Server) wakeResidentRound(ctx context.Context, r proto.SessionResident,
 	}
 	s.log.Info("驻场者续轮开始", "session", r.Session, "identity", r.Identity, "squad", binding.Squad,
 		"carrier", binding.Carrier, "cli", ref.CLI, "push_session", ref.SessionID, "event_count", len(evs))
+	if _, err := s.rooms.RecordResidentRound(r.Session, r.Identity, roundID, "start", ""); err != nil {
+		return zero, fmt.Errorf("记录驻场者续轮开始事实: %w", err)
+	}
 	result, err := s.keystone.WakeResident(ctx, ref, keystone.ResidentBrief{
 		Session: r.Session, Agent: agent, Title: sess.Title, Cards: sess.Cards,
 	}, evs)
 	if err != nil {
-		return result, fmt.Errorf("驻场者续轮失败: %w", err)
+		wakeErr := fmt.Errorf("驻场者续轮失败: %w", err)
+		if _, factErr := s.rooms.RecordResidentRound(r.Session, r.Identity, roundID, "fail", wakeErr.Error()); factErr != nil {
+			s.log.Error("驻场者续轮失败事实写入失败", "session", r.Session, "identity", r.Identity, "round_id", roundID, "cause", factErr)
+		}
+		return result, wakeErr
+	}
+	if _, factErr := s.rooms.RecordResidentRound(r.Session, r.Identity, roundID, "end", ""); factErr != nil {
+		// The keystone call completed successfully; a failed end append leaves the
+		// last persisted observation at start, which the projector reports as such.
+		s.log.Error("驻场者续轮结束事实写入失败", "session", r.Session, "identity", r.Identity, "round_id", roundID, "cause", factErr)
 	}
 	s.log.Info("驻场者续轮结束", "session", r.Session, "push_session", result.SessionID, "ok", true)
 	return result, nil

@@ -87,6 +87,7 @@ func TestB409ProjectionIndexesExistInBothDialects(t *testing.T) {
 	want := []string{
 		"idx_room_messages_card_seq", "idx_session_projection_card_seq", "idx_needs_events_card_seq",
 		"idx_session_created_id_seq", "idx_session_structure_session_seq",
+		"idx_resident_round_session_seq",
 	}
 	for _, ddl := range []struct {
 		name string

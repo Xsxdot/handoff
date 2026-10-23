@@ -51,9 +51,10 @@ type RoomMessageSnapshot struct {
 
 // RoleActivityRead 是 card-scoped 最近事实窗口；TruncatedCards 标识完整窗口之外仍有旧事实。
 type RoleActivityRead struct {
-	Events         []proto.LedgerEvent
-	SessionEvents  []proto.LedgerEvent
-	TruncatedCards []string
+	Events                 []proto.LedgerEvent
+	SessionEvents          []proto.LedgerEvent
+	TruncatedCards         []string
+	SessionEventsTruncated bool
 }
 
 // RoleTicketRead 是当前卡集合的未决票据引用候选；Truncated 明确表示窗口不完整。
@@ -86,6 +87,10 @@ type LedgerClient interface {
 	EventsFromAscContext(ctx context.Context, cardIDs []string, fromSeq int64, limit int) ([]proto.LedgerEvent, error)
 	// RoomMessagesBeforeContext 只读指定房间最近消息；beforeSeq 为排他上界，limit 必须为正。
 	RoomMessagesBeforeContext(ctx context.Context, roomID string, beforeSeq int64, limit int) ([]proto.LedgerEvent, error)
+	// RecordResidentRound appends a correlated push-resident phase to the existing session event stream.
+	RecordResidentRound(sessionID, identity, roundID, phase, reason string) (int64, error)
+	// SessionResidentRoundEventsContext reads a fixed-size window scoped to one session and its current resident.
+	SessionResidentRoundEventsContext(ctx context.Context, sessionID, identity string, limit int) ([]proto.LedgerEvent, bool, error)
 	// RoomMessageSnapshotsContext 批量返回目标 room 最新消息、最大 created_at 与给定 seq 水位之后的消息行数。
 	// 房间身份按 RoomIDOf 语义解析：card_id 优先，无卡事件才取 payload.room；不解释 member/unread。
 	RoomMessageSnapshotsContext(ctx context.Context, afterByRoom map[string]int64) ([]RoomMessageSnapshot, error)

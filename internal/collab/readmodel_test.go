@@ -204,6 +204,36 @@ func (f *fakeLC) RoomMessagesBeforeContext(ctx context.Context, roomID string, b
 	return out, nil
 }
 
+func (f *fakeLC) RecordResidentRound(sessionID, identity, roundID, phase, reason string) (int64, error) {
+	seq := int64(len(f.events) + 1)
+	raw, _ := json.Marshal(map[string]string{"session": sessionID, "identity": identity, "round_id": roundID, "phase": phase, "reason": reason})
+	f.events = append(f.events, proto.LedgerEvent{Seq: seq, Type: ledger.EvResidentRound, Actor: identity, Payload: raw, CreatedAt: time.Now().UTC()})
+	return seq, nil
+}
+
+func (f *fakeLC) SessionResidentRoundEventsContext(ctx context.Context, sessionID, identity string, limit int) ([]proto.LedgerEvent, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, false, err
+	}
+	var out []proto.LedgerEvent
+	for _, ev := range f.events {
+		if ev.Type != ledger.EvResidentRound {
+			continue
+		}
+		var payload struct {
+			Session string `json:"session"`
+		}
+		if json.Unmarshal(ev.Payload, &payload) == nil && payload.Session == sessionID {
+			out = append(out, ev)
+		}
+	}
+	truncated := len(out) > limit
+	if truncated {
+		out = out[len(out)-limit:]
+	}
+	return out, truncated, nil
+}
+
 func (f *fakeLC) RoomMessageSnapshotsContext(ctx context.Context, afterByRoom map[string]int64) ([]client.RoomMessageSnapshot, error) {
 	f.roomSnapshotReads++
 	if err := ctx.Err(); err != nil {

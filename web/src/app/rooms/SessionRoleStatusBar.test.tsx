@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { fetchTaskDetail, replyTicket } from '../../api/client'
@@ -19,6 +19,7 @@ const projection = (observedAt: string): SessionRoleStatusProjection => ({ obser
 }] })
 
 beforeEach(() => vi.clearAllMocks())
+afterEach(() => vi.restoreAllMocks())
 
 describe('SessionRoleStatusBar ticket snapshots', () => {
   it('restores focus through nested role detail and ticket drawer closes', async () => {
@@ -40,6 +41,69 @@ describe('SessionRoleStatusBar ticket snapshots', () => {
     await user.keyboard('{Escape}')
     await waitFor(() => expect(screen.queryByRole('dialog', { name: /协调者 · B456/ })).toBeNull())
     await waitFor(() => expect(document.activeElement).toBe(banner))
+  })
+
+  it('keeps every exception chip visible when the real density fitter compresses and folds other roles', async () => {
+    vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockImplementation(function (this: HTMLElement) {
+      return this.classList.contains('chips') ? 100 : 0
+    })
+    vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockImplementation(function (this: HTMLElement) {
+      if (!this.matches('[data-role-chip]')) return 0
+      return this.classList.contains('mini') ? 26 : this.classList.contains('nodur') ? 64 : 88
+    })
+    vi.mocked(fetchTaskDetail).mockResolvedValue({ task: {} as never, pending_tickets: [ticket], recent_events: [] })
+    const roles = [
+      { ...projection('2026-10-23T07:05:00Z').roles[0], id: 'coordinator:E1', card_id: 'E1', state: 'exception' as const, ticket_refs: undefined, conclusion: '第一项接续异常' },
+      { ...projection('2026-10-23T07:05:00Z').roles[0], id: 'coordinator:E2', card_id: 'E2', state: 'exception' as const, ticket_refs: undefined, conclusion: '第二项接续异常' },
+      projection('2026-10-23T07:05:00Z').roles[0],
+      { ...projection('2026-10-23T07:05:00Z').roles[0], id: 'executor:run-1', kind: 'executor' as const, task_id: 'run-1', state: 'running' as const, ticket_refs: undefined },
+      { ...projection('2026-10-23T07:05:00Z').roles[0], id: 'executor:idle-1', kind: 'executor' as const, task_id: 'idle-1', state: 'idle' as const, ticket_refs: undefined },
+      { ...projection('2026-10-23T07:05:00Z').roles[0], id: 'executor:wait-1', kind: 'executor' as const, task_id: 'wait-1', state: 'waiting' as const, ticket_refs: undefined },
+      { ...projection('2026-10-23T07:05:00Z').roles[0], id: 'executor:unknown-1', kind: 'executor' as const, task_id: 'unknown-1', state: 'unknown' as const, ticket_refs: undefined },
+    ]
+    const { container } = render(<SessionRoleStatusBar sessionId="session:fit" archived={false} summary={null} projection={{ observed_at: '2026-10-23T07:05:00Z', roles }} />)
+
+    expect(await screen.findByRole('button', { name: /需要你处理 1 件事/ })).toBeVisible()
+    await waitFor(() => {
+      const chips = [...container.querySelectorAll<HTMLElement>('[data-role-chip]')]
+      const errors = chips.filter((chip) => chip.dataset.state === 'exception')
+      expect(errors).toHaveLength(2)
+      expect(errors.every((chip) => !chip.hidden && !chip.classList.contains('folded'))).toBe(true)
+      expect(chips.some((chip) => chip.hidden && chip.dataset.state !== 'exception')).toBe(true)
+    })
+    const more = container.querySelector<HTMLButtonElement>('.more')!
+    expect(more).toBeVisible()
+    expect(more.getAttribute('aria-label')).toMatch(/还有 [1-9]\d* 个角色/)
+    expect(more.querySelector('.more-dot.need')).not.toBeNull()
+    expect(more.querySelector('.more-dot.err')).toBeNull()
+  })
+
+  it('sorts across states by the approved urgency order', () => {
+    const states = ['unknown', 'idle', 'running', 'waiting', 'exception', 'needs_you'] as const
+    const { container } = render(<SessionRoleStatusBar sessionId="session:rank" archived={false} summary={null} projection={{
+      observed_at: '2026-10-23T07:05:00Z', roles: states.map((state) => ({
+        id: `coordinator:${state}`, kind: 'coordinator' as const, card_id: state, state, conclusion: state,
+      })),
+    }} />)
+    expect([...container.querySelectorAll<HTMLElement>('[data-role-chip]')].map((chip) => chip.dataset.state)).toEqual([
+      'needs_you', 'exception', 'waiting', 'running', 'idle', 'unknown',
+    ])
+  })
+
+  it('keeps a previously loaded ticket read-only after archiving and removes its actionable CTA', async () => {
+    vi.mocked(fetchTaskDetail).mockResolvedValue({ task: {} as never, pending_tickets: [ticket], recent_events: [] })
+    const user = userEvent.setup()
+    const props = { sessionId: 'session:archived', summary: null }
+    const { rerender } = render(<SessionRoleStatusBar {...props} archived={false} projection={projection('2026-10-23T07:05:00Z')} />)
+    await user.click(await screen.findByRole('button', { name: /需要你处理 1 件事/ }))
+    const drawer = await screen.findByRole('dialog', { name: '待你处理' })
+    await user.type(await within(drawer).findByRole('textbox', { name: '回答（原样透传给模型）' }), '已确认')
+    await waitFor(() => expect(within(drawer).getByRole('button', { name: '提交回答' })).toBeEnabled())
+
+    rerender(<SessionRoleStatusBar {...props} archived projection={projection('2026-10-23T07:06:00Z')} />)
+    expect(screen.queryByRole('button', { name: /需要你处理 1 件事/ })).toBeNull()
+    expect(await within(drawer).findByText(/会话已归档，只读/)).toBeVisible()
+    expect(within(drawer).getByRole('button', { name: '提交回答' })).toBeDisabled()
   })
 
   it('consumes the real Go-serialized B456 JSON without requiring optional since fields', async () => {

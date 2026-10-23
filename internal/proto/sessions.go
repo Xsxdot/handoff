@@ -72,6 +72,9 @@ type SessionMember struct {
 	Carrier        string `json:"carrier,omitempty"`
 	CarrierMachine string `json:"carrier_machine,omitempty"`
 	Model          string `json:"model,omitempty"`
+	// ResidentSatAt is projection-only; it ties resident_round observations to
+	// the current seat without adding a JSON field.
+	ResidentSatAt time.Time `json:"-"`
 }
 
 // SessionCard 是会话里的一张工作项卡。Seat 为空 = 空座（进群 ≠ 配人）。

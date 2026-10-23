@@ -106,6 +106,18 @@ func (f *Facade) RoomMessagesBeforeContext(ctx context.Context, roomID string, b
 	return eventWires(events), nil
 }
 
+func (f *Facade) RecordResidentRound(sessionID, identity, roundID, phase, reason string) (int64, error) {
+	return f.st.RecordSessionResidentRound(sessionID, identity, roundID, phase, reason)
+}
+
+func (f *Facade) SessionResidentRoundEventsContext(ctx context.Context, sessionID, identity string, limit int) ([]proto.LedgerEvent, bool, error) {
+	events, truncated, err := f.st.SessionResidentRoundEventsContext(ctx, sessionID, identity, limit)
+	if err != nil {
+		return nil, false, err
+	}
+	return eventWires(events), truncated, nil
+}
+
 // RoomMessageSnapshotsContext 直通账本批量房间消息摘要，并映射最新事件 wire。
 func (f *Facade) RoomMessageSnapshotsContext(ctx context.Context, afterByRoom map[string]int64) ([]client.RoomMessageSnapshot, error) {
 	snapshots, err := f.st.RoomMessageSnapshotsContext(ctx, afterByRoom)

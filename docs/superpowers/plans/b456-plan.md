@@ -60,6 +60,8 @@
 
 冻结澄清 r1.3（主会话，2026-10-23）：远端镜像快照并非实时权威，不能覆盖同任务较新的明确生命周期事件。可将既有 Task.UpdatedAt 传入内部 observation（不新增 HTTP 字段）与同源 task_mirrored.CreatedAt 比较冲突的新旧；FetchedAt 属本机获取时间，不与远端事件墙钟直接等价。UpdatedAt 仅用于冲突次序，不充当状态持续时长或心跳。不能可靠排序时降级未知/保留较新已观测事实，不复活旧 running；较新的真实继续快照可替代旧 completed。该条收紧已有“旧事实不盖新事实”的承诺，不改 r4 结果和冻结 JSON。
 
+冻结补充 r1.4（主会话，2026-10-23，审核 #33154/#33162、用户批准 #33171）：本轮修复 I1–I5，禁止合并。I5 的 push 驻场者与桌面驻场者分开：桌面门铃没有运行观测，继续 unknown；push 首轮与续轮补最小回合事实。原始来源的成功/失败都 CompleteWake，且首轮无 claim，无法仅由原数据区分结果；用户明确批准“补齐最小回合事实（推荐）”，覆盖此前不新增持久化的限制，仅限此项。复用现有会话事件流的 `resident_round`，含唯一 round_id、当前驻场 identity、phase=start/end/fail、源时间与可见短原因，不建表、扫描器、第二套运行状态或完整输入输出记录。实际调用前 start、同轮返回后 end/fail；同 round_id 配对，较新回合取代旧失败，显式 end 才说明空闲，fail 说明异常。显式 start 未观察到结算可说明最近观测运行，结论必须写“尚未观察到结束”，不承诺心跳；claim/租约本身不推出 running，不设 TTL 自动异常。有明确重启中断证据时可记录同轮中断；沉默不猜故障。采集失败不得伪造新状态，沿现有日志记录失败与关联信息。查询按当前 session 与当前驻场关联有界读取，沿 ledger facade/client，禁止穿透 Store。SessionDetail JSON 不变，`recent.source` 仅补 `resident_round`。HTTP 验证真实 producer start→running、end→idle、fail→exception、旧失败→新成功恢复、桌面 unknown；I1 额外锁住真实答复落库后 delivery_failed 未恢复时不能被普通 running 快照覆盖。
+
 ## 工作单元
 
 ### W1：有界事实投影（后端所有权）
