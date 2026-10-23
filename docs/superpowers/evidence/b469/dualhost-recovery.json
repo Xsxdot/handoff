@@ -334,5 +334,7 @@
   "linux_binary_sha256": "106c687af57216083d0c88d9dfac4fc37fa9b1a967c36224eb7d8308e7454b06",
   "mac_binary_sha256": "05a11809176215ec2f7cf2afd5193f446ef6bd9d256a4179f00dfe751a554603",
   "source_manifest_sha256": "280b862cc8a3e1ec14d4115b43fe868f63116767a4f7d66787cbb9ba59b933d4",
-  "cleanup_note": "A was intentionally stopped before transfer; both recorded A stops exited 0. Final base cleanup therefore has no live A process to reap."
+  "cleanup_note": "A was intentionally stopped before transfer; both recorded A stops exited 0. Final base cleanup therefore has no live A process to reap.",
+  "source_commit": "8cdff7fcca444614c9e517acf1a08cfa82d941bb",
+  "source_manifest": "s3-c93-source-manifest.json"
 }

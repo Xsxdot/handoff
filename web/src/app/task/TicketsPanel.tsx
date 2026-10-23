@@ -128,20 +128,22 @@ function TicketCard({
         <span className="font-mono text-xs text-muted-foreground">{ticket.id}</span>
       </div>
       {ticket.notification && (
-        <p className="text-xs text-muted-foreground" data-testid={`ticket-notification-${ticket.id}`}>
-          通知状态：{ticket.notification.status}
-          {ticket.notification.reason ? `（${ticket.notification.reason}）` : ''}
-          {ticket.notification.last_error ? `：${ticket.notification.last_error}` : ''}
-        </p>
-      )}
-      {retryable && onRetryNotification && (
-        <Button size="sm" variant="outline" disabled={blocked} onClick={() => {
-          setSubmitting(true)
-          setError(null)
-          void onRetryNotification(ticket).catch((err) => setError(errorMessage(err))).finally(() => setSubmitting(false))
-        }}>
-          {submitting ? '重试中…' : '重试通知'}
-        </Button>
+        <div className="flex items-center justify-between gap-3">
+          <p className="min-w-0 break-words text-xs text-muted-foreground" data-testid={`ticket-notification-${ticket.id}`}>
+            通知状态：{ticket.notification.status}
+            {ticket.notification.reason ? `（${ticket.notification.reason}）` : ''}
+            {ticket.notification.last_error ? `：${ticket.notification.last_error}` : ''}
+          </p>
+          {retryable && onRetryNotification && (
+            <Button className="shrink-0" size="sm" variant="outline" disabled={blocked} onClick={() => {
+              setSubmitting(true)
+              setError(null)
+              void onRetryNotification(ticket).catch((err) => setError(errorMessage(err))).finally(() => setSubmitting(false))
+            }}>
+              {submitting ? '重试中…' : '重试通知'}
+            </Button>
+          )}
+        </div>
       )}
 
       {/* 权限/提问全文：完整展示、不截断 */}
