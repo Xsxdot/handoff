@@ -10,7 +10,7 @@
 
 ## 主会话确认的施工边界
 
-- 后端 agent 只拥有 `internal/{ledger,collab,proto,agentd}` 与对应 Go fixture/test；前端 agent 只拥有 `web/`。两者依据下文冻结 wire 协作。任何跨缝语义/字段变更须先回主会话确认并更新冻结契约；不互相覆盖文件。
+- 后端 agent 只拥有 `internal/{ledger,collab,proto,agentd}`，以及仅为单条任务快照只读查询涉及的 `internal/{orchestration,store}` 与对应 Go fixture/test；前端 agent 只拥有 `web/`。两者依据下文冻结 wire 协作。任何跨缝语义/字段变更须先回主会话确认并更新冻结契约；不互相覆盖文件。
 - 不把 DriverLease、席位绑定、卡列或 `task_mirrored` 历史本身当作进程正在运行；不加 TTL 自动判异常。明确 start 至 end/fail 是“最近观测到的回合运行”，沉默只说明未观察到后继，详情展示最后事实时间，不把沉默或经过时长变成在线心跳。
 - S3 必须在抽屉内完成真实批准/拒绝/回答并成功后打开下一张，复用 `TicketsPanel` 与 `replyTicket`。任务详情全文经 `fetchTaskDetail` 获取，禁止拿截断的 `permission_request` 事件摘要当票据正文。Task GET/reply 已由 `internal/agentd/taskroute.go` 按全局唯一 task UUID 经 `byTask` 镜像路由；镜像索引缺失/远端不可用时显示真实读取或答复失败，不把它算入可处理 CTA。仅当前登录用户可处理且已成功读取完整 pending ticket 的项目计入“需要你处理 N”。
 - “接续请求”复用 `sendRoomMessage`，以 `mentions:[cardID]` @ 当前卡席位，沿用现有鉴权、寻址和唤醒队列；不调用 coordinator wake 的转交 API。push 模式按钮/结果只说明“请求已发送/受理”，不保证恢复或执行；pull 模式只说明已发送消息、可查看卡，不声称自动唤醒。
@@ -50,9 +50,13 @@
 }
 ```
 
-`observed_at` 是查询完成时间，只能标注数据更新时间；所有事实时间来自源事件。源时间缺失、零值或未来值不算时长起点，显示“时间未记录”。`roles` 按当前会话成员/卡席位/关联 task 生成，不能将执行者伪装成会话成员；同身份多职责分开。状态优先级、展示名和布局沿 r4。`running` 只表示明确 start/progress 等开始或运行记录尚未观察到结束；无 TTL、不宣称实时心跳，详情的 `conclusion` 说明最近事实及“尚未观察到结束”，时长不因源沉默而刷新。`idle` 只由明确结束/归档或来源明确空闲产生。`waiting` 包含明确未决等待以及 `completed` 后无更晚 dispatch/continue 事实而卡未终态的待接续（仅事实，不判故障）；新派发/新轮次消退，卡终态解除。`exception` 只用当前未恢复的明确失败；旧失败不盖较新成功。`needs_you` 只能由现有票据投影确定并在 task detail 成功读到当前用户可处理的 pending 票据后设置；`ticket_refs` 仅标识，不带任何截断正文。无法按身份/卡/task/序号区分、查询失败或证据缺失时 `unknown`/明确未更新，不能静默当无事实。
+`observed_at` 是查询完成时间，只能标注数据更新时间；所有事实时间来自源事件。源时间缺失、零值或未来值不算时长起点，显示“时间未记录”。`roles` 按当前会话成员/卡席位/关联 task 生成，不能将执行者伪装成会话成员；同身份多职责分开。状态优先级、展示名和布局沿 r4。`running` 只表示明确开始或运行记录尚未观察到结束（普通 progress 仅为活动摘要，不单独证明运行）；无 TTL、不宣称实时心跳，详情的 `conclusion` 说明最近事实及“尚未观察到结束”，时长不因源沉默而刷新。`idle` 只由明确结束/归档或来源明确空闲产生。`waiting` 包含明确未决等待以及 `completed` 后无更晚 dispatch/continue 事实而卡未终态的待接续（仅事实，不判故障）；新派发/新轮次消退，卡终态解除。`exception` 只用当前未恢复的明确失败；旧失败不盖较新成功。`needs_you` 只能由现有票据投影确定并在 task detail 成功读到当前用户可处理的 pending 票据后设置；`ticket_refs` 仅标识，不带任何截断正文。无法按身份/卡/task/序号区分、查询失败或证据缺失时 `unknown`/明确未更新，不能静默当无事实。
 
 `recent.seq` 只在同一来源/作用域内比较，不跨 task `source_seq`、card `seq` 或消息游标推断全局先后；前端按源时间倒序，同时间稳定排序。`source` 只能是冻结来源类型；`summary`/`reason` 仅允许 wake 既有用户可见失败摘要、房间消息摘要或用户可见工单/任务短事件，不回传原始账本 payload、密钥、模型推理或完整执行输出。票据正文只由 task detail API 获取并交给既有 `TicketsPanel`。`can_request_wake` 仅表示可提交 `@card` 接续请求的能力/席位类型，不代表唤醒已发生；动作结果仍由发送 API 响应决定。
+
+冻结澄清 r1.1（主会话，2026-10-23）：`progress` 有配额、对账、看门狗等非执行 producer（`internal/orchestration/{manager,reconcile,quota,watchdog}.go`），不得将任意 progress 映射为 running 或覆盖明确结束/未答状态。同任务接续需核真实当前任务状态或可辨认的权威新轮事实；无法辨认时降级未知并保留证据，不以文字猜测。该澄清保持原六态与查询 wire 形状。
+
+冻结澄清 r1.2（主会话，2026-10-23）：同任务 continue 会更新既有任务 Task.State，但事件只有共用 progress，无法仅从它证明新运行。批准 agentd 组装点通过现有 manager facade GetTask（本机）、新增 GetMirrorTask(taskID) 窄读（远端既存 mirror_tasks 表）取得控制面状态，以 collab 公开投影方法输入当前 role task 引用的快照。不新增持久化、不全量 ListTasks/ListMirrorTasks、不现场远端扇出、不从 collab 穿透执行实现。远端说明最后镜像到达时间，控制面 running 也不承诺进程心跳；Task.UpdatedAt 非专用状态起点，不将其直接当 since。取不到或关联/目标冲突则未知；旧回合 completed 被真实继续后的 running 快照替代。文件所有权扩至此窄读需要的 orchestration/store。JSON 形状不变。
 
 ## 工作单元
 

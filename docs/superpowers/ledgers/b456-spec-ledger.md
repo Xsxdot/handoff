@@ -98,3 +98,4 @@ $ git commit -m 'docs(B456): add role timelines and run-content prototype'
 - r4 fork 与 README 已接收。对照页改用独立 session-baseline.css 修复404；五文件patch重建逐字节一致。base比较页仅补EOF换行，未改形态。192.168.0.167:8456 的状态页/对照页/两份CSS均HTTP200。
 - 独立 plan r1 经主会话拍板，冻结 SessionDetail.role_status JSON；两位本地 gpt-6-luna 按后端/Web文件所有权协作，单卡不拆子卡。这是施工排序调整，不改变r4结果和B471边界。
 - 基线预检：Go collab TestSessionReadsHonorCanceledRequest通过；Node24下 SessionTab 18 tests通过。web依赖 npm ci 已安装（不改lockfile）；系统Node23不满足依赖engine，后续用bundled Node24。
+- 实施中核实普通 progress 同时由配额/对账/看门狗写入，不能作为运行证据。主会话在 plan r1.1 澄清后，进一步以 r1.2 批准复用已有 Task.State 和单条 mirror_tasks 窄读解决同任务continue；仅公开只读面扩展，不新增状态源/持久化。
