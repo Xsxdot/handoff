@@ -1,14 +1,16 @@
 --- a/index.html
 +++ b/index.html
-@@ -275,6 +275,7 @@
+@@ -274,8 +274,8 @@
+     </div>
      <!-- 底部图标区：08-18 把看板从左栏顶部挪到这里，与工单、设置并列 -->
      <div class="dock">
+-      <a class="dock-btn" href="pages/session-current.html" title="当前会话形态">▢</a>
        <a class="dock-btn" href="pages/board.html" title="工作项账本">▤<span class="badge dock-badge">3</span></a>
 +      <a class="dock-btn" href="pages/session-status.html" title="B456 会话内角色状态原型">◉</a>
        <button class="dock-btn" id="openBoard" title="任务看板">▦<span class="dot amber"></span></button>
        <button class="dock-btn" id="openTickets" title="工单">✉<span class="badge dock-badge">2</span></button>
        <!-- B453 新增：账号与额度 -->
-@@ -287,6 +288,7 @@
+@@ -288,6 +288,7 @@
  
    <div class="main">
      <div class="breadcrumb">本机 / handoff / worktrees / 7a8334f4</div>
@@ -18,221 +20,80 @@
        <button class="tab">终端 1</button>
 --- a/pages/session-status.html
 +++ b/pages/session-status.html
-@@ -14,8 +14,8 @@
- <head>
- <meta charset="utf-8">
- <meta name="viewport" content="width=device-width, initial-scale=1">
--<title>handoff 控制台 · 会话（IA 变体）</title>
--<link rel="stylesheet" href="../shared/styles.css">
-+<title>handoff 控制台 · 会话状态（B456 原型）</title>
-+<link rel="stylesheet" href="../shared/session-status.css">
- <style>
-   /* display:flex 会盖掉 UA 的 [hidden]{display:none}——本页大量用 hidden 切态，
-      统一用一条 !important 规则兜住（同 sessions.html 里记下的教训） */
-@@ -177,6 +177,72 @@
-   .bcard .meta { display: block; font-size: 11px; color: var(--muted-foreground); margin-top: 3px; }
-   .bcard .seat { color: var(--amber); font-size: 11px; }
-   .bcard .mono-id { font-family: var(--font-mono); font-size: 11px; color: var(--muted-foreground); margin-right: 4px; }
-+
-+  .status-proto-head { display:flex; align-items:center; gap:16px; flex-wrap:wrap; padding:8px 14px; border-bottom:1px solid #e8dfca; background:#fffbeb; color:#6f603d; font-size:12px; }
-+  .status-proto-head > div { display:flex; align-items:center; gap:8px; }
-+  .status-proto-head b { color:#51421c; }
-+  .status-proto-head label { display:flex; align-items:center; gap:7px; margin-left:auto; }
-+  .status-proto-head select { max-width:min(350px, 58vw); padding:5px 8px; border:1px solid #e4d8b8; border-radius:6px; background:white; color:#51421c; font:inherit; }
-+  .status-proto-head a { color:#8b650d; text-decoration:none; }
-+  .role-status { display:flex; align-items:center; gap:8px; min-height:48px; padding:5px 12px; border-top:1px solid var(--border); background:#fff; flex-wrap:wrap; }
-+  .rs-label { color:var(--muted-foreground); font-size:11px; flex-shrink:0; }
-+  .rs-roles { display:flex; align-items:center; gap:6px; min-width:0; flex-wrap:wrap; }
-+  .rs-person { display:inline-flex; align-items:center; gap:6px; min-width:0; max-width:220px; border:1px solid var(--border); border-radius:7px; padding:4px 7px; background:#fff; color:var(--foreground); text-align:left; cursor:pointer; font:inherit; }
-+  .rs-person:hover { background:var(--muted); }
-+  .rs-avatar { display:grid; place-items:center; width:23px; height:23px; flex-shrink:0; border-radius:50%; background:#f5f5f5; color:#525252; font-size:10px; font-weight:600; }
-+  .rs-person-text { display:flex; flex-direction:column; min-width:0; }
-+  .rs-person-text b { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:11px; font-weight:600; }
-+  .rs-person-text small { color:var(--muted-foreground); font-size:10px; white-space:nowrap; }
-+  .rs-person.running .rs-avatar { background:#fef3c7; color:#92400e; }
-+  .rs-person.waiting .rs-avatar { background:#ffedd5; color:#9a3412; }
-+  .rs-person.done .rs-avatar { background:#dcfce7; color:#166534; }
-+  .rs-person.stale .rs-avatar { background:#f3f4f6; color:#6b7280; }
-+  .rs-summary { min-width:0; margin-left:auto; color:var(--muted-foreground); font-size:11px; }
-+  .role-dialog { width:min(520px, calc(100vw - 28px)); max-width:none; max-height:85vh; padding:0; border:1px solid var(--border); border-radius:12px; color:var(--foreground); box-shadow:0 16px 60px rgba(0,0,0,.2); }
-+  .role-dialog::backdrop { background:rgba(15,23,42,.28); }
-+  .rd-head { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:16px 18px 12px; border-bottom:1px solid var(--border); }
-+  .rd-eyebrow { color:var(--muted-foreground); font-size:11px; }
-+  .rd-head h2 { margin:3px 0 0; font-size:16px; }
-+  .rd-content { padding:14px 18px 18px; overflow:auto; }
-+  .rd-meta { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:12px; }
-+  .rd-meta span { padding:4px 8px; border-radius:999px; background:var(--muted); color:var(--muted-foreground); font-size:11px; }
-+  .rd-content dl { display:grid; grid-template-columns:110px minmax(0,1fr); gap:9px 12px; margin:0; font-size:12.5px; line-height:1.55; }
-+  .rd-content dt { color:var(--muted-foreground); }
-+  .rd-content dd { margin:0; }
-+  .rd-content a { color:#8b650d; }
-+  .rd-links { display:flex; flex-direction:column; gap:4px; margin-top:14px; padding-top:12px; border-top:1px solid var(--border); font-size:12px; }
-+  .rd-links span { color:var(--muted-foreground); font-size:11px; }
-+  @media (max-width:760px) {
-+    .sidebar { width:190px; }
-+    .filetree { display:none; }
-+    .status-proto-head { gap:8px; }
-+    .status-proto-head > div { width:100%; }
-+    .status-proto-head label { margin-left:0; width:100%; }
-+    .status-proto-head select { flex:1; max-width:none; min-width:0; }
-+    .role-status { align-items:flex-start; }
-+    .rs-summary { width:100%; margin-left:19px; }
-+    .rs-roles { flex:1; }
-+    .rs-person { max-width:calc(50% - 4px); }
-+    .rs-person-text small { white-space:normal; }
-+    .sx-input { padding:8px; }
-+    .sx-input .row { align-items:stretch; }
-+    .sx-input textarea { min-width:0; }
-+    .role-status, .sx-input { flex-shrink:0; }
-+  }
-+  @media (max-width:430px) {
-+    /* 房间在 compact 视口中占满宽度；外层树、文件树和工作台标签不是会话导航。 */
-+    .sidebar, .filetree, .breadcrumb, .tabbar { display:none !important; }
-+    .app-shell { width:100%; }
-+    .main { width:100%; min-width:0; }
-+    .main .content { flex:1; min-height:0; }
-+    .status-proto-head > div span { display:none; }
-+    .rs-roles { width:100%; }
-+    .rs-person { flex:1 1 calc(50% - 5px); max-width:none; }
-+    .rs-summary { margin-left:0; }
-+    .rd-content dl { grid-template-columns:1fr; gap:2px; }
-+    .rd-content dd { margin-bottom:8px; }
-+  }
-+
- </style>
- </head>
- <body>
-@@ -237,10 +303,10 @@
-     </div>
- 
-     <div class="dock">
--      <a class="dock-btn" style="background:var(--muted);color:var(--foreground)" href="sessions-v2.html" title="会话 · IA 变体（B361）" aria-current="page">◱<span class="badge dock-badge">2</span></a>
-+      <a class="dock-btn" style="background:var(--muted);color:var(--foreground)" href="session-status.html" title="会话 · B456 状态原型" aria-current="page">◱<span class="badge dock-badge">2</span></a>
-       <a class="dock-btn" href="sessions.html" title="对照：北极星 sessions.html（B358 形态，会话为一等公民页）">⇄</a>
-       <a class="dock-btn" href="board.html" title="工作项">▤<span class="badge dock-badge">2</span></a>
--      <a class="dock-btn" href="flow.html" title="运转流程图（设计文档）">◇</a>
-+      <a class="dock-btn" href="flows.html" title="运转流程图（设计文档）">◇</a>
-       <a class="dock-btn" href="settings.html" title="设置">⚙</a>
-       <button class="dock-btn" title="home 基准终端">▭</button>
-     </div>
-@@ -248,10 +314,19 @@
- 
-   <div class="main">
-     <!-- 走查横条：说明本页是 IA 变体，可一键回北极星 -->
--    <div class="v2-banner">
--      <b>IA 变体对照（B361）</b>：这里把会话从「一等公民页」改回工作台形态——列表收进左栏「会话」tab（项目树在「任务」tab）、
--      群聊/详情开成工作台 tab（可多开、可关、可与「工作项」tab ◫ 分屏）。群聊面与详情的内容与视觉原样继承。
--      <a href="sessions.html">← 回北极星 sessions.html 对照</a>
-+    <div class="status-proto-head">
-+      <div><b>B456 · 会话内状态</b><span>静态原型 · 全部状态为示例数据</span></div>
-+      <label>查看情境
-+        <select id="statusCase" aria-label="切换状态情境">
-+          <option value="working">工作中</option>
-+          <option value="handoff" selected>执行回合完成，待接续（E38）</option>
-+          <option value="progressed">已接续：复审中，工单已答</option>
-+          <option value="approval">等待用户审批</option>
-+          <option value="stale">宿主不可达 / 状态过期</option>
-+          <option value="unknown">无席位 / 状态未知</option>
-+        </select>
-+      </label>
-+      <a href="../index.html">回工作台</a>
-     </div>
-     <div class="breadcrumb">本机 / handoff</div>
-     <div class="tabbar">
-@@ -383,6 +458,11 @@
-             </div>
-           </div>
- 
-+          <section class="role-status" aria-label="会话角色状态">
-+            <span class="rs-label">状态</span>
-+            <div class="rs-roles" id="roleStatus"></div>
-+            <span class="rs-summary" id="statusSummary"></span>
-+          </section>
-           <div class="sx-input">
-             <div class="row">
-               <textarea class="input" placeholder="发消息…（输入 @ 选成员；回复某条消息 = 只叫醒他）"></textarea>
-@@ -478,7 +558,84 @@
-   </aside>
- </div>
- 
-+<dialog id="roleDialog" class="role-dialog">
-+  <div class="rd-head"><div><div class="rd-eyebrow">角色状态 · mock</div><h2 id="rdName">角色</h2></div><button class="icon-btn" id="rdClose" aria-label="关闭">×</button></div>
-+  <div class="rd-content" id="rdContent"></div>
-+</dialog>
-+
- <script>
-+
+@@ -1 +1,63 @@
+-<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>当前会话 · Handoff 原型基准</title><link rel="stylesheet" href="../shared/session-current.css"></head><body><div class="app"><div class="workspace"><aside class="tree"><div class="search">⌕　搜索项目、机器或任务</div><div class="tree-scroll"><div class="tree-head"><span>项目 14</span><span>＋　☷</span></div><section class="project"><div class="project-title">⌄　▣　erp <span class="project-actions">▣　▱　＋</span></div><div class="tree-row tree-session" data-session="erp">▢　项目房间 erp</div><div class="tree-row tree-session" data-session="resident">▢　驻场会话</div><div class="tree-row">▢　E38 快递对账</div><div class="tree-row active">›_　bash · cards/E38-charter-2 <span class="dot"></span></div><div class="tree-row muted">⑂　cards/E42.1-charter-3</div><div class="tree-row muted">⑂　cards/E42.1-charter-2</div><div class="tree-row muted">▣　已结束　128　›</div></section><section class="project"><div class="project-title">⌄　▣　handoff <span class="project-actions">▣　▱　＋</span></div><div class="tree-row">▢　审批闭环与看板：B469 / B463 / B458</div><div class="tree-row">▢　项目房间 handoff</div><div class="tree-row">▢　B456 会话角色状态与阻塞可见性</div><div class="tree-row">›_　bash · main <span class="machine">本机</span><span class="dot"></span></div><div class="tree-row muted">▣　已结束　939　›</div></section><section class="project"><div class="project-title">⌄　▣　xianyu-bridge <span class="project-actions">▣　▱　＋</span></div><div class="tree-row active">›_　bash · codex/x29 <span class="dot"></span></div></section><section class="project"><div class="project-title">›　▣　tk</div><div class="project-title">›　▣　ai-hub</div><div class="project-title">›　▣　cloth</div><div class="project-title">›　▣　charter</div><div class="project-title">›　▣　super-dev</div><div class="project-title">›　▣　handoff-server</div></section></div><footer class="tree-footer"><div class="archive-row">▣　归档会话</div><div class="dock"><span>▢</span><span>▦</span><span>◷</span><span>⚙</span></div></footer></aside><main class="main"><div class="tabs"><span class="tab">›_　bash · main (10)　×</span><span class="tab">▢　会话 · 新会话　×</span><span class="tab active">▢　会话 · 项目房间 erp　×</span><span class="tab">›_　bash · codex/bridge-p2 (11)　×</span></div><div class="pane-head">会话 · 项目房间 erp <span class="pane-actions">⋯　×</span></div><section class="chat"><div class="messages"><article class="message"><div class="meta">cli:opencode/ses_ea28229feffe... · #29275</div>E24 已完成实现并通过独立审查：日期列宽 90→110＋不含略规则，销售「面单打印」页显示名统一为「打单发货」。commit 5b3d275（分支 cards/E24-charter），admin npm test 166+4、npm run build 通过。卡已在 finish，待合入 main。</article><article class="message"><div class="meta">cli:opencode/ses_ea28229feffe... · #29276</div>E24 已在 finish 等合入 main：commit 5b3d275（分支 cards/E24-charter）。销售数据报表日期列 90→110 并对日期单元格取消省略，页面名统一「打单发货」。协作者独立审查全绿；等待人工合并。</article></div></section><div class="composer-wrap"><div class="composer"><span class="tool">☷</span><textarea placeholder="发消息…" aria-label="发消息"></textarea><button class="send" type="button">发送</button></div></div></main></div><div class="quota">已用　◒ ━━━　68%　额度　◔ 0% 4h57m · 16% 6d 18h</div></div></body></html>
+\ No newline at end of file
++<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>会话角色状态 · B456 静态原型</title><link rel="stylesheet" href="../shared/session-current.css"></head><body><div class="app"><div class="workspace"><aside class="tree"><div class="search">⌕　搜索项目、机器或任务</div><div class="tree-scroll"><div class="tree-head"><span>项目 14</span><span>＋　☷</span></div><section class="project"><div class="project-title">⌄　▣　erp <span class="project-actions">▣　▱　＋</span></div><div class="tree-row tree-session" data-session="erp" role="button" tabindex="0">▢　项目房间 erp</div><div class="tree-row tree-session" data-session="resident" role="button" tabindex="0">▢　驻场会话</div><div class="tree-row tree-session" data-session="e38" role="button" tabindex="0" role="button" tabindex="0">▢　E38 快递对账</div><div class="tree-row">›_　bash · cards/E38-charter-2 <span class="machine">linux-01</span><span class="dot"></span></div><div class="tree-row muted">⑂　cards/E42.1-charter-3</div><div class="tree-row muted">⑂　cards/E42.1-charter-2</div><div class="tree-row muted">▣　已结束　128　›</div></section><section class="project"><div class="project-title">⌄　▣　handoff <span class="project-actions">▣　▱　＋</span></div><div class="tree-row">▢　审批闭环与看板：B469 / B463 / B458</div><div class="tree-row">▢　项目房间 handoff</div><div class="tree-row tree-session active" data-session="b456" role="button" tabindex="0">▢　B456 会话角色状态与阻塞可见性</div><div class="tree-row">›_　bash · main <span class="machine">本机</span><span class="dot"></span></div><div class="tree-row muted">▣　已结束　939　›</div></section><section class="project"><div class="project-title">⌄　▣　xianyu-bridge <span class="project-actions">▣　▱　＋</span></div><div class="tree-row">›_　bash · codex/x29 <span class="machine">本机</span><span class="dot"></span></div></section><section class="project"><div class="project-title">›　▣　tk</div><div class="project-title">›　▣　ai-hub</div><div class="project-title">›　▣　cloth</div><div class="project-title">›　▣　charter</div><div class="project-title">›　▣　super-dev</div><div class="project-title">›　▣　handoff-server</div></section></div><footer class="tree-footer"><div class="archive-row">▣　归档会话</div><div class="dock"><span>▢</span><span>▦</span><span>◷</span><span>⚙</span></div></footer></aside><main class="main"><div class="tabs"><span class="tab">›_　bash · main (10)　×</span><span class="tab">▢　会话 · 新会话　×</span><span class="tab">▢　会话 · 项目房间 erp　×</span><span class="tab active" id="activeSessionTab">▢　会话 · B456 会话角色状态与阻塞可见性　×</span><span class="tab">›_　bash · codex/bridge-p2 (11)　×</span></div><div class="casebar"><label for="statusCase">演示情境</label><select id="statusCase"><option value="handoff" selected>E38 待协调者接续</option><option value="working">最近有进展</option><option value="progressed">复审已接续 / 工单已答</option><option value="approval">等待人工决定</option><option value="stale">来源读取失败</option><option value="unknown">没有可用席位</option></select><button id="toggleStatus" type="button" aria-pressed="true">隐藏状态</button><span class="mock-note">历史案例编排 · 全部为 mock，非实时 E38</span></div><div class="pane-head"><span id="paneTitle">会话 · B456 会话角色状态与阻塞可见性</span> <span class="pane-actions">⋯　×</span></div><section class="chat"><div class="messages" id="messages"><article class="message"><div class="meta">B456 演示讨论 · 历史案例 · mock</div>E38 修复执行回合于 14:49 结束并归档。案例记录显示卡仍待复审；截至 15:15，未观察到后续复审派发。</article><article class="message"><div class="meta">B456 演示讨论 · mock</div>状态条将执行任务与卡协调者分开呈现。此案例用于说明待接续状态，不代表当前 E38 实时状态。</article></div></section><div class="status-area" id="statusArea"><div class="role-strip"><span class="status-summary" id="statusSummary"></span><div id="roleStatus" style="display:flex;align-items:center;gap:3px"></div></div></div><div class="composer-wrap"><div class="composer"><span class="tool">☷</span><textarea placeholder="发消息…" aria-label="发消息"></textarea><button class="send" id="sendMessage" type="button">发送</button></div></div></main></div><div class="quota">已用　◒ ━━━　68%　额度　◔ 0% 4h57m · 16% 6d 18h</div></div><dialog id="roleDialog" class="role-dialog"><div class="dialog-head"><h2 id="dialogTitle">角色详情</h2><button id="dialogClose" aria-label="关闭">×</button></div><div class="dialog-body" id="dialogBody"></div></dialog><script>
 +const roleCases = {
 +  working: {
-+    summary: '协调者与执行任务都在工作中',
++    summary: '最近有进展；仅展示最近记录',
 +    roles: [
 +      { id:'self', avatar:'我', name:'我', role:'会话成员', status:'可回复', tone:'calm', elapsed:'', card:'B456', phase:'原型走查', doing:'会话保持可输入；这个状态不表示有人正在替你操作。', waiting:'没有等待对象。', why:'这是当前会话参与者视角。', evidence:'最近一次会话消息：15:14（mock）', updated:'15:14 · mock' },
-+      { id:'coordinator', avatar:'主', name:'主 agent', role:'主 agent', status:'运行中', tone:'running', elapsed:'8 分钟', card:'B456', phase:'协调与核对', doing:'正在整理这轮走查意见，并核对原型范围。', waiting:'等待执行任务返回阶段证据。', why:'协调者仍有活动进展。', evidence:'阶段记录：已读取原型需求（mock）', updated:'15:15 · mock' },
-+      { id:'executor', avatar:'执', name:'执行任务', role:'执行者 · 非会话成员', status:'运行中', tone:'running', elapsed:'6 分钟', card:'B456', phase:'生成状态原型', doing:'正在调整会话底部状态条的窄屏布局。', waiting:'等待当前任务阶段完成。', why:'执行任务独立于群聊成员列表，状态通过任务记录展示。', evidence:'最近进度：状态条结构已写入（mock）', updated:'15:14 · mock' },
++      { id:'coordinator', avatar:'主', name:'主 agent', role:'主 agent', status:'最近有进展', tone:'running', elapsed:'8 分钟前', card:'B456', phase:'协调与核对', doing:'最近记录显示协调者整理了走查意见；没有证据确认当前仍在执行。', waiting:'等待执行任务返回阶段证据。', why:'协调者仍有活动进展。', evidence:'阶段记录：已读取原型需求（mock）', updated:'15:15 · mock' },
++      { id:'executor', avatar:'执', name:'执行任务', role:'执行者 · 非会话成员', status:'最近有进展', tone:'running', elapsed:'6 分钟前', card:'B456', phase:'生成状态原型', doing:'最近进度记录为调整会话底部状态条；没有证据确认当前仍在执行。', waiting:'等待当前任务阶段完成。', why:'执行任务独立于群聊成员列表，状态通过任务记录展示。', evidence:'最近进度：状态条结构已写入（mock）', updated:'15:14 · mock' },
 +    ]
 +  },
 +  handoff: {
 +    summary: '执行回合已完成；等待协调者接续 26 分钟',
 +    roles: [
 +      { id:'self', avatar:'我', name:'我', role:'会话成员', status:'可回复', tone:'calm', elapsed:'', card:'E38', phase:'等待复审', doing:'可在会话里补充信息；当前没有需要你处理的工单。', waiting:'没有等待你答复。', why:'执行回合已完成，后续由卡协调者接续；这不是等待用户审核 spec。', evidence:'执行回合 14:49 结束；15:15 尚无后续阶段证据。', updated:'15:15 · mock' },
-+      { id:'coordinator', avatar:'协', name:'E38 协调者', role:'卡协调者', status:'待接续', tone:'waiting', elapsed:'26 分钟', card:'E38', phase:'任务 waiting_review · 卡在 review（待复审）', doing:'执行回合于 14:49 结束，任务进入待审阅；卡在 review，尚未观察到复审派发。', waiting:'等待 E38 协调者接续并安排复审或补充处理。', why:'15:15 时卡在 review（待复审）列，但尚未观察到复审派发。waiting_review 是任务生命周期态，不表示复审者正在工作，也不是等待用户批准 spec。', evidence:'最后有效证据：执行回合于 14:49 完成；更新时间 14:49。', updated:'状态核对于 15:15 · mock' },
-+      { id:'executor', avatar:'执', name:'执行任务', role:'执行者 · 非会话成员', status:'执行回合已完成', tone:'done', elapsed:'14:49 完成', card:'E38', phase:'实现回合完成', doing:'修复执行回合于 14:49 结束并交回结果；任务进入 waiting_review，卡在 review（待复审），尚未观察到复审派发。', waiting:'执行者不在等待；下一步由卡协调者接续。', why:'执行者是卡上的任务角色，不属于会话成员。执行回合完成不等于卡复审完成。', evidence:'执行回合完成记录：14:49（mock）；15:15 尚无复审开始证据。', updated:'14:49 · mock' },
++      { id:'coordinator', avatar:'协', name:'E38 协调者', role:'卡协调者', status:'待接续', tone:'waiting', elapsed:'26 分钟', card:'E38', phase:'修复任务已归档 · 卡在待复审', doing:'修复任务于 14:49 归档；卡仍待复审，截至 15:15 尚未观察到后续派发。', waiting:'等待 E38 协调者接续并安排复审或补充处理。', why:'这是历史案例：修复任务已归档，卡仍待复审；没有观察到后续派发。不是当前 E38 状态，也不是等待用户批准 spec。', evidence:'最后有效证据：执行回合于 14:49 完成；更新时间 14:49。', updated:'状态核对于 15:15 · mock' },
++      { id:'executor', avatar:'执', name:'执行任务', role:'执行者 · 非会话成员', status:'执行回合已完成', tone:'done', elapsed:'14:49 完成', card:'E38', phase:'实现回合完成', doing:'修复执行回合于 14:49 结束并归档；卡仍待复审，尚未观察到复审派发。', waiting:'执行者不在等待；下一步由卡协调者接续。', why:'执行者是卡上的任务角色，不属于会话成员。执行回合完成不等于卡复审完成。', evidence:'执行回合完成记录：14:49（mock）；15:15 尚无复审开始证据。', updated:'14:49 · mock' },
 +    ]
 +  },
 +  progressed: {
 +    summary: '协调者已接续复审；已答工单不再显示等待',
 +    roles: [
 +      { id:'self', avatar:'我', name:'我', role:'会话成员', status:'可回复', tone:'calm', elapsed:'', card:'E38', phase:'工单已处理', doing:'此前的人工权限工单已获答复，当前没有待你处理的请求。', waiting:'不再等待你回复。', why:'收到明确答复后，等待态已结束。', evidence:'权限工单于 15:18 已答复（mock）。', updated:'15:20 · mock' },
-+      { id:'coordinator', avatar:'协', name:'E38 协调者', role:'卡协调者', status:'已安排复审', tone:'calm', elapsed:'2 分钟前', card:'E38', phase:'任务 waiting_review · 卡在 review（待复审）', doing:'已接续 E38 并安排新的复审任务；协调者负责接续与安排，不承担复审执行。', waiting:'等待复审任务返回结果。', why:'新复审任务于 15:18 开始，旧的 26 分钟待接续状态已被取代。', evidence:'协调者接续并派发复审任务：15:18（mock）。', updated:'15:18 · mock' },
++      { id:'coordinator', avatar:'协', name:'E38 协调者', role:'卡协调者', status:'已安排复审', tone:'calm', elapsed:'2 分钟前', card:'E38', phase:'修复任务已归档 · 卡在待复审', doing:'已接续 E38 并安排新的复审任务；协调者负责接续与安排，不承担复审执行。', waiting:'等待复审任务返回结果。', why:'新复审任务于 15:18 开始，旧的 26 分钟待接续状态已被取代。', evidence:'协调者接续并派发复审任务：15:18（mock）。', updated:'15:18 · mock' },
 +      { id:'executor', avatar:'执', name:'执行任务', role:'执行者 · 非会话成员', status:'执行回合已完成', tone:'done', elapsed:'14:49 完成', card:'E38', phase:'等待复审结果', doing:'执行回合保持已完成；复审由后续独立任务处理。', waiting:'执行者没有待接续动作。', why:'复审是卡上的后续阶段，不会把已完成的执行回合重新标成运行中。', evidence:'执行回合 14:49 完成（mock）。', updated:'14:49 · mock' },
 +      { id:'reviewer', avatar:'审', name:'复审任务', role:'审查者 · 非会话成员', status:'运行中', tone:'running', elapsed:'2 分钟', card:'E38', phase:'复审执行', doing:'独立的复审任务正在检查执行回合提交的修复。', waiting:'正在运行，尚无复审结果。', why:'这条新任务承担审查执行；不把该职责归给卡协调者。', evidence:'复审任务开始记录：15:18（mock）。', updated:'15:20 · mock' },
 +    ]
 +  },
 +  approval: {
-+    summary: '主 agent 等你批准一个请求',
++    summary: '执行任务暂停，等待你决定删除请求',
 +    roles: [
-+      { id:'self', avatar:'我', name:'我', role:'会话成员', status:'需要你', tone:'waiting', elapsed:'', card:'B456', phase:'用户权限工单', doing:'有一个运行时权限工单需要你决定；这是用户授权，不是 spec 审批，也不是卡的机器复审。', waiting:'等待你允许或拒绝这个权限请求。', why:'请求尚未处理；不代表执行任务已经异常。', evidence:'权限请求：读取工作区外目录（mock）', updated:'15:12 · mock' },
-+      { id:'coordinator', avatar:'主', name:'主 agent', role:'主 agent', status:'等待用户授权', tone:'waiting', elapsed:'3 分钟', card:'B456', phase:'权限工单待答', doing:'已暂停在需要人工授权的步骤。', waiting:'等待你对权限工单作出选择。', why:'这是运行时权限请求，不是用户审核 spec，也不是 machine review。', evidence:'权限工单于 15:12 创建（mock）', updated:'15:12 · mock' },
-+      { id:'executor', avatar:'执', name:'执行任务', role:'执行者 · 非会话成员', status:'等待回复', tone:'waiting', elapsed:'3 分钟', card:'B456', phase:'等待授权', doing:'当前执行被权限门暂停。', waiting:'等待主 agent 获得审批结果后继续。', why:'执行任务是卡上的任务席位，不是群聊成员。', evidence:'任务事件：permission_request（mock）', updated:'15:12 · mock' },
++      { id:'self', avatar:'我', name:'我', role:'会话成员', status:'需要你', tone:'waiting', elapsed:'', card:'B456', phase:'用户权限工单', doing:'执行任务请求删除已有文件，当前等待人工决定；状态条不提供批准操作。', waiting:'等待你允许或拒绝这个权限请求。', why:'请求尚未处理；不代表执行任务已经异常。', evidence:'权限请求：删除已有文件（mock，待人工决定）', updated:'15:12 · mock' },
++      { id:'coordinator', avatar:'主', name:'主 agent', role:'主 agent', status:'等待用户授权', tone:'waiting', elapsed:'3 分钟', card:'B456', phase:'权限工单待答', doing:'主 agent 已转交删除请求，等待用户决定。', waiting:'等待你对权限工单作出选择。', why:'主 agent 负责转交与后续处理，不是请求的批准者。', evidence:'权限工单于 15:12 创建（mock）', updated:'15:12 · mock' },
++      { id:'executor', avatar:'执', name:'执行任务', role:'执行者 · 非会话成员', status:'等待回复', tone:'waiting', elapsed:'3 分钟', card:'B456', phase:'等待授权', doing:'当前执行被权限门暂停。', waiting:'等待主 agent 获得审批结果后继续。', why:'执行任务是卡上的任务席位，不是群聊成员。', evidence:'任务记录：需要人工授权（mock）', updated:'15:12 · mock' },
 +    ]
 +  },
 +  stale: {
-+    summary: '宿主暂时不可达，状态信息已过期',
++    summary: '来源读取失败；保留最后观测信息',
 +    roles: [
-+      { id:'self', avatar:'我', name:'我', role:'会话成员', status:'可回复', tone:'calm', elapsed:'', card:'B456', phase:'连接状态未知', doing:'你仍可查看已有会话内容。', waiting:'没有等待你的事项。', why:'本地状态展示不受宿主连接结果影响。', evidence:'最后已知会话活动：15:01（mock）', updated:'15:01 · mock' },
-+      { id:'coordinator', avatar:'主', name:'主 agent', role:'主 agent', status:'状态过期', tone:'stale', elapsed:'14 分钟未更新', card:'B456', phase:'宿主不可达', doing:'无法取得新的协调者状态。', waiting:'等待宿主重新可达后刷新状态。', why:'连接失败只能说明当前取不到新状态，不能据此诊断进程故障。', evidence:'最后有效状态：15:01；之后无新证据。', updated:'15:01 · mock' },
-+      { id:'executor', avatar:'执', name:'执行任务', role:'执行者 · 非会话成员', status:'状态未知', tone:'stale', elapsed:'14 分钟未更新', card:'B456', phase:'无法确认', doing:'没有新事件可确认任务是否仍在运行。', waiting:'等待宿主恢复并提供新状态。', why:'沉默或不可达不等于任务异常。', evidence:'最后有效证据：15:01 任务进度（mock）。', updated:'15:01 · mock' },
++      { id:'self', avatar:'我', name:'我', role:'会话成员', status:'可回复', tone:'calm', elapsed:'', card:'B456', phase:'连接状态未知', doing:'是否有待处理事项暂无法确认。', waiting:'待办状态来源读取失败，暂无法确认。', why:'本地状态展示不受宿主连接结果影响。', evidence:'最后已知会话活动：15:01（mock）', updated:'15:01 · mock' },
++      { id:'coordinator', avatar:'主', name:'主 agent', role:'主 agent', status:'信息未更新', tone:'stale', elapsed:'最后观测 15:01', card:'B456', phase:'宿主不可达', doing:'明确的读取失败导致暂时无法取得新的协调者状态。', waiting:'等待宿主重新可达后刷新状态。', why:'连接失败只能说明当前取不到新状态，不能据此诊断进程故障。', evidence:'最后有效状态：15:01；之后无新证据。', updated:'15:01 · mock' },
++      { id:'executor', avatar:'执', name:'执行任务', role:'执行者 · 非会话成员', status:'状态未知', tone:'stale', elapsed:'最后观测 15:01', card:'B456', phase:'无法确认', doing:'没有新事件可确认任务是否仍在运行。', waiting:'等待宿主恢复并提供新状态。', why:'沉默或不可达不等于任务异常。', evidence:'最后有效证据：15:01 任务进度（mock）。', updated:'15:01 · mock' },
 +    ]
 +  },
 +  unknown: {
-+    summary: '没有可用席位信息，当前状态未知',
++    summary: '协调者未指派，任务未派发',
 +    roles: [
-+      { id:'self', avatar:'我', name:'我', role:'会话成员', status:'可回复', tone:'calm', elapsed:'', card:'B456', phase:'会话可用', doing:'会话可以继续交流。', waiting:'没有等待你的事项。', why:'会话状态与执行席位分别呈现。', evidence:'会话列表可见（mock）', updated:'15:15 · mock' },
-+      { id:'coordinator', avatar:'主', name:'主 agent', role:'主 agent', status:'未知', tone:'stale', elapsed:'', card:'B456', phase:'无席位', doing:'当前没有可确认的主 agent 席位信息。', waiting:'等待席位状态来源恢复或补齐。', why:'没有席位记录时不推断正在运行或发生故障。', evidence:'无有效席位证据。', updated:'尚未更新 · mock' },
-+      { id:'executor', avatar:'执', name:'执行任务', role:'执行者 · 非会话成员', status:'未知', tone:'stale', elapsed:'', card:'B456', phase:'无任务席位', doing:'当前没有关联的执行任务。', waiting:'没有执行者席位可供追踪。', why:'执行者任务不属于会话成员；无任务记录时显示未知。', evidence:'未发现关联任务（mock）。', updated:'尚未更新 · mock' },
++      { id:'self', avatar:'我', name:'我', role:'会话成员', status:'可回复', tone:'calm', elapsed:'', card:'B456', phase:'会话可用', doing:'会话可以继续交流。', waiting:'待办状态来源读取失败，暂无法确认。', why:'会话状态与执行席位分别呈现。', evidence:'会话列表可见（mock）', updated:'15:15 · mock' },
++      { id:'coordinator', avatar:'主', name:'卡协调者', role:'卡协调者', status:'未指派', tone:'stale', elapsed:'', card:'B456', phase:'无协调者席位', doing:'当前卡没有指派协调者。', waiting:'没有协调者处于等待状态。', why:'卡上没有协调者对象；这是明确的未指派状态，不是来源未知。', evidence:'协调者席位未指派（mock）。', updated:'尚未更新 · mock' },
++      { id:'executor', avatar:'执', name:'执行任务', role:'执行者 · 非会话成员', status:'未派发', tone:'stale', elapsed:'', card:'B456', phase:'无执行任务', doing:'当前没有派发执行任务。', waiting:'没有执行任务处于等待状态。', why:'卡上尚未派发执行任务；这是明确的无任务状态。', evidence:'执行任务未派发（mock）。', updated:'尚未更新 · mock' },
 +    ]
 +  }
 +};
++const byId=id=>document.getElementById(id);
++function render(){const c=roleCases[byId('statusCase').value];byId('statusSummary').textContent=c.summary;byId('roleStatus').innerHTML=c.roles.map(r=>`<button class="role-chip" data-role="${r.id}" aria-label="查看${r.name}状态"><span class="avatar">${r.avatar}</span><span><b>${r.name}</b> <small><i class="state-dot ${r.tone}"></i> ${r.status}${r.elapsed?' · '+r.elapsed:''}</small></span></button>`).join('')}
++byId('statusCase').addEventListener('change',render);render();
++byId('toggleStatus').addEventListener('click',e=>{const hidden=byId('statusArea').classList.toggle('hidden');e.currentTarget.textContent=hidden?'显示状态':'隐藏状态';e.currentTarget.setAttribute('aria-pressed',String(!hidden))});
++byId('roleStatus').addEventListener('click',e=>{const b=e.target.closest('[data-role]');if(!b)return;const r=roleCases[byId('statusCase').value].roles.find(x=>x.id===b.dataset.role);byId('dialogTitle').textContent=`${r.name} · ${r.status}`;byId('dialogBody').innerHTML=`<dl><dt>角色 · 经过</dt><dd>${r.role} · ${r.elapsed||'—'}</dd><dt>当前卡与阶段</dt><dd><a href="#mock-card">${r.card} · ${r.phase}</a></dd><dt>正在做什么</dt><dd>${r.doing}</dd><dt>在等谁 / 等什么</dt><dd>${r.waiting}</dd><dt>原因</dt><dd>${r.why}</dd><dt>最后有效证据</dt><dd>${r.evidence}</dd><dt>更新时间</dt><dd>${r.updated}</dd></dl><div class="dialog-links"><a href="#mock-timeline">查看时间线证据（模拟链接）</a> · 不会执行真实操作</div>`;byId('roleDialog').showModal()});
++byId('dialogClose').addEventListener('click',()=>byId('roleDialog').close());byId('roleDialog').addEventListener('click',e=>{if(e.target.matches('a'))e.preventDefault()});
++byId('sendMessage').addEventListener('click',()=>{const t=document.querySelector('.composer textarea');if(!t.value.trim())return;const m=document.createElement('div');m.className='mock-added';m.textContent=t.value.trim();document.querySelector('.messages').append(m);t.value=''});
++const sessions={b456:{title:'B456 会话角色状态与阻塞可见性',messages:[['B456 演示讨论 · 历史案例 · mock','E38 修复执行回合于 14:49 结束并归档。案例记录显示卡仍待复审；截至 15:15，未观察到后续复审派发。'],['B456 演示讨论 · mock','状态条将执行任务与卡协调者分开呈现。此案例用于说明待接续状态，不代表当前 E38 实时状态。']]},erp:{title:'项目房间 erp',messages:[['会话记录 · mock','本地演示会话内容。']],},resident:{title:'驻场会话',messages:[['会话记录 · mock','本地演示会话内容。']]},e38:{title:'E38 快递对账',messages:[['会话记录 · mock','这是本地演示会话，不读取真实会话数据。']]}};
++const activateSession=row=>{const key=row.dataset.session,session=sessions[key];if(!session)return;document.querySelectorAll('[data-session]').forEach(x=>x.classList.toggle('active',x===row));byId('paneTitle').textContent='会话 · '+session.title;byId('activeSessionTab').textContent='▢　会话 · '+session.title+'　×';byId('messages').innerHTML=session.messages.map(([meta,text])=>`<article class="message"><div class="meta">${meta}</div>${text}</article>`).join('')};
++document.querySelectorAll('[data-session]').forEach(row=>{row.addEventListener('click',()=>activateSession(row));row.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();activateSession(row)}})});
++</script></body></html>
+\ No newline at end of file
+--- a/shared/session-current.css
++++ b/shared/session-current.css
+@@ -1,3 +1,7 @@
+ /* Current Handoff session shell mirror; fork reuses this stylesheet. */
+ *{box-sizing:border-box}html,body{height:100%;margin:0;font:12px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#292d32;background:#fbfcfd}button,input,textarea,select{font:inherit;color:inherit}.app{height:100dvh;display:flex;flex-direction:column}.workspace{flex:1;min-height:0;display:flex}.tree{display:flex;flex-direction:column;min-height:0;width:clamp(260px,23vw,456px);min-width:260px;max-width:456px;resize:horizontal;overflow:hidden;border-right:1px solid #e6e8eb;background:#fff;padding:8px 8px 3px}.search{height:28px;border:1px solid #e2e5e8;border-radius:6px;padding:5px 9px;color:#777;margin-bottom:10px}.tree-head{display:flex;justify-content:space-between;color:#777;margin:0 1px 7px}.tree-scroll{flex:1;min-height:0;overflow:auto}.tree-footer{flex:none;border-top:1px solid #e6e8eb;padding-top:5px}.archive-row{height:25px;display:flex;align-items:center;gap:7px;color:#555}.dock{height:28px;border-top:1px solid #e6e8eb;display:flex;align-items:center;justify-content:space-between;color:#777}.dock span{padding:3px 5px}.project{border-top:1px solid #eceef0;padding-top:5px;margin-top:5px}.project-title,.tree-row{height:25px;display:flex;align-items:center;gap:7px;padding:0 5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.project-title{font-weight:600}.project-actions{margin-left:auto;color:#82878c;font-size:10px;letter-spacing:2px;font-weight:400}.machine{margin-left:auto;color:#898e93;font-size:10px}.machine+.dot{margin-left:4px}.tree-row{margin-left:16px;color:#50565d}.tree-row.active{background:#f2f3f4;border-radius:5px}.tree-row.muted{color:#888}.dot{width:6px;height:6px;background:#25ae75;border-radius:50%;margin-left:auto;flex:none}.main{flex:1;min-width:0;display:flex;flex-direction:column}.tabs{height:35px;flex:none;border-bottom:1px solid #e7e9eb;display:flex;align-items:center;padding:0 6px;gap:5px;overflow:hidden;background:#fff}.tab{padding:7px 10px;border-radius:7px;color:#656a70;white-space:nowrap}.tab.active{background:#f0f1f2;color:#282c30;font-weight:600}.pane-head{height:30px;border-bottom:1px solid #e6e8eb;display:flex;align-items:center;padding:0 9px;font-weight:600}.pane-actions{margin-left:auto;color:#777;letter-spacing:5px}.chat{flex:1;min-height:0;overflow:auto;background:#fafbfc;padding:14px 14px}.messages{max-width:950px;display:flex;flex-direction:column;gap:13px}.message{background:white;border:1px solid #e7e9eb;border-radius:12px;padding:10px 12px;box-shadow:0 1px 2px #0000000b;font-size:12.5px;line-height:1.5}.meta{font-size:10px;color:#8b9096;margin-bottom:3px}.composer-wrap{padding:7px 10px 5px;background:#fafbfc}.composer{border:1px solid #e4e7e9;background:#fff;border-radius:14px;min-height:48px;padding:7px 9px;display:flex;align-items:center;gap:9px}.composer textarea{border:0;outline:0;resize:none;flex:1;min-width:0;height:27px;padding:5px 2px}.tool{color:#777;font-size:16px}.send{border:0;border-radius:16px;background:#22272d;color:white;padding:7px 14px}.quota{height:14px;border-top:1px solid #e9ebed;background:#f7f8f9;color:#888;font-size:9px;padding-left:8px;flex:none}
+ @media(max-width:650px){.tree{display:none}.workspace{min-width:0}.tabs{height:34px}.tab{padding:7px 6px}.chat{padding:10px 9px}.message{font-size:12px}.composer-wrap{padding-left:6px;padding-right:6px}}
++.status-area{padding:0 10px 7px;background:#fafbfc}.global-nav{position:fixed;left:8px;bottom:20px;display:flex;gap:4px;z-index:2}.global-nav a{display:block;background:#fff;color:#666;border:1px solid #e4e6e8;border-radius:5px;padding:3px 6px;text-decoration:none;font-size:10px}.casebar{display:flex;align-items:center;gap:8px;padding:4px 10px;border-bottom:1px solid #eceef0;background:#fff}.casebar label{color:#777}.casebar select,.casebar button{height:24px;border:1px solid #e2e5e8;border-radius:5px;background:white;padding:2px 7px}.casebar .mock-note{margin-left:auto;color:#888;font-size:10px}.role-strip{min-height:36px;display:flex;align-items:center;gap:5px;overflow-x:auto;border:1px solid #e4e7e9;background:white;border-radius:10px;padding:4px 6px}.status-summary{color:#747a80;white-space:nowrap;margin-right:3px}.role-chip{border:0;background:transparent;border-radius:7px;display:flex;align-items:center;gap:5px;padding:3px 6px;white-space:nowrap;cursor:pointer}.role-chip:hover{background:#f3f4f5}.avatar{width:20px;height:20px;border-radius:50%;display:grid;place-items:center;background:#eff0f1;color:#666;font-size:10px}.role-chip small{color:#777}.state-dot{width:6px;height:6px;border-radius:50%;background:#999}.state-dot.running{background:#36a87b}.state-dot.waiting{background:#c39a45}.state-dot.done{background:#9a9da1}.state-dot.stale{background:#9a9da1}.role-dialog{border:1px solid #dfe2e5;border-radius:12px;padding:0;width:min(390px,calc(100vw - 24px));box-shadow:0 12px 40px #0002}.role-dialog::backdrop{background:#20252a30}.dialog-head{padding:12px 14px;border-bottom:1px solid #eceef0;display:flex;align-items:center}.dialog-head h2{font-size:14px;margin:0}.dialog-head button{margin-left:auto;border:0;background:none;font-size:20px}.dialog-body{padding:12px 14px}.dialog-body dl{margin:0}.dialog-body dt{color:#85898e;font-size:10px;margin-top:9px}.dialog-body dd{margin:2px 0 0;line-height:1.5}.dialog-links{margin-top:12px;color:#777;font-size:10px}.dialog-links a{color:#555}.mock-added{align-self:flex-end;max-width:70%;background:#f0f1f2;padding:9px 12px;border-radius:12px}.hidden{display:none!important}
 +
-+function renderRoleStatus(caseId) {
-+  const state = roleCases[caseId] || roleCases.handoff;
-+  document.getElementById('statusSummary').textContent = state.summary;
-+  document.getElementById('roleStatus').innerHTML = state.roles.map(r => `<button class="rs-person ${r.tone}" type="button" data-role="${r.id}" aria-label="查看${r.name}状态详情"><span class="rs-avatar">${r.avatar}</span><span class="rs-person-text"><b>${r.name}</b><small>${r.status}${r.elapsed ? ' · ' + r.elapsed : ''}</small></span></button>`).join('');
-+}
-+const roleDialog = document.getElementById('roleDialog');
-+document.getElementById('statusCase').addEventListener('change', e => renderRoleStatus(e.target.value));
-+document.getElementById('roleStatus').addEventListener('click', e => {
-+  const btn = e.target.closest('[data-role]'); if (!btn) return;
-+  const state = roleCases[document.getElementById('statusCase').value] || roleCases.handoff;
-+  const r = state.roles.find(x => x.id === btn.dataset.role); if (!r) return;
-+  document.getElementById('rdName').textContent = `${r.name} · ${r.status}`;
-+  document.getElementById('rdContent').innerHTML = `<div class="rd-meta"><span>角色：${r.role}</span><span>已经过：${r.elapsed || '—'}</span></div><dl><dt>当前卡与阶段</dt><dd><a href="#mock-card" data-mock-link>卡 ${r.card} · ${r.phase}</a></dd><dt>正在做什么</dt><dd>${r.doing}</dd><dt>在等谁 / 等什么</dt><dd>${r.waiting}</dd><dt>原因</dt><dd>${r.why}</dd><dt>最后有效证据</dt><dd>${r.evidence}</dd><dt>更新时间</dt><dd>${r.updated}</dd></dl><div class="rd-links"><a href="#mock-timeline" data-mock-link>查看 timeline 证据</a><span>链接为原型占位，不会执行真实操作。</span></div>`;
-+  roleDialog.showModal();
-+});
-+document.getElementById('rdClose').addEventListener('click', () => roleDialog.close());
-+document.getElementById('rdContent').addEventListener('click', e => { if(e.target.matches('[data-mock-link]')) { e.preventDefault(); e.target.textContent += '（模拟链接）'; } });
-+renderRoleStatus(document.getElementById('statusCase').value);
-+
- // 原型不连后端：全部数据是页面内 mock 常量（与 sessions.html 同一份）。
- const convs = [
-   {
++.hidden{display:none!important}.tree-session{cursor:pointer}.tree-session:hover{background:#f5f6f7}
++@media(max-width:650px){.casebar{flex-wrap:wrap}.casebar .mock-note{display:none}.status-area{padding:0 6px 6px}.status-summary{display:none}.role-strip{max-width:100%}.global-nav{display:none}}
