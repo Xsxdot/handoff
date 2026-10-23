@@ -389,3 +389,12 @@ $ npx eslint .
 - 审查：段 A subagent 审 pass（变异 8 处转红，Minor m1–m7）；段 B subagent 审有条件 fail（I1 = 上条 R4 页面不符；Minor m1–m7）。主会话裁决：I1 修，移动端文案「删除→忽略」接受；修复轮 1 一并修 A-m2、B-m2、B-m5、B-m6，其余 Minor 记账不修。
 - 修复轮 1（a4e5ba68，偏离：无）主会话复核：diff 逐行读过；变异 `useState(a.carriers)`→`useState([])` → `快照已知被载体引用时，点「忽略」直接显示不能忽略…` 1 红，还原后 src/app/accounts 58/58 绿。残余 Minor：坏忽略行显示为「时间未知忽略」，措辞别扭（只在忽略行损坏时出现）。
 - R4 复验（隔离实例换 a4e5ba686bb3 二进制，重建载体 t467-c）：点「忽略」直接出「不能忽略 xsx-renamed-by-old」，正文「仍有 1 个载体在用它的登录：t467-c。先在「设置 · 自动化」把它们换到别的账号登录。」，按钮「关闭」「去改载体」(href `/settings?section=automation`)，点击前后无 `…/ignore` 请求；关闭后卡仍在分组。真机清单 R1–R8 全部符合；R9（S10 生产）待合入、全队换版后由用户操作。
+
+## finish
+
+- 2026-10-23 前端全量（本地，2c89cef6）：vitest `Test Files 150 passed (150) / Tests 2040 passed (2040)`；`tsc -b` 0；eslint `0 errors, 33 warnings`（既有）。
+- finish-check 熟练工（commit 2c89cef628bd 与所检一致）：格式通过（0）、vet 通过、全量 `ok 67 / FAIL 1 / 无测试 7`——唯一红 `internal/ptyhost/engine TestForegroundPgidIdleShellIsItself`，单包与单用例复跑绿，并行负载偶发、非回归；命令表差异 10 条（completion/decision/discipline/frames/machines/preview/room/session/template/workflow 两 README 未提，B467 前即存在）；残余与 CHANGELOG 通过。途中一张审批工单（README 计数的只读 grep 被误判为 handoff 变更命令）主会话批准。
+- 用户 2026-10-23「都照做，合并推送换版」：main 8a31ad33..2c89cef6 快进推送；`build-deploy.sh --pack` 2c89cef628bd；`handoff upgrade --now --from <pack>` → macbook-pro、本机、linux-01 全部「成功 50333816e846 → 2c89cef628bd」，换版后账本可读；复查三台「已是最新」；`account list` / `squad list` 正常（7 载体登录在）。本机旧 CLI 备份 `~/.local/bin/handoff.bak-pre-b467`。
+- 原型回流：fork 的 accounts.html / accounts.js / styles.css 拷入 base，mobile-settings 文案「删除→忽略」，README 行改「已确认」，fork 删除。
+- 清理：隔离实例 t467-mini/t467-old 已停（7797/7798 无监听，在役 7777 PID 84369 全程未动）；测试库 handoff_b467 DROP（rc 0），凭据表登记行标注已 DROP；datadir /tmp/t467n、/tmp/t467o 与构建工作树已删。
+- S10（R9）：待用户在生产控制台忽略 opencode-go-54ce。

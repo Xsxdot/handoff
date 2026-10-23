@@ -14,7 +14,7 @@
      第二轮（用户裁决 A）：再加一组「第三方 API key」——opencode auth.json 里的 provider key 认成账号（身份 = key 短指纹，
      缺省名 <provider>-key-<4位>），同组平铺、卡头小标显示 provider，同 Claude 一样不支持额度探测、不进底栏；
      登录状态：已过期 照常派发（标红 + 复制登录命令），已失效 暂停派发；
-  ⑥ 卡上动作：立即探测 / 在其他机器登录 / 删除（有载体引用时拒删并点名）；阈值与探测间隔在展开区编辑；
+  ⑥ 卡上动作：立即探测 / 在其他机器登录 / 忽略（B467 取代删除；有载体引用时拒绝并点名；页底「已忽略」可恢复）；阈值与探测间隔在展开区编辑；
   ⑦ ?account=<名> 展开并高亮某账号（底栏弹层「管理账号…」跳到这里）；视觉沿用 B453：灰阶、细边框卡片，彩色只给越线数字与状态短语。
   交互遵循 light-interaction.md：零依赖、纯 mock、file:// 直开。数据见 ../shared/accounts.js。
 -->
@@ -102,6 +102,15 @@
   .th-row select.input { width: auto; }
   .th-row span { font-size: 12px; color: var(--muted-foreground); }
   .probe-note { font-size: 11.5px; color: var(--muted-foreground); margin: 8px 0 0; }
+  .ig-sec { padding: 16px 0 8px; border-top: 1px solid var(--border); }
+  .ig-sec summary { cursor: pointer; font-size: 13px; font-weight: 600; color: var(--muted-foreground); list-style: none; }
+  .ig-sec summary::-webkit-details-marker { display: none; }
+  .ig-sec summary::before { content: '›'; display: inline-block; width: 14px; transition: transform .15s; }
+  .ig-sec[open] summary::before { transform: rotate(90deg); }
+  .ig-desc { font-size: 12px; color: var(--muted-foreground); margin: 6px 0 10px 14px; }
+  .ig-row { display: flex; align-items: center; gap: 10px; margin-left: 14px; padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; font-size: 12.5px; margin-bottom: 6px; }
+  .ig-row .k-ic { width: 13px; height: 13px; }
+  .ig-row .sub { color: var(--muted-foreground); font-size: 11.5px; }
   .empty { border: 1px dashed var(--border); border-radius: 8px; padding: 14px 16px; font-size: 12px; color: var(--muted-foreground); }
 
   /* 对话框：灰阶 */
@@ -202,6 +211,7 @@
           <p class="disc-note" id="discNote" hidden></p>
           <div id="pending"></div>
           <div id="groups"></div>
+          <div id="ignoredSec"></div>
         </div>
       </div>
     </main>
@@ -366,7 +376,7 @@
           <span class="a-actions">
             ${k.quota ? `<button class="tbtn" data-probe="${a.id}">立即探测</button>` : ''}
             <button class="tbtn" data-other="${a.id}">在其他机器登录</button>
-            <button class="tbtn" data-del="${a.id}">删除</button>
+            <button class="tbtn" data-del="${a.id}">忽略</button>
           </span>
         </div>
         <div class="a-r2">${r2}</div>
@@ -387,6 +397,7 @@
         ${list.map(cardHTML).join('') || `<div class="empty">还没有 ${k.name} 账号。点右上「＋ 新增登录」在某台机器上登录 ${k.cli}，识别后自动出现在这里。</div>`}
       </section>`;
     }).join('');
+    renderIgnored();
     renderDisc();
     renderPending();
     bind();
@@ -394,6 +405,26 @@
     if (rn) { rn.focus(); rn.select(); }
     const px = proxyEditing && $('px-' + proxyEditing);
     if (px) px.focus();
+  }
+
+  // B467：已忽略折叠区——默认收起；每行可恢复，恢复后回到原分组并重新探测
+  function renderIgnored() {
+    const list = A.ignored;
+    const el = $('ignoredSec');
+    if (!list.length) { el.innerHTML = ''; return; }
+    const wasOpen = el.querySelector('details') && el.querySelector('details').open;
+    el.innerHTML = `<details class="ig-sec"${wasOpen ? ' open' : ''}><summary>已忽略（${list.length}）</summary>
+      <p class="ig-desc">不探测、不进底栏和使用量弹层、不出现在载体的登录下拉里。发现仍会扫到这些登录，只更新它们的状态，不会把账号重新显示出来。</p>
+      ${list.map((a) => `<div class="ig-row">${A.icon(a.kind)}<span class="mono">${a.name}</span>
+        <span class="sub">${a.name === a.identity ? '' : a.identity + ' · '}${a.logins.length} 条登录 · ${A.machinesText(a)} · ${A.ago(Date.now() - a.ignoredAt)}忽略</span>
+        <span class="spacer" style="flex:1"></span><button class="tbtn" data-restore="${a.id}">恢复</button></div>`).join('')}
+    </details>`;
+    el.querySelectorAll('[data-restore]').forEach((b) => b.addEventListener('click', () => {
+      const a = A.ignored.find((x) => x.id === b.dataset.restore);
+      A.restore(a);
+      notes[a.id] = `已恢复（mock）：${a.name} 回到列表，下一轮由持有正常登录的机器探测。`;
+      render();
+    }));
   }
 
   function bind() {
@@ -674,22 +705,21 @@
   dlg.addEventListener('close', () => { if (wiz) closeWizard(); });
   $('newLogin').addEventListener('click', () => openWizard());
 
-  // ---------------- 删除：仍被载体引用时拦住，点名去改哪些载体 ----------------
+  // ---------------- 忽略（B467，取代删除）：仍被载体引用时拦住，点名去改哪些载体 ----------------
   const del = $('delDialog');
   function openDelete(a) {
     const refs = A.carriersOf(a.name);
     if (refs.length) {
-      $('delTitle').textContent = `不能删除 ${a.name}`;
+      $('delTitle').textContent = `不能忽略 ${a.name}`;
       $('delDesc').innerHTML = `仍有 ${refs.length} 个载体在用它的登录：${refs.map((c) => `<b class="mono">${c.name}</b>`).join('、')}。先在「设置 · 自动化」把它们换到别的账号登录。`;
       $('delActions').innerHTML = '<button class="btn sm" id="delClose">关闭</button><a class="btn sm primary" href="settings.html?section=automation" style="text-decoration:none">去改载体</a>';
     } else {
-      $('delTitle').textContent = `删除账号 ${a.name}？`;
-      $('delDesc').textContent = `只删账本里的账号与 ${a.logins.length} 条登录记录，${A.machinesText(a)} 上的凭据文件不动。若这些 HOME 里仍登着这个身份，下次发现会把它重新认出来——要彻底去掉，先在该机退出登录。`;
-      $('delActions').innerHTML = '<button class="btn sm" id="delClose">取消</button><button class="btn sm primary" id="delOk">删除</button>';
+      $('delTitle').textContent = `忽略账号 ${a.name}？`;
+      $('delDesc').textContent = `忽略后不再探测它的额度，也不在底栏、使用量弹层和载体的登录下拉里出现。${A.machinesText(a)} 上的凭据不动，发现仍会扫到它，但不会让它重新出现。随时可在本页底部「已忽略」里恢复。`;
+      $('delActions').innerHTML = '<button class="btn sm" id="delClose">取消</button><button class="btn sm primary" id="delOk">忽略</button>';
       $('delOk').addEventListener('click', () => {
-        A.accounts.splice(A.accounts.indexOf(a), 1);
+        A.ignore(a);
         del.close();
-        A.notify();
       });
     }
     $('delClose').addEventListener('click', () => del.close());

@@ -291,7 +291,7 @@ body.has-statusbar .homedock { bottom: calc(20px + var(--sb-h)); }
 .up-pop { position: fixed; left: 8px; bottom: calc(var(--sb-h) + 6px); z-index: 60; font-size: 12.5px; color: var(--foreground); }
 .up-pop[hidden] { display: none; }
 .up-main, .up-side { background: var(--background); border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--q-shadow); max-height: calc(100vh - var(--sb-h) - 24px); }
-.up-main { width: 376px; max-width: calc(100vw - 16px); padding: 6px; display: flex; flex-direction: column; }
+.up-main { width: 392px; max-width: calc(100vw - 16px); padding: 6px; display: flex; flex-direction: column; }
 .up-side { position: absolute; left: calc(100% + 6px); bottom: 0; width: 290px; padding: 12px 14px 4px; overflow-y: auto; }
 .up-side[hidden] { display: none; }
 .up-head { display: flex; align-items: center; padding: 6px 8px 4px; }

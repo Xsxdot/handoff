@@ -289,6 +289,15 @@
     return carriers.filter((c) => ids.includes(c.login));
   }
   // 支持额度探测的账号（底栏与使用量弹层只列这些；claude 不进底栏）
+  // B467：已忽略的账号（账本里仍在、发现照常扫到它的登录，但不探测、不进底栏/弹层/载体下拉；可恢复）
+  const ignored = [
+    { id: 'a-og9', name: 'opencode-54ce', autoName: 'opencode-54ce', identity: 'acct_54ce…9a10 · org xsx-old', kind: 'opencode-go', planType: 'Go',
+      warn: 60, threshold: 80, interval: 15, status: 'none', probedAgo: null, goodAgo: null, nextIn: 0, failStreak: 0, error: '', brief: '', quota: null,
+      ignoredAt: NOW - 3 * H, ignoredBy: 'mac-mini',
+      logins: [L('l-og9-x', 'mac-pro', '~', 'opencode.db 登录', 'sha256:54ce…9a10', 'ok', ref(9 * D))] },
+  ];
+  function ignore(a) { const i = accounts.indexOf(a); if (i < 0) return; accounts.splice(i, 1); a.ignoredAt = Date.now(); ignored.unshift(a); notify(); }
+  function restore(a) { const i = ignored.indexOf(a); if (i < 0) return; ignored.splice(i, 1); delete a.ignoredAt; accounts.push(a); notify(); }
   function quotaAccounts() { return accounts.filter((a) => KINDS[a.kind].quota); }
   function byProblem(list) { return list.slice().sort((x, y) => STATUS[x.status].rank - STATUS[y.status].rank); }
 
@@ -529,7 +538,6 @@
         <div class="up-seg" role="tablist"><button type="button" data-mode="detail">详细</button><button type="button" data-mode="compact">精简</button></div>
         <div class="up-list"></div>
         <div class="up-menu">
-          <a href="${ROOT}pages/accounts.html">使用详情<span>›</span></a>
           <a href="${ROOT}pages/accounts.html">管理账号…<span>›</span></a>
         </div>
       </div>
@@ -630,7 +638,7 @@
     // 底栏一行：每个账号一段「图标 名称 读数」，问题账号排前；读数随模式（详细：细条 + 两个最短窗口；精简：每周），不写状态字样
     function renderBar() {
       segsEl.innerHTML = byProblem(quotaAccounts()).map((a) => `
-        <button type="button" class="sb-seg" data-acct="${a.name}">${icon(a.kind)}<span class="sb-name">${a.name}</span><span class="sb-val">${barReading(a, mode)}</span></button>`).join('');
+        <button type="button" class="sb-seg" data-acct="${a.name}" title="${a.name}">${icon(a.kind)}<span class="sb-val">${barReading(a, mode)}</span></button>`).join('');
       fit();
     }
     // 溢出：问题优先排序后从尾部（正常的）开始收进「+N」，收起来的永远是最不需要看的
@@ -686,7 +694,7 @@
     ROOT, NOW, KINDS, AGENTS, STATUS, LOGIN_STATE, MACHINES, LOCAL, accounts, carriers, discovery,
     DEFAULT_INTERVAL, DEFAULT_WARN, DEFAULT_LOW, STALE_MS,
     countdown, clock, ago, find, findById, carriersOf, quotaAccounts, byProblem, resetOf, dispatchHint,
-    NO_LOGIN, loginById, accountOfCarrier, carriersOfLogin, homeText, machinesOf, machinesText, probeVia, kindsOf, loginsFor, loginCommand, loginCommandText, cliOfKind, credTimeText,
+    NO_LOGIN, ignored, ignore, restore, loginById, accountOfCarrier, carriersOfLogin, homeText, machinesOf, machinesText, probeVia, kindsOf, loginsFor, loginCommand, loginCommandText, cliOfKind, credTimeText,
     winTone, toneCls, isStale, nextProbeText, hotWindow, tightest,
     icon, plan, resetSpan, pct, statusText, summary, bar, winsCompact, winsFull, weekly, shortLabel, tinyLabel, earliestReset, detailNote, winsInline, barReading,
     updatedText, noteHTML, extraHTML, sidePanelHTML,
