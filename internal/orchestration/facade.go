@@ -31,6 +31,11 @@ func (m *Manager) ListTasks() ([]proto.Task, error) { return m.st.ListTasks() }
 // GetTask 是 store.GetTask 的直通镜像。
 func (m *Manager) GetTask(taskID string) (*proto.Task, error) { return m.st.GetTask(taskID) }
 
+// GetMirrorTask returns one existing cached remote snapshot without remote fan-out.
+func (m *Manager) GetMirrorTask(taskID string) (store.MirrorTask, bool, error) {
+	return m.st.GetMirrorTask(taskID)
+}
+
 // PendingTickets 是 store.PendingTickets 的直通镜像。
 func (m *Manager) PendingTickets(taskID string) ([]proto.Ticket, error) {
 	return m.st.PendingTickets(taskID)

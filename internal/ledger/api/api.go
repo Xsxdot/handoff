@@ -131,6 +131,24 @@ func (f *Facade) SessionProjectionEventsContext(ctx context.Context, sessionID s
 	return eventWires(events), nil
 }
 
+// SessionRoleActivityContext 直通指定卡有界角色事实查询，并保留明确的截断卡集合。
+func (f *Facade) SessionRoleActivityContext(ctx context.Context, cardIDs []string, perCardLimit int) (client.RoleActivityRead, error) {
+	events, truncated, err := f.st.SessionRoleActivityContext(ctx, cardIDs, perCardLimit)
+	if err != nil {
+		return client.RoleActivityRead{}, err
+	}
+	return client.RoleActivityRead{Events: eventWires(events), TruncatedCards: truncated}, nil
+}
+
+// SessionRoleTicketsContext 直通指定卡的未决票据标识查询。
+func (f *Facade) SessionRoleTicketsContext(ctx context.Context, cardIDs []string, limit int) (client.RoleTicketRead, error) {
+	tickets, truncated, err := f.st.SessionRoleTicketsContext(ctx, cardIDs, limit)
+	if err != nil {
+		return client.RoleTicketRead{}, err
+	}
+	return client.RoleTicketRead{Tickets: tickets, Truncated: truncated}, nil
+}
+
 // LatestNeedsEventsContext 直通各卡最新 needs 状态事件。
 func (f *Facade) LatestNeedsEventsContext(ctx context.Context, cardIDs []string) ([]proto.LedgerEvent, error) {
 	events, err := f.st.LatestNeedsEventsContext(ctx, cardIDs)

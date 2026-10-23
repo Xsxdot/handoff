@@ -109,6 +109,13 @@ describe('TicketsPanel 审批交互', () => {
     render(<TicketsPanel tickets={[gateTicket]} disabled onReply={vi.fn()} />)
     expect(screen.getByRole('button', { name: /批准/ })).toBeDisabled()
     expect(screen.getByRole('button', { name: '拒绝' })).toBeDisabled()
+    expect(screen.getByText('已断开，暂不能作答（保留草稿）')).toBeInTheDocument()
+  })
+
+  it('逐票禁用时保留局部不可答复提示', () => {
+    render(<TicketsPanel tickets={[gateTicket]} disabled={() => true} onReply={vi.fn()} />)
+    expect(screen.getByRole('button', { name: /批准/ })).toBeDisabled()
+    expect(screen.getByText('部分事项暂不能作答；保留草稿')).toBeInTheDocument()
   })
 
   it('bare 时不渲染卡片标题，仍渲染工单正文', () => {

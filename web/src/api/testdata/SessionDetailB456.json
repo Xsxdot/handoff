@@ -1,0 +1,137 @@
+{
+  "nodes": [
+    {
+      "card_id": "P1",
+      "node": "",
+      "state": "permission_request"
+    }
+  ],
+  "role_status": {
+    "observed_at": "2026-01-01T00:00:00Z",
+    "roles": [
+      {
+        "can_request_wake": true,
+        "card_id": "P1",
+        "conclusion": "协调者唤醒失败",
+        "id": "coordinator:P1",
+        "identity": "cli:agent#b456",
+        "kind": "coordinator",
+        "more_activity": false,
+        "reason": "载体不可用",
+        "recent": [
+          {
+            "seq": 8,
+            "source": "wake_round",
+            "summary": "协调者唤醒失败: 载体不可用",
+            "time": "2026-01-01T00:00:00Z",
+            "tone": "failed"
+          },
+          {
+            "seq": 7,
+            "source": "task_mirrored",
+            "summary": "出现待处理权限请求",
+            "time": "2026-01-01T00:00:00Z",
+            "tone": "needs_you"
+          }
+        ],
+        "since": "2026-01-01T00:00:00Z",
+        "state": "exception",
+        "ticket_refs": []
+      },
+      {
+        "can_request_wake": false,
+        "card_id": "P1",
+        "conclusion": "任务当前状态未知；最近动态保留账本已观测事实",
+        "id": "executor:task-b456",
+        "kind": "executor",
+        "more_activity": false,
+        "reason": "没有可读取的任务状态快照",
+        "recent": [
+          {
+            "seq": 7,
+            "source": "task_mirrored",
+            "summary": "出现待处理权限请求",
+            "time": "2026-01-01T00:00:00Z",
+            "tone": "needs_you"
+          }
+        ],
+        "state": "unknown",
+        "target": "worker",
+        "task_id": "task-b456",
+        "ticket_refs": [
+          {
+            "card_id": "P1",
+            "target": "worker",
+            "task_id": "task-b456",
+            "task_type": "permission_request",
+            "ticket_id": "ticket-b456"
+          }
+        ]
+      }
+    ]
+  },
+  "summary": {
+    "archived": false,
+    "cards": [
+      {
+        "card_id": "P1",
+        "seat": "cli:agent#b456",
+        "seat_mode": "pull",
+        "status": "待办",
+        "title": "待接续"
+      }
+    ],
+    "id": "session:1",
+    "kind": "session",
+    "last_activity": "2026-01-01T00:00:00Z",
+    "members": [
+      {
+        "identity": "user:tester",
+        "kind": "human",
+        "last_active": "0001-01-01T00:00:00Z",
+        "status": "last_active"
+      },
+      {
+        "identity": "user:sycm",
+        "kind": "human",
+        "last_active": "0001-01-01T00:00:00Z",
+        "status": "last_active"
+      },
+      {
+        "card_id": "P1",
+        "card_title": "待接续",
+        "identity": "cli:agent#b456",
+        "kind": "seat",
+        "last_active": "0001-01-01T00:00:00Z",
+        "status": "last_active"
+      }
+    ],
+    "needs_human": false,
+    "owner": "user:tester",
+    "title": "角色详情",
+    "unread": 0
+  },
+  "timeline": [
+    {
+      "actor": "user:sycm",
+      "created_at": "2026-01-01T00:00:00Z",
+      "kind": "created",
+      "seq": 1
+    },
+    {
+      "actor": "user:sycm",
+      "card_id": "P1",
+      "created_at": "2026-01-01T00:00:00Z",
+      "kind": "card_joined",
+      "seq": 3
+    },
+    {
+      "actor": "cli:agent#b456",
+      "card_id": "P1",
+      "created_at": "2026-01-01T00:00:00Z",
+      "detail": "{\"to\":\"cli:agent#b456\"}",
+      "kind": "seat_bound",
+      "seq": 4
+    }
+  ]
+}

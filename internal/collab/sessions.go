@@ -256,6 +256,29 @@ func (s *Service) SessionDetailContext(ctx context.Context, id string) (detail p
 		log().Warn("会话详情组装失败：读取成员租约", "session", session.ID, "cause", err)
 		return proto.SessionDetail{}, err
 	}
+	var activityRead client.RoleActivityRead
+	activityRead, err = s.lc.SessionRoleActivityContext(ctx, session.Cards, 100)
+	if err != nil {
+		log().Warn("会话角色投影失败：读取有界卡事实", "session", session.ID, "cards", len(session.Cards), "cause", err)
+		return proto.SessionDetail{}, err
+	}
+	activityRead.SessionEvents, err = s.lc.RoomMessagesBeforeContext(ctx, session.ID, 0, 100)
+	if err != nil {
+		log().Warn("会话角色投影失败：读取最近房间消息", "session", session.ID, "cause", err)
+		return proto.SessionDetail{}, err
+	}
+	var ticketRead client.RoleTicketRead
+	ticketRead, err = s.lc.SessionRoleTicketsContext(ctx, session.Cards, 500)
+	if err != nil {
+		log().Warn("会话角色投影失败：读取未决票据引用", "session", session.ID, "cards", len(session.Cards), "cause", err)
+		return proto.SessionDetail{}, err
+	}
+	if ticketRead.Truncated {
+		err = errors.New("会话待处理事项超过本次读取上限，请先通过全局待处理入口处理或拆分会话")
+		log().Warn("会话详情降级：待处理票据超出有界读取上限", "session", session.ID, "cards", len(session.Cards), "limit", 500)
+		return proto.SessionDetail{}, err
+	}
+	detail.RoleStatus = sessionRoleStatus(detail.Summary, activityRead, ticketRead, time.Now().UTC())
 	return detail, nil
 }
 

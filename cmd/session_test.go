@@ -686,8 +686,8 @@ func TestSessionListColumnsAndUnread(t *testing.T) {
 
 // TestSessionDetailThreeSections 锁：三段段头（成员:/节点:/时间线:）逐列可读 +
 // owner 行 human + 进群卡号在文 + timeline 含 created/card_joined + --json
-// roundtrip 回 proto.SessionDetail（顶层键恰 {summary,timeline}——nodes 无
-// task_mirrored 事件缺键）+ 不存在会话非 0 且 stderr 含会话 id（mapSessionError
+// roundtrip 回 proto.SessionDetail（summary/timeline/role_status；nodes 无
+// task_mirrored 事件仍缺键）+ 不存在会话非 0 且 stderr 含会话 id（mapSessionError
 // 丢 id，CLI 边界包回——0.2#4）。
 func TestSessionDetailThreeSections(t *testing.T) {
 	dir := t.TempDir()
@@ -722,8 +722,8 @@ func TestSessionDetailThreeSections(t *testing.T) {
 	if err := json.Unmarshal([]byte(strings.TrimSpace(outJSON)), &raw); err != nil {
 		t.Fatalf("--json 应为 SessionDetail JSON 一行: %v", err)
 	}
-	if len(raw) != 2 {
-		t.Fatalf("顶层键应恰 {summary,timeline}（nodes 缺键）: %v", raw)
+	if len(raw) != 3 {
+		t.Fatalf("顶层键应恰 {summary,timeline,role_status}（nodes 缺键）: %v", raw)
 	}
 	if _, ok := raw["summary"]; !ok {
 		t.Fatal("缺 summary 键")
@@ -731,12 +731,21 @@ func TestSessionDetailThreeSections(t *testing.T) {
 	if _, ok := raw["timeline"]; !ok {
 		t.Fatal("缺 timeline 键")
 	}
+	if _, ok := raw["nodes"]; ok {
+		t.Fatalf("无 task_mirrored 节点仍应缺 nodes 键: %v", raw)
+	}
+	if _, ok := raw["role_status"]; !ok {
+		t.Fatal("缺新增 role_status 键")
+	}
 	var detail proto.SessionDetail
 	if err := json.Unmarshal([]byte(strings.TrimSpace(outJSON)), &detail); err != nil {
 		t.Fatal(err)
 	}
 	if detail.Summary.ID != sessionID || len(detail.Summary.Cards) != 1 || detail.Summary.Cards[0].CardID != card {
 		t.Fatalf("详情投影漂移: %+v", detail.Summary)
+	}
+	if detail.RoleStatus == nil || detail.RoleStatus.Roles == nil {
+		t.Fatalf("新服务应返回非空 role_status.roles 数组: %+v", detail.RoleStatus)
 	}
 	kinds := map[string]bool{}
 	for _, ev := range detail.Timeline {

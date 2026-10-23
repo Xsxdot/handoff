@@ -217,7 +217,51 @@ export interface SessionTimelineEvent {
   created_at: string
 }
 
-export interface SessionDetail { summary: SessionSummary; nodes?: SessionNode[]; timeline?: SessionTimelineEvent[] }
+export type SessionRoleKind = 'coordinator' | 'resident' | 'executor'
+export type SessionRoleState = 'running' | 'idle' | 'needs_you' | 'waiting' | 'exception' | 'unknown'
+export type SessionRoleTone = 'neutral' | 'needs_you' | 'failed'
+export type SessionRoleRecentSource = 'wake_round' | 'room_message' | 'task_mirrored' | 'dispatched' | 'needs_human' | 'needs_cleared' | 'driver_seat_bound' | 'driver_takeover' | 'status_moved'
+
+export interface SessionRoleRecent {
+  seq: number
+  time: string
+  summary: string
+  tone: SessionRoleTone
+  source: SessionRoleRecentSource
+}
+
+export interface SessionRoleTicketRef {
+  card_id: string
+  target: string
+  task_id: string
+  ticket_id: string
+  task_type: 'permission_request' | 'question'
+}
+
+export interface SessionRoleStatus {
+  id: string
+  kind: SessionRoleKind
+  identity?: string
+  card_id?: string
+  task_id?: string
+  target?: string
+  state: SessionRoleState
+  since?: string
+  conclusion: string
+  reason?: string
+  waiting_for?: string
+  recent?: SessionRoleRecent[]
+  more_activity?: boolean
+  ticket_refs?: SessionRoleTicketRef[]
+  can_request_wake?: boolean
+}
+
+export interface SessionRoleStatusProjection {
+  observed_at: string
+  roles: SessionRoleStatus[]
+}
+
+export interface SessionDetail { summary: SessionSummary; nodes?: SessionNode[]; timeline?: SessionTimelineEvent[]; role_status?: SessionRoleStatusProjection }
 
 // ---- C8 接线（契约 §3.5 端点 + §3.6 收件箱；响应信封形状与 C6 handler 逐字一致）----
 import { deleteJSON, postJSON, request } from './client'

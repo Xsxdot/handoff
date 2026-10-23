@@ -49,6 +49,19 @@ type RoomMessageSnapshot struct {
 	MessagesAfter int64
 }
 
+// RoleActivityRead 是 card-scoped 最近事实窗口；TruncatedCards 标识完整窗口之外仍有旧事实。
+type RoleActivityRead struct {
+	Events         []proto.LedgerEvent
+	SessionEvents  []proto.LedgerEvent
+	TruncatedCards []string
+}
+
+// RoleTicketRead 是当前卡集合的未决票据引用候选；Truncated 明确表示窗口不完整。
+type RoleTicketRead struct {
+	Tickets   []proto.SessionTicketRef
+	Truncated bool
+}
+
 // LedgerClient 会话子系统消费账本能力的唯一通道。方法集与契约文档
 // §3.4 一一对应；扩方法先回 contract 节点。
 type LedgerClient interface {
@@ -78,6 +91,10 @@ type LedgerClient interface {
 	RoomMessageSnapshotsContext(ctx context.Context, afterByRoom map[string]int64) ([]RoomMessageSnapshot, error)
 	// SessionProjectionEventsContext 返回单会话结构事件及调用方给定当前成员卡上的投影事件。
 	SessionProjectionEventsContext(ctx context.Context, sessionID string, cardIDs []string) ([]proto.LedgerEvent, error)
+	// SessionRoleActivityContext 读取指定卡最近的角色事实，按卡限额并明确截断卡集合。
+	SessionRoleActivityContext(ctx context.Context, cardIDs []string, perCardLimit int) (RoleActivityRead, error)
+	// SessionRoleTicketsContext 读取指定卡的未决票据候选，不返回票据正文。
+	SessionRoleTicketsContext(ctx context.Context, cardIDs []string, limit int) (RoleTicketRead, error)
 	// LatestNeedsEventsContext 返回每张指定卡最新一条 needs_human/needs_cleared 事实。
 	LatestNeedsEventsContext(ctx context.Context, cardIDs []string) ([]proto.LedgerEvent, error)
 	// --- B409 U5 收件箱限域读（recipient-address 候选；U4/U5 seam 清点见

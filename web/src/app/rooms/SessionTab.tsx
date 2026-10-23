@@ -171,7 +171,10 @@ export function SessionTab({ sessionId, title, onOpenCard, compact = false, pane
               historyExpired={historyPoll.sessionExpired}
               historyError={historyPoll.disconnected && !historyPoll.sessionExpired ? historyPoll.errorText : ''}
               onSent={() => historyPoll.refresh()}
-              onJoinCard={() => setJoinOpen(true)} compact={compact} onOpenCard={onOpenCard} />
+              onJoinCard={() => setJoinOpen(true)} compact={compact} onOpenCard={onOpenCard}
+              roleStatus={detail?.role_status} onOpenCardForRole={onOpenCard}
+              roleStatusUnavailable={detailPoll.disconnected || detailPoll.sessionExpired} roleStatusError={detailPoll.errorText}
+              onRoleStatusRefresh={detailPoll.refresh} />
           </div>
           {/* 详情态占满会话内容区（五块全宽）；归档/拉卡流程接线原样。头部 =
               左上返回（仅回群聊、不出房间）+ 标题；不渲染 ⋯（⋯ 仅群聊态的
@@ -208,7 +211,9 @@ export function SessionTab({ sessionId, title, onOpenCard, compact = false, pane
           historyExpired={historyPoll.sessionExpired}
           historyError={historyPoll.disconnected && !historyPoll.sessionExpired ? historyPoll.errorText : ''}
           onSent={() => historyPoll.refresh()}
-          onJoinCard={() => setJoinOpen(true)} />
+          onJoinCard={() => setJoinOpen(true)} roleStatus={detail?.role_status} onOpenCard={onOpenCard}
+          roleStatusUnavailable={detailPoll.disconnected || detailPoll.sessionExpired} roleStatusError={detailPoll.errorText}
+          onRoleStatusRefresh={detailPoll.refresh} />
       )}
       {!compact && drawerOpen && (
         <aside data-testid="session-drawer" aria-label="会话详情"

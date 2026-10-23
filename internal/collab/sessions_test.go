@@ -418,6 +418,112 @@ func TestSessionVerticalSlice(t *testing.T) {
 	}
 }
 
+func TestSessionRoleStatusUsesScopedLedgerFactsWithoutPayload(t *testing.T) {
+	svc, st, _ := newSessionFixture(t)
+	card := sessionCard(t, st, "角色状态卡")
+	session, err := svc.CreateSession("角色状态会话", "user:sy", "user:sy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.JoinCard(session.ID, card.ID, "user:sy"); err != nil {
+		t.Fatal(err)
+	}
+	seat := "cli:agent#coord"
+	if err := st.BindSeat(card.ID, seat, proto.SeatSourceBind, ledger.SeatBearing{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := st.RecordDispatchAndLinkTask(card.ID, ledger.DispatchSnapshot{Target: "worker", TaskID: "task-uuid-1", Purpose: "implement"}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Add(-time.Minute)
+	if _, err := st.AppendMirroredEvent(card.ID, ledger.MirroredEvent{Target: "worker", Task: "task-uuid-1", SourceSeq: 1,
+		Type: "completed", Payload: []byte(`{"ticket_id":"private-body-must-not-leak"}`), CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.AppendMirroredEvent(card.ID, ledger.MirroredEvent{Target: "worker", Task: "task-uuid-1", SourceSeq: 2,
+		Type: "permission_request", Payload: []byte(`{"ticket_id":"ticket-1","command":"private-body-must-not-leak"}`), CreatedAt: now.Add(time.Second)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.EnsureComment(card.ID, "wake_round:fail:test-round", `{"phase":"fail","err":"carrier unavailable"}`, "agentd"); err != nil {
+		t.Fatal(err)
+	}
+	detail, err := svc.SessionDetail(session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.RoleStatus == nil || len(detail.RoleStatus.Roles) < 2 {
+		t.Fatalf("缺角色投影: %+v", detail.RoleStatus)
+	}
+	var coordinator, executor *proto.SessionRole
+	for i := range detail.RoleStatus.Roles {
+		role := &detail.RoleStatus.Roles[i]
+		if role.Kind == "coordinator" {
+			coordinator = role
+		}
+		if role.Kind == "executor" {
+			executor = role
+		}
+	}
+	if coordinator == nil || coordinator.State != "exception" {
+		t.Fatalf("wake_round fail 应为明确异常: %+v", coordinator)
+	}
+	if executor == nil || executor.State != "waiting" || executor.TaskID != "task-uuid-1" {
+		t.Fatalf("执行回合结束并有后继未决票据应等待: %+v", executor)
+	}
+	if len(executor.TicketRefs) != 1 || executor.TicketRefs[0].TicketID != "ticket-1" {
+		t.Fatalf("需输出候选票据引用: %+v", executor.TicketRefs)
+	}
+	wire, err := json.Marshal(detail)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(wire), "private-body-must-not-leak") || strings.Contains(string(wire), "carrier unavailable") == false {
+		t.Fatalf("角色 wire 必须保留用户可见失败摘要但不含任务正文: %s", wire)
+	}
+}
+
+func TestSessionRoleStatusKeepsLocalEmptyTargetTaskIdentity(t *testing.T) {
+	svc, st, _ := newSessionFixture(t)
+	card := sessionCard(t, st, "本机空 target 角色状态卡")
+	session, err := svc.CreateSession("本机空 target", "user:sy", "user:sy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.JoinCard(session.ID, card.ID, "user:sy"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := st.RecordDispatchAndLinkTask(card.ID, ledger.DispatchSnapshot{Target: "", TaskID: "old-local-task", Purpose: "implement"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.AppendMirroredEvent(card.ID, ledger.MirroredEvent{Target: "", Task: "old-local-task", SourceSeq: 1,
+		Type: "progress", Payload: []byte(`{"task_type":"progress"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := st.RecordDispatchAndLinkTask(card.ID, ledger.DispatchSnapshot{Target: "", TaskID: "current-local-task", Purpose: "implement"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.AppendMirroredEvent(card.ID, ledger.MirroredEvent{Target: "", Task: "current-local-task", SourceSeq: 1,
+		Type: "completed", Payload: []byte(`{"task_type":"completed"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	detail, err := svc.SessionDetail(session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var executor *proto.SessionRole
+	for i := range detail.RoleStatus.Roles {
+		if detail.RoleStatus.Roles[i].Kind == "executor" {
+			executor = &detail.RoleStatus.Roles[i]
+		}
+	}
+	if executor == nil || executor.TaskID != "current-local-task" || executor.Target != "" || executor.State != "idle" {
+		t.Fatalf("空 target 本机任务应按 task ID 独立投影: %+v", executor)
+	}
+	if len(executor.Recent) != 1 || executor.Recent[0].Summary != "执行回合已结束" {
+		t.Fatalf("同为本机空 target 的旧 task 动态不得串入当前 role: %+v", executor.Recent)
+	}
+}
+
 // TestWakeTargetsAddressing 投递寻址：唯一唤醒判定入口。
 func TestWakeTargetsAddressing(t *testing.T) {
 	svc, st, _ := newSessionFixture(t)

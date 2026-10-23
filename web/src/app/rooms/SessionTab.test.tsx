@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { archiveSession, fetchRoomMessages, fetchSessionDetail, joinSessionCard, markRoomRead } from '../../api/rooms'
-import { ApiError } from '../../api/client'
+import { ApiError, fetchTaskDetail, replyTicket } from '../../api/client'
 import { fetchCards } from '../../api/ledger'
 import { openSessionDetail } from './sessionDetailOpener'
 import type { RoomHistoryItem, SessionDetail, SessionSummary } from '../../api/rooms'
@@ -22,6 +22,11 @@ vi.mock('../../api/rooms', async (importOriginal) => ({
 vi.mock('../../api/ledger', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../api/ledger')>()),
   fetchCards: vi.fn(),
+}))
+vi.mock('../../api/client', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../api/client')>()),
+  fetchTaskDetail: vi.fn(),
+  replyTicket: vi.fn(),
 }))
 
 const cases = fixture as { case: string; detail?: SessionDetail; summary?: SessionSummary }[]
@@ -58,6 +63,58 @@ describe('SessionTab', () => {
     render(<SessionTab sessionId="session:7" title="架构物理化" />)
     expect(screen.getByText('正在读取消息…')).toBeInTheDocument()
     expect(screen.queryByText('（还没有消息）')).toBeNull()
+  })
+
+  it('从 SessionDetail.role_status 消费角色状态并在 composer 上方显示 E38 待接续', async () => {
+    const detail = detailOf()
+    detail.role_status = {
+      observed_at: '2026-10-23T07:15:00Z',
+      roles: [{
+        id: 'coordinator:B456', kind: 'coordinator', identity: 'E38 协调者', card_id: 'E38',
+        state: 'waiting', since: '2026-10-23T06:49:00Z', conclusion: '修复已交回，待协调者安排复审',
+        reason: '修复任务已归档，尚未观察到复审派发', waiting_for: '卡协调者',
+        recent: [{ seq: 1, time: '2026-10-23T06:49:00Z', summary: '修复任务归档', tone: 'neutral', source: 'task_mirrored' }],
+      }],
+    }
+    vi.mocked(fetchSessionDetail).mockResolvedValue(detail)
+    render(<SessionTab sessionId="session:7" title="E38" />)
+    const status = await screen.findByRole('region', { name: '会话角色状态' })
+    expect((await within(status).findAllByRole('button', { name: /协调者 · E38/ })).length).toBeGreaterThan(0)
+    expect(within(status).getByText(/待协调者安排复审/)).toBeInTheDocument()
+    expect(screen.getByRole('textbox', { name: '发送消息' })).toBeInTheDocument()
+  })
+
+  it('按 task+ticket 候选读取完整待办并沿既有 reply API 答复', async () => {
+    const detail = detailOf()
+    detail.role_status = {
+      observed_at: '2026-10-23T07:15:00Z',
+      roles: [{ id: 'coord:B456', kind: 'coordinator', identity: 'B456', card_id: 'B456', state: 'needs_you',
+        conclusion: '有两项需要你决定', ticket_refs: [
+          { card_id: 'B456', target: 'local', task_id: 'task-uuid-1', ticket_id: 'ticket-7', task_type: 'question' },
+          { card_id: 'B456', target: 'local', task_id: 'task-uuid-1', ticket_id: 'ticket-8', task_type: 'question' },
+        ] }],
+    }
+    vi.mocked(fetchSessionDetail).mockResolvedValue(detail)
+    const ticket = { id: 'ticket-7', task_id: 'task-uuid-1', kind: 'ask', request: { kind: 'ask', question: '下一步选择哪种方案？' }, created_at: '2026-10-23T07:10:00Z' }
+    const nextTicket = { id: 'ticket-8', task_id: 'task-uuid-1', kind: 'ask', request: { kind: 'ask', question: '接下来还需要确认什么？' }, created_at: '2026-10-23T07:11:00Z' }
+    vi.mocked(fetchTaskDetail)
+      .mockResolvedValueOnce({ task: {} as never, pending_tickets: [ticket, nextTicket], recent_events: [] })
+      .mockResolvedValueOnce({ task: {} as never, pending_tickets: [nextTicket], recent_events: [] })
+    vi.mocked(replyTicket).mockResolvedValueOnce({ ok: true }).mockRejectedValueOnce(new ApiError(502, '远端暂时不可用'))
+    const user = userEvent.setup()
+    render(<SessionTab sessionId="session:7" title="B456" />)
+    await user.click(await screen.findByRole('button', { name: /需要你处理 2/ }))
+    const drawer = await screen.findByRole('dialog', { name: '待你处理' })
+    expect(await within(drawer).findByText('下一步选择哪种方案？')).toBeInTheDocument()
+    await user.type(within(drawer).getAllByRole('textbox', { name: '回答（原样透传给模型）' })[0], '先采用方案 B')
+    await user.click(within(drawer).getAllByRole('button', { name: '提交回答' })[0])
+    await waitFor(() => expect(replyTicket).toHaveBeenCalledWith('task-uuid-1', { ticket_id: 'ticket-7', answer: '先采用方案 B' }))
+    expect(await within(drawer).findByText('接下来还需要确认什么？')).toBeInTheDocument()
+    expect(within(drawer).queryByText('下一步选择哪种方案？')).toBeNull()
+    await user.type(within(drawer).getAllByRole('textbox', { name: '回答（原样透传给模型）' })[0], '保留现有方案')
+    await user.click(within(drawer).getAllByRole('button', { name: '提交回答' })[0])
+    expect((await within(drawer).findAllByRole('alert')).some((alert) => alert.textContent?.includes('远端暂时不可用'))).toBe(true)
+    expect(within(drawer).getByText('接下来还需要确认什么？')).toBeInTheDocument()
   })
 
   it('历史鉴权失败时显示失效原因，不谎报会话没有消息', async () => {

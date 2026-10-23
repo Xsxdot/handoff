@@ -1,7 +1,7 @@
 // 块组件的行为测试：只断言行为，不测样式。
 //
 // 四条硬要求：思维链默认折叠；工具卡默认折叠且三种状态各自可辨；事件标记
-// **不可点**（审批入口唯一在工单面板）；未知类型可展开看原始 JSON。
+// **不可点**（审批交互统一复用 TicketsPanel）；未知类型可展开看原始 JSON。
 import { describe, expect, it } from 'vitest'
 import { fireEvent, render, screen } from '@testing-library/react'
 import type { ToolBlock } from './frames'

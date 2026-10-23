@@ -28,6 +28,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/diag"
 	"github.com/Xsxdot/handoff/internal/ledger"
 	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/store"
 )
 
 // validSessionOwner 校验统一记法（B358.9 §8.3 HTTP 半边）：收敛到 proto 唯一
@@ -284,9 +285,56 @@ func (s *Server) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 		sessionErr(w, fmt.Errorf("会话 %s: %w", id, err))
 		return
 	}
+	s.enrichSessionRoleTaskStates(&detail)
 	annotateReadRows(r.Context(), len(detail.Timeline))
 	s.log.Info("会话详情响应成功", "session", id)
 	writeJSON(w, http.StatusOK, detail)
+}
+
+// enrichSessionRoleTaskStates overlays the existing local task snapshot, then the
+// cached remote mirror snapshot. A cached snapshot is observation only, never a heartbeat.
+func (s *Server) enrichSessionRoleTaskStates(detail *proto.SessionDetail) {
+	if detail == nil || detail.RoleStatus == nil || s.mgr == nil {
+		return
+	}
+	observations := map[string]collab.SessionTaskObservation{}
+	for i := range detail.RoleStatus.Roles {
+		role := &detail.RoleStatus.Roles[i]
+		if role.Kind != "executor" || role.TaskID == "" {
+			continue
+		}
+		task, err := s.mgr.GetTask(role.TaskID)
+		if err != nil {
+			if !errors.Is(err, store.ErrNotFound) {
+				s.log.Warn("会话角色本地任务快照读取失败", "task", role.TaskID, "cause", err)
+				observations[role.TaskID] = collab.SessionTaskObservation{Err: err}
+				continue
+			}
+			mirror, ok, mirrorErr := s.mgr.GetMirrorTask(role.TaskID)
+			if mirrorErr != nil {
+				s.log.Warn("会话角色任务快照读取失败", "task", role.TaskID, "cause", mirrorErr)
+				observations[role.TaskID] = collab.SessionTaskObservation{Err: mirrorErr}
+				continue
+			}
+			if !ok {
+				observations[role.TaskID] = collab.SessionTaskObservation{Missing: true}
+				continue
+			}
+			if mirror.Target != role.Target {
+				observations[role.TaskID] = collab.SessionTaskObservation{Target: mirror.Target}
+				continue
+			}
+			task = &mirror.Task
+			observations[role.TaskID] = collab.SessionTaskObservation{Target: mirror.Target, State: string(task.State), FetchedAt: mirror.FetchedAt, UpdatedAt: task.UpdatedAt, Cached: true}
+			continue
+		}
+		if task == nil {
+			observations[role.TaskID] = collab.SessionTaskObservation{Missing: true}
+			continue
+		}
+		observations[role.TaskID] = collab.SessionTaskObservation{State: string(task.State), UpdatedAt: task.UpdatedAt}
+	}
+	collab.ApplySessionTaskObservations(detail, observations)
 }
 
 // handleSessionArchive POST /api/sessions/{id}/archive → ArchiveSession（幂等，

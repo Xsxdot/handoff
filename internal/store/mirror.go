@@ -170,6 +170,25 @@ func (s *Store) ListMirrorTasks() ([]MirrorTask, error) {
 	return out, nil
 }
 
+// GetMirrorTask reads one cached task snapshot by its globally unique task ID.
+// It does not contact the remote target; FetchedAt marks the observation boundary.
+func (s *Store) GetMirrorTask(taskID string) (MirrorTask, bool, error) {
+	var target, snapshot, fetchedAt string
+	err := s.db.QueryRowContext(context.Background(),
+		`SELECT target, snapshot, fetched_at FROM mirror_tasks WHERE task_id = ?`, taskID).Scan(&target, &snapshot, &fetchedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return MirrorTask{}, false, nil
+	}
+	if err != nil {
+		return MirrorTask{}, false, fmt.Errorf("查询镜像任务 %s: %w", taskID, err)
+	}
+	var task proto.Task
+	if err := json.Unmarshal([]byte(snapshot), &task); err != nil {
+		return MirrorTask{}, false, fmt.Errorf("解析镜像任务 %s: %w", taskID, err)
+	}
+	return MirrorTask{Task: task, Target: target, FetchedAt: parseTime(fetchedAt)}, true, nil
+}
+
 // MirrorTaskTarget 返回任务所属机器（mirror_tasks 的路由索引查询）。
 //
 // 返回：

@@ -55,6 +55,7 @@ type OrchestrationClient interface {
 	// —— 任务查询与应答（B233.28：gateway 不再直打 store 的这一面）——
 	ListTasks() ([]proto.Task, error)
 	GetTask(taskID string) (*proto.Task, error)
+	GetMirrorTask(taskID string) (store.MirrorTask, bool, error)
 	PendingTickets(taskID string) ([]proto.Ticket, error)
 	EventsFrom(taskID string, fromSeq int64, limit int) ([]proto.Event, error)
 	EventsFromAsc(taskID string, fromSeq int64, limit int) ([]proto.Event, error)

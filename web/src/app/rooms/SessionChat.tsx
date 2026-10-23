@@ -14,6 +14,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { CornerUpLeft, ListPlus } from 'lucide-react'
 import type { KeyboardEvent } from 'react'
 import type { IdentityResp, RoomHistoryItem, SessionSummary } from '../../api/rooms'
+import type { SessionRoleStatusProjection } from '../../api/rooms'
 import { addSessionMember, fetchIdentity, sendRoomMessage } from '../../api/rooms'
 import { ApiError } from '../../api/client'
 import { errorMessage } from '../lib/format'
@@ -21,6 +22,7 @@ import { cn } from '@/lib/utils'
 import { SessionExpiredBanner } from '../lib/Banners'
 import { logRoom } from './roomLog'
 import { DELIVERY_READ_TIME_HINT, noRecipientLabel } from './deliveryCopy'
+import { SessionRoleStatusBar } from './SessionRoleStatusBar'
 import { applyMention, extractSessionMentions, isSelfActor, memberRoleLabel, mentionCandidates, segmentBody, signatureText } from './sessionModel'
 
 export interface SessionChatProps {
@@ -39,6 +41,11 @@ export interface SessionChatProps {
   // B369.10 T7：compact 群聊顶部「本会话的卡」chiprow 的点击回调（SessionTab
   // 的 onOpenCard seam，Shell 已通 nav.openCard）。缺省 undefined = 桌面不渲染。
   onOpenCard?: (cardId: string) => void
+  roleStatus?: SessionRoleStatusProjection
+  onOpenCardForRole?: (cardId: string) => void
+  roleStatusUnavailable?: boolean
+  roleStatusError?: string
+  onRoleStatusRefresh?: () => void
 }
 
 function MessageRow({ event, referenced, highlight, archived, selfMember, onJump, onReply, compact = false }: {
@@ -102,7 +109,7 @@ function MessageRow({ event, referenced, highlight, archived, selfMember, onJump
   )
 }
 
-export function SessionChat({ sessionId, summary, events, historyError, historyLoading = false, historyExpired, onSent, onJoinCard, compact = false, onOpenCard }: SessionChatProps) {
+export function SessionChat({ sessionId, summary, events, historyError, historyLoading = false, historyExpired, onSent, onJoinCard, compact = false, onOpenCard, roleStatus, onOpenCardForRole, roleStatusUnavailable = false, roleStatusError = '', onRoleStatusRefresh }: SessionChatProps) {
   const [draft, setDraft] = useState('')
   const [sending, setSending] = useState(false)
   const [sendError, setSendError] = useState('')
@@ -307,6 +314,9 @@ export function SessionChat({ sessionId, summary, events, historyError, historyL
             ))}
           </div>
         )}
+        <SessionRoleStatusBar sessionId={sessionId} projection={roleStatus} archived={archived} summary={summary}
+          unavailable={roleStatusUnavailable} unavailableReason={roleStatusError}
+          onOpenCard={onOpenCardForRole ?? onOpenCard} onRefresh={() => { onSent(); onRoleStatusRefresh?.() }} />
         <div className="flex items-end gap-2 rounded-2xl border bg-background p-1.5">
           {onJoinCard && (
             <button type="button" aria-label="拉卡进群" title="拉卡进群" onClick={onJoinCard}

@@ -9,16 +9,24 @@
 package agentd
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/Xsxdot/handoff/internal/collab"
 	"github.com/Xsxdot/handoff/internal/collab/client"
+	"github.com/Xsxdot/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/executor/fake"
 	"github.com/Xsxdot/handoff/internal/ledger"
+	"github.com/Xsxdot/handoff/internal/orchestration"
 	"github.com/Xsxdot/handoff/internal/proto"
 )
 
@@ -259,7 +267,7 @@ func TestSessionDetailEndpointKeyset(t *testing.T) {
 	}
 	// 顶层键集：summary 恒在；timeline 有结构事件在场；nodes 无 task_mirrored
 	// 事件 → omitempty 缺键（缺失≠null 的字面分辨）。
-	assertKeyset(t, "SessionDetail 顶层", raw, "summary", "timeline")
+	assertKeyset(t, "SessionDetail 顶层", raw, "summary", "timeline", "role_status")
 	if _, ok := raw["nodes"]; ok {
 		t.Fatalf("nodes 无镜像事件应缺键（omitempty），实得: %v", raw["nodes"])
 	}
@@ -315,6 +323,400 @@ func TestSessionDetailEndpointKeyset(t *testing.T) {
 	if !strings.Contains(body, "session:999") {
 		t.Fatalf("404 文案应含会话 id（可行动错误）: %s", body)
 	}
+}
+
+// TestSessionRoleStatusHTTPWire covers the actual mux serialization chain with bounded ledger facts.
+func TestSessionRoleStatusHTTPWire(t *testing.T) {
+	env := newRoomsEnv(t)
+	session := mustConsoleSession(t, env, "角色详情")
+	card := seedCard(t, env, "待接续")
+	if code, body := ledgerPost(t, env.testAgentdEnv, "/api/sessions/"+session.ID+"/cards", fmt.Sprintf(`{"card":%q}`, card.ID)); code != 200 {
+		t.Fatalf("拉卡: %d %s", code, body)
+	}
+	seat := "cli:agent#b456"
+	if err := env.ledger.BindSeat(card.ID, seat, proto.SeatSourceBind, ledger.SeatBearing{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := env.ledger.RecordDispatchAndLinkTask(card.ID, ledger.DispatchSnapshot{Target: "worker", TaskID: "task-b456", Purpose: "implement"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.ledger.AppendMirroredEvent(card.ID, ledger.MirroredEvent{Target: "worker", Task: "task-b456", SourceSeq: 1, Type: "permission_request", Payload: []byte(`{"ticket_id":"ticket-b456","command":"private"}`), CreatedAt: time.Now().Add(-time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.ledger.EnsureComment(card.ID, "wake_round:fail:b456", `{"phase":"fail","err":"载体不可用"}`, "agentd"); err != nil {
+		t.Fatal(err)
+	}
+	code, body := ledgerGet(t, env.testAgentdEnv, "/api/sessions/"+session.ID)
+	if code != 200 {
+		t.Fatalf("会话详情: %d %s", code, body)
+	}
+	var detail proto.SessionDetail
+	if err := json.Unmarshal([]byte(body), &detail); err != nil {
+		t.Fatal(err)
+	}
+	if detail.RoleStatus == nil || len(detail.RoleStatus.Roles) < 2 {
+		t.Fatalf("缺角色状态数组: %s", body)
+	}
+	var coordinator, executor *proto.SessionRole
+	for i := range detail.RoleStatus.Roles {
+		role := &detail.RoleStatus.Roles[i]
+		if role.Kind == "coordinator" {
+			coordinator = role
+		}
+		if role.Kind == "executor" {
+			executor = role
+		}
+	}
+	if coordinator == nil || len(coordinator.Recent) == 0 || coordinator.State != "exception" {
+		t.Fatalf("wake_round 事实未穿过 HTTP: %+v", coordinator)
+	}
+	if executor == nil || len(executor.TicketRefs) != 1 || executor.TicketRefs[0].TicketID != "ticket-b456" {
+		t.Fatalf("票据候选未穿过 HTTP: %+v", executor)
+	}
+	if executor.Since != nil || strings.Contains(body, `"command":"private"`) {
+		t.Fatalf("wire 不得伪造起点或暴露工单正文: %s", body)
+	}
+	normalized := normalizeB456JSON(t, []byte(body))
+	fixture := filepath.Join("..", "..", "web", "src", "api", "testdata", "SessionDetailB456.json")
+	if os.Getenv("B456_UPDATE_FIXTURE") == "1" {
+		if err := os.WriteFile(fixture, normalized, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	} else {
+		want, err := os.ReadFile(fixture)
+		if err != nil {
+			t.Fatalf("读取 Go HTTP 金样: %v（可设置 B456_UPDATE_FIXTURE=1 从真实 mux 响应更新）", err)
+		}
+		if string(want) != string(normalized) {
+			t.Fatalf("Go HTTP JSON 与跨语言金样不符\n got: %s\nwant: %s", normalized, want)
+		}
+	}
+}
+
+func TestSessionRoleTicketLimitFailsClosedOverHTTP(t *testing.T) {
+	env := newRoomsEnv(t)
+	session := mustConsoleSession(t, env, "超限工单详情")
+	card := seedCard(t, env, "超限工单卡")
+	if code, body := ledgerPost(t, env.testAgentdEnv, "/api/sessions/"+session.ID+"/cards", fmt.Sprintf(`{"card":%q}`, card.ID)); code != http.StatusOK {
+		t.Fatalf("拉卡: %d %s", code, body)
+	}
+	if _, _, err := env.ledger.RecordDispatchAndLinkTask(card.ID, ledger.DispatchSnapshot{Target: "", TaskID: "b456-ticket-overflow", Purpose: "implement"}); err != nil {
+		t.Fatal(err)
+	}
+	// Exercise the production mirror-event -> open_ticket_projection path above the fixed 500-row bound.
+	for i := 1; i <= 501; i++ {
+		payload := []byte(fmt.Sprintf(`{"ticket_id":"ticket-overflow-%03d","kind":"ask","question":"question %d"}`, i, i))
+		if _, err := env.ledger.AppendMirroredEvent(card.ID, ledger.MirroredEvent{Target: "", Task: "b456-ticket-overflow", SourceSeq: int64(i), Type: "question", Payload: payload, CreatedAt: time.Now().UTC().Add(time.Duration(i) * time.Millisecond)}); err != nil {
+			t.Fatalf("append pending ticket %d: %v", i, err)
+		}
+	}
+	code, body := ledgerGet(t, env.testAgentdEnv, "/api/sessions/"+session.ID)
+	if code != http.StatusInternalServerError || !strings.Contains(body, "超过本次读取上限") || !strings.Contains(body, "全局待处理入口") {
+		t.Fatalf("票据超限必须明确降级并避免漏显可达动作: %d %s", code, body)
+	}
+}
+
+func TestSessionRoleStatusHTTPKeepsLifecycleTimeAcrossProgress(t *testing.T) {
+	env := newRoomsEnv(t)
+	session := mustConsoleSession(t, env, "角色生命周期起点")
+	card := seedCard(t, env, "完成后进度审计")
+	if code, body := ledgerPost(t, env.testAgentdEnv, "/api/sessions/"+session.ID+"/cards", fmt.Sprintf(`{"card":%q}`, card.ID)); code != http.StatusOK {
+		t.Fatalf("拉卡: %d %s", code, body)
+	}
+	if err := env.ledger.BindSeat(card.ID, "cli:agent#b456-time", proto.SeatSourceBind, ledger.SeatBearing{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := env.ledger.RecordDispatchAndLinkTask(card.ID, ledger.DispatchSnapshot{Target: "worker", TaskID: "task-b456-time", Purpose: "implement"}); err != nil {
+		t.Fatal(err)
+	}
+	completedAt := time.Now().UTC().Add(-17 * time.Minute).Truncate(time.Second)
+	for i, typ := range []string{"completed", "progress"} {
+		createdAt := completedAt
+		if i == 1 {
+			createdAt = completedAt.Add(time.Minute)
+		}
+		if _, err := env.ledger.AppendMirroredEvent(card.ID, ledger.MirroredEvent{Target: "worker", Task: "task-b456-time", SourceSeq: int64(i + 1), Type: typ,
+			Payload: []byte(`{"summary":"审计进度"}`), CreatedAt: createdAt}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := env.st.UpsertMirrorTask("worker", proto.Task{ID: "task-b456-time", State: proto.TaskStateWaitingReview, UpdatedAt: completedAt.Add(30 * time.Second)}, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	code, body := ledgerGet(t, env.testAgentdEnv, "/api/sessions/"+session.ID)
+	if code != http.StatusOK {
+		t.Fatalf("会话详情: %d %s", code, body)
+	}
+	var detail proto.SessionDetail
+	if err := json.Unmarshal([]byte(body), &detail); err != nil {
+		t.Fatal(err)
+	}
+	var coordinator, executor *proto.SessionRole
+	for i := range detail.RoleStatus.Roles {
+		role := &detail.RoleStatus.Roles[i]
+		if role.Kind == "coordinator" {
+			coordinator = role
+		}
+		if role.Kind == "executor" {
+			executor = role
+		}
+	}
+	if executor == nil || executor.State != "idle" || executor.Since == nil || !executor.Since.Equal(completedAt) {
+		t.Fatalf("completed lifecycle time must survive later progress + waiting_review snapshot: %+v", executor)
+	}
+	if coordinator == nil || coordinator.State != "waiting" || coordinator.Since == nil || !coordinator.Since.Equal(completedAt) {
+		t.Fatalf("coordinator handoff wait should retain completed lifecycle time: %+v", coordinator)
+	}
+	// A cached running snapshot from before the ledger completion is stale and
+	// must not resurrect a green state; a later same-task continue is allowed.
+	if err := env.st.UpsertMirrorTask("worker", proto.Task{ID: "task-b456-time", State: proto.TaskStateRunning, UpdatedAt: completedAt.Add(-time.Minute)}, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	assertRoleState := func(wantExec, wantCoord string, wantSince bool) {
+		t.Helper()
+		code, body := ledgerGet(t, env.testAgentdEnv, "/api/sessions/"+session.ID)
+		if code != http.StatusOK {
+			t.Fatalf("会话详情: %d %s", code, body)
+		}
+		var got proto.SessionDetail
+		if err := json.Unmarshal([]byte(body), &got); err != nil {
+			t.Fatal(err)
+		}
+		var execRole, coordRole *proto.SessionRole
+		for i := range got.RoleStatus.Roles {
+			role := &got.RoleStatus.Roles[i]
+			if role.Kind == "executor" {
+				execRole = role
+			}
+			if role.Kind == "coordinator" {
+				coordRole = role
+			}
+		}
+		if execRole == nil || coordRole == nil || execRole.State != wantExec || coordRole.State != wantCoord || (execRole.Since != nil) != wantSince {
+			t.Fatalf("snapshot alignment exec=%+v coord=%+v, want states %s/%s since=%t", execRole, coordRole, wantExec, wantCoord, wantSince)
+		}
+	}
+	assertRoleState("idle", "waiting", true)
+	continuedAt := completedAt.Add(2 * time.Minute)
+	if err := env.st.UpsertMirrorTask("worker", proto.Task{ID: "task-b456-time", State: proto.TaskStateRunning, UpdatedAt: continuedAt}, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	assertRoleState("running", "unknown", false)
+}
+
+// TestB456BrowserHarness serves an isolated, opt-in temporary SQLite fixture for
+// visual acceptance. It never binds production ports and skips in normal suites.
+func TestB456BrowserHarness(t *testing.T) {
+	if os.Getenv("B456_BROWSER_HARNESS") != "1" {
+		t.Skip("set B456_BROWSER_HARNESS=1 to start the isolated browser acceptance fixture")
+	}
+	env := newRoomsEnv(t)
+	fakeAdapter := fake.New([]fake.Step{
+		{Permission: "申请运行只读测试命令"},
+		{Question: "需要确认字段映射，请回复字段名。"},
+		{Permission: "申请执行需要人工确认的写操作"},
+		{Finish: executor.Result{OK: true, Summary: "answers received; fixture task complete"}},
+	})
+	mgr := newManagerForServer(t, env.srv, map[string]executor.Adapter{"fake": fakeAdapter})
+	repo := initTestRepo(t)
+	projectID := registerTestProject(t, mgr, repo)
+	task, err := mgr.Dispatch(context.Background(), orchestration.DispatchReq{ProjectID: projectID, Target: "", Executor: "fake", Prompt: "produce permission, question, a second permission, and finish events", Name: "B456 browser producer proof"})
+	if err != nil {
+		t.Fatalf("真实 manager Dispatch: %v", err)
+	}
+	// Wait for the real executor adapter to emit its permission event/ticket.
+	var ticket proto.Ticket
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		pending, err := mgr.PendingTickets(task.ID)
+		if err == nil && len(pending) > 0 {
+			ticket = pending[0]
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if ticket.ID == "" {
+		t.Fatalf("真实 fake producer 未产生 permission ticket: task=%s", task.ID)
+	}
+	session := mustConsoleSession(t, env, "B456 browser acceptance")
+	card := seedCard(t, env, "真实 producer 待答复")
+	if code, body := ledgerPost(t, env.testAgentdEnv, "/api/sessions/"+session.ID+"/cards", fmt.Sprintf(`{"card":%q}`, card.ID)); code != http.StatusOK {
+		t.Fatalf("拉入真实 task 卡: %d %s", code, body)
+	}
+	if err := env.ledger.BindSeat(card.ID, "cli:agent#b456-harness", proto.SeatSourceBind, ledger.SeatBearing{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := env.ledger.RecordDispatchAndLinkTask(card.ID, ledger.DispatchSnapshot{Target: task.Target, TaskID: task.ID, Purpose: "implement"}); err != nil {
+		t.Fatal(err)
+	}
+	seq := int64(0)
+	syncProducerEvents := func() {
+		t.Helper()
+		events, err := mgr.EventsFromAsc(task.ID, seq, 100)
+		if err != nil {
+			t.Fatalf("读取真实 manager task events: %v", err)
+		}
+		for _, event := range events {
+			if _, err := env.ledger.AppendMirroredEvent(card.ID, ledger.MirroredEvent{Target: task.Target, Task: task.ID, SourceSeq: event.Seq, Type: string(event.Type), Payload: event.Payload, CreatedAt: event.CreatedAt}); err != nil {
+				t.Fatalf("镜像真实 manager event %s/%d: %v", event.Type, event.Seq, err)
+			}
+			seq = event.Seq
+		}
+	}
+	syncProducerEvents()
+	// Keep ledger event history in step with the genuine manager producer while browser replies unblock it.
+	stopSync := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(50 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stopSync:
+				return
+			case <-ticker.C:
+				events, err := mgr.EventsFromAsc(task.ID, seq, 100)
+				if err != nil {
+					continue
+				}
+				for _, event := range events {
+					_, _ = env.ledger.AppendMirroredEvent(card.ID, ledger.MirroredEvent{Target: task.Target, Task: task.ID, SourceSeq: event.Seq, Type: string(event.Type), Payload: event.Payload, CreatedAt: event.CreatedAt})
+					seq = event.Seq
+				}
+			}
+		}
+	}()
+	defer close(stopSync)
+	code, ticketDetail := ledgerGet(t, env.testAgentdEnv, "/api/tasks/"+task.ID)
+	if code != http.StatusOK || !strings.Contains(ticketDetail, `"id":"`+ticket.ID+`"`) || !strings.Contains(ticketDetail, "申请运行只读测试命令") {
+		t.Fatalf("真实 producer pending permission 必须完整可读: %d %s", code, ticketDetail)
+	}
+	code, detailBody := ledgerGet(t, env.testAgentdEnv, "/api/sessions/"+session.ID)
+	if code != http.StatusOK {
+		t.Fatalf("真实 producer SessionDetail: %d %s", code, detailBody)
+	}
+	var detail proto.SessionDetail
+	if err := json.Unmarshal([]byte(detailBody), &detail); err != nil {
+		t.Fatalf("解码真实 producer SessionDetail: %v", err)
+	}
+	var executorRole *proto.SessionRole
+	for i := range detail.RoleStatus.Roles {
+		if detail.RoleStatus.Roles[i].Kind == "executor" && detail.RoleStatus.Roles[i].TaskID == task.ID {
+			executorRole = &detail.RoleStatus.Roles[i]
+			break
+		}
+	}
+	if executorRole == nil {
+		t.Fatalf("SessionDetail 必须投影 genuine task executor: %s", detailBody)
+	}
+	refFound, recentFound := false, false
+	for _, ref := range executorRole.TicketRefs {
+		if ref.TicketID == ticket.ID {
+			refFound = true
+		}
+	}
+	for _, recent := range executorRole.Recent {
+		if recent.Source == "task_mirrored" && strings.Contains(recent.Summary, "权限") {
+			recentFound = true
+		}
+	}
+	if !refFound || !recentFound {
+		t.Fatalf("SessionDetail 未显示真实 pending ticket 与 permission activity（refs=%t recent=%t）: %s", refFound, recentFound, detailBody)
+	}
+	type seededCard struct {
+		ID       string `json:"id"`
+		Kind     string `json:"kind"`
+		TaskID   string `json:"task_id,omitempty"`
+		TicketID string `json:"ticket_id,omitempty"`
+	}
+	cards := []seededCard{{ID: card.ID, Kind: "genuine_producer", TaskID: task.ID, TicketID: ticket.ID}}
+	seedRoleCard := func(title, taskID, kind, taskState, mirrorType string) {
+		t.Helper()
+		c := seedCard(t, env, title)
+		if code, body := ledgerPost(t, env.testAgentdEnv, "/api/sessions/"+session.ID+"/cards", fmt.Sprintf(`{"card":%q}`, c.ID)); code != http.StatusOK {
+			t.Fatalf("拉入 fixture 卡: %d %s", code, body)
+		}
+		if err := env.ledger.BindSeat(c.ID, "cli:agent#b456-harness", proto.SeatSourceBind, ledger.SeatBearing{}); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := env.ledger.RecordDispatchAndLinkTask(c.ID, ledger.DispatchSnapshot{Target: "worker", TaskID: taskID, Purpose: "implement"}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := env.ledger.AppendMirroredEvent(c.ID, ledger.MirroredEvent{Target: "worker", Task: taskID, SourceSeq: 1, Type: mirrorType, Payload: []byte(`{"task_type":"` + taskState + `"}`), CreatedAt: time.Now().UTC().Add(-time.Minute)}); err != nil {
+			t.Fatal(err)
+		}
+		if err := env.st.UpsertMirrorTask("worker", proto.Task{ID: taskID, State: proto.TaskState(taskState)}, time.Now().UTC()); err != nil {
+			t.Fatal(err)
+		}
+		if kind == "wake_failure" {
+			if _, err := env.ledger.EnsureComment(c.ID, "wake_round:fail:b456-harness", `{"phase":"fail","err":"fixture carrier unavailable"}`, "agentd"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		cards = append(cards, seededCard{ID: c.ID, Kind: kind})
+	}
+	seedRoleCard("已完成待接续", "harness-completed", "completed_waiting", string(proto.TaskStateWaitingReview), "completed")
+	seedRoleCard("唤醒失败", "harness-wake-failure", "wake_failure", string(proto.TaskStateRunning), "progress")
+	manifestPath := os.Getenv("B456_BROWSER_HARNESS_MANIFEST")
+	if manifestPath == "" {
+		manifestPath = filepath.Join(os.TempDir(), "b456-session-status-manifest.json")
+	}
+	manifest := struct {
+		URL       string       `json:"url"`
+		Token     string       `json:"token"`
+		SessionID string       `json:"session_id"`
+		Cards     []seededCard `json:"cards"`
+		Evidence  string       `json:"evidence"`
+	}{env.ts.URL, env.token, session.ID, cards, "The genuine task script runs Permission #1, Question, Permission #2, then Finish. The first permission remains pending for browser approval; answer the question before denying the second permission with a reason, because the real reply route sends that reason as guidance to the executor. GET /api/tasks/{taskID} verifies the initial full pending ticket and GET /api/sessions/{sessionID} asserts the same ticket ref plus permission activity. A poller reads local events via Manager.EventsFromAsc and copies producer facts to ledger.AppendMirroredEvent. Completed/wake-failure visual roles are explicitly seeded mirror fixtures, not producer runs."}
+	raw, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(manifestPath, raw, 0o600); err != nil {
+		t.Fatalf("写浏览器验收manifest: %v", err)
+	}
+	t.Logf("B456 isolated browser harness ready: manifest=%s url=%s session=%s real_task=%s", manifestPath, env.ts.URL, session.ID, task.ID)
+	holdSeconds := 600
+	if raw := os.Getenv("B456_BROWSER_HARNESS_HOLD_SECONDS"); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 1 || parsed > 3600 {
+			t.Fatalf("B456_BROWSER_HARNESS_HOLD_SECONDS must be 1..3600: %q", raw)
+		}
+		holdSeconds = parsed
+	}
+	t.Logf("holding isolated harness for %d seconds (terminate this go test to stop)", holdSeconds)
+	time.Sleep(time.Duration(holdSeconds) * time.Second)
+}
+
+func normalizeB456JSON(t *testing.T, raw []byte) []byte {
+	t.Helper()
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		t.Fatal(err)
+	}
+	var walk func(any)
+	walk = func(node any) {
+		switch v := node.(type) {
+		case map[string]any:
+			for key, child := range v {
+				switch key {
+				case "observed_at", "created_at", "updated_at", "last_activity", "time", "since":
+					v[key] = "2026-01-01T00:00:00Z"
+				default:
+					walk(child)
+				}
+			}
+		case []any:
+			for _, child := range v {
+				walk(child)
+			}
+		}
+	}
+	walk(value)
+	encoded, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return append(encoded, '\n')
 }
 
 // assertKeyset 断言 decoded JSON 对象的键集与期望逐键一致（多键少键都红）。

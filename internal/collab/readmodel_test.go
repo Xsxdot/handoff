@@ -351,6 +351,30 @@ func (f *fakeLC) SessionProjectionEventsContext(ctx context.Context, sessionID s
 	return out, nil
 }
 
+func (f *fakeLC) SessionRoleActivityContext(ctx context.Context, cardIDs []string, perCardLimit int) (client.RoleActivityRead, error) {
+	if err := ctx.Err(); err != nil {
+		return client.RoleActivityRead{}, err
+	}
+	cardSet := map[string]bool{}
+	for _, id := range cardIDs {
+		cardSet[id] = true
+	}
+	var events []proto.LedgerEvent
+	for _, event := range f.events {
+		if cardSet[event.CardID] {
+			events = append(events, event)
+		}
+	}
+	return client.RoleActivityRead{Events: events}, nil
+}
+
+func (f *fakeLC) SessionRoleTicketsContext(ctx context.Context, cardIDs []string, limit int) (client.RoleTicketRead, error) {
+	if err := ctx.Err(); err != nil {
+		return client.RoleTicketRead{}, err
+	}
+	return client.RoleTicketRead{Tickets: []proto.SessionTicketRef{}}, nil
+}
+
 func (f *fakeLC) LatestNeedsEventsContext(ctx context.Context, cardIDs []string) ([]proto.LedgerEvent, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err

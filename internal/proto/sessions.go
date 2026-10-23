@@ -204,9 +204,65 @@ type SessionTimelineEvent struct {
 // SessionDetail 是会话详情页投影：结构与状态（成员在 Summary 上）。
 // 结构信息不进聊天流——群聊面只放人话。
 type SessionDetail struct {
-	Summary  SessionSummary         `json:"summary"`
-	Nodes    []SessionNode          `json:"nodes,omitempty"`
-	Timeline []SessionTimelineEvent `json:"timeline,omitempty"`
+	Summary    SessionSummary         `json:"summary"`
+	Nodes      []SessionNode          `json:"nodes,omitempty"`
+	Timeline   []SessionTimelineEvent `json:"timeline,omitempty"`
+	RoleStatus *SessionRoleStatus     `json:"role_status,omitempty"`
+}
+
+// SessionRoleStatus 是会话角色事实的只读投影；事件正文不进入该 DTO。
+type SessionRoleStatus struct {
+	ObservedAt time.Time     `json:"observed_at"`
+	Roles      []SessionRole `json:"roles"`
+}
+
+// SessionRole 是会话内一个具体职责的有限事实摘要。
+type SessionRole struct {
+	ID             string                `json:"id"`
+	Kind           string                `json:"kind"`
+	Identity       string                `json:"identity,omitempty"`
+	CardID         string                `json:"card_id,omitempty"`
+	TaskID         string                `json:"task_id,omitempty"`
+	Target         string                `json:"target,omitempty"`
+	State          string                `json:"state"`
+	Since          *time.Time            `json:"since,omitempty"`
+	Conclusion     string                `json:"conclusion"`
+	Reason         string                `json:"reason,omitempty"`
+	WaitingFor     string                `json:"waiting_for,omitempty"`
+	Recent         []SessionRoleActivity `json:"recent"`
+	MoreActivity   bool                  `json:"more_activity"`
+	TicketRefs     []SessionTicketRef    `json:"ticket_refs"`
+	CanRequestWake bool                  `json:"can_request_wake"`
+	Basis          SessionRoleBasis      `json:"-"`
+}
+
+// SessionRoleBasis tracks the latest evidence used by the in-process projector.
+// It is deliberately excluded from the frozen HTTP contract.
+type SessionRoleBasis struct {
+	Source      string
+	Seq         int64
+	TaskID      string
+	DispatchSeq int64
+	TaskType    string
+	At          time.Time
+}
+
+// SessionRoleActivity 是不含原始 payload 的一行最近动态。
+type SessionRoleActivity struct {
+	Seq     int64     `json:"seq"`
+	Time    time.Time `json:"time"`
+	Summary string    `json:"summary"`
+	Tone    string    `json:"tone"`
+	Source  string    `json:"source"`
+}
+
+// SessionTicketRef 标识候选票据，不包含票据正文。
+type SessionTicketRef struct {
+	CardID   string `json:"card_id"`
+	Target   string `json:"target"`
+	TaskID   string `json:"task_id"`
+	TicketID string `json:"ticket_id"`
+	TaskType string `json:"task_type"`
 }
 
 // SessionCreatedPayload 是 session_created 账本事件的载荷 schema。

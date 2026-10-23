@@ -26,7 +26,7 @@ import { errorMessage } from '../lib/format'
 
 export interface TicketsPanelProps {
   tickets: Ticket[]
-  disabled: boolean
+  disabled: boolean | ((ticket: Ticket) => boolean)
   onReply: (ticket: Ticket, answer: string) => Promise<void>
   // bare 去掉本组件自带的卡片外框与「挂起工单」标题，只留工单本体：
   // 全局工单弹层里每行已是自己的 li 容器与任务归属行，再套一层卡片和标题就重了
@@ -34,16 +34,19 @@ export interface TicketsPanelProps {
 }
 
 export function TicketsPanel({ tickets, disabled, onReply, bare = false }: TicketsPanelProps) {
+  const disabledFor = (ticket: Ticket) => typeof disabled === 'function' ? disabled(ticket) : disabled
+  const anyDisabled = typeof disabled === 'function' ? tickets.some(disabled) : disabled
+  const disabledMessage = typeof disabled === 'function' ? '部分事项暂不能作答；保留草稿' : '已断开，暂不能作答（保留草稿）'
   if (bare) {
     return (
       <div className="flex flex-col gap-3">
-        {disabled && <p className="text-xs text-amber-700">已断开，暂不能作答（保留草稿）</p>}
+        {anyDisabled && <p className="text-xs text-amber-700">{disabledMessage}</p>}
         {tickets.length === 0 ? (
           <p className="text-sm text-muted-foreground">没有等待处理的工单。</p>
         ) : (
           <ul className="flex flex-col gap-3">
             {tickets.map((t) => (
-              <TicketCard key={t.id} ticket={t} disabled={disabled} onReply={onReply} />
+              <TicketCard key={`${t.task_id}:${t.id}`} ticket={t} disabled={disabledFor(t)} onReply={onReply} />
             ))}
           </ul>
         )}
@@ -59,13 +62,13 @@ export function TicketsPanel({ tickets, disabled, onReply, bare = false }: Ticke
         </h2>
         <Badge variant={tickets.length > 0 ? 'destructive' : 'secondary'}>{tickets.length}</Badge>
       </header>
-      {disabled && <p className="text-xs text-amber-700">已断开，暂不能作答（保留草稿）</p>}
+      {anyDisabled && <p className="text-xs text-amber-700">{disabledMessage}</p>}
       {tickets.length === 0 ? (
         <p className="text-sm text-muted-foreground">没有等待处理的工单。</p>
       ) : (
         <ul className="flex flex-col gap-3">
           {tickets.map((t) => (
-            <TicketCard key={t.id} ticket={t} disabled={disabled} onReply={onReply} />
+            <TicketCard key={`${t.task_id}:${t.id}`} ticket={t} disabled={disabledFor(t)} onReply={onReply} />
           ))}
         </ul>
       )}

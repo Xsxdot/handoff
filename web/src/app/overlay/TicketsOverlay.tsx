@@ -8,8 +8,8 @@
 //     按当前目录筛掉等于要求人先猜对是哪个任务才能看到它
 //   - 裁决逻辑不重写：整段复用 TicketsPanel（含「拒绝必须填理由」这条）
 //
-// 审批入口唯一（W4b 既定纪律，不得回退）：会话流里的 EventChip 仍然不可点，只做
-// 指向；能按下批准/拒绝的地方只有这里。
+// 全局入口保留给目录间汇总；会话角色状态也可打开同一 TicketsPanel，并只展示当前
+// 会话关联工单。EventChip 本身仍不可点，只负责说明事件。
 import { ArrowUpRight } from 'lucide-react'
 import type { BaseDir } from '../workbench/useWorkbench'
 import { replyTicket } from '../../api/client'
