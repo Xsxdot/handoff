@@ -1,0 +1,54 @@
+{
+  "probe": "B469 isolated dual-host resident→remote executor",
+  "loopback_model_fixture": true,
+  "kind": "question",
+  "run_id": "dual-b4f4a7f00c",
+  "remote_host": "linux-01",
+  "completed_checks": [
+    "isolated A/B agentd launched with same test PG and one owned SSH tunnel",
+    "real A OpenCode resident dispatched a B-host task with its actual HANDOFF_ORIGIN_SESSION",
+    "B-host real OpenCode task reached a pending permission/question ticket",
+    "A/B task and notification projections observed over the cross-host tunnel",
+    "A coordinator slot was released, B task occupied its own slot, and the original ticket answer relayed"
+  ],
+  "session": {
+    "id": "session:11",
+    "resident": {
+      "identity": "agent:b469dual-b4f4a7f00csquad",
+      "carrier": "b469dual-b4f4a7f00ccoord",
+      "carrier_machine": "b469-dual-b4f4a7f00c-mac"
+    },
+    "member_count": 1
+  },
+  "session_create_seconds": 5.544,
+  "task_id": "b827a89a-53db-4387-9096-b9687d9a8130",
+  "origin_session_matches_A_resident": true,
+  "linux_ticket_count": 1,
+  "linux_ticket_kind": "ask",
+  "linux_task_state_before_reply": "waiting_answer",
+  "A_notice_projection": {
+    "status": "delivered",
+    "ownership_version": 1
+  },
+  "A_notification_projection_seen": true,
+  "A_coordinator_running_at_ticket": 0,
+  "B_task_carrier_running_at_ticket": 1,
+  "original_ticket_reply": {
+    "ok": true,
+    "relayed": true
+  },
+  "task_state_after_reply": "running",
+  "pending_ticket_count_after_reply": 0,
+  "source_task_stop_requested": true,
+  "remote_process_stopped": true,
+  "local_process_exit": 0,
+  "ssh_tunnel_stopped": true,
+  "probe_error": null,
+  "cli_versions": {
+    "mac_opencode": "1.18.32",
+    "linux_opencode": "1.19.3"
+  },
+  "linux_binary_sha256": "106c687af57216083d0c88d9dfac4fc37fa9b1a967c36224eb7d8308e7454b06",
+  "mac_binary_sha256": "05a11809176215ec2f7cf2afd5193f446ef6bd9d256a4179f00dfe751a554603",
+  "source_manifest_sha256": "280b862cc8a3e1ec14d4115b43fe868f63116767a4f7d66787cbb9ba59b933d4"
+}

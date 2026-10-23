@@ -60,7 +60,8 @@ type stopReclaimClient interface {
 // 只把 ledgerstep 已经装配好的请求镜像成 client.DispatchOpts，不做准入或改写。
 func dispatchStep(ctx context.Context, cl client.ExecutionClient, opts ledgerstep.DispatchOpts, target string) (*proto.Task, error) {
 	return cl.Dispatch(ctx, client.DispatchOpts{
-		Prompt: opts.Prompt, Target: target,
+		OriginSession: opts.OriginSession,
+		Prompt:        opts.Prompt, Target: target,
 		Receiver: opts.Receiver,
 		Carrier:  opts.Carrier, Squad: opts.Squad,
 		NewBranch: opts.Branch, Branch: opts.ExistingBranch,
@@ -400,6 +401,18 @@ func (s *Server) disciplineTargetCap(target string) *bool {
 }
 
 func (s *Server) stepTransport(ctx context.Context, opts ledgerstep.DispatchOpts) (string, string, error) {
+	if opts.CardID != "" {
+		if s.ledger == nil {
+			return "", "", fmt.Errorf("读取卡 %s 的会话关联需要 ledger", opts.CardID)
+		}
+		origin, err := s.ledger.SessionOfCard(opts.CardID)
+		if err != nil {
+			s.log.Error("卡派发读取公开会话关联失败", "card", opts.CardID, "cause", err)
+			return "", "", fmt.Errorf("读取卡 %s 的会话关联: %w", opts.CardID, err)
+		}
+		opts.OriginSession = origin
+		s.log.Info("卡派发来源会话已解析", "card", opts.CardID, "origin_session_set", origin != "")
+	}
 	canonical := s.CanonicalTarget(opts.Target)
 	if s.IsSelfMachine(canonical) {
 		canonical = ""

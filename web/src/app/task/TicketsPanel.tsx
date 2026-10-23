@@ -28,12 +28,13 @@ export interface TicketsPanelProps {
   tickets: Ticket[]
   disabled: boolean
   onReply: (ticket: Ticket, answer: string) => Promise<void>
+  onRetryNotification?: (ticket: Ticket) => Promise<void>
   // bare 去掉本组件自带的卡片外框与「挂起工单」标题，只留工单本体：
   // 全局工单弹层里每行已是自己的 li 容器与任务归属行，再套一层卡片和标题就重了
   bare?: boolean
 }
 
-export function TicketsPanel({ tickets, disabled, onReply, bare = false }: TicketsPanelProps) {
+export function TicketsPanel({ tickets, disabled, onReply, onRetryNotification, bare = false }: TicketsPanelProps) {
   if (bare) {
     return (
       <div className="flex flex-col gap-3">
@@ -43,7 +44,7 @@ export function TicketsPanel({ tickets, disabled, onReply, bare = false }: Ticke
         ) : (
           <ul className="flex flex-col gap-3">
             {tickets.map((t) => (
-              <TicketCard key={t.id} ticket={t} disabled={disabled} onReply={onReply} />
+              <TicketCard key={t.id} ticket={t} disabled={disabled} onReply={onReply} onRetryNotification={onRetryNotification} />
             ))}
           </ul>
         )}
@@ -65,7 +66,7 @@ export function TicketsPanel({ tickets, disabled, onReply, bare = false }: Ticke
       ) : (
         <ul className="flex flex-col gap-3">
           {tickets.map((t) => (
-            <TicketCard key={t.id} ticket={t} disabled={disabled} onReply={onReply} />
+            <TicketCard key={t.id} ticket={t} disabled={disabled} onReply={onReply} onRetryNotification={onRetryNotification} />
           ))}
         </ul>
       )}
@@ -79,10 +80,12 @@ function TicketCard({
   ticket,
   disabled,
   onReply,
+  onRetryNotification,
 }: {
   ticket: Ticket
   disabled: boolean
   onReply: (ticket: Ticket, answer: string) => Promise<void>
+  onRetryNotification?: (ticket: Ticket) => Promise<void>
 }) {
   const req = parseTicketRequest(ticket)
   const isGate = req.kind === 'gate'
@@ -113,6 +116,10 @@ function TicketCard({
   }
 
   const blocked = disabled || submitting
+  const retryable = ticket.notification &&
+    !['answered', 'superseded'].includes(ticket.notification.status) &&
+    (ticket.notification.status === 'needs_human' ||
+      ticket.notification.reason === 'recipient_unreachable' || ticket.notification.reason === 'delivery_failed')
 
   return (
     <li className="flex flex-col gap-2 rounded-md border p-3">
@@ -120,6 +127,22 @@ function TicketCard({
         <Badge variant={isGate ? 'default' : 'outline'}>{ticketKindLabel(req.kind)}</Badge>
         <span className="font-mono text-xs text-muted-foreground">{ticket.id}</span>
       </div>
+      {ticket.notification && (
+        <p className="text-xs text-muted-foreground" data-testid={`ticket-notification-${ticket.id}`}>
+          通知状态：{ticket.notification.status}
+          {ticket.notification.reason ? `（${ticket.notification.reason}）` : ''}
+          {ticket.notification.last_error ? `：${ticket.notification.last_error}` : ''}
+        </p>
+      )}
+      {retryable && onRetryNotification && (
+        <Button size="sm" variant="outline" disabled={blocked} onClick={() => {
+          setSubmitting(true)
+          setError(null)
+          void onRetryNotification(ticket).catch((err) => setError(errorMessage(err))).finally(() => setSubmitting(false))
+        }}>
+          {submitting ? '重试中…' : '重试通知'}
+        </Button>
+      )}
 
       {/* 权限/提问全文：完整展示、不截断 */}
       <pre className="whitespace-pre-wrap break-words rounded-md bg-muted/50 p-2 font-mono text-xs leading-relaxed">

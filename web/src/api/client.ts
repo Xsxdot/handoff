@@ -50,6 +50,7 @@ import type {
   PtySessionsResp,
   ReplyRequest,
   ReplyResult,
+  RetryTaskTicketNotificationResponse,
   ResumeResult,
   RunResult,
   SearchResult,
@@ -291,6 +292,14 @@ export function runTaskCommand(id: string, cmd: string): Promise<RunResult> {
 // answer 的编码契约见 app/task/review.ts：批准恒为 "allow"，拒绝必带理由。
 export function replyTicket(id: string, req: ReplyRequest): Promise<ReplyResult> {
   return postJSON<ReplyResult>(`/api/tasks/${encodeURIComponent(id)}/reply`, req)
+}
+
+// retryTaskTicketNotification asks the source machine to verify pending truth and refresh the route.
+export function retryTaskTicketNotification(taskID: string, ticketID: string): Promise<RetryTaskTicketNotificationResponse> {
+  return postJSON<RetryTaskTicketNotificationResponse>(
+    `/api/tasks/${encodeURIComponent(taskID)}/tickets/${encodeURIComponent(ticketID)}/notification/retry`,
+    {},
+  )
 }
 
 // continueTask 向任务续发修改指令（POST /api/tasks/{id}/continue，仅

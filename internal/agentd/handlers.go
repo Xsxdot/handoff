@@ -7,6 +7,7 @@
 package agentd
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -296,6 +297,18 @@ func (s *Server) handleGetTask(w http.ResponseWriter, r *http.Request) {
 	if pending == nil {
 		pending = []proto.Ticket{}
 	}
+	if s.ledger != nil {
+		sourceMachine := s.TaskNoticeSourceMachine()
+		for i := range pending {
+			notice, nerr := s.ledger.GetTaskTicketNotice(sourceMachine, taskID, pending[i].ID)
+			if nerr == nil {
+				pending[i].Notification = &proto.TicketNotification{Status: notice.Status, Reason: notice.Reason,
+					OwnershipVersion: notice.OwnershipVersion, LastError: notice.LastError}
+			} else if !errors.Is(nerr, sql.ErrNoRows) {
+				s.log.Warn("读取工单通知投影失败，继续返回原工单", "task", taskID, "ticket", pending[i].ID, "cause", nerr)
+			}
+		}
+	}
 	if events == nil {
 		events = []proto.Event{}
 	}
@@ -451,6 +464,8 @@ func (s *Server) handleReply(w http.ResponseWriter, r *http.Request) {
 // dispatchRequest 是 POST /api/tasks 的请求体（plan 内容 base64 编码上传，
 // prompt-only 派发时 prompt 非空、plan_b64 为空）。
 type dispatchRequest struct {
+	// OriginSession is an explicit initiating session identity; it is never inferred.
+	OriginSession string `json:"origin_session,omitempty"`
 	// project_id 与 project_name 二选一。**请求体里没有任何路径字段**：
 	// 「代码在这台机器的哪个目录」是执行机自己的私事，调用方不该描述它（B62）。
 	ProjectID   string `json:"project_id"`
@@ -532,6 +547,13 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 		s.log.Warn("dispatch 请求体解析失败", "err", rerr)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "请求体必须是 JSON {project_id, plan_b64, ...}"})
 		return
+	}
+	if req.OriginSession != "" {
+		if err := proto.ValidateOriginSessionID(req.OriginSession); err != nil {
+			s.log.Warn("dispatch origin_session 格式非法", "cause", err)
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_origin_session"})
+			return
+		}
 	}
 	s.log.Info("dispatch 请求身份", "project", req.ProjectID, "receiver", req.Receiver,
 		"carrier", req.Carrier, "squad", req.Squad, "target", req.Target,
@@ -640,7 +662,8 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 	task, err := s.mgr.Dispatch(r.Context(), orchestration.DispatchReq{
 		ProjectID: req.ProjectID, ProjectName: req.ProjectName,
 		PlanB64: req.PlanB64, PlanName: req.PlanName, Target: binding.Target,
-		Prompt: req.Prompt, Name: req.Name, Receiver: req.Receiver, Squad: binding.Squad, Carrier: binding.Carrier,
+		OriginSession: req.OriginSession,
+		Prompt:        req.Prompt, Name: req.Name, Receiver: req.Receiver, Squad: binding.Squad, Carrier: binding.Carrier,
 		Executor: binding.Executor, Discipline: req.Discipline, Model: binding.Model,
 		HomeDir:           homePtr,
 		DisciplineText:    req.DisciplineText,

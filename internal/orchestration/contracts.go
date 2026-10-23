@@ -24,6 +24,8 @@ import (
 
 // DispatchReq 是 Dispatch 的入参：任务仓库、base64 计划与二期派发参数。
 type DispatchReq struct {
+	// OriginSession is the explicit session that initiated the task; empty remains unknown.
+	OriginSession string
 	// ProjectID 是项目身份（sha256(归一化 origin) 前 16 位），由调用方离线算出。
 	// 与 ProjectName 二选一，都空时 400；同时给出时以 ProjectID 为准。
 	ProjectID string

@@ -14,6 +14,7 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -275,6 +276,16 @@ func runCardWait(cmd *cobra.Command, cardID string, subtree, follow bool, timeou
 				"type", e.Type, "cause", err)
 			return err
 		}
+		if e.Type == ledger.EvTaskTicketNotice {
+			var notice proto.TaskTicketNotice
+			if err := json.Unmarshal(e.Payload, &notice); err != nil {
+				return fmt.Errorf("card wait task_ticket_notice seq=%d 解码送达确认: %w", e.Seq, err)
+			}
+			if err := st.SetTaskTicketNoticeStatus(notice.SourceMachine, notice.TaskID, notice.TicketID,
+				notice.OwnershipVersion, "delivered", "", ""); err != nil {
+				return fmt.Errorf("card wait 确认工单通知送达: %w", err)
+			}
+		}
 		emitted[e.Seq] = true
 		slog.Info("card wait 已输出可动作事件", "card", e.CardID, "seq", e.Seq,
 			"type", e.Type, "follow", follow)
@@ -530,6 +541,37 @@ func cardWaitEventActionable(st *ledger.Store, ev ledger.Event) (bool, error) {
 	case ledger.EvNeedsHuman, ledger.EvNeedsCleared,
 		ledger.EvDecisionOpened, ledger.EvDecisionAnswered:
 		return true, nil
+	case ledger.EvTaskTicketNotice:
+		var notice proto.TaskTicketNotice
+		if err := json.Unmarshal(ev.Payload, &notice); err != nil {
+			return false, fmt.Errorf("card %s task_ticket_notice seq=%d 解码: %w", ev.CardID, ev.Seq, err)
+		}
+		if err := proto.ValidateTaskTicketNotice(notice); err != nil {
+			return false, fmt.Errorf("card %s task_ticket_notice seq=%d 契约校验: %w", ev.CardID, ev.Seq, err)
+		}
+		if notice.Target.Kind != proto.DeliverySeat || notice.Target.Card != ev.CardID ||
+			notice.TicketID == "" || notice.TaskID == "" || notice.SourceMachine == "" || notice.SourceSeq <= 0 ||
+			notice.OwnershipVersion <= 0 || (notice.TicketKind != "ask" && notice.TicketKind != "gate") {
+			return false, nil
+		}
+		current, err := st.GetTaskTicketNotice(notice.SourceMachine, notice.TaskID, notice.TicketID)
+		if err != nil {
+			return false, fmt.Errorf("card wait 复读工单通知归属: %w", err)
+		}
+		if current.Target == nil || *current.Target != notice.Target || current.OwnershipVersion != notice.OwnershipVersion ||
+			current.SourceSeq != notice.SourceSeq || current.TicketKind != notice.TicketKind ||
+			(current.Status != "pending" && current.Status != "delivered") {
+			return false, nil
+		}
+		card, err := st.GetCard(notice.Target.Card)
+		if err != nil {
+			return false, fmt.Errorf("card wait 复读当前卡席: %w", err)
+		}
+		if card.DriverSession != notice.Target.Identity || proto.SeatMode(card.DriverMode) != proto.SeatModePull ||
+			proto.ValidateSeat(card.DriverSession, proto.SeatSource(card.DriverSource)) != nil {
+			return false, nil
+		}
+		return true, nil
 	case ledger.EvTaskMirrored:
 		var envelope struct {
 			Node     *string         `json:"node"`
@@ -560,6 +602,30 @@ func cardWaitEventActionable(st *ledger.Store, ev ledger.Event) (bool, error) {
 			"reason", string(decision.Reason))
 		if !decision.Deliver {
 			return false, nil
+		}
+		// 新的 task_ticket_notice 是 ticket 的唯一通知通路。兼容旧流程时，
+		// 只有从未登记过 notice 的历史来源事件才继续作为可动作行展示。
+		// 保留 source 三元组，避免相同 ticket_id 跨执行机误合并。
+		if proto.EventType(envelope.TaskType) == proto.EventTypeQuestion ||
+			proto.EventType(envelope.TaskType) == proto.EventTypePermissionRequest {
+			var ticket struct {
+				TicketID string `json:"ticket_id"`
+			}
+			if err := json.Unmarshal(envelope.Payload, &ticket); err != nil {
+				return false, fmt.Errorf("card %s task_mirrored seq=%d ticket 解码: %w", ev.CardID, ev.Seq, err)
+			}
+			if ticket.TicketID != "" && ev.SourceTarget != "" && ev.SourceTask != "" {
+				_, err := st.GetTaskTicketNotice(ev.SourceTarget, ev.SourceTask, ticket.TicketID)
+				if err == nil {
+					slog.Debug("card wait 忽略已有寻址通知的旧镜像工单事件", "card", ev.CardID,
+						"source_machine", ev.SourceTarget, "task", ev.SourceTask, "ticket", ticket.TicketID,
+						"source_seq", ev.SourceSeq)
+					return false, nil
+				}
+				if !errors.Is(err, sql.ErrNoRows) {
+					return false, fmt.Errorf("card %s task_mirrored seq=%d 查询工单通知: %w", ev.CardID, ev.Seq, err)
+				}
+			}
 		}
 		return client.WaitDeliveryPolicy(proto.EventType(envelope.TaskType)), nil
 	default:

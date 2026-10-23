@@ -18,9 +18,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Xsxdot/handoff/internal/collab"
 	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/discipline"
 	"github.com/Xsxdot/handoff/internal/ledger"
+	"github.com/Xsxdot/handoff/internal/ledger/api"
 	"github.com/Xsxdot/handoff/internal/ledgerstep"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/store"
@@ -171,6 +173,34 @@ func TestLocalStepTransportUsesLocalClient(t *testing.T) {
 	}
 	if got := h.dispatchHits.Load(); got != 2 {
 		t.Fatalf("本机 HTTP 派发命中 %d 次，期望 2", got)
+	}
+}
+
+func TestLocalStepTransportCarriesCardSessionOrigin(t *testing.T) {
+	h := newLocalStepHTTPHarness(t, `{}`)
+	h.srv.rooms = collab.New(api.New(h.ledger))
+	card, err := h.ledger.CreateCard(ledger.NewCard{Project: "demo", Title: "in session", Actor: "user:tester"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := h.srv.rooms.CreateSession("origin room", "user:tester", "user:tester")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.srv.rooms.JoinCard(session.ID, card.ID, "user:tester"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := h.srv.stepTransport(context.Background(), ledgerstep.DispatchOpts{
+		CardID: card.ID, Target: "local", Project: "demo", Prompt: "run", Executor: "opencode",
+	}); err != nil {
+		t.Fatalf("stepTransport: %v", err)
+	}
+	var got string
+	if err := json.Unmarshal(h.lastBody()["origin_session"], &got); err != nil {
+		t.Fatalf("decode origin_session: %v", err)
+	}
+	if got != session.ID {
+		t.Fatalf("origin_session=%q, want %q", got, session.ID)
 	}
 }
 

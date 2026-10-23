@@ -44,20 +44,21 @@ import (
 )
 
 var (
-	dispatchProject     string
-	dispatchPrompt      string
-	dispatchName        string
-	dispatchReceiver    string
-	dispatchExecutor    string
-	dispatchModel       string
-	dispatchBranch      string
-	dispatchNewBranch   string
-	dispatchBase        string
-	dispatchWorktree    string
-	dispatchNewWorktree bool
-	dispatchNoTerminal  bool
-	dispatchNoSyncCheck bool
-	dispatchAllowDirty  bool
+	dispatchProject       string
+	dispatchOriginSession string
+	dispatchPrompt        string
+	dispatchName          string
+	dispatchReceiver      string
+	dispatchExecutor      string
+	dispatchModel         string
+	dispatchBranch        string
+	dispatchNewBranch     string
+	dispatchBase          string
+	dispatchWorktree      string
+	dispatchNewWorktree   bool
+	dispatchNoTerminal    bool
+	dispatchNoSyncCheck   bool
+	dispatchAllowDirty    bool
 	// dispatchDisciplineFile 是 P1 裁决 (a) 的临时正文入口：读文件作 RawText 走
 	// 缝 1，只随这一次派发下发，不落账本（版本记 0）。flag 不属契约冻结物。
 	dispatchDisciplineFile string
@@ -275,6 +276,15 @@ var dispatchCmd = &cobra.Command{
 		if planB64 == "" && dispatchPrompt == "" {
 			return fmt.Errorf("必须提供 plan 文件或 --prompt（至少其一）")
 		}
+		originSession := dispatchOriginSession
+		if !cmd.Flags().Changed("origin-session") {
+			originSession = os.Getenv("HANDOFF_ORIGIN_SESSION")
+		}
+		if originSession != "" {
+			if err := proto.ValidateOriginSessionID(originSession); err != nil {
+				return fmt.Errorf("--origin-session / HANDOFF_ORIGIN_SESSION 格式非法: %w", err)
+			}
+		}
 		// B452：熟练工字段合成（定义 + 命令行覆盖）。--template 带 plan 文件时，plan 文件内容即
 		// 「## 本次任务」，--prompt 照裸派发语义作附加指令由 agentd 接在其后。
 		fields := buildSkilledFields(tpl, planContent, len(args) == 1)
@@ -332,7 +342,8 @@ var dispatchCmd = &cobra.Command{
 		}
 		slog.Info("CLI 裸派发准备发送", "receiver", dispatchReceiver, "executor_overlay", dispatchExecutor)
 		opts := client.DispatchOpts{
-			ProjectID: projectID, ProjectName: dispatchProject,
+			OriginSession: originSession,
+			ProjectID:     projectID, ProjectName: dispatchProject,
 			PlanB64: planB64, PlanName: planName, Target: "", Receiver: fields.receiver,
 			Prompt: fields.prompt, Name: fields.name,
 			Executor: fields.executor, Model: dispatchModel,
@@ -427,6 +438,8 @@ var dispatchCmd = &cobra.Command{
 }
 
 func init() {
+	dispatchCmd.Flags().StringVar(&dispatchOriginSession, "origin-session", "",
+		"显式记录发起本任务的会话 id（缺省读取 HANDOFF_ORIGIN_SESSION；不自动猜测）")
 	dispatchCmd.Flags().StringVar(&dispatchProject, "project", "",
 		"跨项目派发时指定项目名（省略则由当前目录自动识别；用 handoff project ls 查看有哪些）")
 	dispatchCmd.Flags().StringVar(&dispatchPrompt, "prompt", "", "直接指令（prompt-only 派发；与 plan 文件至少其一）")

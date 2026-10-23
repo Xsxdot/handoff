@@ -12,7 +12,7 @@
 // 指向；能按下批准/拒绝的地方只有这里。
 import { ArrowUpRight } from 'lucide-react'
 import type { BaseDir } from '../workbench/useWorkbench'
-import { replyTicket } from '../../api/client'
+import { replyTicket, retryTaskTicketNotification } from '../../api/client'
 import { TicketsPanel } from '../task/TicketsPanel'
 import { Overlay } from './Overlay'
 import type { GlobalTickets } from './useGlobalTickets'
@@ -59,6 +59,11 @@ export function TicketsOverlay({ tickets, onOpenTask, onClose, disabled = false 
                 onReply={async (t, answer) => {
                   if (disabled) return
                   await replyTicket(task.id, { ticket_id: t.id, answer })
+                  tickets.refresh()
+                }}
+                onRetryNotification={async (t) => {
+                  if (disabled) return
+                  await retryTaskTicketNotification(task.id, t.id)
                   tickets.refresh()
                 }}
               />

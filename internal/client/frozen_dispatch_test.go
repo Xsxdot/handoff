@@ -59,6 +59,35 @@ func TestDispatchFrozenIdentityJSONGolden(t *testing.T) {
 	}
 }
 
+func TestDispatchOriginSessionWireAndOmission(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		var got map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if calls == 1 && got["origin_session"] != "ses_from_cli_1" {
+			t.Errorf("origin_session=%#v", got["origin_session"])
+		}
+		if calls == 2 {
+			if _, ok := got["origin_session"]; ok {
+				t.Errorf("unknown origin must be omitted, got %#v", got["origin_session"])
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"task-1","state":"running"}`))
+	}))
+	defer server.Close()
+	c := New(server.URL, "")
+	if _, err := c.Dispatch(context.Background(), DispatchOpts{Prompt: "run", OriginSession: "ses_from_cli_1"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Dispatch(context.Background(), DispatchOpts{Prompt: "run"}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestDispatchFrozenIdentityJSONOmissionAndHomeDirTriState(t *testing.T) {
 	calls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

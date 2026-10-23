@@ -749,12 +749,40 @@ func (c *Client) Reply(ctx context.Context, taskID, ticketID, answer string) err
 	return nil
 }
 
+// RetryTaskTicketNotification asks the source agentd to verify the pending ticket
+// and re-resolve its current notification route. It does not answer the ticket.
+func (c *Client) RetryTaskTicketNotification(ctx context.Context, taskID, ticketID string) (*proto.TicketNotification, error) {
+	path := "/api/tasks/" + url.PathEscape(taskID) + "/tickets/" + url.PathEscape(ticketID) + "/notification/retry"
+	c.log().Info("工单通知重试进入", "url", c.baseURL, "task", taskID, "ticket", ticketID)
+	resp, err := c.do(ctx, http.MethodPost, path, map[string]string{})
+	if err != nil {
+		c.log().Error("工单通知重试请求失败", "task", taskID, "ticket", ticketID, "cause", err)
+		return nil, fmt.Errorf("工单通知重试请求: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		err := c.httpError("工单通知重试", resp)
+		c.log().Warn("工单通知重试被拒", "task", taskID, "ticket", ticketID, "cause", err)
+		return nil, err
+	}
+	var result proto.RetryTaskTicketNotificationResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		c.log().Error("工单通知重试响应解码失败", "task", taskID, "ticket", ticketID, "cause", err)
+		return nil, fmt.Errorf("解析工单通知重试响应: %w", err)
+	}
+	c.log().Info("工单通知重试完成", "task", taskID, "ticket", ticketID,
+		"status", result.Notification.Status, "ownership_version", result.Notification.OwnershipVersion)
+	return &result.Notification, nil
+}
+
 // DispatchOpts 是 Dispatch 的入参，与 agentd POST /api/tasks 的请求体键一一对应。
 //
 // PlanB64 与 Prompt 至少其一：PlanB64 是 base64 的 plan 文件内容（附 plan 名归档），
 // Prompt 是直接指令（prompt-only 派发）；两者都传时 Prompt 作为附加指令拼接在
 // plan 之后。Branch/NewBranch、Worktree/NewWorktree 各自二选一，空=自动分支/原地。
 type DispatchOpts struct {
+	// OriginSession is the explicit initiating session; empty means unknown.
+	OriginSession string
 	// ProjectID 是项目身份，由 CLI 从 cwd 的 origin 离线算出；与 ProjectName 二选一。
 	ProjectID string
 	// ProjectName 是 --project <名字> 的取值，仅在 cwd 不是目标项目时使用。
@@ -825,6 +853,9 @@ func (c *Client) Dispatch(ctx context.Context, opts DispatchOpts) (*proto.Task, 
 		"resolve_default_base": opts.ResolveDefaultBase,
 		"local_base_branch":    opts.LocalBaseBranch,
 		"worktree":             opts.Worktree, "new_worktree": opts.NewWorktree, "base_commit": opts.BaseCommit,
+	}
+	if opts.OriginSession != "" {
+		body["origin_session"] = opts.OriginSession
 	}
 	if opts.Receiver != "" {
 		body["receiver"] = opts.Receiver

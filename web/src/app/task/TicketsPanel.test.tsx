@@ -37,6 +37,24 @@ const noticeTicket: Ticket = {
 }
 
 describe('TicketsPanel 审批交互', () => {
+  it('shows notification routing state without changing the ticket reply path', () => {
+    const onReply = vi.fn().mockResolvedValue(undefined)
+    const ticket = { ...askTicket, notification: { status: 'needs_human', reason: 'resident_missing', ownership_version: 1 } }
+    render(<TicketsPanel tickets={[ticket]} disabled={false} onReply={onReply} />)
+    expect(screen.getByTestId(`ticket-notification-${ticket.id}`)).toHaveTextContent('needs_human')
+    expect(screen.getByTestId(`ticket-notification-${ticket.id}`)).toHaveTextContent('resident_missing')
+  })
+
+  it('needs_human 通知提供独立重试动作，不走工单回答', async () => {
+    const onReply = vi.fn().mockResolvedValue(undefined)
+    const onRetryNotification = vi.fn().mockResolvedValue(undefined)
+    const ticket = { ...askTicket, notification: { status: 'needs_human', reason: 'resident_missing', ownership_version: 1 } }
+    render(<TicketsPanel tickets={[ticket]} disabled={false} onReply={onReply} onRetryNotification={onRetryNotification} />)
+    fireEvent.click(screen.getByRole('button', { name: '重试通知' }))
+    await waitFor(() => expect(onRetryNotification).toHaveBeenCalledWith(ticket))
+    expect(onReply).not.toHaveBeenCalled()
+  })
+
   it('notice 告知工单：全文展示，只有「已知悉」一个动作，提交 answer=已知悉', async () => {
     const onReply = vi.fn().mockResolvedValue(undefined)
     render(<TicketsPanel tickets={[noticeTicket]} disabled={false} onReply={onReply} />)

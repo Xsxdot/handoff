@@ -91,6 +91,39 @@ func TestTaskLifecycle(t *testing.T) {
 	}
 }
 
+// TestTaskOriginSessionPersistsAndLegacyRemainsUnknown protects the explicit
+// notification origin fact across task storage and confirms old rows stay unknown.
+func TestTaskOriginSessionPersistsAndLegacyRemainsUnknown(t *testing.T) {
+	s, err := store.Open(filepath.Join(t.TempDir(), "origin.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	now := time.Now().UTC()
+	for _, task := range []*proto.Task{
+		{ID: "origin-known", OriginSession: "ses_origin_1", RepoPath: "/repo", State: proto.TaskStateRunning, CreatedAt: now, UpdatedAt: now},
+		{ID: "origin-unknown", RepoPath: "/repo", State: proto.TaskStateRunning, CreatedAt: now, UpdatedAt: now},
+	} {
+		if err := s.CreateTask(task); err != nil {
+			t.Fatalf("CreateTask(%s): %v", task.ID, err)
+		}
+	}
+	known, err := s.GetTask("origin-known")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if known.OriginSession != "ses_origin_1" {
+		t.Fatalf("origin_session=%q", known.OriginSession)
+	}
+	unknown, err := s.GetTask("origin-unknown")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unknown.OriginSession != "" {
+		t.Fatalf("legacy/unknown origin was invented: %q", unknown.OriginSession)
+	}
+}
+
 // TestUpdateTaskStateCAS 验证 UpdateTaskState 的 CAS 守卫：两个迁移者并发从 pending 出发
 // 竞争迁到 running，恰好一个成功、另一个必须收到 ErrBadTransit（基于过期快照的写被拒），
 // 迁移不会被 last-writer-wins 静默丢失，最终状态必须为 running。

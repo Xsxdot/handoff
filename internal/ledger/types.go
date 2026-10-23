@@ -86,6 +86,8 @@ const (
 	// CardID=""（无卡事件——follow.go 现状把项目级事件排除在多路 wait 外，
 	// executor 因此零感知，这是刻意的）。载荷 schema 见 proto.RoomMessage。
 	EvRoomMessage = "room_message"
+	// EvTaskTicketNotice is the only task-ticket event kind eligible for addressed session wake.
+	EvTaskTicketNotice = "task_ticket_notice"
 	// EvMessageConsumed 房间消息被恰好一次消费的落账标记。消费判定在账本
 	// 同一 mutate 事务内查后写（照 ClearNeedsHumanFrom 同形），权威在事件
 	// 存在性；会话侧游标只是缓存。

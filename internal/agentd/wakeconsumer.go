@@ -8,6 +8,7 @@ package agentd
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -192,6 +193,27 @@ func (s *Server) acceptsCurrentWorkflowAttempt(ev proto.LedgerEvent) (bool, erro
 	if s.ledger == nil {
 		return false, fmt.Errorf("卡 %s task_mirrored seq=%d: 账本未装配", ev.CardID, ev.Seq)
 	}
+	if envelope.TaskType == string(proto.EventTypePermissionRequest) || envelope.TaskType == string(proto.EventTypeQuestion) {
+		var ticket struct {
+			TicketID string `json:"ticket_id"`
+		}
+		if err := json.Unmarshal(envelope.Payload, &ticket); err != nil {
+			return false, fmt.Errorf("解码镜像工单身份 seq=%d: %w", ev.Seq, err)
+		}
+		if ev.SourceTarget != "" && ev.SourceTask != "" && ticket.TicketID != "" {
+			_, noticeErr := s.ledger.GetTaskTicketNotice(ev.SourceTarget, ev.SourceTask, ticket.TicketID)
+			if noticeErr == nil {
+				s.log.Info("原任务已有寻址通知，抑制旧镜像重复唤醒", "card", ev.CardID, "seq", ev.Seq,
+					"source_machine", ev.SourceTarget, "task", ev.SourceTask, "ticket", ticket.TicketID)
+				return false, nil
+			}
+			if !errors.Is(noticeErr, sql.ErrNoRows) {
+				s.log.Error("查询原任务工单通知失败，不消费镜像唤醒", "card", ev.CardID, "seq", ev.Seq,
+					"source_machine", ev.SourceTarget, "task", ev.SourceTask, "ticket", ticket.TicketID, "cause", noticeErr)
+				return false, fmt.Errorf("查询原任务工单通知: %w", noticeErr)
+			}
+		}
+	}
 	decision, err := client.JudgeMirroredWake(s.ledger, client.WakeGateEvent{
 		CardID: ev.CardID, Seq: ev.Seq, Node: envelope.Node, Attempt: envelope.Attempt,
 		TaskType: envelope.TaskType, SourceTask: ev.SourceTask,
@@ -266,6 +288,94 @@ func automationWakeEvent(ev proto.LedgerEvent) (keystone.WakeEvent, bool, error)
 	}
 }
 
+// taskTicketNoticeWake validates the addressed routing snapshot immediately before
+// creating a wake. The ticket itself remains available only through its owning wait path.
+func (s *Server) taskTicketNoticeWake(ev proto.LedgerEvent) (keystone.WakeEvent, bool, error) {
+	notice, err := decodeTaskTicketNotice(ev.Payload)
+	if err != nil {
+		return keystone.WakeEvent{}, false, fmt.Errorf("decode task ticket notice seq=%d: %w", ev.Seq, err)
+	}
+	current, err := s.ledger.GetTaskTicketNotice(notice.SourceMachine, notice.TaskID, notice.TicketID)
+	if err != nil {
+		return keystone.WakeEvent{}, false, fmt.Errorf("read current task ticket notice: %w", err)
+	}
+	if current.OwnershipVersion != notice.OwnershipVersion || current.SourceSeq != notice.SourceSeq || current.TicketKind != notice.TicketKind || current.Target == nil || *current.Target != notice.Target || current.Status != "pending" && current.Status != "needs_human" {
+		s.log.Info("工单通知事件已过期或已关闭", "seq", ev.Seq, "task", notice.TaskID, "ticket", notice.TicketID, "version", notice.OwnershipVersion)
+		return keystone.WakeEvent{}, false, nil
+	}
+	switch notice.Target.Kind {
+	case proto.DeliveryResident:
+		resident, ok, readErr := s.autoLedger.SessionResident(notice.Target.Session)
+		if readErr != nil {
+			return keystone.WakeEvent{}, false, fmt.Errorf("read addressed notice resident: %w", readErr)
+		}
+		if !ok || resident.Identity != notice.Target.Identity || resident.DriverMode != proto.ResidentDriverPush || !scheduling.IsLocalMachine(resident.CarrierMachine) && !s.IsSelfTarget(resident.CarrierMachine) {
+			return keystone.WakeEvent{}, false, nil
+		}
+		return keystone.WakeEvent{Kind: keystone.WakeMessage, Session: notice.Target.Session, Resident: notice.Target.Identity, Summary: taskTicketNoticeSummary(notice)}, true, nil
+	case proto.DeliverySeat:
+		card, readErr := s.autoLedger.GetCard(notice.Target.Card)
+		if readErr != nil {
+			return keystone.WakeEvent{}, false, fmt.Errorf("read addressed notice seat: %w", readErr)
+		}
+		if card.DriverSession != notice.Target.Identity || proto.SeatMode(card.DriverMode) != proto.SeatModePush || proto.ValidateSeat(card.DriverSession, proto.SeatSource(card.DriverSource)) != nil {
+			return keystone.WakeEvent{}, false, nil
+		}
+		return keystone.WakeEvent{Kind: keystone.WakeTicket, Card: notice.Target.Card, Summary: taskTicketNoticeSummary(notice)}, true, nil
+	default:
+		return keystone.WakeEvent{}, false, fmt.Errorf("task ticket notice seq=%d has unsupported target kind", ev.Seq)
+	}
+}
+
+func taskTicketNoticeSummary(n proto.TaskTicketNotice) string {
+	return fmt.Sprintf("原任务待处理工单：source_machine=%s task_id=%s ticket_id=%s ticket_kind=%s。先读取完整原任务并仅回复该工单一次：handoff show %s --target %s",
+		n.SourceMachine, n.TaskID, n.TicketID, n.TicketKind, n.TaskID, n.SourceMachine)
+}
+
+func decodeTaskTicketNotice(payload []byte) (proto.TaskTicketNotice, error) {
+	var notice proto.TaskTicketNotice
+	if err := json.Unmarshal(payload, &notice); err != nil {
+		return notice, err
+	}
+	if err := proto.ValidateTaskTicketNotice(notice); err != nil {
+		return notice, err
+	}
+	return notice, nil
+}
+
+func (s *Server) setCardNoticeDelivery(n *proto.TaskTicketNotice, status, reason, lastError string) {
+	if err := s.setTaskNoticeDelivery(n, status, reason, lastError); err != nil {
+		s.log.Warn("卡通知投递状态未更新：目标版本已变化", "task", n.TaskID, "ticket", n.TicketID, "version", n.OwnershipVersion)
+		s.log.Warn("卡通知投递状态更新失败", "task", n.TaskID, "ticket", n.TicketID, "status", status, "cause", err)
+	}
+}
+
+func (s *Server) currentTaskTicketNotice(n proto.TaskTicketNotice) (ledger.TaskTicketNoticeState, bool, error) {
+	current, err := s.ledger.GetTaskTicketNotice(n.SourceMachine, n.TaskID, n.TicketID)
+	if err != nil {
+		return current, false, err
+	}
+	return current, current.OwnershipVersion == n.OwnershipVersion && current.SourceSeq == n.SourceSeq && current.TicketKind == n.TicketKind && current.Target != nil && *current.Target == n.Target, nil
+}
+
+func (s *Server) activeTaskTicketNotices() ([]ledger.TaskTicketNoticeState, error) {
+	return s.ledger.ListActiveTaskTicketNotices()
+}
+
+func (s *Server) setTaskNoticeDelivery(n *proto.TaskTicketNotice, status, reason, lastError string) error {
+	current, matches, err := s.currentTaskTicketNotice(*n)
+	if err != nil {
+		return err
+	}
+	if !matches {
+		return fmt.Errorf("task ticket notice target/version changed")
+	}
+	if current.Status != "pending" && current.Status != "needs_human" {
+		return fmt.Errorf("task ticket notice is already closed")
+	}
+	return s.ledger.SetTaskTicketNoticeStatus(n.SourceMachine, n.TaskID, n.TicketID, n.OwnershipVersion, status, reason, lastError)
+}
+
 // decodeRoomMessageForWake 解码 room_message 并判定是否为可寻址的人类发言形状。
 // 返回 human=false 的合法情形：by_system/pointer 系统结构行（恒不唤醒，契约
 // 条 26/31）与 by_system:null 旧边界（B353 锁定，TestB353AutomationRoom* 族）。
@@ -298,6 +408,16 @@ func decodeRoomMessageForWake(ev proto.LedgerEvent) (proto.RoomMessage, bool, er
 // 由纯函数的 EvNeedsHuman 分支落空）的映射沿用 automationWakeEvent，其中
 // 无卡事件是结构事实（session_*/driver_* 等），条 31 不唤醒任何人。
 func (s *Server) automationWakeEvents(ev proto.LedgerEvent) ([]keystone.WakeEvent, error) {
+	if ev.Type == ledger.EvTaskTicketNotice {
+		wake, yes, err := s.taskTicketNoticeWake(ev)
+		if err != nil {
+			return nil, err
+		}
+		if yes {
+			return []keystone.WakeEvent{wake}, nil
+		}
+		return nil, nil
+	}
 	if ev.Type == ledger.EvRoomMessage {
 		return s.roomMessageWakeEvents(ev)
 	}
@@ -518,11 +638,14 @@ func (s *Server) resolveWakeCard(cardID string) string {
 		}
 		switch proto.SeatMode(card.DriverMode) {
 		case proto.SeatModePull:
-			if cardID == origin {
+			if cardID == origin && card.DriverSession != "" && proto.ValidateSeat(card.DriverSession, proto.SeatSource(card.DriverSource)) == nil {
 				return ""
 			}
+			if cardID == origin {
+				s.log.Warn("自动化唤醒起始 pull 席位非法，继续查找 push 祖先", "origin", origin, "card", cardID)
+			}
 		case proto.SeatModePush:
-			if proto.ValidateSeat(card.DriverSession, proto.SeatSource(card.DriverSource)) == nil {
+			if card.DriverSession != "" && proto.ValidateSeat(card.DriverSession, proto.SeatSource(card.DriverSource)) == nil {
 				return cardID
 			}
 			s.log.Warn("自动化唤醒遇非法 push 席位，继续上走", "origin", origin, "card", cardID)
@@ -666,10 +789,11 @@ func (s *Server) consumeAutomationEventsOnce(ctx context.Context) (processed int
 	}
 	s.log.Debug("读取自动化账本事件", "cursor", from, "event_count", len(events))
 	type pending struct {
-		seq int64
-		typ string
-		ev  keystone.WakeEvent
-		raw proto.LedgerEvent
+		seq    int64
+		typ    string
+		ev     keystone.WakeEvent
+		raw    proto.LedgerEvent
+		notice *proto.TaskTicketNotice
 	}
 	pendingByCard := map[string][]pending{}
 	// B444 P1：驻场唤醒另立一批，按会话房间 id 分组；不进 pendingByCard（缺陷族 R1）。
@@ -729,11 +853,18 @@ func (s *Server) consumeAutomationEventsOnce(ctx context.Context) (processed int
 			maxProcessed = ev.Seq
 		}
 		if len(wakes) > 0 {
+			var notice *proto.TaskTicketNotice
+			if ev.Type == ledger.EvTaskTicketNotice {
+				var parsed proto.TaskTicketNotice
+				if json.Unmarshal(ev.Payload, &parsed) == nil {
+					notice = &parsed
+				}
+			}
 			queued := 0
 			for _, wake := range wakes {
 				if wake.IsResident() {
 					pendingByResident[wake.Session] = append(pendingByResident[wake.Session],
-						residentPending{seq: ev.Seq, ev: wake})
+						residentPending{seq: ev.Seq, ev: wake, notice: notice})
 					queued++
 					s.log.Debug("自动化事件进入驻场 pending", "seq", ev.Seq, "session", wake.Session,
 						"identity", wake.Resident, "cursor", from, "cursor_candidate", maxProcessed)
@@ -753,7 +884,7 @@ func (s *Server) consumeAutomationEventsOnce(ctx context.Context) (processed int
 					s.log.Info("自动化唤醒冒泡到祖先席位", "from", wake.Card, "to", target, "seq", ev.Seq)
 				}
 				wake.Card = target
-				pendingByCard[target] = append(pendingByCard[target], pending{seq: ev.Seq, typ: ev.Type, ev: wake, raw: ev})
+				pendingByCard[target] = append(pendingByCard[target], pending{seq: ev.Seq, typ: ev.Type, ev: wake, raw: ev, notice: notice})
 				queued++
 				s.log.Debug("自动化事件进入 pending", "seq", ev.Seq, "card", wake.Card,
 					"type", ev.Type, "kind", string(wake.Kind), "cursor", from,
@@ -879,6 +1010,11 @@ func (s *Server) consumeAutomationEventsOnce(ctx context.Context) (processed int
 				}
 				continue
 			}
+			for _, item := range batch {
+				if item.notice != nil {
+					s.setCardNoticeDelivery(item.notice, "needs_human", "delivery_failed", "seat_wake_failed")
+				}
+			}
 			// 非准入错误维持既有终局处置（B389 §3.5.4/§4-30）：单卡失败不断整轮，
 			// 退避后继续处理同批与后续卡，轮末统一推进终局前缀水位。失败已
 			// CompleteWake，游标不会被它永久挡。
@@ -905,6 +1041,11 @@ func (s *Server) consumeAutomationEventsOnce(ctx context.Context) (processed int
 		}
 		if result.Escalated {
 			escalated = true
+		}
+		for _, item := range batch {
+			if item.notice != nil {
+				s.setCardNoticeDelivery(item.notice, "delivered", "", "")
+			}
 		}
 		for _, seq := range claimedSeqs {
 			s.automationMu.Lock()

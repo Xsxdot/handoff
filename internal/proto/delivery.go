@@ -9,6 +9,7 @@
 package proto
 
 import (
+	"fmt"
 	"strings"
 	"unicode"
 )
@@ -29,6 +30,52 @@ type DeliveryAddress struct {
 	Session  string              `json:"session"`
 	Card     string              `json:"card,omitempty"`
 	Identity string              `json:"identity"`
+}
+
+// TaskTicketNotice is an addressed notice about the original task ticket.
+// It never carries an answer and does not grant permission to answer.
+type TaskTicketNotice struct {
+	SourceMachine    string          `json:"source_machine"`
+	TaskID           string          `json:"task_id"`
+	TicketID         string          `json:"ticket_id"`
+	SourceSeq        int64           `json:"source_seq"`
+	OwnershipVersion int64           `json:"ownership_version"`
+	Target           DeliveryAddress `json:"target"`
+	TicketKind       string          `json:"ticket_kind"`
+}
+
+// ValidateTaskTicketNotice enforces the shared addressed-notice wire contract.
+// Unknown ticket kinds and incomplete addresses must fail closed before any
+// consumer advances a durable cursor. A seat may intentionally have no session.
+func ValidateTaskTicketNotice(n TaskTicketNotice) error {
+	if n.SourceMachine == "" || n.TaskID == "" || n.TicketID == "" || n.SourceSeq <= 0 || n.OwnershipVersion <= 0 {
+		return fmt.Errorf("task ticket notice source identity or version is incomplete")
+	}
+	if n.TicketKind != "ask" && n.TicketKind != "gate" {
+		return fmt.Errorf("unsupported task ticket notice kind %q", n.TicketKind)
+	}
+	if n.Target.Identity == "" {
+		return fmt.Errorf("task ticket notice target identity is empty")
+	}
+	switch n.Target.Kind {
+	case DeliverySeat:
+		if n.Target.Card == "" || n.Target.Session != "" && strings.Contains(n.Target.Session, "/") {
+			return fmt.Errorf("task ticket notice seat target is malformed")
+		}
+	case DeliveryResident:
+		if n.Target.Session == "" || n.Target.Card != "" {
+			return fmt.Errorf("task ticket notice resident target is malformed")
+		}
+	default:
+		return fmt.Errorf("unsupported task ticket notice target kind %q", n.Target.Kind)
+	}
+	return nil
+}
+
+// RetryTaskTicketNotificationResponse wraps the updated notification projection
+// returned by the source-authoritative retry endpoint.
+type RetryTaskTicketNotificationResponse struct {
+	Notification TicketNotification `json:"notification"`
 }
 
 // cursorKeyResidentPrefix 是驻场者地址游标键的前缀（session_delivery_cursors.member 列值）。

@@ -290,13 +290,22 @@ type SessionWake struct {
 	Unread     int          `json:"unread"`               // 该成员在该会话的未读数（含命中条）
 }
 
+// SessionTicketNoticeWake alerts the current addressed listener about an original
+// executor ticket. It contains no answer and grants no answer authority.
+type SessionTicketNoticeWake struct {
+	Type   string           `json:"type"`
+	Notice TaskTicketNotice `json:"notice"`
+	Status string           `json:"status"`
+}
+
 // SessionBacklog 是监听重挂时单行输出的历史定向消息摘要。
 type SessionBacklog struct {
-	Type    string              `json:"type"`
-	Member  string              `json:"member"`
-	FromSeq int64               `json:"from_seq"`
-	ToSeq   int64               `json:"to_seq"`
-	Hits    []SessionBacklogHit `json:"hits"`
+	Type              string                    `json:"type"`
+	Member            string                    `json:"member"`
+	FromSeq           int64                     `json:"from_seq"`
+	ToSeq             int64                     `json:"to_seq"`
+	Hits              []SessionBacklogHit       `json:"hits"`
+	TaskTicketNotices []SessionTicketNoticeWake `json:"task_ticket_notices,omitempty"`
 }
 
 // SessionBacklogHit 保留可跳转的命中条与可选回复引用条。

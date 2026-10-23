@@ -49,8 +49,9 @@ func residentClaimKey(session string) string { return residentClaimPrefix + sess
 
 // residentPending 是驻场批里的一条待处理唤醒。
 type residentPending struct {
-	seq int64
-	ev  keystone.WakeEvent
+	seq    int64
+	ev     keystone.WakeEvent
+	notice *proto.TaskTicketNotice
 }
 
 // residentPushState 是驻场续轮的进程内状态（零值可用，自带锁）：pointed[会话] = 最近一次已落指针行的
@@ -228,17 +229,31 @@ func (s *Server) consumeResidentBatch(ctx context.Context, session string, batch
 			s.log.Warn("驻场者续轮准入满员，保留认领按节拍重试", "session", session, "max_seq", maxSeq)
 			return 0, wakeErr, nil
 		}
+		s.setNoticeDelivery(batch, "needs_human", "delivery_failed", "resident_wake_failed")
 		s.completeWakeBatch(key, claimed)
 		s.recordWakeBackoff(key, maxSeq)
 		s.markSeen(claimed...)
 		return 0, wakeErr, nil
 	}
 	s.residentPush.clear(session)
+	s.setNoticeDelivery(batch, "delivered", "", "")
 	s.completeWakeBatch(key, claimed)
 	s.markSeen(claimed...)
 	s.log.Info("驻场者续轮已完成", "session", session, "identity", identity, "event_count", len(evs),
 		"push_session", result.SessionID)
 	return len(claimed), nil, nil
+}
+
+func (s *Server) setNoticeDelivery(batch []residentPending, status, reason, lastError string) {
+	for _, item := range batch {
+		if item.notice == nil {
+			continue
+		}
+		n := item.notice
+		if err := s.setTaskNoticeDelivery(n, status, reason, lastError); err != nil {
+			s.log.Warn("驻场通知投递状态更新失败", "seq", item.seq, "task", n.TaskID, "ticket", n.TicketID, "status", status, "cause", err)
+		}
+	}
 }
 
 // wakeResidentRound 跑一次 push 驻场者续轮（plan §3 P1：与 wakeCoordinatorRoundID 同骨架）：bearing →
@@ -272,6 +287,8 @@ func (s *Server) wakeResidentRound(ctx context.Context, r proto.SessionResident,
 	ref := keysclient.SessionRef{
 		CLI: spec.CLI, SessionID: r.PushSession, HomeDir: spec.HomeDir, Workdir: spec.Workdir, Model: spec.Model,
 		Carrier: spec.Carrier,
+		// Room session is the explicit origin fact for tasks initiated by this resident.
+		Env: []string{"HANDOFF_ORIGIN_SESSION=" + r.Session},
 	}
 	s.log.Info("驻场者续轮开始", "session", r.Session, "identity", r.Identity, "squad", binding.Squad,
 		"carrier", binding.Carrier, "cli", ref.CLI, "push_session", ref.SessionID, "event_count", len(evs))

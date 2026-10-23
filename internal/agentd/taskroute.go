@@ -25,6 +25,12 @@ import (
 // 注意：render 是流式响应，也走同一条搬运——forwardTo 用 io.Copy 直通，
 // 客户端断开时 r.Context() 取消、上游连接随之断开，无需特殊处理。
 func (s *Server) byTask(next http.HandlerFunc) http.HandlerFunc {
+	return s.byTaskWithUnavailableStatus(next, http.StatusBadGateway)
+}
+
+// byTaskWithUnavailableStatus preserves the common proxy status by default;
+// narrow source-authoritative actions can use 503 to mean the source could not be checked.
+func (s *Server) byTaskWithUnavailableStatus(next http.HandlerFunc, unavailableStatus int) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
 		if id == "" || isForwarded(r) {
@@ -59,7 +65,7 @@ func (s *Server) byTask(next http.HandlerFunc) http.HandlerFunc {
 			// 镜像里记着一台设备表/配置里都已没有的机器：如实报告，别假装 404
 			s.log.Warn("任务路由：镜像指向的机器已未登记",
 				"task", id, "machine", target)
-			writeJSON(w, http.StatusBadGateway, map[string]string{
+			writeJSON(w, unavailableStatus, map[string]string{
 				"error": "任务在机器 " + target + " 上，但它已未登记（设备表/配置中均无此名）"})
 			return
 		}
@@ -67,7 +73,7 @@ func (s *Server) byTask(next http.HandlerFunc) http.HandlerFunc {
 		c, err := s.pool.For(target)
 		if err != nil {
 			s.log.Error("任务路由：取目标客户端失败", "task", id, "machine", target, "cause", err)
-			writeJSON(w, http.StatusBadGateway, map[string]string{
+			writeJSON(w, unavailableStatus, map[string]string{
 				"error": "转发到 " + target + " 失败: " + err.Error()})
 			return
 		}

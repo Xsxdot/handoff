@@ -325,6 +325,8 @@ func ddlStatements(pg bool) []string {
 			`CREATE INDEX IF NOT EXISTS idx_room_messages_room_seq
 				ON card_events((payload->>'room'), seq DESC)
 				WHERE type = 'room_message' AND card_id IS NULL`,
+			`CREATE INDEX IF NOT EXISTS idx_task_ticket_notice_seq ON card_events(seq)
+				WHERE type = 'task_ticket_notice'`,
 			`CREATE INDEX IF NOT EXISTS idx_room_messages_card_seq
 				ON card_events(card_id, seq DESC)
 				WHERE type = 'room_message' AND card_id IS NOT NULL`,
@@ -390,6 +392,14 @@ func ddlStatements(pg bool) []string {
 			`CREATE TABLE IF NOT EXISTS session_delivery_cursors (
 				member TEXT PRIMARY KEY, last_seq BIGINT NOT NULL,
 				updated_at TIMESTAMPTZ NOT NULL)`,
+			`CREATE TABLE IF NOT EXISTS task_ticket_notices (
+				source_machine TEXT NOT NULL, task_id TEXT NOT NULL, ticket_id TEXT NOT NULL,
+				source_seq BIGINT NOT NULL, ownership_version BIGINT NOT NULL,
+				ticket_kind TEXT NOT NULL DEFAULT '',
+				target JSONB, status TEXT NOT NULL, reason TEXT NOT NULL DEFAULT '',
+				last_error TEXT NOT NULL DEFAULT '', retry_after TIMESTAMPTZ,
+				updated_at TIMESTAMPTZ NOT NULL,
+				PRIMARY KEY (source_machine, task_id, ticket_id))`,
 			`CREATE TABLE IF NOT EXISTS card_run_locks (
 				card_id TEXT PRIMARY KEY REFERENCES cards(id),
 				node TEXT NOT NULL, holder TEXT NOT NULL,
@@ -534,6 +544,8 @@ func ddlStatements(pg bool) []string {
 			`CREATE INDEX IF NOT EXISTS idx_room_messages_room_seq
 				ON card_events(json_extract(payload, '$.room'), seq DESC)
 				WHERE type = 'room_message' AND card_id IS NULL`,
+			`CREATE INDEX IF NOT EXISTS idx_task_ticket_notice_seq ON card_events(seq)
+				WHERE type = 'task_ticket_notice'`,
 			`CREATE INDEX IF NOT EXISTS idx_room_messages_card_seq
 				ON card_events(card_id, seq DESC)
 				WHERE type = 'room_message' AND card_id IS NOT NULL`,
@@ -596,6 +608,14 @@ func ddlStatements(pg bool) []string {
 			`CREATE TABLE IF NOT EXISTS session_delivery_cursors (
 				member TEXT PRIMARY KEY, last_seq INTEGER NOT NULL,
 				updated_at TEXT NOT NULL)`,
+			`CREATE TABLE IF NOT EXISTS task_ticket_notices (
+				source_machine TEXT NOT NULL, task_id TEXT NOT NULL, ticket_id TEXT NOT NULL,
+				source_seq INTEGER NOT NULL, ownership_version INTEGER NOT NULL,
+				ticket_kind TEXT NOT NULL DEFAULT '',
+				target TEXT, status TEXT NOT NULL, reason TEXT NOT NULL DEFAULT '',
+				last_error TEXT NOT NULL DEFAULT '', retry_after TEXT,
+				updated_at TEXT NOT NULL,
+				PRIMARY KEY (source_machine, task_id, ticket_id))`,
 			`CREATE TABLE IF NOT EXISTS card_run_locks (
 				card_id TEXT PRIMARY KEY REFERENCES cards(id),
 				node TEXT NOT NULL, holder TEXT NOT NULL,

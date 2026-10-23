@@ -228,13 +228,32 @@ func (s *Store) addressCandidatesSQL(identity, session string, fromSeq, toSeq in
 	mentionsQuery, mentionsArgs := s.sessionCandidatesBranchSQL(identity, fromSeq, toSeq, "mentions")
 	replyQuery, replyArgs := s.sessionCandidatesBranchSQL(identity, fromSeq, toSeq, "reply")
 	unaddressedQuery, unaddressedArgs := s.seatCandidatesUnaddressedBranchSQL(session, fromSeq, toSeq)
+	upper := ""
+	if toSeq > 0 {
+		upper = ` AND seq <= ?`
+	}
+	noticeMatch := `payload->'target'->>'session' = ? AND payload->'target'->>'identity' = ? AND
+		payload->'target'->>'kind' IN ('resident','seat')`
+	if s.dialect == dialectSQLite {
+		noticeMatch = `json_extract(payload, '$.target.session') = ? AND json_extract(payload, '$.target.identity') = ? AND
+			json_extract(payload, '$.target.kind') IN ('resident','seat')`
+	}
+	noticeQuery := `SELECT seq, card_id, type, actor, payload, source_target, source_task, source_seq, created_at
+		FROM card_events WHERE type = 'task_ticket_notice' AND seq > ?` + upper + ` AND ` + noticeMatch
+	noticeArgs := []any{fromSeq}
+	if toSeq > 0 {
+		noticeArgs = append(noticeArgs, toSeq)
+	}
+	noticeArgs = append(noticeArgs, session, identity)
 	query := mentionsQuery + `
 		UNION
 		` + replyQuery + `
 		UNION
 		` + unaddressedQuery + `
+		UNION
+		` + noticeQuery + `
 		ORDER BY seq ASC LIMIT ?`
-	return query, append(append(mentionsArgs, replyArgs...), unaddressedArgs...)
+	return query, append(append(append(mentionsArgs, replyArgs...), unaddressedArgs...), noticeArgs...)
 }
 
 // ResidentMessageCandidatesContext 读一页驻场者地址的会话消息候选（B435 R，C-149–C-151）：

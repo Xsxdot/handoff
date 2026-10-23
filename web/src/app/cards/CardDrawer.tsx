@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { ChevronLeft, X } from 'lucide-react'
-import { ApiError, fetchTaskDetail, replyTicket } from '../../api/client'
+import { ApiError, fetchTaskDetail, replyTicket, retryTaskTicketNotification } from '../../api/client'
 import type { Task, TaskDetail, Ticket } from '../../api/types'
 import { acceptCard, answerDecision, attachFile, clearCardNeeds, detachFile, fetchCardDetail, moveCard, noteCard, patchCard, seatModeView } from '../../api/ledger'
 import type { CardDetail, Decision, LedgerEvent, NodeDef } from '../../api/ledger'
@@ -611,6 +611,11 @@ export function CardDrawer({
     await loadTaskDetail(taskID)
   }
 
+  const retryTaskNotification = async (taskID: string, ticket: Ticket) => {
+    await retryTaskTicketNotification(taskID, ticket.id)
+    await loadTaskDetail(taskID)
+  }
+
   const submitNote = async () => {
     if (writesBlocked) return
     if (!note.trim()) return
@@ -947,7 +952,9 @@ export function CardDrawer({
           {compact && <p className="mb-2 break-all font-mono text-[11px] text-muted-foreground">完整任务 ID：{row.TaskID}</p>}
           {taskLoading === row.TaskID && <p className="text-xs text-muted-foreground">正在读取工单…</p>}
           {taskErrors[row.TaskID] && <p role="alert" className="break-words text-xs text-destructive">{taskErrors[row.TaskID]}</p>}
-          {taskDetail && <TicketsPanel bare tickets={pendingTickets(taskDetail)} disabled={writesBlocked} onReply={(ticket, answer) => replyTaskTicket(row.TaskID, ticket, answer)} />}
+          {taskDetail && <TicketsPanel bare tickets={pendingTickets(taskDetail)} disabled={writesBlocked}
+            onReply={(ticket, answer) => replyTaskTicket(row.TaskID, ticket, answer)}
+            onRetryNotification={(ticket) => retryTaskNotification(row.TaskID, ticket)} />}
         </div>}
       </div>
     )

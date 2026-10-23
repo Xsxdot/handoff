@@ -981,12 +981,13 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 		taskHomeDir = *req.HomeDir
 	}
 	task = &proto.Task{
-		ID:       taskID,
-		Target:   req.Target,
-		RepoPath: repoPath,
-		HomeDir:  taskHomeDir,
-		Carrier:  req.Carrier,
-		Squad:    req.Squad,
+		ID:            taskID,
+		OriginSession: req.OriginSession,
+		Target:        req.Target,
+		RepoPath:      repoPath,
+		HomeDir:       taskHomeDir,
+		Carrier:       req.Carrier,
+		Squad:         req.Squad,
 		// B453 Q6：载体所选账号快照（名、kind、代理）随创建写入，续接/恢复从任务行取——
 		// 运行中/续接的任务不随账号代理后改而变（与 HomeDir 同一快照语义）。
 		Account:      req.Account,

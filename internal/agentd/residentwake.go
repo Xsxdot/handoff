@@ -75,6 +75,7 @@ type residentDoorbellBatch struct {
 	maxSeq   int64
 	failures int       // 已失败的写信尝试次数（只在重试表里有意义）
 	nextAt   time.Time // 下一次重试的最早时刻（desktopClock 读数）
+	notices  []*proto.TaskTicketNotice
 }
 
 func (b *residentDoorbellBatch) add(seq int64) {
@@ -88,10 +89,24 @@ func (b *residentDoorbellBatch) add(seq int64) {
 	}
 }
 
+func (b *residentDoorbellBatch) hasNotice(n proto.TaskTicketNotice) bool {
+	for _, current := range b.notices {
+		if current != nil && current.SourceMachine == n.SourceMachine && current.TaskID == n.TaskID && current.TicketID == n.TicketID && current.OwnershipVersion == n.OwnershipVersion {
+			return true
+		}
+	}
+	return false
+}
+
 // merge 把 other 的命中并进 b（同一地址：在途重试遇到新命中，一封信覆盖两批）。
 func (b *residentDoorbellBatch) merge(other *residentDoorbellBatch) {
 	for _, seq := range other.seqs {
 		b.add(seq)
+	}
+	for _, n := range other.notices {
+		if n != nil && !b.hasNotice(*n) {
+			b.notices = append(b.notices, n)
+		}
 	}
 }
 
@@ -180,7 +195,41 @@ func (s *Server) ringResidentDoorbells(from int64, events []proto.LedgerEvent) e
 	round := residentDoorbellRound{}
 	batches := map[string]*residentDoorbellBatch{}
 	for _, ev := range events {
-		if ev.Seq <= from || ev.Type != ledger.EvRoomMessage || st.isRung(ev.Seq) {
+		if ev.Seq <= from || (ev.Type != ledger.EvRoomMessage && ev.Type != ledger.EvTaskTicketNotice) || st.isRung(ev.Seq) {
+			continue
+		}
+		if ev.Type == ledger.EvTaskTicketNotice {
+			n, err := decodeTaskTicketNotice(ev.Payload)
+			if err != nil {
+				return fmt.Errorf("doorbell notice decode seq=%d: %w", ev.Seq, err)
+			}
+			current, matches, err := s.currentTaskTicketNotice(n)
+			if err != nil {
+				return fmt.Errorf("read current doorbell notice: %w", err)
+			}
+			if !matches || current.Status != "pending" && current.Status != "needs_human" || n.Target.Kind != proto.DeliveryResident {
+				st.markRung(ev.Seq)
+				continue
+			}
+			resident, ok, err := s.autoLedger.SessionResident(n.Target.Session)
+			if err != nil {
+				return fmt.Errorf("read addressed desktop resident: %w", err)
+			}
+			addr := n.Target
+			if reason, skip := s.residentDoorbellIneligible(addr, resident, ok); skip {
+				if reason != "not_local" && reason != "push_resident" {
+					st.markRung(ev.Seq)
+				}
+				continue
+			}
+			key := proto.DeliveryCursorKey(addr)
+			b := batches[key]
+			if b == nil {
+				b = &residentDoorbellBatch{addr: addr}
+				batches[key] = b
+			}
+			b.add(ev.Seq)
+			b.notices = append(b.notices, &n)
 			continue
 		}
 		msg, human, err := decodeRoomMessageForWake(ev)
@@ -222,6 +271,42 @@ func (s *Server) ringResidentDoorbells(from int64, events []proto.LedgerEvent) e
 		if !hit {
 			st.markRung(ev.Seq)
 		}
+	}
+	// Re-read pending and needs_human desktop notices on every poll. The ledger
+	// cursor may already have passed a failed bell; durable notice state is the retry source.
+	active, err := s.activeTaskTicketNotices()
+	if err != nil {
+		return fmt.Errorf("list active desktop notices: %w", err)
+	}
+	for i := range active {
+		n := &active[i]
+		if (n.Status != "pending" && n.Status != "needs_human") || n.LastError == "desktop_open_failed" || n.Target == nil || n.Target.Kind != proto.DeliveryResident {
+			continue
+		}
+		resident, ok, readErr := s.autoLedger.SessionResident(n.Target.Session)
+		if readErr != nil {
+			return fmt.Errorf("read active notice resident: %w", readErr)
+		}
+		if _, skip := s.residentDoorbellIneligible(*n.Target, resident, ok); skip {
+			continue
+		}
+		key := proto.DeliveryCursorKey(*n.Target)
+		b := batches[key]
+		if b == nil {
+			b = &residentDoorbellBatch{addr: *n.Target}
+			batches[key] = b
+		}
+		wire := proto.TaskTicketNotice{SourceMachine: n.SourceMachine, TaskID: n.TaskID, TicketID: n.TicketID, SourceSeq: n.SourceSeq, OwnershipVersion: n.OwnershipVersion, Target: *n.Target, TicketKind: n.TicketKind}
+		if err := proto.ValidateTaskTicketNotice(wire); err != nil {
+			s.log.Warn("active desktop notice is invalid; bell skipped", "task", n.TaskID, "ticket", n.TicketID, "reason", "invalid_notice")
+			continue
+		}
+		if b.hasNotice(wire) {
+			continue
+		}
+		b.add(n.SourceSeq)
+		// The active projection carries current identity/version, unlike an old event.
+		b.notices = append(b.notices, &wire)
 	}
 
 	keys := make([]string, 0, len(batches))
@@ -341,6 +426,7 @@ func (s *Server) residentDoorbellAttempt(key string, b *residentDoorbellBatch, r
 	})
 	home, err := s.desktopMailboxHome()
 	if err != nil {
+		s.setDoorbellNoticeDelivery(b, "needs_human", "delivery_failed", "desktop_bell_failed")
 		s.residentDoorbellUndelivered(key, b, now, "取 HOME", err, round)
 		return
 	}
@@ -353,6 +439,7 @@ func (s *Server) residentDoorbellAttempt(key string, b *residentDoorbellBatch, r
 	s.log.Info("驻场者门铃信已落盘", "session", b.addr.Session, "identity", b.addr.Identity,
 		"letter", letterPath, "count", b.count, "min_seq", b.minSeq, "max_seq", b.maxSeq)
 	unopened := func(stage string, cause error) {
+		s.setDoorbellNoticeDelivery(b, "needs_human", "delivery_failed", "desktop_open_failed")
 		round.unopened++
 		s.log.Error("驻场者门铃信已落盘、continue 未发出（不重写）", "session", b.addr.Session,
 			"identity", b.addr.Identity, "letter", letterPath, "stage", stage, "cause", cause)
@@ -371,9 +458,18 @@ func (s *Server) residentDoorbellAttempt(key string, b *residentDoorbellBatch, r
 		return
 	}
 	round.rung++
+	s.setDoorbellNoticeDelivery(b, "delivered", "", "")
 	s.log.Info(residentDoorbellRungMsg, "session", b.addr.Session, "identity", b.addr.Identity,
 		"desktop_session", r.DesktopSession, "letter", letterPath, "count", b.count,
 		"min_seq", b.minSeq, "max_seq", b.maxSeq)
+}
+
+func (s *Server) setDoorbellNoticeDelivery(b *residentDoorbellBatch, status, reason, lastError string) {
+	for _, n := range b.notices {
+		if err := s.setTaskNoticeDelivery(n, status, reason, lastError); err != nil {
+			s.log.Warn("桌面通知状态更新失败", "task", n.TaskID, "ticket", n.TicketID, "status", status, "cause", err)
+		}
+	}
 }
 
 // residentDoorbellUndelivered 处置「信未落盘」：计一次失败；信箱键不安全（确定性拒绝）或到上限 →
@@ -383,11 +479,13 @@ func (s *Server) residentDoorbellUndelivered(key string, b *residentDoorbellBatc
 	round.undelivered++
 	b.failures++
 	if errors.Is(cause, errDesktopMailboxKeyUnsafe) || b.failures >= residentWakeMaxAttempts {
+		s.setDoorbellNoticeDelivery(b, "needs_human", "delivery_failed", "desktop_bell_failed")
 		s.log.Error("驻场者门铃信未落盘，放弃按铃（消息仍在 session wait 积压里）", "session", b.addr.Session,
 			"identity", b.addr.Identity, "stage", stage, "attempts", b.failures, "count", b.count,
 			"min_seq", b.minSeq, "max_seq", b.maxSeq, "cause", cause)
 		return
 	}
+	s.setDoorbellNoticeDelivery(b, "needs_human", "delivery_failed", "desktop_bell_failed")
 	b.nextAt = now.Add(residentWakeRetryBase << (b.failures - 1))
 	s.residentWake.putRetry(key, b)
 	s.log.Error("驻场者门铃信未落盘，稍后重试", "session", b.addr.Session, "identity", b.addr.Identity,

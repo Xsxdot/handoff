@@ -19,7 +19,7 @@ import (
 // ledgerSchemaVersion 代码期望的 PG 账本 schema 版本。改 ddlStatements 或在
 // ensureSchema 闸内新增迁移时必须加 1（DDL 改动由 TestSchemaVersionPinsDDL 把关，
 // Go 侧迁移测不到）。只能加法式演进：高版本库对低版本二进制必须是超集。
-const ledgerSchemaVersion = 2
+const ledgerSchemaVersion = 3
 
 // schemaVersionKey 是 schema 版本标记在 ledger_meta 中的键名。
 const schemaVersionKey = "schema_version"

@@ -14,6 +14,8 @@
 
 export interface Task {
   id: string
+  /** Explicit initiating session; absent means unknown, including legacy tasks. */
+  origin_session?: string
   target: string
   repo_path: string
   carrier?: string       // 派发时绑定的载体名；缺席=旧任务
@@ -114,6 +116,18 @@ export interface Ticket {
   created_at: string
   answered_at?: string
   delivered_at?: string
+  notification?: TicketNotification
+}
+
+export interface TicketNotification {
+  status: 'pending' | 'delivered' | 'needs_human' | 'superseded' | 'answered' | string
+  reason?: string
+  ownership_version: number
+  last_error?: string
+}
+
+export interface RetryTaskTicketNotificationResponse {
+  notification: TicketNotification
 }
 
 // WorkbenchBaseRow / WorkbenchStateResp 与 internal/proto/workbench.go 对应，两边一起改。

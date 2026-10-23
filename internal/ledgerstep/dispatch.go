@@ -25,6 +25,10 @@ import (
 // DispatchOpts 是 Transport 的完整派发请求。PlanPath 已在 ViaTemplate 中
 // 读成 PlanB64/PlanName；其余字段与 agentd 的派发协议一一对应。
 type DispatchOpts struct {
+	// CardID is the source card, supplied only for resolving its explicit session association.
+	CardID string
+	// OriginSession is resolved from the card's public session association; empty means none.
+	OriginSession                                                                                         string
 	Prompt, Branch, Target, Project, Executor, Model, PlanB64, PlanName, Base, ExistingBranch, Discipline string
 	// Receiver 是统一接收者名（载体或小队）。空=默认载体。Ticket 0 只声明。
 	Receiver string
@@ -459,6 +463,7 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 		"template", req.Template, "target", target, "receiver", req.Receiver,
 		"output_path", req.OutputPath)
 	taskID, baseCommit, err := d.Transport(ctx, DispatchOpts{
+		CardID: c.ID,
 		Prompt: prompt, Branch: branch, Target: routeTarget, Project: c.Project,
 		Executor: executor, Model: model, PlanB64: planB64,
 		Receiver:     req.Receiver,

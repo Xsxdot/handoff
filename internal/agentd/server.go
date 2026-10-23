@@ -974,6 +974,8 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/tasks/{id}", s.machineFirst(s.byTask(s.handleGetTask)))
 	api.HandleFunc("GET /api/tasks/{id}/artifacts", s.machineFirst(s.byTask(s.handleTaskArtifacts)))
 	api.HandleFunc("POST /api/tasks/{id}/reply", s.byTask(s.handleReply))
+	api.HandleFunc("POST /api/tasks/{id}/tickets/{ticket}/notification/retry",
+		s.byTaskWithUnavailableStatus(s.handleRetryTaskTicketNotification, http.StatusServiceUnavailable))
 	api.HandleFunc("POST /api/tasks/{id}/continue", s.byTask(s.handleContinue))
 	api.HandleFunc("POST /api/tasks/{id}/done", s.byTask(s.handleDone))
 	api.HandleFunc("POST /api/tasks/{id}/stop", s.byTask(s.handleStop))
@@ -1683,9 +1685,10 @@ func (r coordinatorRunner) Resume(ref keysclient.SessionRef, prompt string) (key
 		return keysclient.TurnResult{}, classifyRunnerErr(fmt.Errorf("查续接会话是否为驻场者: %w", err))
 	}
 	if resident {
-		ref.Env = nil
+		// A resident must not inherit card-seat identity, but its explicit room origin is safe to retain.
+		ref.Env = originSessionEnv(ref.Env)
 	} else {
-		ref.Env = seatEnv(ref.CLI, ref.SessionID)
+		ref.Env = append(originSessionEnv(ref.Env), seatEnv(ref.CLI, ref.SessionID)...)
 	}
 	ref.Env = r.withAccountProxy(ref.Carrier, ref.CLI, ref.HomeDir, ref.Env)
 	ctx, cancel := readyCtx()
@@ -1705,6 +1708,15 @@ func (r coordinatorRunner) Resume(ref keysclient.SessionRef, prompt string) (key
 	slog.Default().Log(ctx, wakeRoundLogLevel, "协调者回合完成", "cli", ref.CLI,
 		"mode", "resume", "session", got.SessionID, "output_bytes", len(got.Output))
 	return keysclient.TurnResult{SessionID: got.SessionID, Output: got.Output}, nil
+}
+
+func originSessionEnv(env []string) []string {
+	for _, value := range env {
+		if strings.HasPrefix(value, "HANDOFF_ORIGIN_SESSION=") {
+			return []string{value}
+		}
+	}
+	return nil
 }
 
 // classifyRunnerErr 把承载层（hostapi）错误翻译成 keysclient 契约哨兵：

@@ -909,18 +909,17 @@ func setupLedger(cfg *config.Config, srv *agentd.Server, taskStore *store.Store,
 	// 不代表以后没有——留着 len(cfg.Targets)>0 的闸会让控制台新增的第一台
 	// 机器永远等不到账本镜像（与任务镜像同一条纪律，B163 ①）。
 	// 池必须与任务镜像共用同一个：两个池等于两套 relay 隧道。
-	host, _ := os.Hostname()
-	// B439：镜像 holder 用自名（不再用 hostname），命名挂账按「名字 == 自名」
-	// 路由到本机源。无自名（无 DSN 单机账本）回退 hostname + 地址判据（S5）。
-	holder := cfg.Name
-	if holder == "" {
-		holder = host
-	}
-	lm := ledgermirror.New(lst, agentd.NewLedgerMirrorMachines(srv.Pool()), ledgermirror.Options{
-		Holder:       holder,
-		SelfName:     cfg.Name,
-		LocalSource:  ledgermirror.NewLocalSource(taskStore, logger.With("source", "local")),
-		IsSelfTarget: srv.IsSelfTarget,
+	// B439：镜像 holder 用自名；无自名的本机通知/任务来源沿用 hostname key。
+	holder := srv.TaskNoticeSourceMachine()
+	mirrorMachines := agentd.NewLedgerMirrorMachines(srv.Pool(), taskStore)
+	lm := ledgermirror.New(lst, mirrorMachines, ledgermirror.Options{
+		Holder:              holder,
+		SelfName:            cfg.Name,
+		LocalSource:         ledgermirror.NewLocalSource(taskStore, logger.With("source", "local")),
+		LocalTasks:          mirrorMachines.LocalTasks,
+		IsSelfTarget:        srv.IsSelfTarget,
+		TicketNotice:        srv.RecordTaskTicketNotice,
+		RefreshTicketNotice: srv.RefreshTaskTicketNotice,
 	})
 	go lm.Run(ctx)
 	logger.Info("账本镜像子系统已挂载", "holder", holder, "self_name", cfg.Name,

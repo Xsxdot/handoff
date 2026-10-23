@@ -70,11 +70,15 @@ func (s *Store) AppendMirroredEvent(cardID string, ev MirroredEvent) (bool, erro
 		payload := fmt.Sprintf(`{"node":%q,"attempt":%q,"task_type":%q,"payload":%s}`,
 			ev.Node, ev.Attempt, ev.Type, inner)
 		var seq int64
+		var eventCard any
+		if cardID != "" {
+			eventCard = cardID
+		}
 		if s.dialect == dialectPG {
 			err = tx.QueryRow(s.q(`INSERT INTO card_events
 				(card_id, type, actor, payload, source_target, source_task, source_seq, created_at)
 				VALUES (?,?,?,?,?,?,?,?) RETURNING seq`),
-				cardID, EvTaskMirrored, "mirror", payload,
+				eventCard, EvTaskMirrored, "mirror", payload,
 				ev.Target, ev.Task, ev.SourceSeq, s.tval(ev.CreatedAt)).Scan(&seq)
 			if err == nil {
 				_, err = tx.Exec(`SELECT pg_notify('card_events', $1)`, fmt.Sprint(seq))
@@ -84,7 +88,7 @@ func (s *Store) AppendMirroredEvent(cardID string, ev MirroredEvent) (bool, erro
 			res, err = tx.Exec(s.q(`INSERT INTO card_events
 				(card_id, type, actor, payload, source_target, source_task, source_seq, created_at)
 				VALUES (?,?,?,?,?,?,?,?)`),
-				cardID, EvTaskMirrored, "mirror", payload,
+				eventCard, EvTaskMirrored, "mirror", payload,
 				ev.Target, ev.Task, ev.SourceSeq, s.tval(ev.CreatedAt))
 			if err == nil {
 				seq, err = res.LastInsertId()

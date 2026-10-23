@@ -256,6 +256,8 @@ func (s *Server) launchSessionResidentOn(ctx context.Context, sessionID, squad, 
 		workdir: func() string { return s.resolveProjectWorkdir(session.HomeProject, "session", sessionID) },
 		launch: func(round coordinatorCarrierRound) (keystone.RoundResult, error) {
 			var zeroRound keystone.RoundResult
+			// The resident is being launched for this explicit collaboration session; dispatches it starts inherit this origin.
+			round.spec.Env = append(round.spec.Env, "HANDOFF_ORIGIN_SESSION="+sessionID)
 			machine, err := s.residentCarrierMachine(round.carrier.Machine)
 			if err != nil {
 				return zeroRound, err

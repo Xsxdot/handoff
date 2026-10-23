@@ -26,6 +26,8 @@ type TaskLink struct {
 	TaskID    string    `json:"task_id"`
 	Purpose   string    `json:"purpose"`
 	CreatedAt time.Time `json:"created_at"`
+	// OriginSession is a runtime-only source inventory projection; it is never stored in card_tasks.
+	OriginSession string `json:"origin_session,omitempty"`
 }
 
 // TaskLinkKey is the minimal target/task identity needed to compare the local

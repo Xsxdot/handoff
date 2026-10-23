@@ -64,6 +64,56 @@ func syResident(sessionID string) proto.DeliveryAddress {
 
 func syCursorKey(sessionID string) string { return proto.DeliveryCursorKey(syResident(sessionID)) }
 
+func TestSessionWaitRejectsUnknownTicketNoticeKind(t *testing.T) {
+	_, _, st, sessionID := mustWaitFixture(t, t.TempDir())
+	target := syResident(sessionID)
+	if _, _, err := st.PutTaskTicketNotice(ledger.TaskTicketNoticeState{SourceMachine: "exec-a", TaskID: "task",
+		TicketID: "task:q1", TicketKind: "ask", SourceSeq: 1, Target: &target}, "test"); err != nil {
+		t.Fatal(err)
+	}
+	payload, err := json.Marshal(proto.TaskTicketNotice{SourceMachine: "exec-a", TaskID: "task", TicketID: "task:q1",
+		TicketKind: "future-kind", SourceSeq: 1, OwnershipVersion: 1, Target: target})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, hit, err := sessionWaitTaskTicketNotice(st, ledger.Event{Type: ledger.EvTaskTicketNotice, Payload: payload}, target)
+	if err == nil && hit {
+		t.Fatalf("unknown ticket kind must not be accepted: hit=%v err=%v", hit, err)
+	}
+}
+
+func TestSessionWaitRejectsOldResidentBeforeNoticeRefresh(t *testing.T) {
+	_, _, st, sessionID := mustWaitFixture(t, t.TempDir())
+	target := syResident(sessionID)
+	if _, _, err := st.PutTaskTicketNotice(ledger.TaskTicketNoticeState{SourceMachine: "exec-a", TaskID: "task", TicketID: "task:q1",
+		TicketKind: "ask", SourceSeq: 1, Target: &target}, "test"); err != nil {
+		t.Fatal(err)
+	}
+	events, err := st.EventsFromAsc(nil, 0, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var notice ledger.Event
+	for _, event := range events {
+		if event.Type == ledger.EvTaskTicketNotice {
+			notice = event
+			break
+		}
+	}
+	if notice.Seq == 0 {
+		t.Fatal("expected addressed notice event")
+	}
+	if err := st.StandResident(sessionID, target.Identity); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.SitResident(ledger.SessionResident{Session: sessionID, Identity: "user:replacement"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, hit, err := sessionWaitTaskTicketNotice(st, notice, target); err != nil || hit {
+		t.Fatalf("old resident notice after reseat must be rejected: hit=%v err=%v", hit, err)
+	}
+}
+
 func decodeSessionWake(t *testing.T, out string) proto.SessionWake {
 	t.Helper()
 	lines := strings.Split(strings.TrimSpace(out), "\n")
@@ -101,6 +151,31 @@ func TestSessionWaitOutputsHitJSON(t *testing.T) {
 	}
 	if wake.Referenced != nil {
 		t.Fatalf("无引用锚时 referenced 必须省键: %+v", wake.Referenced)
+	}
+}
+
+func TestSessionWaitReceivesOnlyCurrentAddressedTaskTicketNotice(t *testing.T) {
+	dir := t.TempDir()
+	_, _, st, sessionID := mustWaitFixture(t, dir)
+	target := syResident(sessionID)
+	state, changed, err := st.PutTaskTicketNotice(ledger.TaskTicketNoticeState{
+		SourceMachine: "exec-a", TaskID: "bare-task", TicketID: "bare-task:q1",
+		TicketKind: "ask", SourceSeq: 17, Target: &target,
+	}, "test")
+	if err != nil || !changed || state.OwnershipVersion != 1 {
+		t.Fatalf("persist addressed notice: %+v changed=%v err=%v", state, changed, err)
+	}
+	out, _, err := runLedgerCLI(t, dir, "session", "wait", sessionID, "--since", "0")
+	if err != nil {
+		t.Fatalf("session wait task ticket notice: %v", err)
+	}
+	var wake proto.SessionTicketNoticeWake
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &wake); err != nil {
+		t.Fatalf("decode task ticket wake: %v output=%q", err, out)
+	}
+	if wake.Type != "task_ticket_notice" || wake.Notice.TaskID != "bare-task" ||
+		wake.Notice.TicketID != "bare-task:q1" || wake.Notice.Target != target || wake.Notice.OwnershipVersion != 1 {
+		t.Fatalf("task ticket wake=%+v", wake)
 	}
 }
 

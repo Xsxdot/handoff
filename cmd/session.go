@@ -111,8 +111,9 @@ var (
 
 // sessionHit 一条已判定命中的候选：原事件与解码后的消息。
 type sessionHit struct {
-	ev  ledger.Event
-	msg proto.RoomMessage
+	ev     ledger.Event
+	msg    proto.RoomMessage
+	notice *proto.TaskTicketNotice
 }
 
 // sessionWaitPage 读一页驻场者地址的有界候选，并在席位状态版本护栏内完成该页全部
@@ -157,6 +158,17 @@ func sessionWaitPage(ctx context.Context, svc *collab.Service, st *ledger.Store,
 		pageHits := make([]sessionHit, 0, len(candidates))
 		lastSeq := from
 		for _, ev := range candidates {
+			if ev.Type == ledger.EvTaskTicketNotice {
+				notice, hit, err := sessionWaitTaskTicketNotice(st, ev, addr)
+				if err != nil {
+					return nil, 0, err
+				}
+				if hit {
+					pageHits = append(pageHits, sessionHit{ev: ev, notice: &notice})
+				}
+				lastSeq = ev.Seq
+				continue
+			}
 			msg, hit, err := sessionWaitMatch(svc, ev, addr)
 			if err != nil {
 				return nil, 0, err
@@ -198,6 +210,39 @@ func sessionWaitPage(ctx context.Context, svc *collab.Service, st *ledger.Store,
 			"attempt", attempt, "elapsed_ns", time.Since(started).Nanoseconds())...)
 		return pageHits, lastSeq, nil
 	}
+}
+
+// sessionWaitTaskTicketNotice rechecks the latest ownership version before returning
+// an addressed event, so stale routes from a prior resident/seat never ring.
+func sessionWaitTaskTicketNotice(st *ledger.Store, ev ledger.Event, addr proto.DeliveryAddress) (proto.TaskTicketNotice, bool, error) {
+	var notice proto.TaskTicketNotice
+	if err := json.Unmarshal(ev.Payload, &notice); err != nil {
+		return notice, false, fmt.Errorf("session wait task_ticket_notice seq=%d 解码: %w", ev.Seq, err)
+	}
+	if err := proto.ValidateTaskTicketNotice(notice); err != nil {
+		return notice, false, fmt.Errorf("session wait task_ticket_notice seq=%d 契约校验: %w", ev.Seq, err)
+	}
+	if notice.Target != addr {
+		return notice, false, nil
+	}
+	current, err := st.GetTaskTicketNotice(notice.SourceMachine, notice.TaskID, notice.TicketID)
+	if err != nil {
+		return notice, false, fmt.Errorf("session wait 复读工单通知归属 %s/%s: %w", notice.TaskID, notice.TicketID, err)
+	}
+	if current.OwnershipVersion != notice.OwnershipVersion || current.SourceSeq != notice.SourceSeq || current.TicketKind != notice.TicketKind || current.Target == nil || *current.Target != addr ||
+		(current.Status != "pending" && current.Status != "delivered") {
+		return notice, false, nil
+	}
+	if addr.Kind == proto.DeliveryResident {
+		resident, ok, err := st.SessionResident(addr.Session)
+		if err != nil {
+			return notice, false, fmt.Errorf("session wait 复读当前驻场者 %s: %w", addr.Session, err)
+		}
+		if !ok || resident.Identity != addr.Identity {
+			return notice, false, nil
+		}
+	}
+	return notice, true, nil
 }
 
 // isWaitCancel 报告 err 是否为 wait ctx 的取消/到期（区别于真实读错误）。
@@ -399,6 +444,12 @@ func sessionWaitRun(ctx context.Context, svc *collab.Service, st *ledger.Store, 
 				return fmt.Errorf("session wait 积压扫描水位未推进（scan=%d next=%d）", scan, next)
 			}
 			for _, h := range hits {
+				if h.notice != nil {
+					backlog.TaskTicketNotices = append(backlog.TaskTicketNotices, proto.SessionTicketNoticeWake{
+						Type: "task_ticket_notice", Notice: *h.notice, Status: "pending"})
+					backlog.ToSeq = h.ev.Seq
+					continue
+				}
 				ref, err := sessionWaitReference(svc, h.msg)
 				if err != nil {
 					return err
@@ -414,10 +465,16 @@ func sessionWaitRun(ctx context.Context, svc *collab.Service, st *ledger.Store, 
 		slog.Info("session wait 积压扫描完成", append(diag.Attrs(ctx), "member", member,
 			"from_seq", from, "through_seq", scan, "hits", len(backlog.Hits),
 			"elapsed_ns", time.Since(runStarted).Nanoseconds())...)
-		if len(backlog.Hits) > 0 {
+		if len(backlog.Hits) > 0 || len(backlog.TaskTicketNotices) > 0 {
 			// stdout 成功才算交付（契约第 58 条）；随后推进到最高命中 seq。
 			if err := enc.Encode(backlog); err != nil {
 				return fmt.Errorf("session wait 输出积压摘要: %w", err)
+			}
+			for _, notice := range backlog.TaskTicketNotices {
+				if err := st.SetTaskTicketNoticeStatus(notice.Notice.SourceMachine, notice.Notice.TaskID,
+					notice.Notice.TicketID, notice.Notice.OwnershipVersion, "delivered", "", ""); err != nil {
+					return fmt.Errorf("session wait 确认工单通知送达: %w", err)
+				}
 			}
 			if sessionWaitBeforeAdvance != nil {
 				sessionWaitBeforeAdvance(key, backlog.ToSeq)
@@ -482,6 +539,25 @@ func sessionWaitRun(ctx context.Context, svc *collab.Service, st *ledger.Store, 
 				return err
 			}
 			for _, h := range hits {
+				if h.notice != nil {
+					wake := proto.SessionTicketNoticeWake{Type: "task_ticket_notice", Notice: *h.notice, Status: "delivered"}
+					if err := enc.Encode(wake); err != nil {
+						return fmt.Errorf("session wait 输出原工单通知: %w", err)
+					}
+					if err := st.SetTaskTicketNoticeStatus(h.notice.SourceMachine, h.notice.TaskID,
+						h.notice.TicketID, h.notice.OwnershipVersion, "delivered", "", ""); err != nil {
+						return fmt.Errorf("session wait 确认工单通知送达: %w", err)
+					}
+					if !sinceSet {
+						if err := st.AdvanceSessionDeliveryCursor(key, h.ev.Seq); err != nil {
+							return fmt.Errorf("session wait 推进工单通知水位: %w", err)
+						}
+					}
+					if !follow {
+						return nil
+					}
+					continue
+				}
 				wake, err := buildSessionWake(svc, h.ev, h.msg, member)
 				if err != nil {
 					return err

@@ -30,6 +30,7 @@ printf 'env:HOME=%s\n' "$HOME" >>"$COORD_CAPTURE"
 printf 'env:PWD=%s\n' "$(pwd -P)" >>"$COORD_CAPTURE"
 printf 'env:HANDOFF_SESSION_CLI=%s\n' "${HANDOFF_SESSION_CLI-<unset>}" >>"$COORD_CAPTURE"
 printf 'env:HANDOFF_SESSION_ID=%s\n' "${HANDOFF_SESSION_ID-<unset>}" >>"$COORD_CAPTURE"
+printf 'env:HANDOFF_ORIGIN_SESSION=%s\n' "${HANDOFF_ORIGIN_SESSION-<unset>}" >>"$COORD_CAPTURE"
 printf '%s\n' '{"type":"step_start","sessionID":"runner-sess","part":{"type":"step-start"}}'
 printf '%s\n' '{"type":"text","sessionID":"runner-sess","part":{"type":"text","text":"runner-ok"}}'
 printf '%s\n' '{"type":"step_finish","sessionID":"runner-sess","part":{"type":"step-finish","reason":"stop"}}'
@@ -264,6 +265,7 @@ func TestB444ResidentResumeHasNoSeatEnv(t *testing.T) {
 		func(keysclient.SessionSpec) (string, error) { return home, nil }, rooms.IsPushResidentSession)
 	if _, err := runner.Resume(keysclient.SessionRef{
 		CLI: "opencode", SessionID: "ses_resident", HomeDir: home, Workdir: t.TempDir(),
+		Env: []string{"HANDOFF_ORIGIN_SESSION=" + session.ID, "HANDOFF_SESSION_ID=must-not-leak"},
 	}, "resident resume"); err != nil {
 		t.Fatalf("runner.Resume(resident): %v", err)
 	}
@@ -271,6 +273,9 @@ func TestB444ResidentResumeHasNoSeatEnv(t *testing.T) {
 		if got, _ := b435CapturedEnv(t, capture, key); got != "<unset>" {
 			t.Fatalf("驻场续轮子进程 %s=%q，want <unset>（驻场回合不注入卡席位对）", key, got)
 		}
+	}
+	if got, _ := b435CapturedEnv(t, capture, "HANDOFF_ORIGIN_SESSION"); got != session.ID {
+		t.Fatalf("驻场续轮 HANDOFF_ORIGIN_SESSION=%q，want %q", got, session.ID)
 	}
 	if err := os.Remove(capture); err != nil {
 		t.Fatal(err)
@@ -282,6 +287,9 @@ func TestB444ResidentResumeHasNoSeatEnv(t *testing.T) {
 	}
 	if got, _ := b435CapturedEnv(t, capture, "HANDOFF_SESSION_ID"); got != "ses_card" {
 		t.Fatalf("卡续轮子进程 HANDOFF_SESSION_ID=%q，want ses_card（卡回合照旧注入）", got)
+	}
+	if got, _ := b435CapturedEnv(t, capture, "HANDOFF_ORIGIN_SESSION"); got != "<unset>" {
+		t.Fatalf("无origin的卡续轮 HANDOFF_ORIGIN_SESSION=%q，want <unset>", got)
 	}
 }
 

@@ -125,6 +125,132 @@ func TestB353CardWaitDefaultEmitsFirstActionAndExits(t *testing.T) {
 	}
 }
 
+func TestCardWaitReceivesAddressedTaskTicketNoticeAndAcknowledgesIt(t *testing.T) {
+	dir := t.TempDir()
+	cardID := createCardWaitFixture(t, dir)
+	st, err := ledger.Open(filepath.Join(dir, "ledger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.BindSeatMode(cardID, "cli:opencode#s1", proto.SeatSourceBind, proto.SeatModePull, ledger.SeatBearing{}); err != nil {
+		_ = st.Close()
+		t.Fatalf("bind notice recipient card: %v", err)
+	}
+	target := proto.DeliveryAddress{Kind: proto.DeliverySeat, Session: "session:1", Card: cardID, Identity: "cli:opencode#s1"}
+	state, changed, err := st.PutTaskTicketNotice(ledger.TaskTicketNoticeState{
+		SourceMachine: "exec-a", TaskID: "bare-task", TicketID: "bare-task:p1", TicketKind: "gate",
+		SourceSeq: 5, Target: &target,
+	}, "test")
+	if err != nil || !changed {
+		_ = st.Close()
+		t.Fatalf("put card notice: %+v changed=%v err=%v", state, changed, err)
+	}
+	_ = st.Close()
+	out, _, err := runLedgerCLI(t, dir, "card", "wait", cardID, "--since", "0")
+	if err != nil {
+		t.Fatalf("card wait: %v output=%s", err, out)
+	}
+	lines := cardWaitActionableLines(out)
+	if len(lines) != 1 {
+		t.Fatalf("card wait should emit exactly one addressed notice: %q", out)
+	}
+	var event ledger.Event
+	if err := json.Unmarshal([]byte(lines[0]), &event); err != nil {
+		t.Fatalf("decode event: %v line=%s", err, lines[0])
+	}
+	if event.Type != ledger.EvTaskTicketNotice || event.CardID != cardID {
+		t.Fatalf("card wait emitted %+v", event)
+	}
+	st, err = ledger.Open(filepath.Join(dir, "ledger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	current, err := st.GetTaskTicketNotice("exec-a", "bare-task", "bare-task:p1")
+	if err != nil || current.Status != "delivered" {
+		t.Fatalf("target card wait should acknowledge only after stdout: state=%+v err=%v", current, err)
+	}
+}
+
+func TestCardWaitSuppressesLegacyMirroredTicketWhenNoticeExists(t *testing.T) {
+	dir := t.TempDir()
+	cardID := createCardWaitFixture(t, dir)
+	st, err := ledger.Open(filepath.Join(dir, "ledger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	seat := "cli:opencode#pull"
+	if err := st.BindSeatMode(cardID, seat, proto.SeatSourceBind, proto.SeatModePull, ledger.SeatBearing{}); err != nil {
+		t.Fatal(err)
+	}
+	target := proto.DeliveryAddress{Kind: proto.DeliverySeat, Card: cardID, Identity: seat}
+	if _, _, err := st.PutTaskTicketNotice(ledger.TaskTicketNoticeState{SourceMachine: "exec-a", TaskID: "task-a",
+		TicketID: "task-a:q1", TicketKind: "ask", SourceSeq: 7, Target: &target}, "test"); err != nil {
+		t.Fatal(err)
+	}
+	inserted, err := st.AppendMirroredEvent(cardID, ledger.MirroredEvent{Target: "exec-a", Task: "task-a", SourceSeq: 7,
+		Type: string(proto.EventTypeQuestion), Payload: []byte(`{"ticket_id":"task-a:q1","question":"approve?"}`)})
+	if err != nil || !inserted {
+		t.Fatalf("append legacy mirrored source event: inserted=%v err=%v", inserted, err)
+	}
+	events, err := st.EventsFromAsc([]string{cardID}, 0, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ev := range events {
+		if ev.Type != ledger.EvTaskMirrored {
+			continue
+		}
+		actionable, err := cardWaitEventActionable(st, ev)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if actionable {
+			t.Fatalf("legacy mirror duplicated addressed notice: seq=%d", ev.Seq)
+		}
+	}
+}
+
+func TestCardWaitRejectsOldSeatAfterRebindBeforeNoticeRefresh(t *testing.T) {
+	dir := t.TempDir()
+	cardID := createCardWaitFixture(t, dir)
+	st, err := ledger.Open(filepath.Join(dir, "ledger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	oldSeat, newSeat := "cli:codex#old", "cli:codex#new"
+	if err := st.BindSeatMode(cardID, oldSeat, proto.SeatSourceBind, proto.SeatModePull, ledger.SeatBearing{}); err != nil {
+		t.Fatal(err)
+	}
+	target := proto.DeliveryAddress{Kind: proto.DeliverySeat, Card: cardID, Identity: oldSeat}
+	if _, _, err := st.PutTaskTicketNotice(ledger.TaskTicketNoticeState{SourceMachine: "exec-a", TaskID: "task", TicketID: "task:q1",
+		TicketKind: "ask", SourceSeq: 1, Target: &target}, "test"); err != nil {
+		t.Fatal(err)
+	}
+	events, err := st.EventsFromAsc([]string{cardID}, 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var notice ledger.Event
+	for _, event := range events {
+		if event.Type == ledger.EvTaskTicketNotice {
+			notice = event
+			break
+		}
+	}
+	if notice.Seq == 0 {
+		t.Fatal("expected addressed notice event")
+	}
+	if err := st.RebindSeatMode(cardID, newSeat, proto.SeatSourceBind, proto.SeatModePull, oldSeat, ledger.SeatBearing{}); err != nil {
+		t.Fatal(err)
+	}
+	if actionable, err := cardWaitEventActionable(st, notice); err != nil || actionable {
+		t.Fatalf("old-seat notice after rebind must be rejected: actionable=%v err=%v", actionable, err)
+	}
+}
+
 func TestB353CardWaitFollowFiltersAndContinues(t *testing.T) {
 	dir := t.TempDir()
 	cardID := createCardWaitFixture(t, dir)

@@ -274,6 +274,19 @@ func (s *Service) LeaveCard(sessionID, cardID, actor string) error {
 	return mapSessionError(s.lc.LeaveCardToSession(sessionID, cardID, actor))
 }
 
+// SessionOfCard returns the explicitly registered collaboration session for a card; an empty value means unassociated.
+func (s *Service) SessionOfCard(cardID string) (string, error) {
+	if cardID == "" {
+		return "", fmt.Errorf("读取卡会话关联需要 card id")
+	}
+	session, err := s.lc.SessionOfCard(cardID)
+	if err != nil {
+		log().Warn("读取卡会话关联失败", "card", cardID, "cause", err)
+		return "", mapSessionError(err)
+	}
+	return session, nil
+}
+
 // 驻场者写面哨兵（B435 R）。占位/不在座直接复用出站哨兵，调用方（CLI）只依赖 collab 包。
 var (
 	// ErrResidentIdentity 驻场者身份不是统一记法 user:<n>/agent:<n>（C-413），或是系统发信身份（Q14 甲）。

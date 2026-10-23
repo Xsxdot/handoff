@@ -5,10 +5,12 @@ package ledgermirror
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -102,6 +104,336 @@ func TestMirrorFlowsLinkedTaskEvents(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	t.Fatal("镜像未按期落账（应恰 2 条：progress 过滤、幂等不重）")
+}
+
+func TestMirrorNoticeFailureDoesNotAdvanceSourceCursor(t *testing.T) {
+	s := testLedger(t)
+	c, _ := s.CreateCard(ledger.NewCard{Title: "通知游标", Project: "p", Workflow: "bug", Actor: "t"})
+	if err := s.LinkTask(c.ID, "mac-notice", "T-notice", ledger.PurposeReview, "t"); err != nil {
+		t.Fatal(err)
+	}
+	calls := make(chan int64, 4)
+	noticeCalls := make(chan struct{}, 4)
+	source := func(ctx context.Context, _ client.EventStreamClient, taskID string, from int64, onEvent func(proto.Event) error) error {
+		calls <- from
+		if from < 1 {
+			if err := onEvent(proto.Event{Seq: 1, TaskID: taskID, Type: proto.EventTypeQuestion,
+				Payload: []byte(`{"ticket_id":"T-notice:q1","kind":"ask"}`)}); err != nil {
+				return err
+			}
+		}
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	m := New(s, machinesWith(t, "mac-notice"), Options{Holder: "notice-window", Tick: 20 * time.Millisecond,
+		LeaseTTL: time.Second, Source: source, TicketNotice: func(string, string, string, string, proto.Event) error {
+			noticeCalls <- struct{}{}
+			return errors.New("injected notice persistence failure")
+		}})
+	ctx, cancel := context.WithCancel(context.Background())
+	go m.Run(ctx)
+	t.Cleanup(func() { cancel(); m.Stop() })
+	var first, second int64
+	select {
+	case first = <-calls:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first subscription absent")
+	}
+	select {
+	case second = <-calls:
+	case <-time.After(5 * time.Second):
+		t.Fatal("reconnect absent")
+	}
+	if first != 0 || second != 0 {
+		t.Fatalf("failed notice must not advance source cursor, first=%d second=%d", first, second)
+	}
+	if len(noticeCalls) < 2 {
+		t.Fatalf("failed notice event was not replayed; calls=%d", len(noticeCalls))
+	}
+}
+
+type originTaskMachines struct {
+	*fakeMachines
+	tasks map[string][]proto.TaskView
+}
+
+func (m *originTaskMachines) Tasks(_ context.Context, name string) ([]proto.TaskView, error) {
+	return m.tasks[name], nil
+}
+
+func TestMirrorDiscoversUnlinkedOriginSessionTasks(t *testing.T) {
+	s := testLedger(t)
+	base := machinesWith(t, "mac-origin")
+	machines := &originTaskMachines{fakeMachines: base, tasks: map[string][]proto.TaskView{
+		"mac-origin": {
+			{Task: proto.Task{ID: "bare-1", OriginSession: "session:7", State: proto.TaskStateWaitingAnswer}},
+			{Task: proto.Task{ID: "bare-unknown", State: proto.TaskStateWaitingAnswer}},
+		},
+	}}
+	subscribed := make(chan string, 2)
+	source := func(ctx context.Context, _ client.EventStreamClient, taskID string, from int64,
+		onEvent func(proto.Event) error) error {
+		subscribed <- taskID
+		if from < 1 {
+			if err := onEvent(proto.Event{Seq: 1, TaskID: taskID, Type: proto.EventTypeQuestion,
+				Payload: []byte(`{"ticket_id":"bare-1:q1","kind":"ask"}`)}); err != nil {
+				return err
+			}
+		}
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	m := New(s, machines, Options{Holder: "test-origin", Tick: 20 * time.Millisecond,
+		LeaseTTL: time.Second, Source: source})
+	ctx, cancel := context.WithCancel(context.Background())
+	go m.Run(ctx)
+	t.Cleanup(func() { cancel(); m.Stop() })
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		seenSubscriptions := map[string]bool{}
+		for len(seenSubscriptions) < 2 {
+			select {
+			case taskID := <-subscribed:
+				seenSubscriptions[taskID] = true
+			default:
+				break
+			}
+			if len(seenSubscriptions) < 2 {
+				break
+			}
+		}
+		if seenSubscriptions["bare-1"] && seenSubscriptions["bare-unknown"] {
+			return
+		}
+		events, err := s.EventsFromAsc(nil, 0, 100)
+		if err == nil {
+			for _, ev := range events {
+				if ev.Type != ledger.EvTaskMirrored {
+					continue
+				}
+				var envelope struct {
+					TaskType string `json:"task_type"`
+				}
+				if json.Unmarshal(ev.Payload, &envelope) == nil && envelope.TaskType == string(proto.EventTypeQuestion) {
+					return
+				}
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("未挂卡且有 origin_session 的任务没有进入现有 per-task 事件镜像")
+}
+
+func TestMirrorDiscoversBareLocalOriginTaskWithoutRemoteTargets(t *testing.T) {
+	s := testLedger(t)
+	machines := newFakeMachines()
+	type localSub struct{ target, task string }
+	local := func(ctx context.Context, _ client.EventStreamClient, taskID string, _ int64, onEvent func(proto.Event) error) error {
+		if err := onEvent(proto.Event{Seq: 1, TaskID: taskID, Type: proto.EventTypeQuestion,
+			Payload: []byte(`{"ticket_id":"bare-local:q1"}`)}); err != nil {
+			return err
+		}
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	noticeSource := make(chan localSub, 1)
+	m := New(s, machines, Options{Holder: "bare-local-test", Tick: 20 * time.Millisecond,
+		LeaseTTL: time.Second, LocalSource: local, LocalTasks: func(context.Context) ([]proto.TaskView, error) {
+			return []proto.TaskView{{Task: proto.Task{ID: "bare-local", OriginSession: "session:7", State: proto.TaskStateWaitingAnswer}}}, nil
+		}, TicketNotice: func(target, taskID, _ string, _ string, _ proto.Event) error {
+			noticeSource <- localSub{target: target, task: taskID}
+			return nil
+		}})
+	ctx, cancel := context.WithCancel(context.Background())
+	go m.Run(ctx)
+	defer func() { cancel(); m.Stop() }()
+	select {
+	case sub := <-noticeSource:
+		if sub.task != "bare-local" || sub.target != "bare-local-test" {
+			t.Fatalf("subscribed target/task=%q/%q", sub.target, sub.task)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("bare local task was not discovered with an empty remote target pool")
+	}
+}
+
+type blockingOriginInventory struct {
+	*originTaskMachines
+	blocked string
+}
+
+func (m *blockingOriginInventory) Tasks(ctx context.Context, name string) ([]proto.TaskView, error) {
+	if name == m.blocked {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	return m.originTaskMachines.Tasks(ctx, name)
+}
+
+type delayedOriginInventory struct {
+	*originTaskMachines
+	delay time.Duration
+}
+
+func (m *delayedOriginInventory) Tasks(ctx context.Context, name string) ([]proto.TaskView, error) {
+	timer := time.NewTimer(m.delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-timer.C:
+		return m.originTaskMachines.Tasks(ctx, name)
+	}
+}
+
+type changeableOriginInventory struct {
+	*originTaskMachines
+	mu      sync.Mutex
+	fail    bool
+	include bool
+	called  chan bool
+}
+
+func (m *changeableOriginInventory) Tasks(ctx context.Context, name string) ([]proto.TaskView, error) {
+	m.mu.Lock()
+	fail, include := m.fail, m.include
+	m.mu.Unlock()
+	m.called <- fail
+	if fail {
+		return nil, errors.New("injected inventory outage")
+	}
+	if !include {
+		return []proto.TaskView{}, nil
+	}
+	return m.originTaskMachines.Tasks(ctx, name)
+}
+
+func TestMirrorInventoryErrorRetainsLastGoodUntilSuccessfulEmpty(t *testing.T) {
+	s := testLedger(t)
+	base := &originTaskMachines{fakeMachines: machinesWith(t, "flaky"), tasks: map[string][]proto.TaskView{
+		"flaky": {{Task: proto.Task{ID: "retained", State: proto.TaskStateWaitingAnswer}}},
+	}}
+	machines := &changeableOriginInventory{originTaskMachines: base, include: true, called: make(chan bool, 8)}
+	started, canceled := make(chan string, 4), make(chan string, 4)
+	source := func(ctx context.Context, _ client.EventStreamClient, taskID string, _ int64, _ func(proto.Event) error) error {
+		started <- taskID
+		<-ctx.Done()
+		canceled <- taskID
+		return ctx.Err()
+	}
+	m := New(s, machines, Options{Holder: "inventory-retain", Tick: 30 * time.Millisecond, LeaseTTL: time.Second, Source: source})
+	ctx, cancel := context.WithCancel(context.Background())
+	go m.Run(ctx)
+	defer func() { cancel(); m.Stop() }()
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("initial task inventory was not subscribed")
+	}
+	for {
+		select {
+		case <-machines.called:
+		default:
+			goto initialDrained
+		}
+	}
+initialDrained:
+	machines.mu.Lock()
+	machines.fail = true
+	machines.mu.Unlock()
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case failed := <-machines.called:
+			if failed {
+				goto failedObserved
+			}
+		case <-deadline:
+			t.Fatal("failed inventory retry was not observed")
+		}
+	}
+failedObserved:
+	time.Sleep(50 * time.Millisecond)
+	select {
+	case task := <-canceled:
+		t.Fatalf("inventory error incorrectly removed last-good task subscription %q", task)
+	default:
+	}
+	machines.mu.Lock()
+	machines.fail, machines.include = false, false
+	machines.mu.Unlock()
+	deadline = time.After(2 * time.Second)
+	for {
+		select {
+		case failed := <-machines.called:
+			if !failed {
+				goto emptyObserved
+			}
+		case <-deadline:
+			t.Fatal("successful empty inventory retry was not observed")
+		}
+	}
+emptyObserved:
+	select {
+	case task := <-canceled:
+		if task != "retained" {
+			t.Fatalf("canceled task=%q", task)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("successful empty inventory did not remove the task")
+	}
+}
+
+func TestMirrorIncludesInventoryThatReturnsAfter450ms(t *testing.T) {
+	s := testLedger(t)
+	machines := &delayedOriginInventory{originTaskMachines: &originTaskMachines{
+		fakeMachines: machinesWith(t, "slow-live"),
+		tasks:        map[string][]proto.TaskView{"slow-live": {{Task: proto.Task{ID: "late-inventory", OriginSession: "session:late", State: proto.TaskStateWaitingAnswer}}}},
+	}, delay: 450 * time.Millisecond}
+	subscribed := make(chan string, 1)
+	source := func(ctx context.Context, _ client.EventStreamClient, taskID string, _ int64, _ func(proto.Event) error) error {
+		subscribed <- taskID
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	m := New(s, machines, Options{Holder: "slow-inventory", Tick: 20 * time.Millisecond, LeaseTTL: time.Second, Source: source})
+	ctx, cancel := context.WithCancel(context.Background())
+	go m.Run(ctx)
+	defer func() { cancel(); m.Stop() }()
+	select {
+	case task := <-subscribed:
+		if task != "late-inventory" {
+			t.Fatalf("subscribed task=%q", task)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("valid 450ms task inventory was not included")
+	}
+}
+
+func TestMirrorInventoryBlackholeDoesNotBlockHealthyMachine(t *testing.T) {
+	s := testLedger(t)
+	machines := &blockingOriginInventory{originTaskMachines: &originTaskMachines{
+		fakeMachines: machinesWith(t, "a-blackhole", "b-live"),
+		tasks:        map[string][]proto.TaskView{"b-live": {{Task: proto.Task{ID: "waiting", State: proto.TaskStateWaitingAnswer}}}},
+	}, blocked: "a-blackhole"}
+	subscribed := make(chan string, 1)
+	source := func(ctx context.Context, _ client.EventStreamClient, taskID string, _ int64, _ func(proto.Event) error) error {
+		subscribed <- taskID
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	m := New(s, machines, Options{Holder: "inventory-isolation", Tick: 20 * time.Millisecond, LeaseTTL: time.Second, Source: source})
+	ctx, cancel := context.WithCancel(context.Background())
+	go m.Run(ctx)
+	defer func() { cancel(); m.Stop() }()
+	select {
+	case task := <-subscribed:
+		if task != "waiting" {
+			t.Fatalf("subscribed task=%q", task)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("blackholed inventory blocked healthy machine discovery")
+	}
 }
 
 // TestB2336MirrorSourceEventCoverage keeps the source-to-card seam explicit:

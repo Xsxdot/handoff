@@ -11,8 +11,31 @@ package proto
 
 import (
 	"encoding/json"
+	"fmt"
+	"strings"
 	"time"
 )
+
+// ValidateOriginSessionID checks the conservative portable session-id shape used by task origin routing.
+// It validates syntax only and does not claim that the session exists or is reachable.
+func ValidateOriginSessionID(id string) error {
+	if id == "" || len(id) > 200 || strings.TrimSpace(id) != id {
+		return fmt.Errorf("会话 id 必须为 1..200 个无首尾空白字符")
+	}
+	value := id
+	if strings.HasPrefix(value, "session:") {
+		value = strings.TrimPrefix(value, "session:")
+	}
+	if value == "" {
+		return fmt.Errorf("会话 id 主体不能为空")
+	}
+	for _, r := range value {
+		if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '_' && r != '-' {
+			return fmt.Errorf("会话 id 含非法字符 %q", r)
+		}
+	}
+	return nil
+}
 
 // TaskState 表示任务所处状态。
 type TaskState string
@@ -224,10 +247,13 @@ type SpendEntry struct {
 // JSON 线格式契约（CLI wait/tasks/attach 输出与 server WS/REST 共用此结构，
 // key 必须小写——上层脚本按 {"id":..,"state":..,"created_at":..} 解析）。
 type Task struct {
-	ID       string `json:"id"`
-	Target   string `json:"target"`
-	RepoPath string `json:"repo_path"`
-	HomeDir  string `json:"home_dir,omitempty"` // 载体派发的隔离 HOME；空串表示旧任务或普通派发。
+	ID string `json:"id"`
+	// OriginSession is the explicitly supplied session that initiated a bare task.
+	// Empty means unknown (including every task created before this field existed).
+	OriginSession string `json:"origin_session,omitempty"`
+	Target        string `json:"target"`
+	RepoPath      string `json:"repo_path"`
+	HomeDir       string `json:"home_dir,omitempty"` // 载体派发的隔离 HOME；空串表示旧任务或普通派发。
 	// Carrier 是派发时绑定的载体名（B233.5）。空=旧任务或尚未接线的派发。
 	// 落盘列归实现节点；本字段先冻结 JSON 键。
 	Carrier string `json:"carrier,omitempty"`
@@ -448,11 +474,21 @@ type Ticket struct {
 	// DeliveredAt 是应答送达 executor 的时刻；非 nil 才代表 executor 真的收到了。
 	// 与 AnsweredAt 分开记录：「协调者已裁决」与「裁决已送达」是两件事实，
 	// 合并会让中继失败后无从判断该不该重投（见 Manager.RecoverStuck）。
-	DeliveredAt *time.Time `json:"delivered_at"`
+	DeliveredAt  *time.Time          `json:"delivered_at"`
+	Notification *TicketNotification `json:"notification,omitempty"`
 	// Fingerprint 是 gate 工单的裁决指纹：权限描述全文的 sha256 十六进制串。
 	// 它让「协调者是不是已经就同一件事表过态」成为一次索引查询而不是全表扫文本。
 	// ask 工单不参与复用，留空。
 	Fingerprint string `json:"fingerprint"`
+}
+
+// TicketNotification is the delivery projection for the original ticket. It does
+// not alter the ticket's answer authority or carry an answer.
+type TicketNotification struct {
+	Status           string `json:"status"`
+	Reason           string `json:"reason,omitempty"`
+	OwnershipVersion int64  `json:"ownership_version"`
+	LastError        string `json:"last_error,omitempty"`
 }
 
 // transitTable 是任务状态机迁移表，key 为来源状态，value 为允许迁移到的状态集合。

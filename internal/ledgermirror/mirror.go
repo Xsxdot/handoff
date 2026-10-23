@@ -49,9 +49,17 @@ type Options struct {
 	LeaseTTL    time.Duration
 	Source      Source
 	LocalSource Source
+	// LocalTasks is the host's public task inventory. It is read independently
+	// of the remote pool because the local machine is deliberately absent there.
+	LocalTasks func(context.Context) ([]proto.TaskView, error)
 	// IsSelfTarget 是无自名时的回退判据（地址判）。有 SelfName 时不再参与
 	// 名字面判等。
 	IsSelfTarget func(target string) bool
+	// TicketNotice records the separately addressed route for permission/question
+	// events before the source cursor is committed. Replays are expected and must be idempotent.
+	TicketNotice func(target, taskID, cardID, originSession string, event proto.Event) error
+	// RefreshTicketNotice re-resolves active notices from current task/card/resident facts.
+	RefreshTicketNotice func(target, taskID, cardID, originSession string, current ledger.TaskTicketNoticeState) error
 }
 
 // LocalEventStore is the persisted-event boundary used by the local source.
@@ -83,6 +91,12 @@ type Machines interface {
 	// 对账按实例判等识别「机器配置已变更」（B163 ②），在适配层另造副本
 	// 会让订阅每轮退订重订。
 	For(name string) (client.EventStreamClient, error)
+}
+
+// TaskInventory is an optional read side implemented by production machine
+// adapters. It discovers explicitly session-originated tasks that have no card link.
+type TaskInventory interface {
+	Tasks(ctx context.Context, name string) ([]proto.TaskView, error)
 }
 
 // subscription 是一条在飞订阅的登记：取消函数 + 它当时用的客户端实例。
@@ -196,18 +210,21 @@ type Mirror struct {
 	opt      Options
 	log      *slog.Logger
 
-	holding    atomic.Bool
-	mu         sync.Mutex
-	subs       map[string]*subscription
-	conn       map[string]bool
-	ended      map[string]bool
-	wg         sync.WaitGroup
-	wgMu       sync.Mutex
-	runMu      sync.Mutex
-	runStop    context.CancelFunc
-	runDone    chan struct{}
-	runStarted atomic.Bool
-	stopAsked  atomic.Bool
+	holding        atomic.Bool
+	mu             sync.Mutex
+	subs           map[string]*subscription
+	conn           map[string]bool
+	ended          map[string]bool
+	inventoryMu    sync.Mutex
+	taskInventory  map[string][]proto.TaskView
+	localInventory []proto.TaskView
+	wg             sync.WaitGroup
+	wgMu           sync.Mutex
+	runMu          sync.Mutex
+	runStop        context.CancelFunc
+	runDone        chan struct{}
+	runStarted     atomic.Bool
+	stopAsked      atomic.Bool
 }
 
 // New 构造。
@@ -233,7 +250,8 @@ func New(st *ledger.Store, machines Machines, opt Options) *Mirror {
 	}
 	return &Mirror{st: st, machines: machines, opt: opt,
 		log:  slog.Default().With("subsystem", "ledgermirror"),
-		subs: map[string]*subscription{}, conn: map[string]bool{}, ended: map[string]bool{}}
+		subs: map[string]*subscription{}, conn: map[string]bool{}, ended: map[string]bool{},
+		taskInventory: map[string][]proto.TaskView{}}
 }
 
 func (m *Mirror) setConn(key string, ok bool) {
@@ -252,10 +270,23 @@ func (m *Mirror) isLocalTarget(target string) bool {
 	if target == "" {
 		return true
 	}
+	if localName := m.localTargetName(); localName != "" && target == localName {
+		return true
+	}
 	if m.opt.SelfName != "" {
 		return target == m.opt.SelfName
 	}
 	return m.opt.IsSelfTarget != nil && m.opt.IsSelfTarget(target)
+}
+
+func (m *Mirror) localTargetName() string {
+	if m.opt.SelfName != "" {
+		return m.opt.SelfName
+	}
+	if m.opt.Holder != "" && m.opt.Holder != "unknown" {
+		return m.opt.Holder
+	}
+	return ""
 }
 
 // Holding 当前是否持有镜像 lease（测试与状态面用）。
@@ -331,6 +362,23 @@ func (m *Mirror) Stop() {
 // 三条判据都取自活配置（经 Machines）：机器在不在、客户端是不是同一个实例、
 // 该机器本轮取不取得到客户端。任何一条不成立都收掉对应订阅——镜像宁可少订，
 // 也不能拿旧凭据连下去（那正是 B163 ② 的形态：改了地址却永不生效）。
+func (m *Mirror) addInventoryTask(want map[string]ledger.TaskLink, linked map[string]bool,
+	originSessions map[string]string, target string, task proto.TaskView) {
+	key := target + "/" + task.ID
+	originSessions[key] = task.OriginSession
+	if linked[key] {
+		link := want[key]
+		link.OriginSession = task.OriginSession
+		want[key] = link
+		return
+	}
+	if task.OriginSession == "" && task.State != proto.TaskStateWaitingAnswer {
+		return
+	}
+	want[key] = ledger.TaskLink{Target: target, TaskID: task.ID, Purpose: "origin_session", OriginSession: task.OriginSession}
+	m.log.Debug("发现未挂卡会话来源任务，纳入事件恢复", "target", target, "task", task.ID, "state", task.State)
+}
+
 func (m *Mirror) reconcile(ctx context.Context) {
 	names := m.machines.Names()
 	registered := make(map[string]bool, len(names))
@@ -353,6 +401,7 @@ func (m *Mirror) reconcile(ctx context.Context) {
 		return
 	}
 	want := map[string]ledger.TaskLink{}
+	linked := make(map[string]bool, len(links))
 	for _, link := range links {
 		if link.Target == "" {
 			// B439 S7：存量无归属 '' 挂账不迁移、不静默。仍按「持有者本机」尽力
@@ -385,6 +434,98 @@ func (m *Mirror) reconcile(ctx context.Context) {
 			continue
 		}
 		want[link.Target+"/"+link.TaskID] = link
+		linked[link.Target+"/"+link.TaskID] = true
+	}
+	// Bare tasks with explicit origin_session have no card_tasks row by design.
+	// The public task inventory plus per-task persisted event stream is the existing
+	// recovery source; do not fabricate a card link for these tasks.
+	originSessions := map[string]string{}
+	if inventory, ok := m.machines.(TaskInventory); ok {
+		type inventoryResult struct {
+			name  string
+			tasks []proto.TaskView
+			err   error
+		}
+		inventoryCtx, cancelInventory := context.WithCancel(ctx)
+		results := make(chan inventoryResult, len(names))
+		for _, name := range names {
+			name := name
+			go func() {
+				callCtx, cancel := context.WithTimeout(inventoryCtx, 2*time.Second)
+				defer cancel()
+				tasks, err := inventory.Tasks(callCtx, name)
+				results <- inventoryResult{name: name, tasks: tasks, err: err}
+			}()
+		}
+		for remaining := len(names); remaining > 0; {
+			select {
+			case result := <-results:
+				remaining--
+				if result.err != nil {
+					m.log.Warn("读取会话来源任务清单失败", "target", result.name, "cause", result.err)
+					continue
+				}
+				m.inventoryMu.Lock()
+				m.taskInventory[result.name] = append([]proto.TaskView(nil), result.tasks...)
+				m.inventoryMu.Unlock()
+			case <-ctx.Done():
+				remaining = 0
+			}
+		}
+		cancelInventory()
+		m.inventoryMu.Lock()
+		for _, name := range names {
+			for _, task := range m.taskInventory[name] {
+				m.addInventoryTask(want, linked, originSessions, name, task)
+			}
+		}
+		m.inventoryMu.Unlock()
+	}
+	if m.opt.LocalTasks != nil {
+		localCtx, cancelLocal := context.WithTimeout(ctx, 5*time.Second)
+		tasks, err := m.opt.LocalTasks(localCtx)
+		cancelLocal()
+		if err != nil {
+			m.log.Warn("读取本机来源任务清单失败，保留下轮重试", "target", m.opt.SelfName, "cause", err)
+		} else {
+			m.inventoryMu.Lock()
+			m.localInventory = append([]proto.TaskView(nil), tasks...)
+			m.inventoryMu.Unlock()
+		}
+		m.inventoryMu.Lock()
+		localTarget := m.localTargetName()
+		for _, task := range m.localInventory {
+			m.addInventoryTask(want, linked, originSessions, localTarget, task)
+		}
+		m.inventoryMu.Unlock()
+	}
+	if m.opt.RefreshTicketNotice != nil {
+		notices, err := m.st.ListActiveTaskTicketNotices()
+		if err != nil {
+			m.log.Warn("读取活动工单通知失败，保留现有路由", "cause", err)
+		} else {
+			for _, notice := range notices {
+				key := notice.SourceMachine + "/" + notice.TaskID
+				originSession, ok := originSessions[key]
+				if !ok {
+					continue
+				}
+				cardID, cardErr := m.st.CardOfTask(notice.SourceMachine, notice.TaskID)
+				if cardErr != nil && !errors.Is(cardErr, ledger.ErrNotFound) {
+					m.log.Warn("反查活动工单通知卡失败，保留原路由", "target", notice.SourceMachine,
+						"task", notice.TaskID, "ticket", notice.TicketID, "cause", cardErr)
+					continue
+				}
+				if errors.Is(cardErr, ledger.ErrNotFound) {
+					cardID = ""
+				}
+				if err := m.opt.RefreshTicketNotice(notice.SourceMachine, notice.TaskID, cardID, originSession, notice); err != nil {
+					m.log.Warn("刷新活动工单通知归属失败", "target", notice.SourceMachine,
+						"task", notice.TaskID, "ticket", notice.TicketID,
+						"ownership_version", notice.OwnershipVersion, "cause", err)
+				}
+			}
+		}
 	}
 
 	// 现取客户端：只对本轮真有挂账的机器取一次（For 不发网络请求）。
@@ -572,6 +713,16 @@ func (m *Mirror) subscribe(ctx context.Context, link ledger.TaskLink, c client.E
 					m.log.Debug("账本镜像过滤事件", "target", link.Target, "task", link.TaskID,
 						"node", link.Node, "attempt", link.Attempt, "seq", e.Seq, "type", e.Type)
 					return nil
+				}
+				// Record routing before the source cursor advances. If this fails,
+				// source replay is safe because notice writes are idempotent.
+				if m.opt.TicketNotice != nil && (e.Type == proto.EventTypeQuestion || e.Type == proto.EventTypePermissionRequest ||
+					e.Type == proto.EventTypeTicketAnswered || e.Type == proto.EventTypeTicketsVoided) {
+					if err := m.opt.TicketNotice(link.Target, link.TaskID, link.CardID, link.OriginSession, e); err != nil {
+						m.log.Warn("工单通知路由记录失败", "target", link.Target, "task", link.TaskID,
+							"source_seq", e.Seq, "type", e.Type, "cause", err)
+						return err
+					}
 				}
 				wrote, err := m.st.AppendMirroredEvent(link.CardID, ledger.MirroredEvent{
 					Target: link.Target, Task: link.TaskID, Node: link.Node, Attempt: link.Attempt, SourceSeq: e.Seq,

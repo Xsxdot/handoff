@@ -21,7 +21,7 @@
 // cursor 归属：浏览器不碰 ~/.handoff/cursor-*（那是 CLI 审核者的本机游标账本），
 // 这里从 from_seq=0 或已知最大 seq 续，是观察者；与 CLI 同时盯同一任务互不干扰。
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { ApiError, fetchTaskDetail, replyTicket } from '../../api/client'
+import { ApiError, fetchTaskDetail, replyTicket, retryTaskTicketNotification } from '../../api/client'
 import type { Event, TaskDetail, Ticket } from '../../api/types'
 import { connectEvents, type WsStatus } from '../../api/ws'
 import { errorMessage } from '../lib/format'
@@ -40,6 +40,7 @@ export interface TaskSession {
   sessionExpired: boolean
   refresh: () => void
   replyToTicket: (ticket: Ticket, answer: string) => Promise<void>
+  retryTicketNotification: (ticket: Ticket) => Promise<void>
 }
 
 export function useTaskSession(id: string | undefined): TaskSession {
@@ -173,6 +174,15 @@ export function useTaskSession(id: string | undefined): TaskSession {
     [id, refreshDetail],
   )
 
+  const retryTicketNotification = useCallback(
+    async (ticket: Ticket) => {
+      if (!id) return
+      await retryTaskTicketNotification(id, ticket.id)
+      void refreshDetail()
+    },
+    [id, refreshDetail],
+  )
+
   return {
     detail,
     events,
@@ -184,5 +194,6 @@ export function useTaskSession(id: string | undefined): TaskSession {
     sessionExpired,
     refresh: () => void refreshDetail(),
     replyToTicket,
+    retryTicketNotification,
   }
 }

@@ -163,6 +163,9 @@ func TestB444PushResidentResumesOnHumanMessage(t *testing.T) {
 	if ref.CLI != "opencode" || ref.HomeDir != b444Home || ref.Workdir != b444Workdir || ref.Model != b444Model {
 		t.Fatalf("续轮 ref 应取自驻场 bearing，得 %+v", ref)
 	}
+	if len(ref.Env) != 1 || ref.Env[0] != "HANDOFF_ORIGIN_SESSION="+session {
+		t.Fatalf("驻场续轮必须显式传递房间 origin_session，得 env=%v", ref.Env)
+	}
 	_, prompts := runner.snapshot()
 	if !strings.Contains(prompts[0], "--agent "+b444Squad) || !strings.Contains(prompts[0], session) {
 		t.Fatalf("驻场续轮简报应给出以 --agent %s 回到 %s 的发言命令: %q", b444Squad, session, prompts[0])
