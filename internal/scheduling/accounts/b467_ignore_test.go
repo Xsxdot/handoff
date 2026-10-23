@@ -215,3 +215,43 @@ func TestIgnoreMarkLifecycleAndDiscoveryNeverUndoesIt(t *testing.T) {
 		t.Fatalf("坏忽略行应按已忽略、at 未知: %+v %v", v, err)
 	}
 }
+
+// restoringAfterPut 模拟「忽略写入成功后、读回前另一人已恢复」：写忽略行之后的下一次读忽略行
+// 先删掉它再回 NotFound，让 Ignore 的读面 Ignored=nil（并发 Restore 的合法结果）。
+type restoringAfterPut struct {
+	*memRegistry
+	armed bool
+}
+
+func (r *restoringAfterPut) Put(kind, id string, expect int, body []byte, actor string) (int, error) {
+	v, err := r.memRegistry.Put(kind, id, expect, body, actor)
+	if err == nil && kind == accounts.KindIgnore {
+		r.armed = true
+	}
+	return v, err
+}
+
+func (r *restoringAfterPut) Get(kind, id string) (schedclient.Record, error) {
+	if r.armed && kind == accounts.KindIgnore {
+		r.armed = false
+		if rec, err := r.memRegistry.Get(kind, id); err == nil {
+			_ = r.memRegistry.Delete(kind, id, rec.Version, "test-restore")
+		}
+		return schedclient.Record{}, schedclient.ErrNotFound
+	}
+	return r.memRegistry.Get(kind, id)
+}
+
+// TestIgnoreSurvivesConcurrentRestoreBetweenPutAndRead 锁成功日志不得解引用可能为 nil 的
+// nv.Ignored：Put 与读回之间被并发 Restore 删掉忽略行时，忽略仍应返回「未忽略」读面而不 panic。
+func TestIgnoreSurvivesConcurrentRestoreBetweenPutAndRead(t *testing.T) {
+	svc := accounts.New(&restoringAfterPut{memRegistry: newMem()})
+	seedAccount(t, svc)
+	v, err := svc.Ignore(ogID, "linux-01")
+	if err != nil {
+		t.Fatalf("并发恢复后忽略应正常返回: %v", err)
+	}
+	if v.Ignored != nil {
+		t.Fatalf("读回时忽略行已被并发恢复删掉，Ignored 应为 nil: %+v", v.Ignored)
+	}
+}

@@ -101,7 +101,7 @@ function AccountDetail({ a }: { a: AccountView }) {
 /** IgnoreDialog 忽略确认：成功由 store.apply 把账号移进「已忽略」区；被载体引用（409）时点名并给换登录入口。 */
 function IgnoreDialog({ a, onClose }: { a: AccountView; onClose: () => void }) {
   const { apply } = useAccounts()
-  const [refs, setRefs] = useState<string[]>([])
+  const [refs, setRefs] = useState<string[]>(a.carriers)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const run = async () => {

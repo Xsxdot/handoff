@@ -248,22 +248,52 @@ describe('账号管理', () => {
     expect(screen.getByTestId('accounts-page').textContent).toContain('已恢复：og-mini 回到列表，下一轮由持有正常登录的机器探测。')
   })
 
-  it('被载体引用时拒绝忽略：点名载体并可跳去设置·自动化', async () => {
+  it('快照已知被载体引用时，点「忽略」直接显示不能忽略，不先出确认框也不调 API', async () => {
     const user = userEvent.setup()
-    vi.mocked(ignoreAccount).mockRejectedValue(new ApiError(409, '不能忽略', { error: '不能忽略', carriers: ['dp'] }))
     render(<AccountsPage />)
     await user.click(within(card('og-team')).getByRole('button', { name: '忽略' }))
-    await user.click(within(screen.getByRole('dialog', { name: '忽略账号 og-team？' })).getByRole('button', { name: '忽略' }))
-    const blocked = await screen.findByRole('dialog', { name: '不能忽略 og-team' })
+    const blocked = screen.getByRole('dialog', { name: '不能忽略 og-team' })
     expect(blocked.textContent).toContain('仍有 1 个载体在用它的登录：dp')
     expect(within(blocked).getByRole('link', { name: '去改载体' })).toHaveAttribute('href', '/settings?section=automation')
     expect(within(blocked).getByRole('button', { name: '关闭' })).toBeVisible()
+    expect(ignoreAccount).not.toHaveBeenCalled()
     expect(screen.getByTestId('acard-og-team')).toBeInTheDocument()
+  })
+
+  it('快照过旧（carriers 为空）时由 409 兜底切换为不能忽略', async () => {
+    const user = userEvent.setup()
+    __setAccountsForTest(sampleAccounts().map((a) => (a.name === 'og-team' ? { ...a, carriers: [] } : a)))
+    vi.mocked(ignoreAccount).mockRejectedValue(new ApiError(409, '不能忽略', { error: '不能忽略', carriers: ['dp'] }))
+    render(<AccountsPage />)
+    await user.click(within(card('og-team')).getByRole('button', { name: '忽略' }))
+    const confirm = screen.getByRole('dialog', { name: '忽略账号 og-team？' })
+    await user.click(within(confirm).getByRole('button', { name: '忽略' }))
+    expect(ignoreAccount).toHaveBeenCalledWith('opencode-go:og-team')
+    const blocked = await screen.findByRole('dialog', { name: '不能忽略 og-team' })
+    expect(blocked.textContent).toContain('仍有 1 个载体在用它的登录：dp')
+    expect(within(blocked).getByRole('button', { name: '关闭' })).toBeVisible()
   })
 
   it('没有已忽略账号时整节不渲染', () => {
     render(<AccountsPage />)
     expect(screen.queryByTestId('ignored-section')).toBeNull()
+  })
+
+  it('快照里的已忽略账号只进「已忽略」区，不进六组分组（B-m5）', () => {
+    __setAccountsForTest([...sampleAccounts(), ignoredAccount()])
+    render(<AccountsPage />)
+    expect(screen.queryByTestId('acard-og-hidden')).toBeNull()
+    expect(card('og-main')).toBeInTheDocument()
+    const sec = screen.getByTestId('ignored-section')
+    expect(within(sec).getByTestId('ignored-og-hidden')).toBeInTheDocument()
+  })
+
+  it('忽略时刻是零值时间戳时显示「时间未知」，不显示巨大的「天前」（B-m2）', () => {
+    __setAccountsForTest([...sampleAccounts(), { ...ignoredAccount(), ignored: { at: '0001-01-01T00:00:00Z', by: 'linux-01' } }])
+    render(<AccountsPage />)
+    const row = within(screen.getByTestId('ignored-section')).getByTestId('ignored-og-hidden')
+    expect(row.textContent).toContain('时间未知')
+    expect(row.textContent).not.toContain('天前')
   })
 })
 
@@ -376,7 +406,7 @@ describe('新增登录（三步）', () => {
     __setAccountsForTest([...sampleAccounts(), ignoredAccount()])
     vi.mocked(createLoginHome).mockResolvedValue({ home: '~/.handoff/home/oc-abcd', command: { run: 'HOME=/root/.handoff/home/oc-abcd opencode console login' } })
     vi.mocked(checkLoginHome).mockResolvedValue({ logins: [
-      { login: 'login-new', account: 'opencode-go:hidden', account_name: 'og-hidden', new_account: false, account_logins: 2 },
+      { login: 'login-new', account: 'opencode-go:og-hidden', account_name: 'hidden-renamed', new_account: false, account_logins: 2 },
     ] })
     render(<AccountsPage />)
     await user.click(screen.getByRole('button', { name: '＋ 新增登录' }))

@@ -4,7 +4,7 @@
 import { describe, expect, it } from 'vitest'
 import type { AccountView, AccountWindowView, LoginView } from '../../api/accounts'
 import {
-  barWindows, byProblem, countdown, dispatchHint, failBrief, homeText, hotWindow, KIND_ORDER, loginCommandText, loginCredText,
+  ago, barWindows, byProblem, countdown, dispatchHint, failBrief, homeText, hotWindow, KIND_ORDER, loginCommandText, loginCredText,
   loginStateHint, loginStateLabel, machinesText, nextProbeText, quotaAccounts, recoverAt, sameMachine, statusPhrase, supportsProbe, tightest,
   toneClass, updatedText, weeklyWindow, windowLabel, winTone,
 } from './model'
@@ -177,6 +177,14 @@ describe('账号展示规则', () => {
     expect(windowLabel(win('session', 1, undefined, 'Gemini'))).toBe('Gemini 5h')
     expect(windowLabel(win('weekly', 1, undefined, 'Claude/GPT'))).toBe('Claude/GPT 周')
     expect(KIND_ORDER).toHaveLength(6)
+  })
+
+  it('相对时间：零值/非正时间戳回「时间未知」，不出巨大的「天前」', () => {
+    expect(ago('0001-01-01T00:00:00Z', NOW)).toBe('时间未知')
+    expect(ago('1970-01-01T00:00:00Z', NOW)).toBe('时间未知')
+    expect(ago(iso(-2 * H), NOW)).toBe('2 小时前')
+    expect(ago('', NOW)).toBe('从未')
+    expect(ago('not-a-time', NOW)).toBe('从未')
   })
 
   it('倒计时', () => {

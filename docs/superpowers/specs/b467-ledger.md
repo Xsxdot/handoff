@@ -251,3 +251,125 @@ Not implemented: HTMLCanvasElement's getContext() method: without installing the
 ```
 
 - 提交：`git commit -m "feat(B467): 段 B 控制台——store 分区、忽略/恢复、底栏去名与弹层、已忽略区"` 原始输出：`[cards/B467-charter-2 8131894b] feat(B467): 段 B 控制台——store 分区、忽略/恢复、底栏去名与弹层、已忽略区` / `13 files changed, 373 insertions(+), 78 deletions(-)`。本行随同批 amend 收入（amend 会换 hash，台账保留提交当时的 `8131894b`）。
+
+## implement 修复轮 1
+
+### 偏离与自主决定
+
+无。五条只按本轮补充的范围修复（web/src/app/accounts、internal/scheduling/accounts、对应测试），未动 web/src/api/**，未改其他行为。
+
+### 先红后绿
+
+- I1：AccountsPage.test 新增/改写两条用例。改前 `IgnoreDialog` 初值 `[]`，第一条快照已知 carriers 时仍先出确认框：`Unable to find role="dialog" and name "不能忽略 og-team"`；第二条（快照 carriers 空 + 409 兜底）与 B-m5 守卫用例一并通过。改 `useState(a.carriers)` 后两条绿。
+- A-m2：`TestIgnoreSurvivesConcurrentRestoreBetweenPutAndRead` 改前直接 panic，原文：`panic: runtime error: invalid memory address or nil pointer dereference ... accounts.(*Service).Ignore ... ignore.go:107`。改用本次写入的 `by/at` 局部值记日志后绿。
+- B-m2：`ago('0001-01-01T00:00:00Z', NOW)` 改前 `739910 天前`；账号页已忽略行改前含 `739911 天前忽略`。`ago` 对 `t <= 0` 回「时间未知」后 model/组件两处绿。
+- B-m6：LoginWizard 按名字判已忽略改为 `a.id === item.account`。用例把 `account_name` 改成 `hidden-renamed`、`account` 用真实账号 id，改前无「已忽略，可在本页底部恢复」，改后绿。
+- B-m5：新增「快照里的已忽略账号只进『已忽略』区，不进六组分组」守卫用例；现有 store 分区下本就通过，去掉分区即会红。
+
+修复后定点命令（本工作树）：`go test ./internal/scheduling/accounts/ -run 'TestIgnore|Test.*Ignore' -count=1` → `ok`；`npx vitest run src/app/accounts/AccountsPage.test.tsx src/app/accounts/model.test.ts` → `41 passed`。
+
+### 收尾命令原始输出
+
+```
+$ gofmt -l internal cmd
+$ go vet ./...
+```
+
+```
+$ env -u CLAUDE_CODE_SESSION_ID go test ./internal/scheduling/... ./internal/agentd/... ./cmd/...
+ok  	github.com/Xsxdot/handoff/internal/scheduling	24.083s
+ok  	github.com/Xsxdot/handoff/internal/scheduling/accounts	0.040s
+ok  	github.com/Xsxdot/handoff/internal/scheduling/internal/logging	0.002s
+ok  	github.com/Xsxdot/handoff/internal/agentd	281.023s
+ok  	github.com/Xsxdot/handoff/internal/agentd/accountwork	0.382s
+ok  	github.com/Xsxdot/handoff/cmd	142.252s
+```
+
+```
+$ npx vitest run
+ RUN  v4.1.10 /root/.handoff/worktrees/0d876b87/web
+
+Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+
+ Test Files  150 passed (150)
+      Tests  2040 passed (2040)
+   Start at  04:24:32
+   Duration  17.76s (transform 21.16s, setup 17.92s, import 38.13s, tests 80.16s, environment 107.43s)
+```
+
+```
+$ npx tsc -b
+```
+
+```
+$ npx eslint .
+/root/.handoff/worktrees/0d876b87/web/src/app/board/BoardPage.tsx
+  55:9  warning  The 'tasks' logical expression could make the dependencies of useMemo Hook (at line 86) change on every render. To fix this, wrap the initialization of 'tasks' in its own useMemo() Hook  react-hooks/exhaustive-deps
+
+/root/.handoff/worktrees/0d876b87/web/src/app/cards/CardsPage.tsx
+  176:129  warning  React Hook useMemo has an unnecessary dependency: 'sharedSource'. Either exclude it or remove the dependency array                        react-hooks/exhaustive-deps
+  221:6    warning  React Hook useEffect has a missing dependency: 'sharedData'. Either include it or remove the dependency array                             react-hooks/exhaustive-deps
+  221:7    warning  React Hook useEffect has a complex expression in the dependency array. Extract it to a separate variable so it can be statically checked  react-hooks/exhaustive-deps
+  245:6    warning  React Hook useEffect has a missing dependency: 'cardsPoll'. Either include it or remove the dependency array                              react-hooks/exhaustive-deps
+
+/root/.handoff/worktrees/0d876b87/web/src/app/cards/NewCardDialog.tsx
+  26:17  warning  Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components  react-refresh/only-export-components
+
+/root/.handoff/worktrees/0d876b87/web/src/app/data/usePreviews.ts
+  152:18  warning  The ref value 'openingRef.current' will likely have changed by the time this effect cleanup function runs. If this ref points to a node rendered by React, copy 'openingRef.current' to a variable inside the effect, and use that variable in the cleanup function  react-hooks/exhaustive-deps
+  153:15  warning  The ref value 'openRef.current' will likely have changed by the time this effect cleanup function runs. If this ref points to a node rendered by React, copy 'openRef.current' to a variable inside the effect, and use that variable in the cleanup function        react-hooks/exhaustive-deps
+
+/root/.handoff/worktrees/0d876b87/web/src/app/files/FileTree.tsx
+  243:6  warning  React Hook useEffect has a missing dependency: 'base'. Either include it or remove the dependency array. If 'setExpanded' needs the current value of 'base', you can also switch to useReducer instead of useState and read 'base' in the reducer  react-hooks/exhaustive-deps
+
+/root/.handoff/worktrees/0d876b87/web/src/app/settings/UpdatePage.tsx
+  72:9  warning  The 'machines' logical expression could make the dependencies of useEffect Hook (at line 97) change on every render. To fix this, wrap the initialization of 'machines' in its own useMemo() Hook  react-hooks/exhaustive-deps
+
+/root/.handoff/worktrees/0d876b87/web/src/app/shell/Breadcrumb.tsx
+  25:17  warning  Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components  react-refresh/only-export-components
+
+/root/.handoff/worktrees/0d876b87/web/src/app/shell/Shell.tsx
+   94:17  warning  Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components  react-refresh/only-export-components
+  114:17  warning  Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components  react-refresh/only-export-components
+  125:17  warning  Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components  react-refresh/only-export-components
+  391:6   warning  React Hook useEffect has a missing dependency: 'wb'. Either include it or remove the dependency array                           react-hooks/exhaustive-deps
+
+/root/.handoff/worktrees/0d876b87/web/src/app/task/codeText.tsx
+  33:17  warning  Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components  react-refresh/only-export-components
+  52:17  warning  Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components  react-refresh/only-export-components
+
+/root/.handoff/worktrees/0d876b87/web/src/app/tree/MobileWorkspace.tsx
+  80:7  warning  React Hook useMemo has a missing dependency: 'activeSessions'. Either include it or remove the dependency array  react-hooks/exhaustive-deps
+
+/root/.handoff/worktrees/0d876b87/web/src/app/tree/ProjectTree.tsx
+  214:17  warning  Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components  react-refresh/only-export-components
+  233:17  warning  Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components  react-refresh/only-export-components
+  287:17  warning  Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components  react-refresh/only-export-components
+  302:17  warning  Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components  react-refresh/only-export-components
+  323:17  warning  Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components  react-refresh/only-export-components
+  339:17  warning  Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components  react-refresh/only-export-components
+  367:17  warning  Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components  react-refresh/only-export-components
+
+/root/.handoff/worktrees/0d876b87/web/src/app/workbench/BlankTab.tsx
+  22:14  warning  Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components  react-refresh/only-export-components
+  73:17  warning  Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components  react-refresh/only-export-components
+  84:17  warning  Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components  react-refresh/only-export-components
+
+/root/.handoff/worktrees/0d876b87/web/src/app/workbench/MobileKeybar.tsx
+  33:14  warning  Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components  react-refresh/only-export-components
+
+/root/.handoff/worktrees/0d876b87/web/src/app/workbench/TaskPickerDialog.tsx
+  38:17  warning  Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components  react-refresh/only-export-components
+  50:17  warning  Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components  react-refresh/only-export-components
+
+/root/.handoff/worktrees/0d876b87/web/src/components/ui/badge.tsx
+  41:17  warning  Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components  react-refresh/only-export-components
+
+/root/.handoff/worktrees/0d876b87/web/src/components/ui/button.tsx
+  57:18  warning  Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components  react-refresh/only-export-components
+
+✖ 33 problems (0 errors, 33 warnings)
+```
+
+- 提交：`git commit -m "fix(B467): 修复轮 1——忽略确认前置、nil 忽略日志、时间未知、按 id 判已忽略"` 原始输出：`[cards/B467-charter-3 4d0d3027] fix(B467): 修复轮 1——忽略确认前置、nil 忽略日志、时间未知、按 id 判已忽略` / `8 files changed, 213 insertions(+), 11 deletions(-)`。本行随同批 amend 收入（amend 会换 hash，台账保留提交当时的 `4d0d3027`）。
+

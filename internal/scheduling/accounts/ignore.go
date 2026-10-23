@@ -88,7 +88,8 @@ func (s *Service) Ignore(ref, by string) (View, error) {
 		logger().Warn("忽略账号被拒：名下登录仍被载体引用", "id", id, "name", v.Account.Name, "carriers", v.Carriers)
 		return View{}, &ReferencedError{Account: v.Account.Name, Carriers: v.Carriers, Action: "忽略"}
 	}
-	body, err := ignoreBody(IgnoreMark{At: time.Now(), By: by})
+	at := time.Now()
+	body, err := ignoreBody(IgnoreMark{At: at, By: by})
 	if err != nil {
 		return View{}, err
 	}
@@ -104,8 +105,9 @@ func (s *Service) Ignore(ref, by string) (View, error) {
 	if err != nil {
 		return View{}, err
 	}
-	logger().Info("忽略账号成功", "id", id, "name", nv.Account.Name, "by", nv.Ignored.By,
-		"at", nv.Ignored.At, "logins", len(nv.Logins), "carriers", nv.Carriers)
+	// 读回可能已被并发 Restore 删掉忽略行（nv.Ignored=nil），用本次写入的 by/at 记日志，不解引用读面。
+	logger().Info("忽略账号成功", "id", id, "name", nv.Account.Name, "by", actorOf(by),
+		"at", at.UTC(), "logins", len(nv.Logins), "carriers", nv.Carriers)
 	return nv, nil
 }
 

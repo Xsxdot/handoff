@@ -217,7 +217,7 @@ export function LoginWizard({ open, machines, selfMachines, account, preset, onC
               <div><span className="q-mute">✓</span> 已识别新登录</div>
               <div>→ {item.new_account
                 ? <>新账号 <b>{item.account_name}</b><span className="q-mute">（没拿到邮箱时按「类型-短 id」起名，可改名）</span></>
-                : <>已挂到账号 <b>{item.account_name}</b><span className="q-mute">（已有 {item.account_logins} 条登录）</span>{ignored.some((a) => a.name === item.account_name) && <span className="q-mute">（已忽略，可在本页底部恢复）</span>}</>}</div>
+                : <>已挂到账号 <b>{item.account_name}</b><span className="q-mute">（已有 {item.account_logins} 条登录）</span>{ignored.some((a) => a.id === item.account) && <span className="q-mute">（已忽略，可在本页底部恢复）</span>}</>}</div>
               <div className="q-mute">新登录：{machine} · <span className="mono">{created ? homeText(created.home) : ''}</span></div>
             </div>
           ))}

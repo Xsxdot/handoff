@@ -368,6 +368,8 @@ export function ago(iso: string | undefined, now: number): string {
   if (!iso) return '从未'
   const t = Date.parse(iso)
   if (Number.isNaN(t)) return '从未'
+  // 坏忽略行投影出 Go 零值时刻（0001-01-01）或无时刻（<= Unix epoch）：差值没有意义，写「时间未知」。
+  if (t <= 0) return '时间未知'
   const ms = now - t
   if (ms < M) return '刚刚'
   if (ms < Hh) return `${Math.floor(ms / M)} 分钟前`
