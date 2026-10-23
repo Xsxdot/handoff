@@ -373,3 +373,19 @@ $ npx eslint .
 
 - 提交：`git commit -m "fix(B467): 修复轮 1——忽略确认前置、nil 忽略日志、时间未知、按 id 判已忽略"` 原始输出：`[cards/B467-charter-3 4d0d3027] fix(B467): 修复轮 1——忽略确认前置、nil 忽略日志、时间未知、按 id 判已忽略` / `8 files changed, 213 insertions(+), 11 deletions(-)`。本行随同批 amend 收入（amend 会换 hash，台账保留提交当时的 `4d0d3027`）。
 
+
+## review 真机（主会话，2026-10-23；隔离实例 t467-mini 127.0.0.1:7797 分支二进制 7ac40dc3844d，测试库 handoff_b467，在役 7777 未动）
+
+- R0：建库 handoff_b467（脚本，凭据不打印，登记已分配）；`account discover` → 2 个真实账号：2yrp…（claude，不支持探测）、xsxdot@gmail.com（opencode-go，opencode.db 登录，三窗口 5h 5%/周 21%/月 11%）。样本 Y = xsxdot@gmail.com（id opencode-go:1e5f72dfee52），间隔经 PUT 设 5 分钟。
+- R4（API）：建载体 t467-c 选 Y 的登录 → `PUT /api/accounts/<Y>/ignore` → `409 {"error":"不能忽略账号 xsxdot@gmail.com：名下登录仍被载体 t467-c 引用，先在载体里改选其他账号登录","carriers":["t467-c"]}`。
+- R4（页面）：**不符**——点「忽略」先出确认框「忽略账号 xsxdot@gmail.com？」，不是「不能忽略」；根因 `AccountsPage.tsx:104` `useState([])`（API 快照 carriers=['t467-c'] 在）→ 修复轮 1 第 1 条。
+- R7：browser-worker——`.up-main` 392px；xsxdot 行 5h/周/月 三个 `.qi` offsetTop 均 127；`.sb-seg` textContent `5% 3h21m·21% 2d 19h`、title `xsxdot@gmail.com`；弹层菜单只有「管理账号…」，全文无「使用详情」；控制台无 error/warn。
+- R1：删 t467-c 后浏览器忽略 Y → `PUT …/ignore 200`；Y 离开分组，页底「已忽略（1）」行「xsxdot@gmail.com · 1 条登录 · t467-mini · 刚刚忽略」+「恢复」；`.sb-seg` 0 个、弹层无 Y；刷新后仍在已忽略区。04:12:02Z、04:12:07Z 两轮 `account discover succeeded` 后 `account list` Y 状态列「已忽略」，登录「正常」，未回分组。
+- R6：`--json`：Y `ignored={'at':'2026-10-23T04:10:44.747499Z','by':'t467-mini'}`、无 `probe_login`；另一账号无 `ignored` 键。
+- R5：忽略后 `PUT /api/squads/carriers/t467-c?expect=0` 选 Y 登录 → `400 {"error":"scheduling: 登记校验未过: 账号 xsxdot@gmail.com 已忽略，先在账号页恢复"}`。
+- R2：`account probe xsxdot@gmail.com` → 退出 1，`状态码 409: {"error":"账号已忽略：账号 xsxdot@gmail.com 已忽略，先在账号页恢复"}`；间隔 5 分钟，忽略于 04:10:44Z，04:18:13Z 读 `probed_at`/`last_attempt` 仍为 04:10:29Z（≥7.5 分钟无探测）。
+- R8：起 t467-old（~/.local/bin/handoff 50333816，127.0.0.1:7798，同测试库）：其 GET 里 Y 无 `ignored` 键（预期差异）；经它 `PUT /api/accounts/<Y>?expect=2 {"name":"xsx-renamed-by-old"}` → 200；新实例 GET：`xsx-renamed-by-old ignored={'at':'2026-10-23T04:10:44.747499Z','by':'t467-mini'}` 仍在——Q1「旧二进制改写定义行不抹忽略」行为证据。t467-old 随即停止（其启动发现给 Y 加了一条 t467-old 登录）。
+- R3：浏览器 04:19:30Z 点「恢复」→ `DELETE …/ignore 200`；回 OpenCode Go 分组，提示「已恢复：xsx-renamed-by-old 回到列表，下一轮由持有正常登录的机器探测。」，底栏出现该段；`account list` 上次探测 04:19:56Z「9m前」→ 04:20:24Z「<1m前」（≤ 54s 内被探测）。
+- 审查：段 A subagent 审 pass（变异 8 处转红，Minor m1–m7）；段 B subagent 审有条件 fail（I1 = 上条 R4 页面不符；Minor m1–m7）。主会话裁决：I1 修，移动端文案「删除→忽略」接受；修复轮 1 一并修 A-m2、B-m2、B-m5、B-m6，其余 Minor 记账不修。
+- 修复轮 1（a4e5ba68，偏离：无）主会话复核：diff 逐行读过；变异 `useState(a.carriers)`→`useState([])` → `快照已知被载体引用时，点「忽略」直接显示不能忽略…` 1 红，还原后 src/app/accounts 58/58 绿。残余 Minor：坏忽略行显示为「时间未知忽略」，措辞别扭（只在忽略行损坏时出现）。
+- R4 复验（隔离实例换 a4e5ba686bb3 二进制，重建载体 t467-c）：点「忽略」直接出「不能忽略 xsx-renamed-by-old」，正文「仍有 1 个载体在用它的登录：t467-c。先在「设置 · 自动化」把它们换到别的账号登录。」，按钮「关闭」「去改载体」(href `/settings?section=automation`)，点击前后无 `…/ignore` 请求；关闭后卡仍在分组。真机清单 R1–R8 全部符合；R9（S10 生产）待合入、全队换版后由用户操作。
