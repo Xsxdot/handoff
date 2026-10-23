@@ -1,8 +1,8 @@
-# B469 S3 最薄接缝（协调者核定 v1，2026-10-23）
+# B469 S3 最薄接缝（协调者核定 v1.1，2026-10-23）
 
 ## 偏离与自主决定
 
-无实现。上一稿额外所有者CRUD、task_notification_owners及必填responsible_identity已被协调者否决，本稿删除。r1.3回退依据就是任务origin_session与该会话当前登记驻场者，不能另设绑定门槛；本稿不改变答权。协调者已依据下述P0补证核定v1，允许进入S3实现；后续验收缺项不得宣称通过。
+v1 已核定并有 S3 实现提交 `8cdff7fcc`；v1.1 的未知 kind 跳过/Warn/推进游标由 B469 #33182 用户授权且本会话协调者已核定，I5 准确发现 wire 已由根协调者核定。上一稿额外所有者CRUD、task_notification_owners及必填responsible_identity已被协调者否决，本稿不恢复。r1.3回退依据就是任务origin_session与该会话当前登记驻场者，不能另设绑定门槛；本稿不改变答权。下述 P0 补证不等于 S3 验收，缺项不得宣称通过。
 
 ## 已有事实与唯一新增发起字段
 
@@ -16,13 +16,19 @@ CLI生产：新增 `--origin-session`，缺省读 `HANDOFF_ORIGIN_SESSION`，fla
 
 卡路径结果在通知组装点区分 `push/pull/none`：自身合法push→自身；origin合法pull→原card wait通道并收口；空座/非法继续祖先push，跳过pull祖先且保留循环保护。现有resolveWakeCard空字符串混合pull/none，不能直接用空值触发fallback。只有none→origin_session当前登记resident→人；无origin/无resident/不可达均有可见待办，不广播、不找最后发言者。
 
-建议一个独立账本事件type `task_ticket_notice`，payload准确键：`source_machine`、`task_id`、`ticket_id`、`source_seq`、`ownership_version`、`target`（一个既有DeliveryAddress）、`ticket_kind`（gate/ask）。target.session是唯一房间引用，不再加room。无target不发寻址事件；原工单详情按machine/task/ticket读取，通知不是第二回答载体。未知kind/缺字段/解码错不上推游标；未知type不唤醒。
+独立账本事件 type 字面值 `task_ticket_notice`，payload 键：`source_machine`、`task_id`、`ticket_id`、`source_seq`、`ownership_version`、`target`（一个既有DeliveryAddress）、`ticket_kind`（gate/ask）。target.session是唯一房间引用，不再加room。无target不发寻址事件；原工单详情按machine/task/ticket读取，通知不是第二回答载体。**v1.1 修订**：未知/非法通知 kind（包括无法安全解析的通知 payload）对该消费者为一条不可投递事件：不唤醒、不标 delivered，Warn 仅带 kind/seq/source 标识不带正文，消费游标按该 seq 推进，后续合法事件仍可消费。未知的其他事件 type 沿既有忽略语义，不冒充本通知。此处覆盖 v1 的“不上推游标”；与 B435 r1.4 修订第 4 点一致。
 
 ownership_version由通知领域为该原工单分配单调整数，指向一次已解析的卡席位或当前resident地址快照；目标变化才加一。原工单首次为1，同地址重放不增；版本只控制通知替换/幂等，不限制合法答权。不新增责任CRUD。重试/源重放/收到席位或resident变更事件时通过公开面重读路由；新目标版本撤旧待办，旧目标机投递前重读最新版本，不能投递过时地址。需要跨进程CAS防止两个消费者各自改版本。
 
 ## 发布与持久化：先复用现有任务面
 
-推荐最小实现A：复用已配置机器的任务列表及每task事件补拉/订阅，补齐**未挂卡且origin_session非空的任务**，并将无origin原工单保留在人可见任务列表。现有Mirror从AllTaskLinks生成挂卡订阅（mirror.go:340-356），新增独立origin任务订阅集合，不伪card_tasks、不伪挂卡；每task事件after_seq从执行机持久事件补发，不只依赖易失Publish。与既有挂卡集合去重。任务终态/归档后的关单事件补齐后才退订，重启从未收口记录恢复。
+最小实现 A 的现状是每 10s 向每机 GET `/api/tasks`，执行机无界列表扫描；又对全部活动通知（含 delivered）每轮调用刷新并写事务。v1.1 的 I5 推荐在现有“任务 ID 发现 + 每 task 持久事件”边界内加**源创建序**：`internal/store` 的 `CreateTask` 同事务写一条 task ID→自增 seq 的窄索引，旧任务按 `(created_at,id)` 一次回填后新任务继续自增；返回项只带订阅所需的 ID/origin/state/待答票布尔值。旧任务排序仅决定首次扫描顺序，不充当以后创建的时间游标。不能用 `created_at` 作唯一 cursor：时钟回退、同 timestamp 与 ID 排序都可能漏后建任务。源任务若终态仍有待答票，不能仅按 running 过滤。此窄索引只供任务发现，不承载通用事件/通知语义。
+
+**I5 准确 wire，协调者核定后实施**：源执行机新增 `GET /api/tasks/discovery?after_seq=N&limit=100`（转发仍按原机器路由，未带该路径的旧 `GET /api/tasks` 裸数组形状不变）。`N` 为非负整数排他下界；`limit` 正整数且服务端上限 100，非法返回 400。成功 200 JSON 为 `{ "items": [{"seq": 1, "task_id": "...", "origin_session": "...", "state": "...", "has_pending_tickets": false}], "next_seq": 1, "has_more": false }`；items 按 seq 升序，空页 `next_seq=N`，`has_more` 表示源端尚有更高创建序。源 task 不按 origin/state 预过滤；**镜像必须给所有非终态 task 建立 task-scoped 持久事件订阅责任，即使 origin 为空、当前无票**，因为它以后可生 question/permission。终态但 `has_pending_tickets=true` 仍须订阅/补拉到票收口；其余终态可按已有 ended 规则退订。不能沿用 `m.addInventoryTask` 的 `(origin非空 || state=waiting_answer)` 过滤后就推进 creation cursor。`origin_session` 空串表示 unknown，`has_pending_tickets` 由源机同页任务/票读取形成，查询错返回 5xx 不伪 false。`seq` 是源机 SQLite `task_creation_seq` 自增主键，`task_id` 唯一；`CreateTask` 与该行必须同一事务，失败一起回滚。迁移在旧任务仍可创建时持写锁一次回填，重复启动幂等。源库无现成 global task-created cursor/API（`internal/store/store.go:CreateTask/ListTasks`），本索引是最窄新增源事实。Go ServeMux 注册 `/api/tasks/discovery` 精确路径，须用真实 HTTP 测试证明不落入 `/api/tasks/{id}`；新客户端请求旧源的新路径收到 404 视不兼容并告警，不能自动回退每 10s 全量 `/api/tasks`。
+
+镜像发现水位复用已存在的 ledger `RegistryGet/RegistryPut`（`internal/ledger/registry.go`）：kind `b469_task_discovery_cursor`、id=源机器规范名、body=`{"seq":N}`，使用 registry Version CAS，不能把 `RegistryEntry.Seq` 当源序；也不能复用 `mirror_cursors.last_seq`（它是事件镜像健康水位）。不新增共享 PG 表，所以 B469 已有 schema 2→3 约束不因 I5 再升版；若实际实现确需共享 PG DDL，必须先按 schema 3→4 纪律重审，不能悄悄改表。每页所有非终态及终态待答 task 已纳入订阅/恢复责任后才 CAS 前进，不成功则原页重放；并发持有者 CAS 冲突重读后继续。**重启恢复**：registry 只有 scalar，不保存未出票任务订阅集合；新进程必须从 `after_seq=0` 有界分页重建仍需监听的任务，再继续超过旧水位的新页，不能加载 cursor 后直接跳到最新。稳态可每轮从持久水位增量查询；每 task 的持久事件 `after_seq` 仍负责补发。启动 O(N) 分页一次可接受，每 10s 全表不接受。本节 exact wire 已由协调者核定；迁移/订阅恢复责任边界须按此复验，证伪源事实时回报协调者。
+
+活动通知可周期性只读重解析，以便即使没有新工单事件也能察觉卡席位/驻场变更；解析后地址、状态、来源 seq 与错误/退避事实均未变，直接返回且**不进入写事务、不更新 updated_at**。重复来源投递不得增 ownership_version。跨机断连保持已知未收口通知与重试责任；重连按持久水位补拉。已 delivered 可参与归属检查，但静止时零写。增量发现与静止零写必须各有跨轮计数/SQL 反例测试。
 
 若A的现有任务列表不包含重启窗口内已归档任务，先补窄的列表筛选/分页恢复语义；不能仅扫当前running从而漏永久待办。只有核实该补强比新全局源更重时才用备选B：GET `/api/ticket-events?after_seq=&limit=` 读取执行机持久工单事件并带next_seq。B新增全局扫描API/客户端/游标/索引及来源枚举，成本高于A复用列表+每task公开事件，现无证据证明必须。不得先落B全套。
 
@@ -42,7 +48,7 @@ print/desktop仅由当前目标归属机消费，投递前核resident/席位和o
 
 契约核定后可实施项：origin传播、最小来源复用、通知单表CAS/事件、三态路由、无卡工单可见投影、寻址候选/游标接线。但开S3前仍须P0真实外部CLI从房间发任务产生permission/question，验证发起回合短时退出、LaunchAdmit/驻场准入归零、原任务仍待答、重启回答恢复；协调者补probe。双机同测试PG断连/补发/换责/目标机投递是后续真实验收硬门。不能以fixture、源码或30min耗尽结案。若需改Runner无ctx签名或hostapi承载，停段另呈契约，不实现自身权限桥。S2独立。
 
-存储归属不变：任务origin属执行机任务事实；会话/通知域解析已有卡/驻场公开面并拥有通知记录；ledger仅持久化；approval不反查内部。新增范围限上述真实接缝，不建通用总线或所有者管理系统。图覆盖债：checkout无codegraph目录，按源码定位；未实现/验收。
+存储归属不变：任务origin属执行机任务事实；会话/通知域解析已有卡/驻场公开面并拥有通知记录；ledger仅持久化；approval不反查内部。新增范围限上述真实接缝，不建通用总线或所有者管理系统。图覆盖债：checkout无codegraph目录，按源码定位；已有实现但独立审查尚未通过。
 
 ## 协调者核定与P0补证
 
