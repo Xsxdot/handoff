@@ -215,12 +215,11 @@ func sessionWaitPage(ctx context.Context, svc *collab.Service, st *ledger.Store,
 // sessionWaitTaskTicketNotice rechecks the latest ownership version before returning
 // an addressed event, so stale routes from a prior resident/seat never ring.
 func sessionWaitTaskTicketNotice(st *ledger.Store, ev ledger.Event, addr proto.DeliveryAddress) (proto.TaskTicketNotice, bool, error) {
-	var notice proto.TaskTicketNotice
-	if err := json.Unmarshal(ev.Payload, &notice); err != nil {
-		return notice, false, fmt.Errorf("session wait task_ticket_notice seq=%d 解码: %w", ev.Seq, err)
-	}
-	if err := proto.ValidateTaskTicketNotice(notice); err != nil {
-		return notice, false, fmt.Errorf("session wait task_ticket_notice seq=%d 契约校验: %w", ev.Seq, err)
+	notice, err := proto.DecodeTaskTicketNotice(ev.Payload)
+	if err != nil {
+		slog.Warn("session wait 跳过无效工单通知", "kind", notice.TicketKind, "seq", ev.Seq,
+			"source_machine", notice.SourceMachine, "task", notice.TaskID, "cause", err)
+		return notice, false, nil
 	}
 	if notice.Target != addr {
 		return notice, false, nil

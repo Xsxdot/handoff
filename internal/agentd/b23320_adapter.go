@@ -52,6 +52,29 @@ func (m LedgerMirrorMachines) Tasks(ctx context.Context, name string) ([]proto.T
 	return c.ListTasks(ctx)
 }
 
+// DiscoverTasks reads one bounded source page for the durable mirror cursor.
+func (m LedgerMirrorMachines) DiscoverTasks(ctx context.Context, name string, afterSeq int64, limit int) (*proto.TaskDiscoveryPage, error) {
+	c, err := m.pool.For(name)
+	if err != nil {
+		return nil, err
+	}
+	return c.DiscoverTasks(ctx, afterSeq, limit)
+}
+
+// TaskResponsibility reads one exact source task plus its pending tickets. The
+// mirror calls this only for terminal candidates or a normally closed stream.
+func (m LedgerMirrorMachines) TaskResponsibility(ctx context.Context, name, taskID string) (ledgermirror.TaskResponsibilityStatus, error) {
+	c, err := m.pool.For(name)
+	if err != nil {
+		return ledgermirror.TaskResponsibilityStatus{}, err
+	}
+	info, err := c.Attach(ctx, taskID)
+	if err != nil {
+		return ledgermirror.TaskResponsibilityStatus{}, err
+	}
+	return ledgermirror.TaskResponsibilityStatus{State: info.Task.State, PendingTickets: len(info.PendingTickets)}, nil
+}
+
 // LocalTasks exposes the host's persisted public task inventory independently
 // of the remote pool; the local machine is deliberately absent from Names().
 func (m LedgerMirrorMachines) LocalTasks(ctx context.Context) ([]proto.TaskView, error) {
@@ -70,6 +93,27 @@ func (m LedgerMirrorMachines) LocalTasks(ctx context.Context) ([]proto.TaskView,
 		views = append(views, proto.TaskView{Task: task})
 	}
 	return views, nil
+}
+
+// LocalDiscovery reads a bounded page from the local authoritative store.
+func (m LedgerMirrorMachines) LocalDiscovery(ctx context.Context, afterSeq int64, limit int) (*proto.TaskDiscoveryPage, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if m.localTasks == nil {
+		return nil, errors.New("local task store unavailable")
+	}
+	store, ok := m.localTasks.(interface {
+		DiscoverTasks(int64, int) (proto.TaskDiscoveryPage, error)
+	})
+	if !ok {
+		return nil, errors.New("local task store does not support task discovery")
+	}
+	page, err := store.DiscoverTasks(afterSeq, limit)
+	if err != nil {
+		return nil, err
+	}
+	return &page, nil
 }
 
 // 编译期锚：适配器必须始终满足 ledgermirror 侧机器源接口。

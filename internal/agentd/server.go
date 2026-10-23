@@ -955,6 +955,7 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/gc", s.handleGC)
 	api.HandleFunc("POST /api/gc", s.handleGC)
 	api.HandleFunc("GET /api/tasks", s.handleListTasks)
+	api.HandleFunc("GET /api/tasks/discovery", s.handleTaskDiscovery)
 	api.HandleFunc("POST /api/tasks", s.handleDispatch)
 	// /api/tasks/{id} 系列按任务归属包一层 byTask：本机没有就查镜像索引转发
 	//（W3a §5.1 透明路由，见 taskroute.go）。render 是流式也走同一条搬运。

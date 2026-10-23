@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/Xsxdot/handoff/internal/proto"
 )
@@ -92,6 +93,49 @@ func TestTaskTicketNoticeRoutingIsIdempotentAndAddressed(t *testing.T) {
 	}
 }
 
+func TestTaskTicketNoticeUnchangedReconcileDoesNotWrite(t *testing.T) {
+	st, err := Open(filepath.Join(t.TempDir(), "ledger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	now := time.Date(2026, 10, 23, 1, 0, 0, 0, time.UTC)
+	st.now = func() time.Time { return now }
+	target := proto.DeliveryAddress{Kind: proto.DeliveryResident, Session: "session:steady", Identity: "user:owner"}
+	input := TaskTicketNoticeState{SourceMachine: "source", TaskID: "task", TicketID: "task:q1", SourceSeq: 8, TicketKind: "ask", Target: &target}
+	first, _, err := st.PutTaskTicketNotice(input, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(time.Minute)
+	second, changed, err := st.PutTaskTicketNotice(input, "test")
+	if err != nil || changed {
+		t.Fatalf("unchanged reconcile changed=%v err=%v", changed, err)
+	}
+	if !second.UpdatedAt.Equal(first.UpdatedAt) {
+		t.Fatalf("updated_at churned: first=%s second=%s", first.UpdatedAt, second.UpdatedAt)
+	}
+	entries, err := st.EventsFromAsc(nil, 0, 20)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("identical route emitted event/write: events=%d err=%v", len(entries), err)
+	}
+}
+
+func TestTaskTicketNoticePreflightReadErrorIsNotTreatedAsMissing(t *testing.T) {
+	st, err := Open(filepath.Join(t.TempDir(), "ledger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	target := proto.DeliveryAddress{Kind: proto.DeliveryResident, Session: "session:read-error", Identity: "user:owner"}
+	if _, _, err := st.PutTaskTicketNotice(TaskTicketNoticeState{SourceMachine: "source", TaskID: "task",
+		TicketID: "task:q1", SourceSeq: 1, TicketKind: "ask", Target: &target}, "test"); err == nil {
+		t.Fatal("closed database preflight read was treated as a missing row")
+	}
+}
+
 func TestRetryTaskTicketNoticeRequeuesSameOwnerOnlyOnce(t *testing.T) {
 	st, err := Open(filepath.Join(t.TempDir(), "ledger.db"))
 	if err != nil {
@@ -120,6 +164,47 @@ func TestRetryTaskTicketNoticeRequeuesSameOwnerOnlyOnce(t *testing.T) {
 	}
 	if len(events) != 2 || events[1].Type != EvTaskTicketNotice {
 		t.Fatalf("explicit retry should emit exactly one fresh addressed event, got %+v", events)
+	}
+}
+
+func TestTaskTicketNoticeRetryAfterAndTaskScopedActiveQuery(t *testing.T) {
+	st, err := Open(filepath.Join(t.TempDir(), "ledger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	target := proto.DeliveryAddress{Kind: proto.DeliveryResident, Session: "session:retry", Identity: "user:owner"}
+	for _, taskID := range []string{"task-one", "task-two"} {
+		if _, _, err := st.PutTaskTicketNotice(TaskTicketNoticeState{SourceMachine: "source", TaskID: taskID,
+			TicketID: taskID + ":q1", SourceSeq: 1, TicketKind: "ask", Target: &target}, "test"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	retryAt := time.Now().UTC().Add(time.Minute)
+	if err := st.SetTaskTicketNoticeStatusWithRetryAfter("source", "task-one", "task-one:q1", 1,
+		"needs_human", "delivery_failed", "desktop_bell_failed", &retryAt); err != nil {
+		t.Fatal(err)
+	}
+	refreshed, changed, err := st.PutTaskTicketNotice(TaskTicketNoticeState{SourceMachine: "source", TaskID: "task-one",
+		TicketID: "task-one:q1", SourceSeq: 1, TicketKind: "ask", Target: &target}, "reconcile")
+	if err != nil || changed || refreshed.Status != "needs_human" || refreshed.Reason != "delivery_failed" ||
+		refreshed.LastError != "desktop_bell_failed" || refreshed.RetryAfter == nil || !refreshed.RetryAfter.Equal(retryAt) {
+		t.Fatalf("unchanged route erased delivery failure lifecycle: state=%+v changed=%v err=%v", refreshed, changed, err)
+	}
+	got, err := st.GetTaskTicketNotice("source", "task-one", "task-one:q1")
+	if err != nil || got.RetryAfter == nil || !got.RetryAfter.Equal(retryAt) {
+		t.Fatalf("retry_after not persisted: got=%+v err=%v", got, err)
+	}
+	active, err := st.ListActiveTaskTicketNoticesForTask("source", "task-one")
+	if err != nil || len(active) != 1 || active[0].TaskID != "task-one" {
+		t.Fatalf("task-scoped active query leaked other tasks: active=%+v err=%v", active, err)
+	}
+	if err := st.SetTaskTicketNoticeStatus("source", "task-one", "task-one:q1", 1, "delivered", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	got, err = st.GetTaskTicketNotice("source", "task-one", "task-one:q1")
+	if err != nil || got.RetryAfter != nil {
+		t.Fatalf("delivery must clear retry_after: got=%+v err=%v", got, err)
 	}
 }
 

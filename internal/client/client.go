@@ -182,8 +182,12 @@ var ErrIdleTimeout = errors.New("空闲超时：期间未收到任何帧")
 // 已完成」，按正常结束处理而非错误（一次性 wait 用它在首个可动作事件后收手）。
 var errStopStream = errors.New("stream stopped by callback")
 
-// errArchived 是内部哨兵：对端以 StatusNormalClosure 关闭，表示任务已归档。
-var errArchived = errors.New("任务已归档")
+// ErrStreamNormalClosure marks a clean WebSocket close. It is only a transport
+// signal: callers must check the task's authoritative state before ending work.
+var ErrStreamNormalClosure = errors.New("事件流正常关闭")
+
+// errArchived is the local spelling retained by the client wait/follow helpers.
+var errArchived = ErrStreamNormalClosure
 
 // AttachInfo 是 attach 命令的完整现场快照：任务 + 待办工单 + 最近事件。
 // 与 agentd GET /api/tasks/{id} 的响应线格式一一对应，协调者恢复现场的关键数据源。
@@ -697,6 +701,27 @@ func (c *Client) ListTasks(ctx context.Context) ([]proto.TaskView, error) {
 		return nil, fmt.Errorf("解析任务列表响应: %w", err)
 	}
 	return tasks, nil
+}
+
+// DiscoverTasks fetches one bounded creation-ordered source task page.
+func (c *Client) DiscoverTasks(ctx context.Context, afterSeq int64, limit int) (*proto.TaskDiscoveryPage, error) {
+	path := fmt.Sprintf("/api/tasks/discovery?after_seq=%d&limit=%d", afterSeq, limit)
+	resp, err := c.do(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, fmt.Errorf("task discovery request: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, c.httpError("task discovery", resp)
+	}
+	var page proto.TaskDiscoveryPage
+	if err := json.NewDecoder(resp.Body).Decode(&page); err != nil {
+		return nil, fmt.Errorf("decode task discovery response: %w", err)
+	}
+	if page.Items == nil {
+		return nil, errors.New("task discovery response has null items")
+	}
+	return &page, nil
 }
 
 // Attach 获取任务的完整现场快照（任务 + 待办工单 + 最近事件），

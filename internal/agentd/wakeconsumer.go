@@ -293,7 +293,9 @@ func automationWakeEvent(ev proto.LedgerEvent) (keystone.WakeEvent, bool, error)
 func (s *Server) taskTicketNoticeWake(ev proto.LedgerEvent) (keystone.WakeEvent, bool, error) {
 	notice, err := decodeTaskTicketNotice(ev.Payload)
 	if err != nil {
-		return keystone.WakeEvent{}, false, fmt.Errorf("decode task ticket notice seq=%d: %w", ev.Seq, err)
+		s.log.Warn("跳过无效工单通知事件", "kind", notice.TicketKind, "seq", ev.Seq,
+			"source_machine", notice.SourceMachine, "task", notice.TaskID, "cause", err)
+		return keystone.WakeEvent{}, false, nil
 	}
 	current, err := s.ledger.GetTaskTicketNotice(notice.SourceMachine, notice.TaskID, notice.TicketID)
 	if err != nil {
@@ -333,19 +335,15 @@ func taskTicketNoticeSummary(n proto.TaskTicketNotice) string {
 }
 
 func decodeTaskTicketNotice(payload []byte) (proto.TaskTicketNotice, error) {
-	var notice proto.TaskTicketNotice
-	if err := json.Unmarshal(payload, &notice); err != nil {
-		return notice, err
-	}
-	if err := proto.ValidateTaskTicketNotice(notice); err != nil {
-		return notice, err
-	}
-	return notice, nil
+	return proto.DecodeTaskTicketNotice(payload)
 }
 
 func (s *Server) setCardNoticeDelivery(n *proto.TaskTicketNotice, status, reason, lastError string) {
 	if err := s.setTaskNoticeDelivery(n, status, reason, lastError); err != nil {
-		s.log.Warn("卡通知投递状态未更新：目标版本已变化", "task", n.TaskID, "ticket", n.TicketID, "version", n.OwnershipVersion)
+		if errors.Is(err, ledger.ErrTaskTicketNoticeOwnershipChanged) {
+			s.log.Info("卡通知投递结果因归属已变化而丢弃", "task", n.TaskID, "ticket", n.TicketID, "version", n.OwnershipVersion)
+			return
+		}
 		s.log.Warn("卡通知投递状态更新失败", "task", n.TaskID, "ticket", n.TicketID, "status", status, "cause", err)
 	}
 }
@@ -363,17 +361,22 @@ func (s *Server) activeTaskTicketNotices() ([]ledger.TaskTicketNoticeState, erro
 }
 
 func (s *Server) setTaskNoticeDelivery(n *proto.TaskTicketNotice, status, reason, lastError string) error {
+	return s.setTaskNoticeDeliveryWithRetryAfter(n, status, reason, lastError, nil)
+}
+
+func (s *Server) setTaskNoticeDeliveryWithRetryAfter(n *proto.TaskTicketNotice, status, reason, lastError string, retryAfter *time.Time) error {
 	current, matches, err := s.currentTaskTicketNotice(*n)
 	if err != nil {
 		return err
 	}
 	if !matches {
-		return fmt.Errorf("task ticket notice target/version changed")
+		return fmt.Errorf("%w: target or version changed", ledger.ErrTaskTicketNoticeOwnershipChanged)
 	}
 	if current.Status != "pending" && current.Status != "needs_human" {
-		return fmt.Errorf("task ticket notice is already closed")
+		return fmt.Errorf("%w: status=%s", ledger.ErrTaskTicketNoticeClosed, current.Status)
 	}
-	return s.ledger.SetTaskTicketNoticeStatus(n.SourceMachine, n.TaskID, n.TicketID, n.OwnershipVersion, status, reason, lastError)
+	return s.ledger.SetTaskTicketNoticeStatusWithRetryAfter(n.SourceMachine, n.TaskID, n.TicketID,
+		n.OwnershipVersion, status, reason, lastError, retryAfter)
 }
 
 // decodeRoomMessageForWake 解码 room_message 并判定是否为可寻址的人类发言形状。

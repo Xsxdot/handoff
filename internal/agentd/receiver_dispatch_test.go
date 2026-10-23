@@ -231,6 +231,48 @@ func TestHandleDispatchEmptyReceiverBindsDefault(t *testing.T) {
 	}
 }
 
+func TestDispatchOriginSessionSurvivesHTTPStoreAndTaskDetailProjection(t *testing.T) {
+	env := newReceiverTestEnv(t)
+	seedDefaultFakeCarrier(t, env.srv, "fake")
+	session, err := env.ledger.CreateSession("dispatch origin", "user:test", "user:test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(map[string]string{"project_id": env.projectID, "prompt": "origin roundtrip",
+		"executor": "fake", "origin_session": session.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created := postDispatch(t, env.srv, string(body))
+	if created.Code != http.StatusOK {
+		t.Fatalf("POST /api/tasks returned %d: %s", created.Code, created.Body.String())
+	}
+	task := decodeDispatchTask(t, created)
+	stored, err := env.st.GetTask(task.ID)
+	if err != nil || stored.OriginSession != session.ID {
+		t.Fatalf("origin_session did not reach source store: stored=%+v err=%v", stored, err)
+	}
+	raw, code := env.getRaw(t, "/api/tasks/"+task.ID)
+	if code != http.StatusOK {
+		t.Fatalf("GET /api/tasks/{id} returned %d: %s", code, raw)
+	}
+	var detail taskDetail
+	if err := json.Unmarshal(raw, &detail); err != nil {
+		t.Fatal(err)
+	}
+	if detail.Task.Task.OriginSession != session.ID {
+		t.Fatalf("origin_session did not survive task detail DTO: got=%q want=%q", detail.Task.Task.OriginSession, session.ID)
+	}
+	stop := runAction(env.srv, actionRequest(task.ID, "stop", ""), env.srv.handleStop)
+	if stop.Code != http.StatusOK {
+		t.Fatalf("cleanup stop returned %d: %s", stop.Code, stop.Body.String())
+	}
+	bad := postDispatch(t, env.srv, `{"project_id":"`+env.projectID+`","prompt":"bad origin","executor":"fake","origin_session":"not a session"}`)
+	if bad.Code != http.StatusBadRequest {
+		t.Fatalf("invalid origin_session returned %d: %s", bad.Code, bad.Body.String())
+	}
+}
+
 // TestB23310FrozenEmptyHomeDirReachesTaskAsExplicitEmpty 锁住冻结 HTTP 接缝的
 // HomeDir 三态：请求明确携带空串时，传给 Manager 的身份快照仍须保留字段存在性，
 // 不能被当成 nil 省略。

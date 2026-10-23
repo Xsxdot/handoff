@@ -1,12 +1,15 @@
 package agentd
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Xsxdot/handoff/internal/ledger"
 	"github.com/Xsxdot/handoff/internal/proto"
@@ -131,18 +134,56 @@ func TestInvalidTicketNoticeWireDoesNotRingOrAcknowledge(t *testing.T) {
 			n := proto.TaskTicketNotice{SourceMachine: "source", TaskID: "task-invalid", TicketID: "task-invalid:p1", SourceSeq: 5, OwnershipVersion: 1, Target: target, TicketKind: "ask"}
 			tc.mutate(&n)
 			payload, _ := json.Marshal(n)
-			_, _, mapErr := env.srv.taskTicketNoticeWake(proto.LedgerEvent{Seq: 9, Type: ledger.EvTaskTicketNotice, Payload: payload})
-			if mapErr == nil {
-				t.Fatal("invalid notice wire was accepted by automation mapper")
+			wake, hit, mapErr := env.srv.taskTicketNoticeWake(proto.LedgerEvent{Seq: 9, Type: ledger.EvTaskTicketNotice, Payload: payload})
+			if mapErr != nil || hit {
+				t.Fatalf("invalid notice wire must be skipped without blocking cursor: wake=%+v hit=%v err=%v", wake, hit, mapErr)
 			}
-			if err := env.srv.ringResidentDoorbells(0, []proto.LedgerEvent{{Seq: 9, Type: ledger.EvTaskTicketNotice, Payload: payload}}); err == nil {
-				t.Fatal("invalid notice wire was accepted by desktop intake")
+			if err := env.srv.ringResidentDoorbells(0, []proto.LedgerEvent{{Seq: 9, Type: ledger.EvTaskTicketNotice, Payload: payload}}); err != nil {
+				t.Fatalf("invalid notice wire must not block desktop intake cursor: %v", err)
 			}
 			state, err := env.ledger.GetTaskTicketNotice("source", "task-invalid", "task-invalid:p1")
 			if err != nil || state.Status != "pending" {
 				t.Fatalf("invalid wire changed notice status: %+v err=%v", state, err)
 			}
 		})
+	}
+}
+
+func TestUnknownTicketNoticeDoesNotBlockLaterValidNotice(t *testing.T) {
+	env, runner := newB444Env(t)
+	session := b435Session(t, env)
+	b444SitPush(t, env, session, "local")
+	drainAutomation(t, env)
+	first, second := "invalid-task", "valid-task"
+	for _, taskID := range []string{first, second} {
+		address := proto.DeliveryAddress{Kind: proto.DeliveryResident, Session: session, Identity: b444Identity}
+		if _, _, err := env.ledger.PutTaskTicketNotice(ledger.TaskTicketNoticeState{SourceMachine: "source", TaskID: taskID,
+			TicketID: taskID + ":p1", TicketKind: "ask", SourceSeq: 1, Target: &address}, "test"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	db, err := sql.Open("sqlite", env.ledgerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`UPDATE card_events SET payload = json_set(payload, '$.ticket_kind', 'future-kind')
+		WHERE seq = (SELECT MIN(seq) FROM card_events WHERE type='task_ticket_notice')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := env.srv.consumeAutomationEventsOnce(context.Background()); err != nil {
+		t.Fatalf("unknown notice blocked following valid event: %v", err)
+	}
+	invalid, err := env.ledger.GetTaskTicketNotice("source", first, first+":p1")
+	if err != nil || invalid.Status != "pending" {
+		t.Fatalf("invalid event must be skipped without acknowledging its source: state=%+v err=%v", invalid, err)
+	}
+	valid, err := env.ledger.GetTaskTicketNotice("source", second, second+":p1")
+	if err != nil || valid.Status != "delivered" {
+		t.Fatalf("valid event after unknown kind must still be consumed: state=%+v err=%v", valid, err)
+	}
+	if len(b444ResidentResumes(runner)) != 1 {
+		t.Fatalf("following valid notice should trigger exactly one resident resume, got %d", len(b444ResidentResumes(runner)))
 	}
 }
 
@@ -240,6 +281,51 @@ func TestTaskTicketNoticeResidentPushConsumesAndAcknowledges(t *testing.T) {
 		if !strings.Contains(prompts[0], anchor) {
 			t.Fatalf("resident push prompt missing %q: %s", anchor, prompts[0])
 		}
+	}
+}
+
+func TestTaskTicketNoticeDeliveryLeavesSourceGateAndAskUnanswered(t *testing.T) {
+	env, _ := newNoPTYAutomationEnv(t)
+	session := b435Session(t, env)
+	b444SitPush(t, env, session, "local")
+	for _, kind := range []string{"gate", "ask"} {
+		t.Run(kind, func(t *testing.T) {
+			taskID, ticketID := "source-"+kind, "source-"+kind+":p1"
+			now := time.Now().UTC()
+			if err := env.st.CreateTask(&proto.Task{ID: taskID, Target: "local", Executor: "fake",
+				State: proto.TaskStateWaitingAnswer, CreatedAt: now, UpdatedAt: now}); err != nil {
+				t.Fatal(err)
+			}
+			request, _ := json.Marshal(map[string]string{"kind": kind, "question": "continue?"})
+			if _, err := env.st.CreateTicket(&proto.Ticket{ID: ticketID, TaskID: taskID, Kind: kind, Request: request, CreatedAt: now}); err != nil {
+				t.Fatal(err)
+			}
+			address := proto.DeliveryAddress{Kind: proto.DeliveryResident, Session: session, Identity: b444Identity}
+			if _, _, err := env.ledger.PutTaskTicketNotice(ledger.TaskTicketNoticeState{SourceMachine: "source", TaskID: taskID,
+				TicketID: ticketID, TicketKind: kind, SourceSeq: 1, Target: &address}, "test"); err != nil {
+				t.Fatal(err)
+			}
+			drainAutomation(t, env)
+			notice, err := env.ledger.GetTaskTicketNotice("source", taskID, ticketID)
+			if err != nil || notice.Status != "delivered" {
+				t.Fatalf("notice should be delivered: notice=%+v err=%v", notice, err)
+			}
+			pending, err := env.st.PendingTickets(taskID)
+			if err != nil || len(pending) != 1 || pending[0].ID != ticketID {
+				t.Fatalf("notification delivery must leave original ticket pending: pending=%+v err=%v", pending, err)
+			}
+			original, err := env.st.GetTicket(ticketID)
+			if err != nil || original.Answer != nil {
+				t.Fatalf("notice must not answer source ticket: ticket=%+v err=%v", original, err)
+			}
+			if err := env.st.AnswerTicket(ticketID, "Continue"); err != nil {
+				t.Fatal(err)
+			}
+			answered, err := env.st.GetTicket(ticketID)
+			if err != nil || answered.Answer == nil || *answered.Answer != "Continue" {
+				t.Fatalf("only source answer CAS should close original ticket: ticket=%+v err=%v", answered, err)
+			}
+		})
 	}
 }
 

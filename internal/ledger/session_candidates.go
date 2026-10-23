@@ -235,8 +235,12 @@ func (s *Store) addressCandidatesSQL(identity, session string, fromSeq, toSeq in
 	noticeMatch := `payload->'target'->>'session' = ? AND payload->'target'->>'identity' = ? AND
 		payload->'target'->>'kind' IN ('resident','seat')`
 	if s.dialect == dialectSQLite {
-		noticeMatch = `json_extract(payload, '$.target.session') = ? AND json_extract(payload, '$.target.identity') = ? AND
-			json_extract(payload, '$.target.kind') IN ('resident','seat')`
+		// Legacy/corrupt TEXT payloads must reach the consumer so it can warn and
+		// skip the row while advancing its bounded scan; malformed JSON cannot be
+		// passed to json_extract (SQLite raises an error for the whole candidate page).
+		noticeMatch = `CASE WHEN json_valid(payload) THEN (
+			json_extract(payload, '$.target.session') = ? AND json_extract(payload, '$.target.identity') = ? AND
+			json_extract(payload, '$.target.kind') IN ('resident','seat')) ELSE 1 END`
 	}
 	noticeQuery := `SELECT seq, card_id, type, actor, payload, source_target, source_task, source_seq, created_at
 		FROM card_events WHERE type = 'task_ticket_notice' AND seq > ?` + upper + ` AND ` + noticeMatch

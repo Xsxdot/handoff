@@ -12,7 +12,9 @@ package ledgermirror
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
@@ -52,6 +54,10 @@ type Options struct {
 	// LocalTasks is the host's public task inventory. It is read independently
 	// of the remote pool because the local machine is deliberately absent there.
 	LocalTasks func(context.Context) ([]proto.TaskView, error)
+	// LocalDiscovery returns bounded creation-sequence pages from the local task store.
+	LocalDiscovery func(context.Context, int64, int) (*proto.TaskDiscoveryPage, error)
+	// LocalTaskResponsibility reads one local task and its pending tickets.
+	LocalTaskResponsibility func(context.Context, string) (TaskResponsibilityStatus, error)
 	// IsSelfTarget 是无自名时的回退判据（地址判）。有 SelfName 时不再参与
 	// 名字面判等。
 	IsSelfTarget func(target string) bool
@@ -97,6 +103,25 @@ type Machines interface {
 // adapters. It discovers explicitly session-originated tasks that have no card link.
 type TaskInventory interface {
 	Tasks(ctx context.Context, name string) ([]proto.TaskView, error)
+}
+
+// TaskDiscovery is the bounded source-side incremental inventory used in production.
+type TaskDiscovery interface {
+	DiscoverTasks(ctx context.Context, name string, afterSeq int64, limit int) (*proto.TaskDiscoveryPage, error)
+}
+
+// TaskResponsibilityStatus is the authoritative one-task check used for terminal
+// candidates. PendingTickets is included because terminal tasks may still own
+// unanswered work that must remain routable.
+type TaskResponsibilityStatus struct {
+	State          proto.TaskState
+	PendingTickets int
+}
+
+// TaskResponsibilityReader is an optional exact-source read used only for a
+// terminal candidate or a normally closed source stream.
+type TaskResponsibilityReader interface {
+	TaskResponsibility(ctx context.Context, name, taskID string) (TaskResponsibilityStatus, error)
 }
 
 // subscription 是一条在飞订阅的登记：取消函数 + 它当时用的客户端实例。
@@ -215,9 +240,14 @@ type Mirror struct {
 	subs           map[string]*subscription
 	conn           map[string]bool
 	ended          map[string]bool
+	archived       map[string]bool
 	inventoryMu    sync.Mutex
 	taskInventory  map[string][]proto.TaskView
 	localInventory []proto.TaskView
+	discoveryMu    sync.Mutex
+	discovered     map[string]map[string]proto.TaskDiscoveryItem
+	discoverySeq   map[string]int64
+	discoveryReady map[string]bool
 	wg             sync.WaitGroup
 	wgMu           sync.Mutex
 	runMu          sync.Mutex
@@ -250,8 +280,9 @@ func New(st *ledger.Store, machines Machines, opt Options) *Mirror {
 	}
 	return &Mirror{st: st, machines: machines, opt: opt,
 		log:  slog.Default().With("subsystem", "ledgermirror"),
-		subs: map[string]*subscription{}, conn: map[string]bool{}, ended: map[string]bool{},
-		taskInventory: map[string][]proto.TaskView{}}
+		subs: map[string]*subscription{}, conn: map[string]bool{}, ended: map[string]bool{}, archived: map[string]bool{},
+		taskInventory: map[string][]proto.TaskView{}, discovered: map[string]map[string]proto.TaskDiscoveryItem{},
+		discoverySeq: map[string]int64{}, discoveryReady: map[string]bool{}}
 }
 
 func (m *Mirror) setConn(key string, ok bool) {
@@ -379,6 +410,137 @@ func (m *Mirror) addInventoryTask(want map[string]ledger.TaskLink, linked map[st
 	m.log.Debug("发现未挂卡会话来源任务，纳入事件恢复", "target", target, "task", task.ID, "state", task.State)
 }
 
+type discoveryCursor struct {
+	Seq int64 `json:"seq"`
+}
+
+const taskDiscoveryCursorKind = "b469_task_discovery_cursor"
+const taskDiscoveryPageSize = 100
+
+func normalizeDiscoveryMachine(name string) string { return strings.ToLower(strings.TrimSpace(name)) }
+
+func (m *Mirror) advanceDiscoveryCursor(id string, seq int64) (int64, error) {
+	body, _ := json.Marshal(discoveryCursor{Seq: seq})
+	for attempt := 0; attempt < 3; attempt++ {
+		entry, err := m.st.RegistryGet(taskDiscoveryCursorKind, id)
+		version := 0
+		currentSeq := int64(0)
+		if err == nil {
+			version = entry.Version
+			var saved discoveryCursor
+			if err := json.Unmarshal(entry.Body, &saved); err != nil || saved.Seq < 0 {
+				return 0, fmt.Errorf("decode task discovery cursor %s version %d", id, entry.Version)
+			}
+			currentSeq = saved.Seq
+		} else if !errors.Is(err, ledger.ErrNotFound) {
+			return 0, fmt.Errorf("read task discovery cursor %s: %w", id, err)
+		}
+		if currentSeq >= seq {
+			return currentSeq, nil
+		}
+		if _, err := m.st.RegistryPut(taskDiscoveryCursorKind, id, version, body, m.opt.Holder); err == nil {
+			m.log.Info("任务发现水位已推进", "source", id, "source_seq", seq, "attempt", attempt+1)
+			return seq, nil
+		} else if !errors.Is(err, ledger.ErrCASConflict) {
+			return 0, fmt.Errorf("advance task discovery cursor %s to %d: %w", id, seq, err)
+		}
+		m.log.Debug("任务发现水位 CAS 冲突，重读当前版本", "source", id, "source_seq", seq, "attempt", attempt+1)
+	}
+	return 0, fmt.Errorf("advance task discovery cursor %s to %d after CAS retries: %w", id, seq, ledger.ErrCASConflict)
+}
+
+// discoverSourcePage rebuilds the in-memory subscription responsibility from seq 0
+// after process restart, then reads only pages beyond the last committed source seq.
+// A page is added to the responsibility cache before its registry cursor is advanced.
+func (m *Mirror) discoverSourcePage(ctx context.Context, name string, fetch func(context.Context, int64, int) (*proto.TaskDiscoveryPage, error)) error {
+	if name == "" || fetch == nil {
+		return errors.New("task discovery source unavailable")
+	}
+	id := normalizeDiscoveryMachine(name)
+	m.discoveryMu.Lock()
+	if m.discovered[id] == nil {
+		m.discovered[id] = map[string]proto.TaskDiscoveryItem{}
+	}
+	ready := m.discoveryReady[id]
+	after := m.discoverySeq[id]
+	m.discoveryMu.Unlock()
+	if !ready {
+		after = 0
+	}
+	persistedSeq := int64(0)
+	entry, getErr := m.st.RegistryGet(taskDiscoveryCursorKind, id)
+	if getErr == nil {
+		var saved discoveryCursor
+		if err := json.Unmarshal(entry.Body, &saved); err != nil || saved.Seq < 0 {
+			return fmt.Errorf("decode task discovery cursor %s version %d", id, entry.Version)
+		}
+		persistedSeq = saved.Seq
+	} else if !errors.Is(getErr, ledger.ErrNotFound) {
+		return fmt.Errorf("read task discovery cursor %s: %w", id, getErr)
+	}
+
+	for {
+		m.log.Debug("请求任务增量发现页", "source", id, "after_seq", after, "limit", taskDiscoveryPageSize)
+		callCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		page, err := fetch(callCtx, after, taskDiscoveryPageSize)
+		cancel()
+		if err != nil {
+			return fmt.Errorf("discover tasks from %s after %d: %w", name, after, err)
+		}
+		if page == nil || page.Items == nil || page.NextSeq < after {
+			return fmt.Errorf("invalid task discovery page from %s after %d", name, after)
+		}
+		last := after
+		for _, item := range page.Items {
+			if item.Seq <= last || item.TaskID == "" {
+				return fmt.Errorf("invalid task discovery item from %s at seq %d", name, item.Seq)
+			}
+			last = item.Seq
+		}
+		if len(page.Items) == 0 && page.NextSeq != after {
+			return fmt.Errorf("empty task discovery page advanced from %d to %d", after, page.NextSeq)
+		}
+		if page.NextSeq != last {
+			return fmt.Errorf("task discovery next_seq %d does not match last item %d", page.NextSeq, last)
+		}
+		m.discoveryMu.Lock()
+		for _, item := range page.Items {
+			// Terminal tasks with no source-side pending ticket have no ongoing
+			// subscription responsibility. The source cursor still advances below.
+			if item.State.IsTerminal() && !item.HasPendingTickets {
+				delete(m.discovered[id], item.TaskID)
+				continue
+			}
+			m.discovered[id][item.TaskID] = item
+		}
+		m.discoveryMu.Unlock()
+		m.log.Debug("任务发现页读取完成", "source", id, "after_seq", after,
+			"next_seq", page.NextSeq, "items", len(page.Items), "has_more", page.HasMore)
+		if page.NextSeq > persistedSeq {
+			var putErr error
+			persistedSeq, putErr = m.advanceDiscoveryCursor(id, page.NextSeq)
+			if putErr != nil {
+				return putErr
+			}
+		}
+		after = page.NextSeq
+		if !page.HasMore {
+			break
+		}
+		if len(page.Items) == 0 {
+			return fmt.Errorf("task discovery source %s claims more with an empty page", name)
+		}
+	}
+	m.discoveryMu.Lock()
+	if after < persistedSeq {
+		after = persistedSeq
+	}
+	m.discoverySeq[id] = after
+	m.discoveryReady[id] = true
+	m.discoveryMu.Unlock()
+	return nil
+}
+
 func (m *Mirror) reconcile(ctx context.Context) {
 	names := m.machines.Names()
 	registered := make(map[string]bool, len(names))
@@ -436,43 +598,49 @@ func (m *Mirror) reconcile(ctx context.Context) {
 		want[link.Target+"/"+link.TaskID] = link
 		linked[link.Target+"/"+link.TaskID] = true
 	}
-	// Bare tasks with explicit origin_session have no card_tasks row by design.
-	// The public task inventory plus per-task persisted event stream is the existing
-	// recovery source; do not fabricate a card link for these tasks.
+	// Task discovery is an independent recovery path; it never fabricates card links.
 	originSessions := map[string]string{}
-	if inventory, ok := m.machines.(TaskInventory); ok {
+	if discovery, ok := m.machines.(TaskDiscovery); ok {
+		for _, name := range names {
+			name := name
+			if err := m.discoverSourcePage(ctx, name, func(callCtx context.Context, after int64, limit int) (*proto.TaskDiscoveryPage, error) {
+				return discovery.DiscoverTasks(callCtx, name, after, limit)
+			}); err != nil {
+				m.log.Warn("读取任务增量发现失败，保留最后可用订阅责任", "target", name, "cause", err)
+			}
+		}
+	} else if inventory, ok := m.machines.(TaskInventory); ok {
+		// Compatibility for non-production test/legacy machine adapters. Production uses
+		// the source creation cursor and never falls back after a discovery 404.
 		type inventoryResult struct {
 			name  string
 			tasks []proto.TaskView
 			err   error
 		}
-		inventoryCtx, cancelInventory := context.WithCancel(ctx)
 		results := make(chan inventoryResult, len(names))
 		for _, name := range names {
 			name := name
 			go func() {
-				callCtx, cancel := context.WithTimeout(inventoryCtx, 2*time.Second)
+				callCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 				defer cancel()
 				tasks, err := inventory.Tasks(callCtx, name)
 				results <- inventoryResult{name: name, tasks: tasks, err: err}
 			}()
 		}
-		for remaining := len(names); remaining > 0; {
+		for remaining := len(names); remaining > 0; remaining-- {
 			select {
 			case result := <-results:
-				remaining--
 				if result.err != nil {
-					m.log.Warn("读取会话来源任务清单失败", "target", result.name, "cause", result.err)
+					m.log.Warn("读取任务清单失败", "target", result.name, "cause", result.err)
 					continue
 				}
 				m.inventoryMu.Lock()
 				m.taskInventory[result.name] = append([]proto.TaskView(nil), result.tasks...)
 				m.inventoryMu.Unlock()
 			case <-ctx.Done():
-				remaining = 0
+				remaining = 1
 			}
 		}
-		cancelInventory()
 		m.inventoryMu.Lock()
 		for _, name := range names {
 			for _, task := range m.taskInventory[name] {
@@ -481,12 +649,17 @@ func (m *Mirror) reconcile(ctx context.Context) {
 		}
 		m.inventoryMu.Unlock()
 	}
-	if m.opt.LocalTasks != nil {
+	if m.opt.LocalDiscovery != nil {
+		localTarget := m.localTargetName()
+		if err := m.discoverSourcePage(ctx, localTarget, m.opt.LocalDiscovery); err != nil {
+			m.log.Warn("读取本机任务增量发现失败，保留最后可用订阅责任", "target", localTarget, "cause", err)
+		}
+	} else if m.opt.LocalTasks != nil {
 		localCtx, cancelLocal := context.WithTimeout(ctx, 5*time.Second)
 		tasks, err := m.opt.LocalTasks(localCtx)
 		cancelLocal()
 		if err != nil {
-			m.log.Warn("读取本机来源任务清单失败，保留下轮重试", "target", m.opt.SelfName, "cause", err)
+			m.log.Warn("读取本机来源任务清单失败，保留上次成功清单", "target", m.opt.SelfName, "cause", err)
 		} else {
 			m.inventoryMu.Lock()
 			m.localInventory = append([]proto.TaskView(nil), tasks...)
@@ -499,17 +672,80 @@ func (m *Mirror) reconcile(ctx context.Context) {
 		}
 		m.inventoryMu.Unlock()
 	}
+	addDiscovered := func(target string, item proto.TaskDiscoveryItem) {
+		key := target + "/" + item.TaskID
+		if linked[key] {
+			originSessions[key] = item.OriginSession
+			link := want[key]
+			link.OriginSession = item.OriginSession
+			want[key] = link
+			return
+		}
+		originSessions[key] = item.OriginSession
+		want[key] = ledger.TaskLink{Target: target, TaskID: item.TaskID, Purpose: "task_discovery", OriginSession: item.OriginSession}
+	}
+	m.discoveryMu.Lock()
+	for _, name := range names {
+		for _, item := range m.discovered[normalizeDiscoveryMachine(name)] {
+			addDiscovered(name, item)
+		}
+	}
+	if local := m.localTargetName(); local != "" {
+		for _, item := range m.discovered[normalizeDiscoveryMachine(local)] {
+			addDiscovered(local, item)
+		}
+	}
+	m.discoveryMu.Unlock()
 	if m.opt.RefreshTicketNotice != nil {
-		notices, err := m.st.ListActiveTaskTicketNotices()
-		if err != nil {
-			m.log.Warn("读取活动工单通知失败，保留现有路由", "cause", err)
-		} else {
+		type sourceTask struct{ machine, task string }
+		sources := make([]sourceTask, 0, len(originSessions))
+		for key := range originSessions {
+			parts := strings.SplitN(key, "/", 2)
+			if len(parts) == 2 {
+				sources = append(sources, sourceTask{machine: parts[0], task: parts[1]})
+			}
+		}
+		for _, source := range sources {
+			notices, err := m.st.ListActiveTaskTicketNoticesForTask(source.machine, source.task)
+			if err != nil {
+				m.log.Warn("按源任务读取活动工单通知失败，保留现有路由", "target", source.machine, "task", source.task, "cause", err)
+				continue
+			}
+			m.discoveryMu.Lock()
+			item, discovered := m.discovered[normalizeDiscoveryMachine(source.machine)][source.task]
+			m.discoveryMu.Unlock()
+			m.mu.Lock()
+			archived := m.archived[source.machine+"/"+source.task]
+			m.mu.Unlock()
+			if discovered && (item.State.IsTerminal() || archived) {
+				status, statusErr := m.readTaskResponsibility(ctx, source.machine, source.task)
+				if statusErr != nil {
+					m.log.Warn("核验终态任务责任失败，保留订阅", "target", source.machine, "task", source.task, "cause", statusErr)
+				} else if (status.State.IsTerminal() || archived) && status.PendingTickets == 0 && len(notices) == 0 {
+					m.discoveryMu.Lock()
+					delete(m.discovered[normalizeDiscoveryMachine(source.machine)], source.task)
+					m.discoveryMu.Unlock()
+					key := source.machine + "/" + source.task
+					delete(originSessions, key)
+					if !linked[key] {
+						delete(want, key)
+						m.mu.Lock()
+						delete(m.ended, key)
+						delete(m.archived, key)
+						m.mu.Unlock()
+					}
+					m.log.Info("终态任务已无待答票，释放发现责任", "target", source.machine, "task", source.task)
+				} else if status.State != "" && status.State != item.State {
+					m.discoveryMu.Lock()
+					item.State = status.State
+					item.HasPendingTickets = status.PendingTickets > 0
+					m.discovered[normalizeDiscoveryMachine(source.machine)][source.task] = item
+					m.discoveryMu.Unlock()
+				}
+			}
 			for _, notice := range notices {
 				key := notice.SourceMachine + "/" + notice.TaskID
-				originSession, ok := originSessions[key]
-				if !ok {
-					continue
-				}
+				originSession := originSessions[key]
 				cardID, cardErr := m.st.CardOfTask(notice.SourceMachine, notice.TaskID)
 				if cardErr != nil && !errors.Is(cardErr, ledger.ErrNotFound) {
 					m.log.Warn("反查活动工单通知卡失败，保留原路由", "target", notice.SourceMachine,
@@ -647,6 +883,35 @@ func (m *Mirror) reconcile(ctx context.Context) {
 //
 // 注意：不动 m.ended —— 那是「这条挂账已终态」的记忆，与「这条订阅为什么被收掉」
 // 是两件事；误删会让已归档的 task 在下一轮被重新订阅。
+func (m *Mirror) readTaskResponsibility(ctx context.Context, target, taskID string) (TaskResponsibilityStatus, error) {
+	callCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if m.isLocalTarget(target) {
+		if m.opt.LocalTaskResponsibility == nil {
+			return TaskResponsibilityStatus{}, errors.New("本机任务责任读取未配置")
+		}
+		return m.opt.LocalTaskResponsibility(callCtx, taskID)
+	}
+	reader, ok := m.machines.(TaskResponsibilityReader)
+	if !ok {
+		return TaskResponsibilityStatus{}, errors.New("来源机器不支持单任务责任读取")
+	}
+	return reader.TaskResponsibility(callCtx, target, taskID)
+}
+
+func (m *Mirror) updateDiscoveredResponsibility(target, taskID string, status TaskResponsibilityStatus) {
+	id := normalizeDiscoveryMachine(target)
+	m.discoveryMu.Lock()
+	defer m.discoveryMu.Unlock()
+	item, ok := m.discovered[id][taskID]
+	if !ok {
+		return
+	}
+	item.State = status.State
+	item.HasPendingTickets = status.PendingTickets > 0
+	m.discovered[id][taskID] = item
+}
+
 func (m *Mirror) dropSubLocked(key string, sub *subscription, reason string) {
 	sub.cancel()
 	delete(m.subs, key)
@@ -707,8 +972,12 @@ func (m *Mirror) subscribe(ctx context.Context, link ledger.TaskLink, c client.E
 					"task", link.TaskID, "node", link.Node, "attempt", link.Attempt, "from_seq", wm)
 			}
 		}
+		terminalSignal := false
 		if source != nil {
 			err = source(ctx, c, link.TaskID, wm, func(e proto.Event) error {
+				if e.Type == proto.EventTypeFailed {
+					terminalSignal = true
+				}
 				if mirrorSkip[e.Type] {
 					m.log.Debug("账本镜像过滤事件", "target", link.Target, "task", link.TaskID,
 						"node", link.Node, "attempt", link.Attempt, "seq", e.Seq, "type", e.Type)
@@ -754,12 +1023,48 @@ func (m *Mirror) subscribe(ctx context.Context, link ledger.TaskLink, c client.E
 		if ctx.Err() != nil {
 			return
 		}
-		if errors.Is(err, errMirrorArchived) || err == nil {
+		if errors.Is(err, errMirrorArchived) {
+			status, statusErr := m.readTaskResponsibility(ctx, link.Target, link.TaskID)
 			m.mu.Lock()
+			m.archived[key] = true
 			m.ended[key] = true
 			m.mu.Unlock()
-			m.log.Info("订阅正常终结（task 归档）", "target", link.Target, "task", link.TaskID)
+			if statusErr == nil {
+				m.updateDiscoveredResponsibility(link.Target, link.TaskID, status)
+				m.log.Info("订阅正常终结（收到 task archived 事件）", "target", link.Target,
+					"task", link.TaskID, "pending_tickets", status.PendingTickets)
+			} else {
+				m.log.Warn("归档事件已到但无法核验待答票，保留通知责任", "target", link.Target,
+					"task", link.TaskID, "cause", statusErr)
+			}
 			return
+		}
+		// A WebSocket normal close is only a transport signal. The source may
+		// still be live (or retain unanswered tickets), so verify its authority
+		// before ending the responsibility just as for EOF/terminal events.
+		if err == nil || terminalSignal || errors.Is(err, client.ErrStreamNormalClosure) {
+			status, statusErr := m.readTaskResponsibility(ctx, link.Target, link.TaskID)
+			if statusErr == nil && status.State.IsTerminal() {
+				m.updateDiscoveredResponsibility(link.Target, link.TaskID, status)
+				if status.PendingTickets == 0 {
+					m.mu.Lock()
+					m.ended[key] = true
+					m.mu.Unlock()
+					m.log.Info("源任务权威状态已终态且无待答票，停止事件订阅", "target", link.Target, "task", link.TaskID,
+						"state", status.State)
+					return
+				}
+				m.log.Warn("源任务已终态但仍有待答票，保留订阅", "target", link.Target,
+					"task", link.TaskID, "state", status.State, "pending_tickets", status.PendingTickets)
+			}
+			if statusErr != nil {
+				m.log.Warn("事件源结束但权威任务状态读取失败，保留订阅并重连", "target", link.Target,
+					"task", link.TaskID, "cause", statusErr)
+			} else if !status.State.IsTerminal() {
+				m.log.Warn("事件源结束但任务仍非终态，保留订阅并重连", "target", link.Target,
+					"task", link.TaskID, "state", status.State)
+			}
+			err = errors.New("event source closed before authoritative task termination")
 		}
 		m.log.Warn("订阅断开，退避重连", "card", link.CardID, "target", link.Target,
 			"task", link.TaskID, "node", link.Node, "attempt", link.Attempt,

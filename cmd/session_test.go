@@ -7,12 +7,14 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -77,8 +79,8 @@ func TestSessionWaitRejectsUnknownTicketNoticeKind(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, hit, err := sessionWaitTaskTicketNotice(st, ledger.Event{Type: ledger.EvTaskTicketNotice, Payload: payload}, target)
-	if err == nil && hit {
-		t.Fatalf("unknown ticket kind must not be accepted: hit=%v err=%v", hit, err)
+	if err != nil || hit {
+		t.Fatalf("unknown ticket kind must be skipped: hit=%v err=%v", hit, err)
 	}
 }
 
@@ -111,6 +113,72 @@ func TestSessionWaitRejectsOldResidentBeforeNoticeRefresh(t *testing.T) {
 	}
 	if _, hit, err := sessionWaitTaskTicketNotice(st, notice, target); err != nil || hit {
 		t.Fatalf("old resident notice after reseat must be rejected: hit=%v err=%v", hit, err)
+	}
+}
+
+func TestSessionWaitOtherResidentNoticeCannotBeCandidateOrDelivered(t *testing.T) {
+	_, _, st, sessionID := mustWaitFixture(t, t.TempDir())
+	owner := syResident(sessionID)
+	other := proto.DeliveryAddress{Kind: proto.DeliveryResident, Session: sessionID, Identity: "agent:other"}
+	if _, _, err := st.PutTaskTicketNotice(ledger.TaskTicketNoticeState{SourceMachine: "exec-other", TaskID: "other-task",
+		TicketID: "other-task:q1", TicketKind: "ask", SourceSeq: 4, Target: &other}, "test"); err != nil {
+		t.Fatal(err)
+	}
+	events, err := st.ResidentMessageCandidatesContext(context.Background(), owner.Identity, owner.Session, 0, 0, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ev := range events {
+		if ev.Type == ledger.EvTaskTicketNotice {
+			t.Fatalf("notice addressed to other resident leaked through candidate query: seq=%d", ev.Seq)
+		}
+	}
+	state, err := st.GetTaskTicketNotice("exec-other", "other-task", "other-task:q1")
+	if err != nil || state.Status != "pending" {
+		t.Fatalf("filtering another resident must not acknowledge its notice: state=%+v err=%v", state, err)
+	}
+}
+
+func TestSessionWaitRechecksNoticeWireAndCurrentOwner(t *testing.T) {
+	_, _, st, sessionID := mustWaitFixture(t, t.TempDir())
+	owner := syResident(sessionID)
+	other := proto.DeliveryAddress{Kind: proto.DeliveryResident, Session: sessionID, Identity: "agent:other"}
+	if _, _, err := st.PutTaskTicketNotice(ledger.TaskTicketNoticeState{SourceMachine: "exec-other", TaskID: "other-task",
+		TicketID: "other-task:q1", TicketKind: "ask", SourceSeq: 4, Target: &other}, "test"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := st.PutTaskTicketNotice(ledger.TaskTicketNoticeState{SourceMachine: "exec-wire", TaskID: "wire-task",
+		TicketID: "wire-task:q1", TicketKind: "ask", SourceSeq: 5, Target: &owner}, "test"); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name    string
+		machine string
+		task    string
+		ticket  string
+		seq     int64
+		wire    proto.DeliveryAddress
+	}{
+		{name: "wire targets other identity while current row targets owner", machine: "exec-wire", task: "wire-task", ticket: "wire-task:q1", seq: 5, wire: other},
+		{name: "wire claims current identity but source row targets other", machine: "exec-other", task: "other-task", ticket: "other-task:q1", seq: 4, wire: owner},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			payload, err := json.Marshal(proto.TaskTicketNotice{SourceMachine: tc.machine, TaskID: tc.task, TicketID: tc.ticket,
+				TicketKind: "ask", SourceSeq: tc.seq, OwnershipVersion: 1, Target: tc.wire})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, hit, err := sessionWaitTaskTicketNotice(st, ledger.Event{Seq: 99, Type: ledger.EvTaskTicketNotice, Payload: payload}, owner)
+			if err != nil || hit {
+				t.Fatalf("other source notice must not be received: hit=%v err=%v", hit, err)
+			}
+		})
+	}
+	for _, key := range [][3]string{{"exec-other", "other-task", "other-task:q1"}, {"exec-wire", "wire-task", "wire-task:q1"}} {
+		state, err := st.GetTaskTicketNotice(key[0], key[1], key[2])
+		if err != nil || state.Status != "pending" {
+			t.Fatalf("wire/current rejection must not acknowledge the source notice %v: state=%+v err=%v", key, state, err)
+		}
 	}
 }
 
@@ -176,6 +244,90 @@ func TestSessionWaitReceivesOnlyCurrentAddressedTaskTicketNotice(t *testing.T) {
 	if wake.Type != "task_ticket_notice" || wake.Notice.TaskID != "bare-task" ||
 		wake.Notice.TicketID != "bare-task:q1" || wake.Notice.Target != target || wake.Notice.OwnershipVersion != 1 {
 		t.Fatalf("task ticket wake=%+v", wake)
+	}
+}
+
+func TestSessionWaitSkipsMalformedNoticeAndDeliversFollowingGoodNotice(t *testing.T) {
+	dir := t.TempDir()
+	_, _, st, sessionID := mustWaitFixture(t, dir)
+	raw, err := sql.Open("sqlite", filepath.Join(dir, "ledger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := raw.Exec(`INSERT INTO card_events(type,actor,payload,created_at) VALUES('task_ticket_notice','corrupt-source','{broken',?)`, time.Now().UTC().Format(time.RFC3339Nano))
+	if err != nil {
+		raw.Close()
+		t.Fatal(err)
+	}
+	badSeq, err := result.LastInsertId()
+	if err != nil {
+		raw.Close()
+		t.Fatal(err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	target := syResident(sessionID)
+	if _, _, err := st.PutTaskTicketNotice(ledger.TaskTicketNoticeState{SourceMachine: "exec-good", TaskID: "good-task",
+		TicketID: "good-task:q1", TicketKind: "ask", SourceSeq: 2, Target: &target}, "test"); err != nil {
+		t.Fatal(err)
+	}
+	// Assert the malformed row enters the bounded candidate page. If the SQL
+	// changes its invalid-JSON branch to ELSE 0, the following valid notice still
+	// wakes the CLI, but the corrupt event is silently skipped without warning.
+	candidates, err := st.ResidentMessageCandidatesContext(context.Background(), target.Identity,
+		target.Session, 0, 0, sessionWaitPageLimit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundBad := false
+	for _, candidate := range candidates {
+		if candidate.Seq == badSeq && candidate.Type == ledger.EvTaskTicketNotice && string(candidate.Payload) == "{broken" {
+			foundBad = true
+		}
+	}
+	if !foundBad {
+		t.Fatalf("malformed notice seq %d must reach the consumer candidate page: %+v", badSeq, candidates)
+	}
+	var logs bytes.Buffer
+	previousLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(previousLogger) })
+	out, _, err := runLedgerCLI(t, dir, "session", "wait", sessionID)
+	if err != nil {
+		t.Fatalf("session wait must continue after malformed notice: %v", err)
+	}
+	var backlog proto.SessionBacklog
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &backlog); err != nil {
+		t.Fatalf("decode following addressed notice: %v output=%q", err, out)
+	}
+	if len(backlog.TaskTicketNotices) != 1 || backlog.TaskTicketNotices[0].Notice.TicketID != "good-task:q1" {
+		t.Fatalf("notice after malformed row was not delivered: %+v", backlog)
+	}
+	logText := logs.String()
+	for _, field := range []string{"跳过无效工单通知", `kind=`, `seq=` + fmt.Sprint(badSeq), `source_machine=`} {
+		if !strings.Contains(logText, field) {
+			t.Fatalf("malformed notice warning missing %q: %s", field, logText)
+		}
+	}
+	if strings.Contains(logText, "{broken") {
+		t.Fatalf("malformed notice payload must not be logged: %s", logText)
+	}
+	events, err := st.EventsFromAsc(nil, 0, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var goodSeq int64
+	for _, event := range events {
+		if event.Type == ledger.EvTaskTicketNotice && strings.Contains(string(event.Payload), `"ticket_id":"good-task:q1"`) {
+			goodSeq = event.Seq
+		}
+	}
+	if goodSeq == 0 {
+		t.Fatal("following valid notice event not found")
+	}
+	if cursor, err := st.SessionDeliveryCursor(syCursorKey(sessionID)); err != nil || cursor != goodSeq {
+		t.Fatalf("wait must advance durable cursor across malformed row through following good notice: cursor=%d want=%d err=%v", cursor, goodSeq, err)
 	}
 }
 

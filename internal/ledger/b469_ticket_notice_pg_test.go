@@ -3,6 +3,7 @@
 package ledger
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"net/url"
@@ -196,5 +197,70 @@ func TestB469TicketNoticePGUnknownOriginRemainsVisible(t *testing.T) {
 	}
 	if _, _, err := first.RetryTaskTicketNotice(input.SourceMachine, input.TaskID, input.TicketID, 2, "b469-test"); err == nil {
 		t.Fatal("explicit retry must not revive an answered ticket")
+	}
+}
+
+func TestB469TicketNoticePGIdenticalReplaySkipsGlobalWriteLock(t *testing.T) {
+	first, second, _ := b469IsolatedPGStores(t)
+	owner := proto.DeliveryAddress{Kind: proto.DeliveryResident, Session: "session:lock", Identity: "agent:owner"}
+	input := TaskTicketNoticeState{SourceMachine: "source-lock", TaskID: "task-lock", TicketID: "task-lock:q1",
+		SourceSeq: 9, TicketKind: "ask", Target: &owner}
+	if _, _, err := first.PutTaskTicketNotice(input, "b469-test"); err != nil {
+		t.Fatal(err)
+	}
+	retryAt := time.Now().UTC().Add(7 * time.Minute).Truncate(time.Microsecond)
+	if err := first.SetTaskTicketNoticeStatusWithRetryAfter(input.SourceMachine, input.TaskID, input.TicketID, 1,
+		"needs_human", "delivery_failed", "temporary bell error", &retryAt); err != nil {
+		t.Fatal(err)
+	}
+	before, err := first.GetTaskTicketNotice(input.SourceMachine, input.TaskID, input.TicketID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lockConn, err := second.db.Conn(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lockConn.Close()
+	lockTx, err := lockConn.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lockTx.Rollback()
+	if _, err := lockTx.ExecContext(context.Background(), `SELECT pg_advisory_xact_lock(915601)`); err != nil {
+		t.Fatal(err)
+	}
+	type putResult struct {
+		state   TaskTicketNoticeState
+		changed bool
+		err     error
+	}
+	done := make(chan putResult, 1)
+	go func() {
+		state, changed, err := first.PutTaskTicketNotice(input, "b469-test")
+		done <- putResult{state: state, changed: changed, err: err}
+	}()
+	var replay putResult
+	select {
+	case replay = <-done:
+	case <-time.After(600 * time.Millisecond):
+		_ = lockTx.Rollback()
+		<-done // let a broken implementation finish before test cleanup closes the store
+		t.Fatal("identical notice replay waited on the global PG advisory write lock")
+	}
+	if err := lockTx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	if replay.err != nil || replay.changed || !replay.state.UpdatedAt.Equal(before.UpdatedAt) ||
+		replay.state.RetryAfter == nil || before.RetryAfter == nil || !replay.state.RetryAfter.Equal(*before.RetryAfter) {
+		t.Fatalf("same facts changed routing lifecycle: state=%+v changed=%v err=%v before=%+v",
+			replay.state, replay.changed, replay.err, before)
+	}
+	newOwner := proto.DeliveryAddress{Kind: proto.DeliveryResident, Session: "session:lock", Identity: "agent:new-owner"}
+	input.Target = &newOwner
+	input.SourceSeq++
+	after, changed, err := first.PutTaskTicketNotice(input, "b469-test")
+	if err != nil || !changed || after.Status != "pending" || after.OwnershipVersion != 2 || after.RetryAfter != nil {
+		t.Fatalf("changed owner must still use the serialized write path: state=%+v changed=%v err=%v", after, changed, err)
 	}
 }

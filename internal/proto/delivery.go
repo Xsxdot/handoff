@@ -9,6 +9,7 @@
 package proto
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"unicode"
@@ -44,9 +45,22 @@ type TaskTicketNotice struct {
 	TicketKind       string          `json:"ticket_kind"`
 }
 
+// DecodeTaskTicketNotice decodes and validates an addressed notice, preserving
+// any fields decoded before a malformed payload was detected for safe logging.
+func DecodeTaskTicketNotice(payload []byte) (TaskTicketNotice, error) {
+	var notice TaskTicketNotice
+	if err := json.Unmarshal(payload, &notice); err != nil {
+		return notice, err
+	}
+	if err := ValidateTaskTicketNotice(notice); err != nil {
+		return notice, err
+	}
+	return notice, nil
+}
+
 // ValidateTaskTicketNotice enforces the shared addressed-notice wire contract.
-// Unknown ticket kinds and incomplete addresses must fail closed before any
-// consumer advances a durable cursor. A seat may intentionally have no session.
+// Consumers may skip invalid events while advancing their event cursor; producers
+// still use this validator to reject invalid writes. A seat may intentionally have no session.
 func ValidateTaskTicketNotice(n TaskTicketNotice) error {
 	if n.SourceMachine == "" || n.TaskID == "" || n.TicketID == "" || n.SourceSeq <= 0 || n.OwnershipVersion <= 0 {
 		return fmt.Errorf("task ticket notice source identity or version is incomplete")

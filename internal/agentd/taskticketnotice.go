@@ -35,14 +35,11 @@ func (s *Server) RecordTaskTicketNotice(machine, taskID, cardID, originSession s
 			current.OwnershipVersion, "answered", "ticket_answered", "")
 	}
 	if event.Type == proto.EventTypeTicketsVoided {
-		active, err := s.ledger.ListActiveTaskTicketNotices()
+		active, err := s.ledger.ListActiveTaskTicketNoticesForTask(machine, taskID)
 		if err != nil {
 			return fmt.Errorf("list notices for voided task %s: %w", taskID, err)
 		}
 		for _, current := range active {
-			if current.SourceMachine != machine || current.TaskID != taskID {
-				continue
-			}
 			if err := s.ledger.SetTaskTicketNoticeStatus(machine, taskID, current.TicketID,
 				current.OwnershipVersion, "answered", "tickets_voided", ""); err != nil {
 				return err

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/Xsxdot/handoff/internal/client"
 	"github.com/Xsxdot/handoff/internal/ledger"
+	"github.com/Xsxdot/handoff/internal/orchestration"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/google/uuid"
 )
@@ -186,6 +188,76 @@ func TestRetryTaskTicketNotificationHTTPRoundTrip(t *testing.T) {
 	closed, err := env.ledger.GetTaskTicketNotice("source-a", taskID, ticketID)
 	if err != nil || closed.Status != "answered" || closed.Reason != "ticket_answered" {
 		t.Fatalf("answered source truth did not close notice: %+v err=%v", closed, err)
+	}
+}
+
+type retryEventReadFailure struct {
+	orchestration.OrchestrationClient
+}
+
+func (r retryEventReadFailure) EventsFromAsc(string, int64, int) ([]proto.Event, error) {
+	return nil, errors.New("injected source event read failure")
+}
+
+func TestRetryTaskTicketNotificationPaginatesPastTenThousandEvents(t *testing.T) {
+	env := newLedgerEnv(t)
+	env.srv.Conf()().Name = "source-a"
+	room, err := env.ledger.CreateSession("retry pagination", "user:tester", "user:tester")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.ledger.SitResident(ledger.SessionResident{Session: room.ID, Identity: "agent:retry"}); err != nil {
+		t.Fatal(err)
+	}
+	taskID, ticketID := uuid.NewString(), "ticket:old-source-event"
+	now := time.Now().UTC()
+	if err := env.st.CreateTask(&proto.Task{ID: taskID, Target: "local", Executor: "fake",
+		State: proto.TaskStateWaitingAnswer, OriginSession: room.ID, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	request, _ := json.Marshal(map[string]string{"kind": "ask", "question": "continue?"})
+	if _, err := env.st.CreateTicket(&proto.Ticket{ID: ticketID, TaskID: taskID, Kind: "ask", Request: request, CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	question, _ := json.Marshal(map[string]string{"ticket_id": ticketID, "kind": "ask"})
+	if _, err := env.st.AppendEvent(taskID, proto.EventTypeQuestion, json.RawMessage(question)); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 10001; i++ {
+		if _, err := env.st.AppendEvent(taskID, proto.EventTypeProgress, json.RawMessage(`{"progress":"still waiting"}`)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cl := client.New(env.ts.URL, env.token)
+	result, err := cl.RetryTaskTicketNotification(context.Background(), taskID, ticketID)
+	if err != nil || result == nil || result.Status != "pending" {
+		t.Fatalf("retry must page to the original event beyond 10000 later events: result=%+v err=%v", result, err)
+	}
+}
+
+func TestRetryTaskTicketNotificationSourceReadFailureIsUnavailable(t *testing.T) {
+	env := newLedgerEnv(t)
+	taskID, ticketID := uuid.NewString(), "ticket:read-failure"
+	now := time.Now().UTC()
+	if err := env.st.CreateTask(&proto.Task{ID: taskID, Target: "local", Executor: "fake",
+		State: proto.TaskStateWaitingAnswer, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	request, _ := json.Marshal(map[string]string{"kind": "ask", "question": "continue?"})
+	if _, err := env.st.CreateTicket(&proto.Ticket{ID: ticketID, TaskID: taskID, Kind: "ask", Request: request, CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	question, _ := json.Marshal(map[string]string{"ticket_id": ticketID, "kind": "ask"})
+	if _, err := env.st.AppendEvent(taskID, proto.EventTypeQuestion, json.RawMessage(question)); err != nil {
+		t.Fatal(err)
+	}
+	env.srv.mgr = retryEventReadFailure{env.srv.mgr}
+	code, _ := ledgerPost(t, env.testAgentdEnv, "/api/tasks/"+taskID+"/tickets/"+ticketID+"/notification/retry", `{}`)
+	if code != http.StatusServiceUnavailable {
+		t.Fatalf("source event read failure returned %d, want 503", code)
+	}
+	if _, err := env.ledger.GetTaskTicketNotice("source-a", taskID, ticketID); err == nil {
+		t.Fatal("failed source read must not create or mutate a notice")
 	}
 }
 

@@ -345,8 +345,50 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("迁移 repos → project_locations: %w", err)
 	}
+	if err := migrateTaskCreationSequence(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("迁移任务创建序号: %w", err)
+	}
 	log().Info("SQLite 存储已打开", "path", path)
 	return &Store{db: db}, nil
+}
+
+// migrateTaskCreationSequence creates the immutable task discovery cursor and
+// backfills old rows exactly once, deterministically by creation time then ID.
+func migrateTaskCreationSequence(db *sql.DB) error {
+	tx, err := db.BeginTx(context.Background(), nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(context.Background(), `CREATE TABLE IF NOT EXISTS task_creation_seq (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_id TEXT NOT NULL UNIQUE REFERENCES tasks(id)
+)`); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(context.Background(), `CREATE TABLE IF NOT EXISTS task_creation_seq_meta (
+  singleton INTEGER PRIMARY KEY CHECK(singleton=1), legacy_backfill_done INTEGER NOT NULL
+)`); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(context.Background(), `INSERT OR IGNORE INTO task_creation_seq_meta(singleton,legacy_backfill_done) VALUES (1,0)`); err != nil {
+		return err
+	}
+	var done int
+	if err := tx.QueryRowContext(context.Background(), `SELECT legacy_backfill_done FROM task_creation_seq_meta WHERE singleton=1`).Scan(&done); err != nil {
+		return err
+	}
+	if done == 0 {
+		if _, err := tx.ExecContext(context.Background(), `INSERT OR IGNORE INTO task_creation_seq(task_id)
+SELECT id FROM tasks ORDER BY created_at ASC, id ASC`); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(context.Background(), `UPDATE task_creation_seq_meta SET legacy_backfill_done=1 WHERE singleton=1`); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 // Close 关闭数据库连接池。
@@ -369,7 +411,12 @@ func (s *Store) CreateTask(t *proto.Task) error {
 	if t.RerunOf != nil {
 		rerunOf = *t.RerunOf
 	}
-	_, err := s.db.ExecContext(context.Background(), `
+	tx, err := s.db.BeginTx(context.Background(), nil)
+	if err != nil {
+		return fmt.Errorf("开始创建任务事务 %s: %w", t.ID, err)
+	}
+	defer tx.Rollback()
+	_, err = tx.ExecContext(context.Background(), `
 INSERT INTO tasks (id, target, repo_path, origin_session, home_dir, carrier, squad, branch, plan_path, plan_summary, executor_session, state, created_at, updated_at,
   name, executor, model, work_dir, worktree_managed, base_commit, base_ahead, repo_dirty_count, repo_dirty_files, discipline_name, discipline_version, mode,
   account, account_kind, account_proxy, rerun_of_task, rerun_of_machine)
@@ -381,6 +428,12 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 
 		t.DisciplineVersion, t.Mode, t.Account, t.AccountKind, t.AccountProxy, rerunOf.Task, rerunOf.Machine)
 	if err != nil {
 		return fmt.Errorf("写入任务 %s: %w", t.ID, err)
+	}
+	if _, err := tx.ExecContext(context.Background(), `INSERT INTO task_creation_seq (task_id) VALUES (?)`, t.ID); err != nil {
+		return fmt.Errorf("记录任务创建序号 %s: %w", t.ID, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("提交任务创建事务 %s: %w", t.ID, err)
 	}
 	return nil
 }

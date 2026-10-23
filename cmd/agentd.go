@@ -913,10 +913,24 @@ func setupLedger(cfg *config.Config, srv *agentd.Server, taskStore *store.Store,
 	holder := srv.TaskNoticeSourceMachine()
 	mirrorMachines := agentd.NewLedgerMirrorMachines(srv.Pool(), taskStore)
 	lm := ledgermirror.New(lst, mirrorMachines, ledgermirror.Options{
-		Holder:              holder,
-		SelfName:            cfg.Name,
-		LocalSource:         ledgermirror.NewLocalSource(taskStore, logger.With("source", "local")),
-		LocalTasks:          mirrorMachines.LocalTasks,
+		Holder:         holder,
+		SelfName:       cfg.Name,
+		LocalSource:    ledgermirror.NewLocalSource(taskStore, logger.With("source", "local")),
+		LocalDiscovery: mirrorMachines.LocalDiscovery,
+		LocalTaskResponsibility: func(ctx context.Context, taskID string) (ledgermirror.TaskResponsibilityStatus, error) {
+			if err := ctx.Err(); err != nil {
+				return ledgermirror.TaskResponsibilityStatus{}, err
+			}
+			task, err := taskStore.GetTask(taskID)
+			if err != nil {
+				return ledgermirror.TaskResponsibilityStatus{}, err
+			}
+			pending, err := taskStore.PendingTickets(taskID)
+			if err != nil {
+				return ledgermirror.TaskResponsibilityStatus{}, err
+			}
+			return ledgermirror.TaskResponsibilityStatus{State: task.State, PendingTickets: len(pending)}, nil
+		},
 		IsSelfTarget:        srv.IsSelfTarget,
 		TicketNotice:        srv.RecordTaskTicketNotice,
 		RefreshTicketNotice: srv.RefreshTaskTicketNotice,

@@ -257,6 +257,40 @@ func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, views)
 }
 
+// handleTaskDiscovery serves a bounded creation-ordered source inventory for mirror recovery.
+// It intentionally avoids the display-oriented, unbounded GET /api/tasks contract.
+func (s *Server) handleTaskDiscovery(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	if len(q["after_seq"]) != 1 || len(q["limit"]) != 1 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "after_seq and limit are required exactly once"})
+		return
+	}
+	afterSeq, err := strconv.ParseInt(q.Get("after_seq"), 10, 64)
+	if err != nil || afterSeq < 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "after_seq must be a non-negative integer"})
+		return
+	}
+	limit, err := strconv.Atoi(q.Get("limit"))
+	if err != nil || limit < 1 || limit > 100 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "limit must be between 1 and 100"})
+		return
+	}
+	if s.st == nil {
+		s.log.Warn("任务发现请求到达但 store 未注入", "after_seq", afterSeq, "limit", limit)
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "store 未就绪"})
+		return
+	}
+	s.log.Info("读取任务发现页", "after_seq", afterSeq, "limit", limit)
+	page, err := s.st.DiscoverTasks(afterSeq, limit)
+	if err != nil {
+		s.log.Error("读取任务发现页失败", "after_seq", afterSeq, "limit", limit, "cause", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "内部错误"})
+		return
+	}
+	s.log.Info("读取任务发现页完成", "after_seq", afterSeq, "next_seq", page.NextSeq, "items", len(page.Items), "has_more", page.HasMore)
+	writeJSON(w, http.StatusOK, page)
+}
+
 // handleGetTask 返回任务详情（任务 + 待办工单 + 最近事件），是 attach 命令的数据源。
 func (s *Server) handleGetTask(w http.ResponseWriter, r *http.Request) {
 	taskID := r.PathValue("id")

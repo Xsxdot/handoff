@@ -46,13 +46,13 @@ func (s *Server) handleRetryTaskTicketNotification(w http.ResponseWriter, r *htt
 			return
 		}
 		s.log.Error("通知重试读取任务失败", "task", taskID, "ticket", ticketID, "cause", err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "读取任务失败"})
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "读取任务失败"})
 		return
 	}
 	notice, noticeErr := s.ledger.GetTaskTicketNotice(sourceMachine, taskID, ticketID)
 	if noticeErr != nil && !errors.Is(noticeErr, sql.ErrNoRows) && !errors.Is(noticeErr, ledger.ErrNotFound) && !errors.Is(noticeErr, store.ErrNotFound) {
 		s.log.Error("通知重试读取路由失败", "task", taskID, "ticket", ticketID, "cause", noticeErr)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "读取通知状态失败"})
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "读取通知状态失败"})
 		return
 	}
 	sourceTicket, sourceTicketErr := s.st.GetTicket(ticketID)
@@ -72,7 +72,7 @@ func (s *Server) handleRetryTaskTicketNotification(w http.ResponseWriter, r *htt
 	pending, err := s.mgr.PendingTickets(taskID)
 	if err != nil {
 		s.log.Error("通知重试读取待答工单失败", "task", taskID, "ticket", ticketID, "cause", err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "读取工单失败"})
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "读取工单失败"})
 		return
 	}
 	var ticket *proto.Ticket
@@ -98,12 +98,6 @@ func (s *Server) handleRetryTaskTicketNotification(w http.ResponseWriter, r *htt
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "工单已结束，不能重试通知"})
 		return
 	}
-	events, err := s.mgr.EventsFrom(taskID, 0, 10000)
-	if err != nil {
-		s.log.Error("通知重试读取源事件失败", "task", taskID, "ticket", ticketID, "cause", err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "读取工单事件失败"})
-		return
-	}
 	if ticket == nil {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "源任务没有该待答工单，通知未重试"})
 		return
@@ -115,20 +109,41 @@ func (s *Server) handleRetryTaskTicketNotification(w http.ResponseWriter, r *htt
 		return
 	}
 	var sourceEvent *proto.Event
-	for i := range events {
-		if (events[i].Type != proto.EventTypeQuestion && events[i].Type != proto.EventTypePermissionRequest) || events[i].Seq <= 0 {
-			continue
+	const eventPageSize = 1000
+	var afterSeq int64
+	for {
+		events, readErr := s.mgr.EventsFromAsc(taskID, afterSeq, eventPageSize)
+		if readErr != nil {
+			s.log.Error("通知重试读取源事件页失败", "task", taskID, "ticket", ticketID,
+				"after_seq", afterSeq, "cause", readErr)
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "读取工单事件失败"})
+			return
 		}
-		var payload struct {
-			TicketID string `json:"ticket_id"`
+		for i := range events {
+			if events[i].Seq <= afterSeq {
+				s.log.Warn("通知重试源事件页序列未前进", "task", taskID, "ticket", ticketID,
+					"after_seq", afterSeq, "source_seq", events[i].Seq)
+				writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "读取工单事件失败"})
+				return
+			}
+			afterSeq = events[i].Seq
+			if events[i].Type != proto.EventTypeQuestion && events[i].Type != proto.EventTypePermissionRequest {
+				continue
+			}
+			var payload struct {
+				TicketID string `json:"ticket_id"`
+			}
+			if err := json.Unmarshal(events[i].Payload, &payload); err != nil {
+				s.log.Warn("通知重试忽略损坏的历史工单事件", "task", taskID, "seq", events[i].Seq, "cause", err)
+				continue
+			}
+			if payload.TicketID == ticketID {
+				event := events[i]
+				sourceEvent = &event
+				break
+			}
 		}
-		if err := json.Unmarshal(events[i].Payload, &payload); err != nil {
-			s.log.Warn("通知重试忽略损坏的历史工单事件", "task", taskID, "seq", events[i].Seq, "cause", err)
-			continue
-		}
-		if payload.TicketID == ticketID {
-			event := events[i]
-			sourceEvent = &event
+		if sourceEvent != nil || len(events) < eventPageSize {
 			break
 		}
 	}

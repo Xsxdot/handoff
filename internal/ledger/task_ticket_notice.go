@@ -12,6 +12,9 @@ import (
 	"github.com/Xsxdot/handoff/internal/proto"
 )
 
+var ErrTaskTicketNoticeOwnershipChanged = errors.New("task ticket notice ownership changed")
+var ErrTaskTicketNoticeClosed = errors.New("task ticket notice is closed")
+
 // TaskTicketNoticeState is the current routing projection for one executor ticket.
 type TaskTicketNoticeState struct {
 	SourceMachine    string                 `json:"source_machine"`
@@ -30,7 +33,9 @@ type TaskTicketNoticeState struct {
 
 // PutTaskTicketNotice atomically upserts current routing state and emits a
 // separately addressed event when a target exists. A changed address advances
-// ownership_version; replaying the same address is idempotent.
+// ownership_version; replaying the same address is idempotent. A read-only
+// preflight avoids opening the globally serialized write transaction for facts
+// that already match; the write path still rechecks after acquiring its lock.
 func (s *Store) PutTaskTicketNotice(in TaskTicketNoticeState, actor string) (TaskTicketNoticeState, bool, error) {
 	if in.SourceMachine == "" || in.TaskID == "" || in.TicketID == "" || in.SourceSeq <= 0 {
 		return TaskTicketNoticeState{}, false, errors.New("task ticket notice source identity is incomplete")
@@ -50,16 +55,26 @@ func (s *Store) PutTaskTicketNotice(in TaskTicketNoticeState, actor string) (Tas
 	if actor == "" {
 		actor = "agentd"
 	}
+	if current, unchanged, err := s.sameTaskTicketNoticeFacts(in); err != nil {
+		log().Warn("task ticket notice preflight read failed", "machine", in.SourceMachine,
+			"task", in.TaskID, "ticket", in.TicketID, "cause", err)
+		return TaskTicketNoticeState{}, false, err
+	} else if unchanged {
+		log().Debug("task ticket notice facts unchanged; skipped write transaction", "machine", current.SourceMachine,
+			"task", current.TaskID, "ticket", current.TicketID, "ownership_version", current.OwnershipVersion)
+		return current, false, nil
+	}
 	var out TaskTicketNoticeState
 	changed := false
 	err := s.mutate(func(tx *sql.Tx, sink *eventSink) error {
-		var oldTargetRaw sql.NullString
+		var oldTargetRaw, oldRetryAfter sql.NullString
 		var oldVersion int64
 		var oldSourceSeq int64
-		var oldStatus, oldKind string
-		err := tx.QueryRow(s.q(`SELECT target, ownership_version, source_seq, status, ticket_kind FROM task_ticket_notices
+		var oldStatus, oldKind, oldReason, oldLastError string
+		var oldUpdatedAt any
+		err := tx.QueryRow(s.q(`SELECT target, ownership_version, source_seq, status, ticket_kind, reason, last_error, retry_after, updated_at FROM task_ticket_notices
 			WHERE source_machine=? AND task_id=? AND ticket_id=?`), in.SourceMachine, in.TaskID, in.TicketID).
-			Scan(&oldTargetRaw, &oldVersion, &oldSourceSeq, &oldStatus, &oldKind)
+			Scan(&oldTargetRaw, &oldVersion, &oldSourceSeq, &oldStatus, &oldKind, &oldReason, &oldLastError, &oldRetryAfter, &oldUpdatedAt)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("read current ticket notice routing: %w", err)
 		}
@@ -120,16 +135,39 @@ func (s *Store) PutTaskTicketNotice(in TaskTicketNoticeState, actor string) (Tas
 				}
 			} else {
 				in.Status = oldStatus
+				in.Reason = oldReason
+				in.LastError = oldLastError
 				if in.Reason == "" {
 					in.Reason = "resident_missing"
+				}
+				if oldRetryAfter.Valid {
+					retryAt := toTime(oldRetryAfter.String)
+					in.RetryAfter = &retryAt
 				}
 			}
 		} else if errors.Is(err, sql.ErrNoRows) || changed {
 			in.Status = "pending"
 			in.Reason = ""
+			in.LastError = ""
+			in.RetryAfter = nil
 		} else {
 			in.Status = oldStatus
-			in.Reason = ""
+			in.Reason = oldReason
+			in.LastError = oldLastError
+			if oldRetryAfter.Valid {
+				retryAt := toTime(oldRetryAfter.String)
+				in.RetryAfter = &retryAt
+			}
+		}
+		if !errors.Is(err, sql.ErrNoRows) && oldSourceSeq == in.SourceSeq && oldKind == in.TicketKind &&
+			oldTargetMatches && oldStatus == in.Status && oldReason == in.Reason && oldLastError == in.LastError &&
+			sameNoticeRetryAfter(oldRetryAfter, in.RetryAfter) {
+			// Reconciliation runs periodically; an identical route must not churn
+			// updated_at or registry/event writes on every poll.
+			in.OwnershipVersion = oldVersion
+			in.UpdatedAt = toTime(oldUpdatedAt)
+			out = in
+			return nil
 		}
 		in.UpdatedAt = s.timeNow().UTC()
 		var targetValue any
@@ -180,6 +218,42 @@ func (s *Store) PutTaskTicketNotice(in TaskTicketNoticeState, actor string) (Tas
 	return out, changed, nil
 }
 
+func (s *Store) sameTaskTicketNoticeFacts(in TaskTicketNoticeState) (TaskTicketNoticeState, bool, error) {
+	current, err := s.GetTaskTicketNotice(in.SourceMachine, in.TaskID, in.TicketID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return TaskTicketNoticeState{}, false, nil
+	}
+	if err != nil {
+		return TaskTicketNoticeState{}, false, fmt.Errorf("preflight read current ticket notice routing: %w", err)
+	}
+	targetSame := current.Target == nil && in.Target == nil
+	if current.Target != nil && in.Target != nil {
+		targetSame = *current.Target == *in.Target
+	}
+	if current.SourceSeq != in.SourceSeq || current.TicketKind != in.TicketKind || !targetSame {
+		return TaskTicketNoticeState{}, false, nil
+	}
+	if current.Status == "answered" || current.Status == "superseded" {
+		return current, true, nil
+	}
+	// For a nil route, the existing writer repairs an empty reason/status to
+	// resident_missing/needs_human. Let that repair take the serialized path.
+	if in.Target == nil && (current.Status == "" || current.Reason == "") {
+		return TaskTicketNoticeState{}, false, nil
+	}
+	return current, true, nil
+}
+
+func sameNoticeRetryAfter(saved sql.NullString, current *time.Time) bool {
+	if !saved.Valid {
+		return current == nil
+	}
+	if current == nil {
+		return false
+	}
+	return toTime(saved.String).Equal(*current)
+}
+
 // GetTaskTicketNotice reads the latest notice routing projection.
 func (s *Store) GetTaskTicketNotice(machine, taskID, ticketID string) (TaskTicketNoticeState, error) {
 	var out TaskTicketNoticeState
@@ -210,9 +284,23 @@ func (s *Store) GetTaskTicketNotice(machine, taskID, ticketID string) (TaskTicke
 
 // ListActiveTaskTicketNotices returns notices that may still need routing work.
 func (s *Store) ListActiveTaskTicketNotices() ([]TaskTicketNoticeState, error) {
-	rows, err := s.db.Query(`SELECT source_machine,task_id,ticket_id,source_seq,ownership_version,ticket_kind,
+	return s.listActiveTaskTicketNotices("")
+}
+
+// ListActiveTaskTicketNoticesForTask returns active notices for one original task.
+// Both source fields are required so lifecycle events never scan or mutate another task's notices.
+func (s *Store) ListActiveTaskTicketNoticesForTask(machine, taskID string) ([]TaskTicketNoticeState, error) {
+	if machine == "" || taskID == "" {
+		return nil, fmt.Errorf("active task ticket notice query requires source machine and task")
+	}
+	return s.listActiveTaskTicketNotices(` AND source_machine=? AND task_id=?`, machine, taskID)
+}
+
+func (s *Store) listActiveTaskTicketNotices(filter string, args ...any) ([]TaskTicketNoticeState, error) {
+	query := `SELECT source_machine,task_id,ticket_id,source_seq,ownership_version,ticket_kind,
 		target,status,reason,last_error,retry_after,updated_at FROM task_ticket_notices
-		WHERE status IN ('pending','delivered','needs_human') ORDER BY updated_at`)
+		WHERE status IN ('pending','delivered','needs_human')` + filter + ` ORDER BY updated_at`
+	rows, err := s.db.Query(s.q(query), args...)
 	if err != nil {
 		return nil, fmt.Errorf("list active task ticket notices: %w", err)
 	}
@@ -250,13 +338,27 @@ func (s *Store) ListActiveTaskTicketNotices() ([]TaskTicketNoticeState, error) {
 // SetTaskTicketNoticeStatus changes delivery/lifecycle state only if the caller
 // still holds the current ownership version. It cannot change answer authority.
 func (s *Store) SetTaskTicketNoticeStatus(machine, taskID, ticketID string, version int64, status, reason, lastError string) error {
+	return s.SetTaskTicketNoticeStatusWithRetryAfter(machine, taskID, ticketID, version, status, reason, lastError, nil)
+}
+
+// SetTaskTicketNoticeStatusWithRetryAfter changes lifecycle and retry scheduling
+// together under the same ownership-version CAS. Nil clears any prior retry time.
+func (s *Store) SetTaskTicketNoticeStatusWithRetryAfter(machine, taskID, ticketID string, version int64,
+	status, reason, lastError string, retryAfter *time.Time) error {
 	if status != "pending" && status != "delivered" && status != "needs_human" && status != "superseded" && status != "answered" {
 		return fmt.Errorf("invalid task ticket notice status %q", status)
 	}
+	var retryValue any
+	if retryAfter != nil {
+		if status != "needs_human" {
+			return fmt.Errorf("retry_after is only valid for needs_human notices")
+		}
+		retryValue = s.tval(retryAfter.UTC())
+	}
 	err := s.mutate(func(tx *sql.Tx, _ *eventSink) error {
-		res, err := tx.Exec(s.q(`UPDATE task_ticket_notices SET status=?,reason=?,last_error=?,updated_at=?
+		res, err := tx.Exec(s.q(`UPDATE task_ticket_notices SET status=?,reason=?,last_error=?,retry_after=?,updated_at=?
 			WHERE source_machine=? AND task_id=? AND ticket_id=? AND ownership_version=?
-			AND status IN ('pending','delivered','needs_human')`), status, reason, lastError, s.tval(s.timeNow().UTC()),
+			AND status IN ('pending','delivered','needs_human')`), status, reason, lastError, retryValue, s.tval(s.timeNow().UTC()),
 			machine, taskID, ticketID, version)
 		if err != nil {
 			return fmt.Errorf("update task ticket notice status: %w", err)

@@ -40,6 +40,22 @@ func ValidateOriginSessionID(id string) error {
 // TaskState 表示任务所处状态。
 type TaskState string
 
+// TaskDiscoveryItem 是跨机任务增量发现中的单个源任务事实；不包含展示/账单字段。
+type TaskDiscoveryItem struct {
+	Seq               int64     `json:"seq"`
+	TaskID            string    `json:"task_id"`
+	OriginSession     string    `json:"origin_session"`
+	State             TaskState `json:"state"`
+	HasPendingTickets bool      `json:"has_pending_tickets"`
+}
+
+// TaskDiscoveryPage 是按创建序号分页的任务发现响应。
+type TaskDiscoveryPage struct {
+	Items   []TaskDiscoveryItem `json:"items"`
+	NextSeq int64               `json:"next_seq"`
+	HasMore bool                `json:"has_more"`
+}
+
 const (
 	TaskStatePending       TaskState = "pending"
 	TaskStateRunning       TaskState = "running"

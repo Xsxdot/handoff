@@ -542,12 +542,11 @@ func cardWaitEventActionable(st *ledger.Store, ev ledger.Event) (bool, error) {
 		ledger.EvDecisionOpened, ledger.EvDecisionAnswered:
 		return true, nil
 	case ledger.EvTaskTicketNotice:
-		var notice proto.TaskTicketNotice
-		if err := json.Unmarshal(ev.Payload, &notice); err != nil {
-			return false, fmt.Errorf("card %s task_ticket_notice seq=%d 解码: %w", ev.CardID, ev.Seq, err)
-		}
-		if err := proto.ValidateTaskTicketNotice(notice); err != nil {
-			return false, fmt.Errorf("card %s task_ticket_notice seq=%d 契约校验: %w", ev.CardID, ev.Seq, err)
+		notice, err := proto.DecodeTaskTicketNotice(ev.Payload)
+		if err != nil {
+			slog.Warn("card wait 跳过无效工单通知", "kind", notice.TicketKind, "seq", ev.Seq,
+				"source_machine", notice.SourceMachine, "task", notice.TaskID, "cause", err)
+			return false, nil
 		}
 		if notice.Target.Kind != proto.DeliverySeat || notice.Target.Card != ev.CardID ||
 			notice.TicketID == "" || notice.TaskID == "" || notice.SourceMachine == "" || notice.SourceSeq <= 0 ||
