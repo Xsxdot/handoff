@@ -58,6 +58,8 @@
 
 冻结澄清 r1.2（主会话，2026-10-23）：同任务 continue 会更新既有任务 Task.State，但事件只有共用 progress，无法仅从它证明新运行。批准 agentd 组装点通过现有 manager facade GetTask（本机）、新增 GetMirrorTask(taskID) 窄读（远端既存 mirror_tasks 表）取得控制面状态，以 collab 公开投影方法输入当前 role task 引用的快照。不新增持久化、不全量 ListTasks/ListMirrorTasks、不现场远端扇出、不从 collab 穿透执行实现。远端说明最后镜像到达时间，控制面 running 也不承诺进程心跳；Task.UpdatedAt 非专用状态起点，不将其直接当 since。取不到或关联/目标冲突则未知；旧回合 completed 被真实继续后的 running 快照替代。文件所有权扩至此窄读需要的 orchestration/store。JSON 形状不变。
 
+冻结澄清 r1.3（主会话，2026-10-23）：远端镜像快照并非实时权威，不能覆盖同任务较新的明确生命周期事件。可将既有 Task.UpdatedAt 传入内部 observation（不新增 HTTP 字段）与同源 task_mirrored.CreatedAt 比较冲突的新旧；FetchedAt 属本机获取时间，不与远端事件墙钟直接等价。UpdatedAt 仅用于冲突次序，不充当状态持续时长或心跳。不能可靠排序时降级未知/保留较新已观测事实，不复活旧 running；较新的真实继续快照可替代旧 completed。该条收紧已有“旧事实不盖新事实”的承诺，不改 r4 结果和冻结 JSON。
+
 ## 工作单元
 
 ### W1：有界事实投影（后端所有权）
