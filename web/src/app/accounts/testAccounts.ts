@@ -46,6 +46,18 @@ export function sampleAccounts(): AccountView[] {
   ]
 }
 
+/**
+ * ignoredAccount B467：已忽略账号样本（`ignored` 在场）。各消费点应把它从可见列表里排除，
+ * 只有账号页底部「已忽略」区读它。
+ */
+export function ignoredAccount(): AccountView {
+  const a = base('og-hidden', 'opencode-go', 'macbook-pro', 'ok', {
+    label: 'hidden@example.com',
+    reading: reading([w('session', 12, 3 * H), w('weekly', 24, 100 * H)]),
+  })
+  return { ...a, ignored: { at: at(-3 * H), by: 'linux-01' } }
+}
+
 // claude：两台 Mac 主 HOME 各一条登录（同一身份、不支持额度探测）。
 function claudeAccount(): AccountView {
   const a = base('claude-main', 'claude', 'mac-mini', 'na', { label: 'xsx@example.com', carriers: ['cl'] }, { home: '~', carriers: ['cl'], state: 'expired' })

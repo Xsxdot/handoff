@@ -4,7 +4,9 @@
 //   - Shell 调一次 useAccountsSource(enabled)：usePoll 每 30s 拉 GET /api/accounts，结果写进
 //     模块级快照；页面隐藏停表、断线保留旧数据、401 终止，全部沿用 usePoll 的纪律
 //   - 底栏、弹层、账号页、移动设置节、载体对话框用 useAccounts() 读同一份快照
-//   - 立即探测 / 登记 / 删除的回执就地合入快照（不等下一轮轮询，也不另起全量 GET）
+//   - 立即探测 / 登记 / 忽略 / 恢复的回执就地合入快照（不等下一轮轮询，也不另起全量 GET）
+//   - B467：入口分区——快照 accounts 只含未忽略账号，已忽略的进 ignored（账号页「已忽略」区
+//     唯一消费者）。底栏、弹层、移动节、载体下拉都读 accounts，一处排除即处处生效。
 //
 // 为什么是模块级单例 + 订阅而不是 Context：消费点散在 Shell 的多棵子树（底栏在壳底、
 // 账号页在整页路由、移动设置节在 mobile-home 覆盖层、载体对话框在设置页），与
@@ -20,8 +22,10 @@ import { usePoll } from '../data/usePoll'
 export const ACCOUNTS_POLL_MS = 30_000
 
 export interface AccountsSnapshot {
-  /** null = 还没有任何一次成功读（或没有数据源）；[] = 已读到、空库。 */
+  /** null = 还没有任何一次成功读（或没有数据源）；[] = 已读到、空库。已排除已忽略账号。 */
   accounts: AccountView[] | null
+  /** B467：已忽略账号（`ignored` 在场）；只有账号页底部「已忽略」区读它。 */
+  ignored: AccountView[]
   /** 各机「上次发现」；随 GET /api/accounts 一起回来，账号页页头读它。 */
   discovery: DiscoveryView[]
   /** 最近一次拉取失败的原因；成功后清空。断线时 accounts 保留旧值。 */
@@ -29,7 +33,7 @@ export interface AccountsSnapshot {
   disconnected: boolean
 }
 
-let snapshot: AccountsSnapshot = { accounts: null, discovery: [], errorText: '', disconnected: false }
+let snapshot: AccountsSnapshot = { accounts: null, ignored: [], discovery: [], errorText: '', disconnected: false }
 let refreshFn: () => void = () => {}
 const subscribers = new Set<(s: AccountsSnapshot) => void>()
 
@@ -38,12 +42,28 @@ function publish(next: AccountsSnapshot) {
   for (const notify of subscribers) notify(next)
 }
 
-/** mergeAccount 把一条新回执合入快照：同名替换、新名追加（登记），保持原序。 */
+/** splitByIgnored 入口分区：ignored 在场 ⇔ 已忽略（Q3/A13，没有 false 形态）。 */
+function splitByIgnored(list: AccountView[]): { accounts: AccountView[]; ignored: AccountView[] } {
+  const accounts: AccountView[] = []
+  const ignored: AccountView[] = []
+  for (const a of list) (a.ignored !== undefined ? ignored : accounts).push(a)
+  return { accounts, ignored }
+}
+
+/** upsertById 替换同 id 的项（保持原序），没有则追加。 */
+function upsertById(list: AccountView[], view: AccountView): AccountView[] {
+  const idx = list.findIndex((a) => a.id === view.id)
+  return idx >= 0 ? list.map((a, i) => (i === idx ? view : a)) : [...list, view]
+}
+
+/** mergeAccount 把一条新回执合入对应分区：忽略/恢复回执按 id 在两张表之间移动。 */
 function mergeAccount(view: AccountView) {
-  const list = snapshot.accounts ?? []
-  const idx = list.findIndex((a) => a.name === view.name)
-  const next = idx >= 0 ? list.map((a, i) => (i === idx ? view : a)) : [...list, view]
-  publish({ ...snapshot, accounts: next })
+  const without = (list: AccountView[]) => list.filter((a) => a.id !== view.id)
+  if (view.ignored !== undefined) {
+    publish({ ...snapshot, accounts: without(snapshot.accounts ?? []), ignored: upsertById(snapshot.ignored, view) })
+  } else {
+    publish({ ...snapshot, accounts: upsertById(snapshot.accounts ?? [], view), ignored: without(snapshot.ignored) })
+  }
 }
 
 /**
@@ -57,8 +77,9 @@ export function useAccountsSource(enabled: boolean): void {
   }, [poll.refresh])
   useEffect(() => {
     if (poll.data !== null) {
-      console.debug('accounts.poll.success', { accounts: poll.data.accounts.length })
-      publish({ accounts: poll.data.accounts, discovery: poll.data.discovery, errorText: '', disconnected: false })
+      const { accounts, ignored } = splitByIgnored(poll.data.accounts)
+      console.debug('accounts.poll.success', { accounts: accounts.length, ignored: ignored.length })
+      publish({ accounts, ignored, discovery: poll.data.discovery, errorText: '', disconnected: false })
     }
   }, [poll.data])
   useEffect(() => {
@@ -78,8 +99,6 @@ export interface AccountsApi extends AccountsSnapshot {
   apply: (view: AccountView) => void
   /** 单条登录的回执（PUT 代理）合入它所属的账号。 */
   applyLogin: (login: LoginView) => void
-  /** 删除成功后把它从快照里拿掉。 */
-  remove: (name: string) => void
 }
 
 /** useAccounts 读共享快照；任意多个挂载点拿到同一份。 */
@@ -109,10 +128,7 @@ export function useAccounts(): AccountsApi {
     const owner = (snapshot.accounts ?? []).find((a) => a.logins.some((l) => l.id === login.id))
     if (owner) mergeAccount({ ...owner, logins: owner.logins.map((l) => (l.id === login.id ? login : l)) })
   }, [])
-  const remove = useCallback((name: string) => {
-    publish({ ...snapshot, accounts: (snapshot.accounts ?? []).filter((a) => a.name !== name) })
-  }, [])
-  return { ...state, refresh, probe, apply, applyLogin, remove }
+  return { ...state, refresh, probe, apply, applyLogin }
 }
 
 /** useNow 每 intervalMs 刷新一次的「现在」（倒计时文案用；与 orca 一样 30s 一跳）。 */
@@ -125,14 +141,15 @@ export function useNow(intervalMs = 30_000): number {
   return now
 }
 
-/** __setAccountsForTest 直接发布一份快照；只供组件测试，生产代码不得调用。 */
+/** __setAccountsForTest 直接发布一份快照（按 ignored 分区）；只供组件测试，生产代码不得调用。 */
 export function __setAccountsForTest(accounts: AccountView[] | null, discovery: DiscoveryView[] = []): void {
-  publish({ accounts, discovery, errorText: '', disconnected: false })
+  const split = accounts === null ? { accounts: null, ignored: [] } : splitByIgnored(accounts)
+  publish({ ...split, discovery, errorText: '', disconnected: false })
 }
 
 /** __resetAccountsStoreForTest 重置模块级状态；只供测试隔离。 */
 export function __resetAccountsStoreForTest(): void {
-  snapshot = { accounts: null, discovery: [], errorText: '', disconnected: false }
+  snapshot = { accounts: null, ignored: [], discovery: [], errorText: '', disconnected: false }
   refreshFn = () => {}
   subscribers.clear()
 }

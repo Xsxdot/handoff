@@ -73,7 +73,7 @@ export function MobileAccountsSection({ sectionClass }: { sectionClass: string }
           ]
         })}
       </div>
-      <p className="mt-1.5 text-xs leading-5 text-muted-foreground">登记、编辑和删除账号请到桌面控制台的「账号」页。</p>
+      <p className="mt-1.5 text-xs leading-5 text-muted-foreground">登记、编辑和忽略账号请到桌面控制台的「账号」页。</p>
     </div>
   )
 }

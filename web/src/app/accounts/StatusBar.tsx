@@ -1,14 +1,14 @@
 // StatusBar.tsx —— 控制台额度底栏与「使用量」弹层（B453 spec S9，形态基准 prototypes/b453-accounts 各页底栏）。
 //
 // 职责：
-//   - 底栏一行弱色小字：「已用」+ 每账号一段（图标 名称 读数），问题账号排前，最右刷新；
-//     放不下的从尾部（正常账号）收进「+N」
+//   - 底栏一行弱色小字：「已用」+ 每账号一段（图标 读数；名字只在 title 悬停，B467 S8），
+//     问题账号排前，最右刷新；放不下的从尾部（正常账号）收进「+N」
 //   - 点底栏弹出「使用量」弹层：按类型分组、详细/精简两模式（偏好 webPrefs.usageMode，缺省详细），
 //     底栏随模式变；hover（触屏/键盘为点击/聚焦）某行在右侧二级面板看全部细节与立即探测
 //
 // 边界：
 //   - 数据只读 Shell 级共享快照（store.ts）；立即探测经 store.probe 就地合入，不整页重载
-//   - 「管理账号…」「使用详情」只回调 onManage，路由由 Shell 决定
+//   - 弹层底部菜单只有「管理账号…」（B467 S9），只回调 onManage，路由由 Shell 决定
 //   - 紧凑档（phone/pad）不挂本组件（S10：移动端不显示底栏，额度在设置页）——由 Shell 判
 //   - 底栏不写「低额度」「无额度」字样：越线只靠数值与细条的琥珀/红色区分（S9 第五轮定）
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
@@ -210,8 +210,8 @@ export function UsageStatusBar({ onManage }: { onManage: (name?: string) => void
         <div ref={segsRef} className="sb-segs">
           {sorted.length === 0 && <span>还没有可探测额度的账号</span>}
           {sorted.map((a, i) => (
-            <button key={a.name} type="button" className="sb-seg" data-acct={a.name} data-testid={`sb-seg-${a.name}`} hidden={hiddenFrom >= 0 && i >= hiddenFrom}>
-              <KindIcon kind={a.kind} /><span className="sb-name">{a.name}</span><span className="sb-val"><BarReading a={a} mode={mode} now={now} /></span>
+            <button key={a.name} type="button" className="sb-seg" title={a.name} data-acct={a.name} data-testid={`sb-seg-${a.name}`} hidden={hiddenFrom >= 0 && i >= hiddenFrom}>
+              <KindIcon kind={a.kind} /><span className="sb-val"><BarReading a={a} mode={mode} now={now} /></span>
             </button>
           ))}
         </div>
@@ -235,7 +235,6 @@ export function UsageStatusBar({ onManage }: { onManage: (name?: string) => void
               })}
             </div>
             <div className="up-menu">
-              <button type="button" onClick={() => { close(); onManage() }}>使用详情<span>›</span></button>
               <button type="button" onClick={() => { close(); onManage() }}>管理账号…<span>›</span></button>
             </div>
           </div>

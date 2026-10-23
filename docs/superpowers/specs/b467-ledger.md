@@ -149,3 +149,105 @@ ok  	github.com/Xsxdot/handoff/internal/workspace/internal/gitproc	(cached)
 ```
 
 - 环境敏感：本次全量绿，未触发 `CLAUDE_CODE_SESSION_ID` / 嵌套工作树敏感用例。
+
+
+## implement 段 B
+
+- 2026-10-23 段 B 执行（基线 `6d9dccbb`，分支 `cards/B467-charter-2`；只改 plan §6 段 B 允许文件集，未碰 `web/src/api/**` 与 Go 代码）。
+- `web/node_modules` 开工时缺席，先跑 `npm ci --no-audit --no-fund`（290 packages，1s）；未改 package-lock。
+- 先红→绿：
+  - store 分区：新测试首跑红 `TypeError: Cannot read properties of undefined (reading 'map')`（`ignored` 尚不存在）；实现入口 `splitByIgnored` 与回执按 id 移动后绿（快照 accounts 排除已忽略、ignored 单列、忽略/恢复回执在两表之间移动）。
+  - 底栏/弹层：首跑红 `AssertionError: expected 'og-main34% 2h41m·62% 4d 2h' not to contain 'og-main'`；去掉 `.sb-name`、段 `title` 放名字、菜单删「使用详情」、`.up-main` 376→392px 后绿。
+  - 账号页：首跑红 `Unable to find an accessible element with the role "button" and name "忽略"`；`DeleteDialog`→`IgnoreDialog`（确认/拒绝文案与「去改载体」）、页底 `已忽略（N）` 折叠区与恢复、去掉 store `remove` 后绿。
+  - 向导提示：首跑红 `expected ... to contain '已忽略，可在本页底部恢复'`；按 store `ignored` 判后绿。
+  - 消费点回归（MobileAccounts / SchedulingPage）在 store 分区落地后补写，首跑即绿；其牙由分区本身支撑（取掉分区即红），按纪律留 review 变异复验，实现侧未自验。
+- 自主决定（均在 plan §9 授权内）：`mergeAccount` 按 id（原按 name）移动，忽略/恢复与改名并存不串表；`IgnoreDialog` 不拿快照 `a.carriers` 预拦，一律走 API 的 409 再点名（服务端权威）；「去改载体」用 `<a href="/settings?section=automation">`（jsdom 可测、无需 Router 包裹）；移动端说明「登记、编辑和删除账号」改「登记、编辑和忽略账号」（原文案在界面无删除入口后失真）。
+- 未验证：`.up-main` 392px 的实际布局换行与底栏形态只经 CSS/组件断言，真实渲染待主会话浏览器 R7；弹层与底栏未用 jsdom 量宽度（plan §10 假绿族）。
+
+段 B 验收命令原始输出（2026-10-23，本工作树，`cd web && npx vitest run && npx tsc -b && npx eslint .`）：
+
+```
+
+ RUN  v4.1.10 /root/.handoff/worktrees/47973e2e/web
+
+Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+
+ Test Files  150 passed (150)
+      Tests  2036 passed (2036)
+   Start at  04:01:38
+   Duration  17.91s (transform 18.29s, setup 17.53s, import 34.50s, tests 80.78s, environment 108.78s)
+
+[vitest exit=0]
+[tsc exit=0]
+
+/root/.handoff/worktrees/47973e2e/web/src/app/board/BoardPage.tsx
+  55:9  warning  The 'tasks' logical expression could make the dependencies of useMemo Hook (at line 86) change on every render. To fix this, wrap the initialization of 'tasks' in its own useMemo() Hook  react-hooks/exhaustive-deps
+
+/root/.handoff/worktrees/47973e2e/web/src/app/cards/CardsPage.tsx
+  176:129  warning  React Hook useMemo has an unnecessary dependency: 'sharedSource'. Either exclude it or remove the dependency array                        react-hooks/exhaustive-deps
+  221:6    warning  React Hook useEffect has a missing dependency: 'sharedData'. Either include it or remove the dependency array                             react-hooks/exhaustive-deps
+  221:7    warning  React Hook useEffect has a complex expression in the dependency array. Extract it to a separate variable so it can be statically checked  react-hooks/exhaustive-deps
+  245:6    warning  React Hook useEffect has a missing dependency: 'cardsPoll'. Either include it or remove the dependency array                              react-hooks/exhaustive-deps
+
+/root/.handoff/worktrees/47973e2e/web/src/app/cards/NewCardDialog.tsx
+  26:17  warning  Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components  react-refresh/only-export-components
+
+/root/.handoff/worktrees/47973e2e/web/src/app/data/usePreviews.ts
+  152:18  warning  The ref value 'openingRef.current' will likely have changed by the time this effect cleanup function runs. If this ref points to a node rendered by React, copy 'openingRef.current' to a variable inside the effect, and use that variable in the cleanup function  react-hooks/exhaustive-deps
+  153:15  warning  The ref value 'openRef.current' will likely have changed by the time this effect cleanup function runs. If this ref points to a node rendered by React, copy 'openRef.current' to a variable inside the effect, and use that variable in the cleanup function        react-hooks/exhaustive-deps
+
+/root/.handoff/worktrees/47973e2e/web/src/app/files/FileTree.tsx
+  243:6  warning  React Hook useEffect has a missing dependency: 'base'. Either include it or remove the dependency array. If 'setExpanded' needs the current value of 'base', you can also switch to useReducer instead of useState and read 'base' in the reducer  react-hooks/exhaustive-deps
+
+/root/.handoff/worktrees/47973e2e/web/src/app/settings/UpdatePage.tsx
+  72:9  warning  The 'machines' logical expression could make the dependencies of useEffect Hook (at line 97) change on every render. To fix this, wrap the initialization of 'machines' in its own useMemo() Hook  react-hooks/exhaustive-deps
+
+/root/.handoff/worktrees/47973e2e/web/src/app/shell/Breadcrumb.tsx
+  25:17  warning  Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components  react-refresh/only-export-components
+
+/root/.handoff/worktrees/47973e2e/web/src/app/shell/Shell.tsx
+   94:17  warning  Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components  react-refresh/only-export-components
+  114:17  warning  Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components  react-refresh/only-export-components
+  125:17  warning  Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components  react-refresh/only-export-components
+  391:6   warning  React Hook useEffect has a missing dependency: 'wb'. Either include it or remove the dependency array                           react-hooks/exhaustive-deps
+
+/root/.handoff/worktrees/47973e2e/web/src/app/task/codeText.tsx
+  33:17  warning  Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components  react-refresh/only-export-components
+  52:17  warning  Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components  react-refresh/only-export-components
+
+/root/.handoff/worktrees/47973e2e/web/src/app/tree/MobileWorkspace.tsx
+  80:7  warning  React Hook useMemo has a missing dependency: 'activeSessions'. Either include it or remove the dependency array  react-hooks/exhaustive-deps
+
+/root/.handoff/worktrees/47973e2e/web/src/app/tree/ProjectTree.tsx
+  214:17  warning  Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components  react-refresh/only-export-components
+  233:17  warning  Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components  react-refresh/only-export-components
+  287:17  warning  Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components  react-refresh/only-export-components
+  302:17  warning  Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components  react-refresh/only-export-components
+  323:17  warning  Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components  react-refresh/only-export-components
+  339:17  warning  Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components  react-refresh/only-export-components
+  367:17  warning  Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components  react-refresh/only-export-components
+
+/root/.handoff/worktrees/47973e2e/web/src/app/workbench/BlankTab.tsx
+  22:14  warning  Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components  react-refresh/only-export-components
+  73:17  warning  Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components  react-refresh/only-export-components
+  84:17  warning  Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components  react-refresh/only-export-components
+
+/root/.handoff/worktrees/47973e2e/web/src/app/workbench/MobileKeybar.tsx
+  33:14  warning  Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components  react-refresh/only-export-components
+
+/root/.handoff/worktrees/47973e2e/web/src/app/workbench/TaskPickerDialog.tsx
+  38:17  warning  Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components  react-refresh/only-export-components
+  50:17  warning  Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components  react-refresh/only-export-components
+
+/root/.handoff/worktrees/47973e2e/web/src/components/ui/badge.tsx
+  41:17  warning  Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components  react-refresh/only-export-components
+
+/root/.handoff/worktrees/47973e2e/web/src/components/ui/button.tsx
+  57:18  warning  Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components  react-refresh/only-export-components
+
+✖ 33 problems (0 errors, 33 warnings)
+
+[eslint exit=0]
+```
+
+- 提交：`git commit -m "feat(B467): 段 B 控制台——store 分区、忽略/恢复、底栏去名与弹层、已忽略区"` 原始输出：`[cards/B467-charter-2 8131894b] feat(B467): 段 B 控制台——store 分区、忽略/恢复、底栏去名与弹层、已忽略区` / `13 files changed, 373 insertions(+), 78 deletions(-)`。本行随同批 amend 收入（amend 会换 hash，台账保留提交当时的 `8131894b`）。

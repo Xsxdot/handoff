@@ -3,7 +3,8 @@
 // 职责：
 //   - 按六种 kind 分组（OpenCode Go / Codex / Grok / Antigravity / Claude / 第三方 API key），组内问题账号排前
 //   - 账号卡：身份摘要 + 额度窗口 + 登录子表（机器/HOME/来源/指纹/状态/代理/载体）+ 可展开的阈值与探测信息
-//   - 动作：改名（内联）、改阈值/间隔（展开区）、编辑登录代理、复制登录命令、立即探测、在其他机器登录、删除
+//   - 动作：改名（内联）、改阈值/间隔（展开区）、编辑登录代理、复制登录命令、立即探测、在其他机器登录、忽略
+//   - 页底「已忽略（N）」折叠区：列出已忽略账号并提供「恢复」（B467 S1/S4）
 //   - 页头「上次发现 x 前 · 立即发现」（逐机报错）与「＋ 新增登录」三步对话框
 //
 // 边界：
@@ -14,7 +15,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { ApiError, fetchMachines } from '../../api/client'
 import {
-  deleteAccount, discoverAccounts, putAccount,
+  discoverAccounts, ignoreAccount, putAccount, restoreAccount,
   type AccountDeleteRefusal, type AccountInput, type AccountView, type MachineDiscoverResult,
 } from '../../api/accounts'
 import { errorMessage } from '../lib/format'
@@ -97,27 +98,28 @@ function AccountDetail({ a }: { a: AccountView }) {
   )
 }
 
-/** DeleteDialog 删除确认：有载体引用时拦住并点名；无引用时写明下次发现会重新出现。 */
-function DeleteDialog({ a, onClose, onRemoved }: { a: AccountView; onClose: () => void; onRemoved: () => void }) {
-  const [refs, setRefs] = useState<string[]>(a.carriers)
+/** IgnoreDialog 忽略确认：成功由 store.apply 把账号移进「已忽略」区；被载体引用（409）时点名并给换登录入口。 */
+function IgnoreDialog({ a, onClose }: { a: AccountView; onClose: () => void }) {
+  const { apply } = useAccounts()
+  const [refs, setRefs] = useState<string[]>([])
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const run = async () => {
     setBusy(true)
     setError('')
-    console.info('accounts.delete.start', { account: a.id, name: a.name, expect: a.version })
+    console.info('accounts.ignore.start', { account: a.id, name: a.name })
     try {
-      await deleteAccount(a.id, a.version)
-      console.info('accounts.delete.success', { account: a.id, name: a.name })
-      onRemoved()
+      const view = await ignoreAccount(a.id)
+      console.info('accounts.ignore.success', { account: a.id, name: a.name })
+      apply(view)
       onClose()
     } catch (cause) {
       const body = cause instanceof ApiError ? (cause.body as Partial<AccountDeleteRefusal> | undefined) : undefined
       if (cause instanceof ApiError && cause.status === 409 && Array.isArray(body?.carriers) && body.carriers.length) {
-        console.warn('accounts.delete.referenced', { account: a.id, carriers: body.carriers })
+        console.warn('accounts.ignore.referenced', { account: a.id, carriers: body.carriers })
         setRefs(body.carriers)
       } else {
-        console.error('accounts.delete.failure', { account: a.id, cause })
+        console.error('accounts.ignore.failure', { account: a.id, cause })
         setError(errorMessage(cause))
       }
     } finally {
@@ -125,18 +127,20 @@ function DeleteDialog({ a, onClose, onRemoved }: { a: AccountView; onClose: () =
     }
   }
   const blocked = refs.length > 0
-  const title = blocked ? `不能删除 ${a.name}` : `删除账号 ${a.name}？`
+  const title = blocked ? `不能忽略 ${a.name}` : `忽略账号 ${a.name}？`
   return (
     <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/30 p-4" role="dialog" aria-modal="true" aria-label={title}>
       <div className="w-full max-w-[440px] rounded-lg border bg-background p-5 shadow-lg">
         <h3 className="mb-2 text-sm font-semibold">{title}</h3>
         <p className="text-xs leading-6 text-muted-foreground">{blocked
-          ? <>仍有 {refs.length} 个载体在用它的登录：{refs.map((c, i) => <span key={c}>{i > 0 && '、'}<b className="font-mono text-foreground">{c}</b></span>)}。先在「设置 · 自动化」把它们换到别的账号登录，或改选「无账号 · 主 HOME」。</>
-          : <>只删账本里的账号与 {a.logins.length} 条登录记录，{machinesText(a)} 上的凭据文件与 HOME 都不动。若这些 HOME 里仍登着这个身份，<b className="font-medium text-foreground">下次发现会重新认出来</b>——要彻底去掉，先在该机退出登录。</>}</p>
+          ? <>仍有 {refs.length} 个载体在用它的登录：{refs.map((c, i) => <span key={c}>{i > 0 && '、'}<b className="font-mono text-foreground">{c}</b></span>)}。先在「设置 · 自动化」把它们换到别的账号登录。</>
+          : <>忽略后不再探测它的额度，也不在底栏、使用量弹层和载体的登录下拉里出现。{machinesText(a)} 上的凭据不动，发现仍会扫到它，但不会让它重新出现。随时可在本页底部「已忽略」里恢复。</>}</p>
         {error && <p role="alert" className="mt-2 break-words text-xs text-destructive">{error}</p>}
         <div className="mt-4 flex justify-end gap-2">
           <button type="button" className="rounded-md border px-3 py-1.5 text-xs" onClick={onClose}>{blocked ? '关闭' : '取消'}</button>
-          {!blocked && <button type="button" className="rounded-md bg-primary px-3 py-1.5 text-xs text-primary-foreground" disabled={busy} onClick={() => void run()}>{busy ? '删除中…' : '删除'}</button>}
+          {blocked
+            ? <a className="rounded-md border px-3 py-1.5 text-xs" href="/settings?section=automation">去改载体</a>
+            : <button type="button" className="rounded-md bg-primary px-3 py-1.5 text-xs text-primary-foreground" disabled={busy} onClick={() => void run()}>{busy ? '忽略中…' : '忽略'}</button>}
         </div>
       </div>
     </div>
@@ -146,7 +150,7 @@ function DeleteDialog({ a, onClose, onRemoved }: { a: AccountView; onClose: () =
 const PENCIL = <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10.8 2.6l2.6 2.6-7.8 7.8H3v-2.6z" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" /></svg>
 
 /** AccountCard 一张账号卡：身份与状态、额度窗口、登录子表、可展开的阈值/探测详情。 */
-function AccountCard({ a, open, flash, now, renaming, notice, failure, onRename, onToggle, onOtherLogin, onDelete }: {
+function AccountCard({ a, open, flash, now, renaming, notice, failure, onRename, onToggle, onOtherLogin, onIgnore }: {
   a: AccountView
   open: boolean
   flash: boolean
@@ -157,7 +161,7 @@ function AccountCard({ a, open, flash, now, renaming, notice, failure, onRename,
   onRename: (value: string, done?: boolean) => void
   onToggle: () => void
   onOtherLogin: () => void
-  onDelete: () => void
+  onIgnore: () => void
 }) {
   const { probe, applyLogin } = useAccounts()
   const [probing, setProbing] = useState(false)
@@ -201,7 +205,7 @@ function AccountCard({ a, open, flash, now, renaming, notice, failure, onRename,
         <span className="a-actions">
           {quota && <button type="button" className="tbtn" disabled={probing} onClick={() => void runProbe()}>{probing ? '探测中…' : '立即探测'}</button>}
           <button type="button" className="tbtn" onClick={onOtherLogin}>在其他机器登录</button>
-          <button type="button" className="tbtn" onClick={onDelete}>删除</button>
+          <button type="button" className="tbtn" onClick={onIgnore}>忽略</button>
         </span>
       </div>
       <div className="a-r2">{[a.label || a.id, `${a.logins.length} 条登录 · ${machinesText(a)}`].filter(Boolean).join(' · ')}</div>
@@ -226,11 +230,14 @@ interface NewLoginPreset { machine?: string; agent?: string }
 
 /** AccountsPage 账号与额度页；highlight = ?account= 名字，newLogin = ?login=new 预选。 */
 export function AccountsPage({ highlight = '', newLogin = null }: { highlight?: string; newLogin?: NewLoginPreset | null }) {
-  const { accounts, discovery, errorText, refresh, remove } = useAccounts()
+  const { accounts, ignored, discovery, errorText, refresh, apply } = useAccounts()
   const now = useNow()
   const [opened, setOpened] = useState<Set<string>>(() => new Set(highlight ? [highlight] : []))
   const [renaming, setRenaming] = useState<{ name: string; value: string } | null>(null)
-  const [deleting, setDeleting] = useState<AccountView | null>(null)
+  const [ignoring, setIgnoring] = useState<AccountView | null>(null)
+  const [restoring, setRestoring] = useState('')
+  const [restoreNote, setRestoreNote] = useState('')
+  const [restoreError, setRestoreError] = useState('')
   const [wizard, setWizard] = useState<{ open: boolean; account: AccountView | null; preset?: NewLoginPreset }>(
     () => ({ open: newLogin !== null, account: null, preset: newLogin ?? undefined }),
   )
@@ -240,7 +247,6 @@ export function AccountsPage({ highlight = '', newLogin = null }: { highlight?: 
   const [finding, setFinding] = useState(false)
   const [findResult, setFindResult] = useState<MachineDiscoverResult[] | null>(null)
   const [findError, setFindError] = useState('')
-  const { apply } = useAccounts()
 
   useEffect(() => { if (highlight) setOpened((cur) => new Set(cur).add(highlight)) }, [highlight])
   useEffect(() => {
@@ -273,6 +279,24 @@ export function AccountsPage({ highlight = '', newLogin = null }: { highlight?: 
       trouble(a.name, errorMessage(cause))
       setRenaming(null)
     })
+  }
+
+  // 恢复：删忽略行后由 store.apply 把账号移回可见分组；下一轮探测交给持有正常登录的机器。
+  const restore = async (a: AccountView) => {
+    setRestoring(a.name)
+    setRestoreError('')
+    console.info('accounts.restore.start', { account: a.id, name: a.name })
+    try {
+      const view = await restoreAccount(a.id)
+      console.info('accounts.restore.success', { account: a.id, name: view.name })
+      apply(view)
+      setRestoreNote(`已恢复：${view.name} 回到列表，下一轮由持有正常登录的机器探测。`)
+    } catch (cause) {
+      console.error('accounts.restore.failure', { account: a.id, cause })
+      setRestoreError(errorMessage(cause))
+    } finally {
+      setRestoring('')
+    }
   }
 
   const discoverNow = async () => {
@@ -333,14 +357,30 @@ export function AccountsPage({ highlight = '', newLogin = null }: { highlight?: 
                   onRename={(value, done) => commitRename(a, value, done)}
                   onToggle={() => toggle(a.name)}
                   onOtherLogin={() => setWizard({ open: true, account: a })}
-                  onDelete={() => setDeleting(a)} />
+                  onIgnore={() => setIgnoring(a)} />
               ))}
               {accounts !== null && group.length === 0 && <div className="a-empty">还没有 {meta.name} 账号。点右上「＋ 新增登录」在某台机器上登录 {meta.cli}，识别后自动出现在这里。</div>}
             </section>
           )
         })}
+        {ignored.length > 0 && (
+          <details className="igsec" data-testid="ignored-section">
+            <summary>已忽略（{ignored.length}）</summary>
+            <p className="ig-desc">不探测、不进底栏和使用量弹层、不出现在载体的登录下拉里。发现仍会扫到这些登录，只更新它们的状态，不会把账号重新显示出来。</p>
+            {ignored.map((a) => (
+              <div key={a.id} className="ig-row" data-testid={`ignored-${a.name}`}>
+                <KindIcon kind={a.kind} />
+                <span className="ig-name">{a.name}</span>
+                <span className="ig-meta">{[a.label || a.id, `${a.logins.length} 条登录 · ${machinesText(a)}`, `${ago(a.ignored?.at, now)}忽略`].filter(Boolean).join(' · ')}</span>
+                <button type="button" className="tbtn" disabled={restoring === a.name} onClick={() => void restore(a)}>{restoring === a.name ? '恢复中…' : '恢复'}</button>
+              </div>
+            ))}
+            {restoreError && <p role="alert" className="a-note q-out">{restoreError}</p>}
+          </details>
+        )}
+        {restoreNote && <p className="a-note" data-testid="restore-note">{restoreNote}</p>}
       </div>
-      {deleting && <DeleteDialog a={deleting} onClose={() => setDeleting(null)} onRemoved={() => remove(deleting.name)} />}
+      {ignoring && <IgnoreDialog a={ignoring} onClose={() => setIgnoring(null)} />}
       <LoginWizard open={wizard.open} machines={machineOptions} selfMachines={selfMachines} account={wizard.account} preset={wizard.preset}
         onClose={() => setWizard((cur) => ({ ...cur, open: false }))}
         onDone={() => { refresh(); console.info('accounts.login_wizard.done') }}

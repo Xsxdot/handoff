@@ -6,13 +6,13 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import userEvent from '@testing-library/user-event'
 import { ApiError, fetchMachines } from '../../api/client'
 import {
-  checkLoginHome, createLoginHome, deleteAccount, discoverAccounts, probeAccount, putAccount, putLoginProxy,
+  checkLoginHome, createLoginHome, discoverAccounts, ignoreAccount, probeAccount, putAccount, putLoginProxy, restoreAccount,
   type AccountView,
 } from '../../api/accounts'
 import { AccountsPage } from './AccountsPage'
 import { copyToClipboard } from '../lib/clipboard'
 import { __resetAccountsStoreForTest, __setAccountsForTest } from './store'
-import { sampleAccounts } from './testAccounts'
+import { ignoredAccount, sampleAccounts } from './testAccounts'
 
 vi.mock('../../api/client', async () => {
   const actual = await vi.importActual<typeof import('../../api/client')>('../../api/client')
@@ -24,11 +24,12 @@ vi.mock('../../api/accounts', async () => {
     ...actual,
     checkLoginHome: vi.fn(),
     createLoginHome: vi.fn(),
-    deleteAccount: vi.fn(),
     discoverAccounts: vi.fn(),
+    ignoreAccount: vi.fn(),
     probeAccount: vi.fn(),
     putAccount: vi.fn(),
     putLoginProxy: vi.fn(),
+    restoreAccount: vi.fn(),
   }
 })
 vi.mock('../lib/clipboard', () => ({ copyToClipboard: vi.fn(async () => true) }))
@@ -216,32 +217,53 @@ describe('账号管理', () => {
     expect(await within(card('og-main')).findByRole('alert')).toHaveTextContent('探测请求失败：上游超时')
   })
 
-  it('删除：被载体引用时拦住并点名；无引用时确认框写明下次发现会重新出现', async () => {
+  it('忽略：确认框写明不探测与凭据不动；成功后移入「已忽略」区，可恢复回列表（S1/S4）', async () => {
     const user = userEvent.setup()
-    vi.mocked(deleteAccount).mockResolvedValue({ name: 'og-mini', version: 2 })
+    const ignored: AccountView = { ...sampleAccounts()[2], label: 'hidden@example.com', ignored: { at: new Date(Date.now() - 3 * 3600_000).toISOString(), by: 'linux-01' } }
+    vi.mocked(ignoreAccount).mockResolvedValue(ignored)
+    const restored = sampleAccounts()[2]
+    vi.mocked(restoreAccount).mockResolvedValue(restored)
     render(<AccountsPage />)
-    await user.click(within(card('og-team')).getByRole('button', { name: '删除' }))
-    const blocked = screen.getByRole('dialog', { name: '不能删除 og-team' })
-    expect(blocked.textContent).toContain('dp')
-    await user.click(within(blocked).getByRole('button', { name: '关闭' }))
-    expect(deleteAccount).not.toHaveBeenCalled()
 
-    await user.click(within(card('og-mini')).getByRole('button', { name: '删除' }))
-    const confirm = screen.getByRole('dialog', { name: '删除账号 og-mini？' })
-    expect(confirm.textContent).toContain('下次发现会重新认出来')
-    await user.click(within(confirm).getByRole('button', { name: '删除' }))
-    expect(deleteAccount).toHaveBeenCalledWith('opencode-go:og-mini', 2)
+    await user.click(within(card('og-mini')).getByRole('button', { name: '忽略' }))
+    const confirm = screen.getByRole('dialog', { name: '忽略账号 og-mini？' })
+    expect(confirm.textContent).toContain('忽略后不再探测它的额度')
+    expect(confirm.textContent).toContain('mac-mini 上的凭据不动')
+    expect(confirm.textContent).toContain('发现仍会扫到它，但不会让它重新出现')
+    expect(confirm.textContent).toContain('随时可在本页底部「已忽略」里恢复')
+    await user.click(within(confirm).getByRole('button', { name: '忽略' }))
+    expect(ignoreAccount).toHaveBeenCalledWith('opencode-go:og-mini')
     await waitFor(() => expect(screen.queryByTestId('acard-og-mini')).toBeNull())
+    const sec = screen.getByTestId('ignored-section')
+    expect(sec.textContent).toContain('已忽略（1）')
+    const row = within(sec).getByTestId('ignored-og-mini')
+    expect(row.textContent).toContain('hidden@example.com')
+    expect(row.textContent).toContain('1 条登录 · mac-mini')
+    expect(row.textContent).toMatch(/3 小时前忽略/)
+
+    await user.click(within(row).getByRole('button', { name: '恢复' }))
+    expect(restoreAccount).toHaveBeenCalledWith('opencode-go:og-mini')
+    await waitFor(() => expect(screen.queryByTestId('ignored-section')).toBeNull())
+    expect(screen.getByTestId('acard-og-mini')).toBeInTheDocument()
+    expect(screen.getByTestId('accounts-page').textContent).toContain('已恢复：og-mini 回到列表，下一轮由持有正常登录的机器探测。')
   })
 
-  it('删除时服务端 409 回引用载体（快照过旧）也列出', async () => {
+  it('被载体引用时拒绝忽略：点名载体并可跳去设置·自动化', async () => {
     const user = userEvent.setup()
-    vi.mocked(deleteAccount).mockRejectedValue(new ApiError(409, '仍被引用', { error: '仍被引用', carriers: ['mini', 'mini-2'] }))
+    vi.mocked(ignoreAccount).mockRejectedValue(new ApiError(409, '不能忽略', { error: '不能忽略', carriers: ['dp'] }))
     render(<AccountsPage />)
-    await user.click(within(card('og-mini')).getByRole('button', { name: '删除' }))
-    await user.click(within(dialog()).getByRole('button', { name: '删除' }))
-    const blocked = await screen.findByRole('dialog', { name: '不能删除 og-mini' })
-    expect(blocked.textContent).toContain('mini-2')
+    await user.click(within(card('og-team')).getByRole('button', { name: '忽略' }))
+    await user.click(within(screen.getByRole('dialog', { name: '忽略账号 og-team？' })).getByRole('button', { name: '忽略' }))
+    const blocked = await screen.findByRole('dialog', { name: '不能忽略 og-team' })
+    expect(blocked.textContent).toContain('仍有 1 个载体在用它的登录：dp')
+    expect(within(blocked).getByRole('link', { name: '去改载体' })).toHaveAttribute('href', '/settings?section=automation')
+    expect(within(blocked).getByRole('button', { name: '关闭' })).toBeVisible()
+    expect(screen.getByTestId('acard-og-team')).toBeInTheDocument()
+  })
+
+  it('没有已忽略账号时整节不渲染', () => {
+    render(<AccountsPage />)
+    expect(screen.queryByTestId('ignored-section')).toBeNull()
   })
 })
 
@@ -347,6 +369,23 @@ describe('新增登录（三步）', () => {
     expect(checkLoginHome).not.toHaveBeenCalled()
     await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
     expect(checkLoginHome).toHaveBeenCalledWith('linux-01', '~/.handoff/home/cx-abcd')
+  })
+
+  it('识别结果落在已忽略账号时提示可恢复（Q12）', async () => {
+    const user = userEvent.setup()
+    __setAccountsForTest([...sampleAccounts(), ignoredAccount()])
+    vi.mocked(createLoginHome).mockResolvedValue({ home: '~/.handoff/home/oc-abcd', command: { run: 'HOME=/root/.handoff/home/oc-abcd opencode console login' } })
+    vi.mocked(checkLoginHome).mockResolvedValue({ logins: [
+      { login: 'login-new', account: 'opencode-go:hidden', account_name: 'og-hidden', new_account: false, account_logins: 2 },
+    ] })
+    render(<AccountsPage />)
+    await user.click(screen.getByRole('button', { name: '＋ 新增登录' }))
+    await user.selectOptions(within(dialog()).getByLabelText('机器'), 'linux-01')
+    await user.selectOptions(within(dialog()).getByLabelText('Agent'), 'opencode')
+    await user.click(within(dialog()).getByRole('button', { name: '建目录并给出登录命令' }))
+    await user.click(within(dialog()).getByRole('button', { name: '我已登录，立即检查' }))
+    expect(await within(dialog()).findByText(/已挂到账号/)).toBeInTheDocument()
+    expect(dialog().textContent).toContain('已忽略，可在本页底部恢复')
   })
 
   it('账号卡「在其他机器登录」预选 agent；?login=new 预选机器与 agent', async () => {

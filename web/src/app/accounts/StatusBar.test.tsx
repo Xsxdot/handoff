@@ -9,7 +9,7 @@ import { __resetWebPrefsForTest } from '../settings/useWebPrefs'
 import { PREFS_KEY } from '../settings/webPrefs'
 import { __resetAccountsStoreForTest, __setAccountsForTest } from './store'
 import { UsageStatusBar } from './StatusBar'
-import { sampleAccounts } from './testAccounts'
+import { ignoredAccount, sampleAccounts } from './testAccounts'
 
 vi.mock('../../api/accounts', async () => {
   const actual = await vi.importActual<typeof import('../../api/accounts')>('../../api/accounts')
@@ -116,6 +116,36 @@ describe('额度底栏', () => {
     expect(await within(pop).findByTestId('up-row-codex-spare')).toHaveTextContent('7%')
     await user.click(within(screen.getByTestId('usage-side')).getByRole('button', { name: /管理账号/ }))
     expect(onManage).toHaveBeenCalledWith('codex-spare')
+  })
+
+  it('已忽略账号不进底栏、弹层与「刷新所有账号」', async () => {
+    const user = userEvent.setup()
+    __setAccountsForTest([...sampleAccounts(), ignoredAccount()])
+    vi.mocked(probeAccount).mockResolvedValue(ignoredAccount())
+    render(<UsageStatusBar onManage={() => {}} />)
+    expect(segNames()).not.toContain('og-hidden')
+    await user.click(screen.getByText('已用'))
+    const pop = screen.getByRole('dialog', { name: '使用量' })
+    expect(within(pop).queryByTestId('up-row-og-hidden')).toBeNull()
+    await user.click(within(pop).getByRole('button', { name: /所有账号/ }))
+    expect(probeAccount).not.toHaveBeenCalledWith('og-hidden')
+  })
+
+  it('底栏段只有图标与读数、名字在 title；弹层菜单只剩「管理账号…」（S8/S9）', async () => {
+    const user = userEvent.setup()
+    const onManage = vi.fn()
+    render(<UsageStatusBar onManage={onManage} />)
+    const s = seg('og-main')
+    expect(s.textContent).not.toContain('og-main')
+    expect(s).toHaveAttribute('title', 'og-main')
+    expect(s.querySelector('.sb-name')).toBeNull()
+    await user.click(screen.getByText('已用'))
+    const pop = screen.getByRole('dialog', { name: '使用量' })
+    expect(within(pop).queryByText('使用详情')).toBeNull()
+    const manage = within(pop).getByRole('button', { name: /管理账号/ })
+    expect(manage).toBeVisible()
+    await user.click(manage)
+    expect(onManage).toHaveBeenCalled()
   })
 
   it('还没有快照（账本未启用/首拉未回）时不渲染', () => {

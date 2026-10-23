@@ -11,6 +11,7 @@ import { checkLoginHome, createLoginHome, type AccountView, type LoginCheckItem,
 import { copyToClipboard } from '../lib/clipboard'
 import { errorMessage } from '../lib/format'
 import { homeText, kindMeta, loginCommandText } from './model'
+import { useAccounts } from './store'
 
 const INPUT = 'h-8 w-full rounded-md border bg-background px-2 text-xs'
 const LABEL = 'mb-1 block text-xs text-muted-foreground'
@@ -54,6 +55,7 @@ export function LoginWizard({ open, machines, selfMachines, account, preset, onC
   const [checkNote, setCheckNote] = useState('')
   const [busy, setBusy] = useState(false)
   const [checking, setChecking] = useState(false)
+  const { ignored } = useAccounts()
   const poll = useRef<number | null>(null)
 
   // 打开时按来源初始化：preset > 账号已有登录避让 > 第一台机器。
@@ -215,7 +217,7 @@ export function LoginWizard({ open, machines, selfMachines, account, preset, onC
               <div><span className="q-mute">✓</span> 已识别新登录</div>
               <div>→ {item.new_account
                 ? <>新账号 <b>{item.account_name}</b><span className="q-mute">（没拿到邮箱时按「类型-短 id」起名，可改名）</span></>
-                : <>已挂到账号 <b>{item.account_name}</b><span className="q-mute">（已有 {item.account_logins} 条登录）</span></>}</div>
+                : <>已挂到账号 <b>{item.account_name}</b><span className="q-mute">（已有 {item.account_logins} 条登录）</span>{ignored.some((a) => a.name === item.account_name) && <span className="q-mute">（已忽略，可在本页底部恢复）</span>}</>}</div>
               <div className="q-mute">新登录：{machine} · <span className="mono">{created ? homeText(created.home) : ''}</span></div>
             </div>
           ))}

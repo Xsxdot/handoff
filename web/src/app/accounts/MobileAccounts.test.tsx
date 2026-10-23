@@ -6,7 +6,7 @@ import userEvent from '@testing-library/user-event'
 import { probeAccount } from '../../api/accounts'
 import { SettingsHub } from '../settings/SettingsHub'
 import { __resetAccountsStoreForTest, __setAccountsForTest } from './store'
-import { sampleAccounts } from './testAccounts'
+import { ignoredAccount, sampleAccounts } from './testAccounts'
 
 vi.mock('../../api/accounts', async () => {
   const actual = await vi.importActual<typeof import('../../api/accounts')>('../../api/accounts')
@@ -35,7 +35,7 @@ describe('移动设置 · 账号与额度', () => {
     expect(main.textContent).toMatch(/后重置/)
     expect(screen.getByTestId('m-acct-agy-main').querySelectorAll('.qg')).toHaveLength(2)
     expect(screen.getByTestId('m-acct-og-team').textContent).toContain('无额度')
-    expect(screen.getByText('登记、编辑和删除账号请到桌面控制台的「账号」页。')).toBeInTheDocument()
+    expect(screen.getByText('登记、编辑和忽略账号请到桌面控制台的「账号」页。')).toBeInTheDocument()
     // 不支持额度探测的 kind 也在列表里，但展开后没有「立即探测」
     expect(screen.getByTestId('m-acct-claude-main').textContent).toContain('不支持额度探测')
     // 只读：没有编辑/删除入口
@@ -62,6 +62,13 @@ describe('移动设置 · 账号与额度', () => {
     await user.click(within(row).getByRole('button', { name: /claude-main/ }))
     expect(row.textContent).toContain('不支持额度探测')
     expect(within(row).queryByRole('button', { name: '立即探测' })).toBeNull()
+  })
+
+  it('已忽略账号不出现，页头计数也不含（B467）', () => {
+    __setAccountsForTest([...sampleAccounts(), ignoredAccount()])
+    hub()
+    expect(screen.queryByTestId('m-acct-og-hidden')).toBeNull()
+    expect(screen.getByTestId('settings-section-accounts').textContent).toContain('9 个')
   })
 
   it('账本未启用（无快照）时不出这一节', () => {

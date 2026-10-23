@@ -7,7 +7,7 @@ import { fetchMachines } from '../../api/client'
 import { detectCarrier, deleteCarrier, getCarrierRunCommand, getSquads, putCarrier, putSquad } from '../../api/scheduling'
 import { SchedulingPage } from './SchedulingPage'
 import { __resetAccountsStoreForTest, __setAccountsForTest } from '../accounts/store'
-import { sampleAccounts } from '../accounts/testAccounts'
+import { ignoredAccount, sampleAccounts } from '../accounts/testAccounts'
 
 vi.mock('../../api/client', async () => {
   const actual = await vi.importActual<typeof import('../../api/client')>('../../api/client')
@@ -104,6 +104,18 @@ describe('SchedulingPage', () => {
     render(<SchedulingPage />)
     expect(await screen.findAllByText('未上线')).toHaveLength(2)
     expect(screen.queryByText('undefined')).not.toBeInTheDocument()
+  })
+
+  it('已忽略账号的登录不出现在载体登录下拉里（B467 S5）', async () => {
+    const user = userEvent.setup()
+    const hidden = ignoredAccount()
+    __setAccountsForTest([...sampleAccounts(), { ...hidden, logins: [{ ...hidden.logins[0], machine: 'linux-01' }] }])
+    render(<SchedulingPage />)
+    await user.click(screen.getByRole('button', { name: '登记载体' }))
+    await user.selectOptions(screen.getByLabelText('机器'), 'linux-01')
+    await user.selectOptions(screen.getByLabelText('CLI'), 'opencode')
+    expect(screen.queryByRole('option', { name: /og-hidden/ })).toBeNull()
+    expect(screen.getByRole('option', { name: /og-main/ })).toBeInTheDocument()
   })
 
   it('载体对话框没有 HOME 输入；选中登录后只读显示该登录决定的 HOME/凭据/代理', async () => {
