@@ -398,3 +398,4 @@ $ npx eslint .
 - 原型回流：fork 的 accounts.html / accounts.js / styles.css 拷入 base，mobile-settings 文案「删除→忽略」，README 行改「已确认」，fork 删除。
 - 清理：隔离实例 t467-mini/t467-old 已停（7797/7798 无监听，在役 7777 PID 84369 全程未动）；测试库 handoff_b467 DROP（rc 0），凭据表登记行标注已 DROP；datadir /tmp/t467n、/tmp/t467o 与构建工作树已删。
 - S10（R9）：待用户在生产控制台忽略 opencode-go-54ce。
+- S10（R9）生产：用户 2026-10-23 在控制台忽略 opencode-go-54ce（`ignored.at 2026-10-23T05:18:55.915585Z by macbook-pro`）；05:19:23Z、05:19:32Z 三机发现各两轮 succeeded 后 `account list` 仍「已忽略」、未回分组；`account probe` 退出 1；05:35:47Z（≥ 一个 15 分钟间隔后）`last_attempt_at` 仍为忽略前的 02:40:38Z、无读数——不探测、不回来。第 1 条原始反馈闭环，B467 全部故事 S1–S10 核销。
