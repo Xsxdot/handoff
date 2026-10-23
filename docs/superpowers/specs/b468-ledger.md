@@ -45,3 +45,10 @@ AssertionError: expected '0 0 16 16' to be '0 0 24 24' // Object.is equality
 ## 未验证
 
 - 浏览器亮/暗截图（spec S1 验收）不在本节点做，交主会话验收。
+
+## review / 验收（主会话，2026-10-23）
+
+- diff 199dbc73..HEAD 逐行读过：只换 `ICON_PATHS.codex/grok` 两条 path（与下载文件 d 串一致）+ `ICON_VIEWBOX` 表；其余三 kind 未动；原型 `accounts.js` 同步。偏离与自主决定三条（新测试文件、viewBox 另表、原型注释）均在 L1 执行者权限内，已核。
+- 变异：`ICON_VIEWBOX` 去掉 grok → `× grok 用 24×24 官方标志单色路径`，`Tests 1 failed | 2 passed (3)`；还原 `3 passed (3)`。
+- 浏览器（工作树 vite 开发版 :5242，反代在役 agentd，只读）：弹层菜单只剩「管理账号…」（确认是新前端）；/accounts 分组标题 Codex `viewBox 0 0 24 24`、d 以 `M9.205 8.658` 起、fill currentColor → oklch(0.196)；Grok `0 0 24 24`、`M9.27 15.29`；OpenCode Go / Antigravity 仍 `0 0 16 16`；底栏、弹层同；暗色（产品无主题入口，`documentElement.classList.add('dark')` 模拟）图标 fill 随文字变为 oklch(0.804)/oklch(0.708)；控制台无 error。两标志 15px 下可辨。观察：实心标志与线稿图标视觉重量不同（记账，不改）。
+- 过程：首次起的 `console-dev` 跑在主检出（旧代码），截到旧图标，作废；临时在主检出 `.claude/launch.json` 加 `console-dev-b464`（--prefix 工作树 web，端口 5242），验收后原样恢复。
