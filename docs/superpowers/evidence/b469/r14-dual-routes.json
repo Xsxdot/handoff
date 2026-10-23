@@ -1,0 +1,320 @@
+{
+  "probe": "B469 isolated card route / retry / session wait acceptance",
+  "loopback_model_fixture": true,
+  "production_credentials_used": false,
+  "kind": "permission",
+  "run_id": "r14r-7954a460",
+  "remote_host": "linux-01",
+  "machine_names": [
+    "b469-r14r-7954a460-mac",
+    "b469-r14r-7954a460-linux"
+  ],
+  "completed_checks": [
+    "isolated A/B agentd launched with same test PG and one owned SSH tunnel",
+    "P own push ticket notice resolved to P current push seat and was delivered without answering the source ticket",
+    "standalone L pull notice stayed pending until the real card wait CLI emitted it",
+    "empty C escalated to parent P push and delivered once",
+    "no-card/no-origin retry stayed needs_human, rejected caller target, and could not answer the ticket",
+    "A-offline session wait explicitly replayed the origin-addressed notice and acknowledged it while the source ask remained pending"
+  ],
+  "phases": [],
+  "cases": [
+    {
+      "case": "isolated_project_prefix_set",
+      "at_unix": 1792757621,
+      "project": "b469-dual-fixture",
+      "prefix": "BR",
+      "schema": "b469_route_r14r_7954a460"
+    },
+    {
+      "case": "workflow_created",
+      "at_unix": 1792757626,
+      "name": "b469router14r7954a460",
+      "version": 1,
+      "states": [
+        "待办",
+        "完成"
+      ]
+    },
+    {
+      "case": "A_resident_session_created",
+      "at_unix": 1792757629,
+      "session_id": "session:1",
+      "resident_identity": "agent:b469r14r-7954a460squad",
+      "carrier_machine": "b469-r14r-7954a460-mac"
+    },
+    {
+      "case": "parent_push_card_created",
+      "at_unix": 1792757632,
+      "card_id": "BR1",
+      "driver_session": "cli:opencode#ses_e9751781dffelMFOeSYVEqDDuQ",
+      "driver_mode": "push",
+      "launch_session_id": "ses_e9751781dffelMFOeSYVEqDDuQ"
+    },
+    {
+      "case": "parent-own-push_source_created",
+      "at_unix": 1792757640,
+      "task_id": "fca69c9b-c0d0-455a-8824-bf93765971bb",
+      "ticket_id": "fca69c9b-c0d0-455a-8824-bf93765971bb:que_168aea70c001VNPKz0j0PNFnyu",
+      "kind": "ask",
+      "origin_session": null,
+      "initial_status": "needs_human",
+      "initial_ownership_version": 1
+    },
+    {
+      "case": "P_own_push",
+      "at_unix": 1792757657,
+      "task_id": "fca69c9b-c0d0-455a-8824-bf93765971bb",
+      "ticket_id": "fca69c9b-c0d0-455a-8824-bf93765971bb:que_168aea70c001VNPKz0j0PNFnyu",
+      "target": {
+        "card": "BR1",
+        "kind": "seat",
+        "session": "",
+        "identity": "cli:opencode#ses_e9751781dffelMFOeSYVEqDDuQ"
+      },
+      "ownership_version": 2,
+      "link_seq_before": 4,
+      "coordinator_main_request_delta": 1,
+      "source_ticket_still_pending": true
+    },
+    {
+      "case": "P own push_answered",
+      "at_unix": 1792757658,
+      "task_id": "fca69c9b-c0d0-455a-8824-bf93765971bb",
+      "ticket_id": "fca69c9b-c0d0-455a-8824-bf93765971bb:que_168aea70c001VNPKz0j0PNFnyu",
+      "reply_ok": true,
+      "relayed": true,
+      "b_task_slot_count": 0
+    },
+    {
+      "case": "standalone-pull_source_created",
+      "at_unix": 1792757661,
+      "task_id": "39f0a22c-1d93-4475-8b32-5f41b80a1a16",
+      "ticket_id": "39f0a22c-1d93-4475-8b32-5f41b80a1a16:que_168af0c4f001zOfZWqiwxTqSqH",
+      "kind": "ask",
+      "origin_session": null,
+      "initial_status": "needs_human",
+      "initial_ownership_version": 1
+    },
+    {
+      "case": "L_standalone_pull",
+      "at_unix": 1792757670,
+      "task_id": "39f0a22c-1d93-4475-8b32-5f41b80a1a16",
+      "ticket_id": "39f0a22c-1d93-4475-8b32-5f41b80a1a16:que_168af0c4f001zOfZWqiwxTqSqH",
+      "target": {
+        "card": "BR2",
+        "kind": "seat",
+        "session": "",
+        "identity": "cli:opencode#b469pullr14r7954a4"
+      },
+      "ownership_version": 2,
+      "link_seq_before": 15,
+      "card_wait_emitted": {
+        "seq": 17,
+        "card_id": "BR2",
+        "type": "task_ticket_notice",
+        "actor": "agentd",
+        "payload": {
+          "target": {
+            "card": "BR2",
+            "kind": "seat",
+            "session": "",
+            "identity": "cli:opencode#b469pullr14r7954a4"
+          },
+          "task_id": "39f0a22c-1d93-4475-8b32-5f41b80a1a16",
+          "ticket_id": "39f0a22c-1d93-4475-8b32-5f41b80a1a16:que_168af0c4f001zOfZWqiwxTqSqH",
+          "source_seq": 6,
+          "ticket_kind": "ask",
+          "source_machine": "b469-r14r-7954a460-linux",
+          "ownership_version": 2
+        },
+        "created_at": "2026-10-23T20:14:33.731212+08:00"
+      },
+      "coordinator_main_request_delta": 0,
+      "cursor_claim": "--since explicit replay only; persistent cursor not tested"
+    },
+    {
+      "case": "L standalone pull_answered",
+      "at_unix": 1792757671,
+      "task_id": "39f0a22c-1d93-4475-8b32-5f41b80a1a16",
+      "ticket_id": "39f0a22c-1d93-4475-8b32-5f41b80a1a16:que_168af0c4f001zOfZWqiwxTqSqH",
+      "reply_ok": true,
+      "relayed": true,
+      "b_task_slot_count": 0
+    },
+    {
+      "case": "empty-child-parent-push_source_created",
+      "at_unix": 1792757680,
+      "task_id": "73169569-f12e-4263-9f5f-9e1f490bbe4b",
+      "ticket_id": "73169569-f12e-4263-9f5f-9e1f490bbe4b:que_168af3d72001wxDoDwST1X3314",
+      "kind": "ask",
+      "origin_session": null,
+      "initial_status": "needs_human",
+      "initial_ownership_version": 1
+    },
+    {
+      "case": "C_empty_child_escalates_to_parent_push",
+      "at_unix": 1792757698,
+      "child_card": "BR1.1",
+      "parent_card": "BR1",
+      "task_id": "73169569-f12e-4263-9f5f-9e1f490bbe4b",
+      "ticket_id": "73169569-f12e-4263-9f5f-9e1f490bbe4b:que_168af3d72001wxDoDwST1X3314",
+      "target": {
+        "card": "BR1",
+        "kind": "seat",
+        "session": "",
+        "identity": "cli:opencode#ses_e9751781dffelMFOeSYVEqDDuQ"
+      },
+      "ownership_version": 2,
+      "link_seq_before": 22,
+      "coordinator_main_request_delta": 1
+    },
+    {
+      "case": "C empty child_answered",
+      "at_unix": 1792757699,
+      "task_id": "73169569-f12e-4263-9f5f-9e1f490bbe4b",
+      "ticket_id": "73169569-f12e-4263-9f5f-9e1f490bbe4b:que_168af3d72001wxDoDwST1X3314",
+      "reply_ok": true,
+      "relayed": true,
+      "b_task_slot_count": 0
+    },
+    {
+      "case": "unrouted-retry_source_created",
+      "at_unix": 1792757702,
+      "task_id": "6edfb511-2440-4410-bc38-9d365523a5d2",
+      "ticket_id": "6edfb511-2440-4410-bc38-9d365523a5d2:que_168afa93d001ZWzWu0UYCE50ds",
+      "kind": "ask",
+      "origin_session": null,
+      "initial_status": "needs_human",
+      "initial_ownership_version": 1
+    },
+    {
+      "case": "unrouted_retry_has_no_answer_authority",
+      "at_unix": 1792757702,
+      "task_id": "6edfb511-2440-4410-bc38-9d365523a5d2",
+      "ticket_id": "6edfb511-2440-4410-bc38-9d365523a5d2:que_168afa93d001ZWzWu0UYCE50ds",
+      "initial_target": null,
+      "initial_status": "needs_human",
+      "empty_retry_http": 200,
+      "after_retry_status": "needs_human",
+      "ownership_version_before": 1,
+      "ownership_version_after": 1,
+      "forged_target_http": 400,
+      "source_still_waiting_before_reply": true,
+      "answered_retry_http": 409,
+      "final_notice_status": "answered",
+      "original_reply_relayed": true
+    },
+    {
+      "case": "A_agentd_stopped",
+      "at_unix": 1792757702,
+      "process_exit": 0
+    },
+    {
+      "case": "session-resident_source_created",
+      "at_unix": 1792757710,
+      "task_id": "da62e0ca-0c37-4f6d-9f18-7549956238ea",
+      "ticket_id": "da62e0ca-0c37-4f6d-9f18-7549956238ea:que_168afb7ca001PUwk7tMI4GcfVO",
+      "kind": "ask",
+      "origin_session": "session:1",
+      "initial_status": "pending",
+      "initial_ownership_version": 1
+    },
+    {
+      "case": "session_wait_explicit_replay",
+      "at_unix": 1792757711,
+      "task_id": "da62e0ca-0c37-4f6d-9f18-7549956238ea",
+      "ticket_id": "da62e0ca-0c37-4f6d-9f18-7549956238ea:que_168afb7ca001PUwk7tMI4GcfVO",
+      "origin_session": "session:1",
+      "target_address": {
+        "kind": "resident",
+        "session": "session:1",
+        "identity": "agent:b469r14r-7954a460squad"
+      },
+      "target_machine": "b469-r14r-7954a460-mac",
+      "session_wait_emitted": {
+        "type": "task_ticket_notice",
+        "notice": {
+          "source_machine": "b469-r14r-7954a460-linux",
+          "task_id": "da62e0ca-0c37-4f6d-9f18-7549956238ea",
+          "ticket_id": "da62e0ca-0c37-4f6d-9f18-7549956238ea:que_168afb7ca001PUwk7tMI4GcfVO",
+          "source_seq": 19,
+          "ownership_version": 1,
+          "target": {
+            "kind": "resident",
+            "session": "session:1",
+            "identity": "agent:b469r14r-7954a460squad"
+          },
+          "ticket_kind": "ask"
+        },
+        "status": "delivered"
+      },
+      "status": "delivered",
+      "ownership_version": 1,
+      "since_floor": 33,
+      "cursor_claim": "explicit --since replay only; persistent cursor not tested",
+      "a_agentd_running": false,
+      "current_resident_identity": "agent:b469r14r-7954a460squad"
+    },
+    {
+      "case": "session resident_answered",
+      "at_unix": 1792757711,
+      "task_id": "da62e0ca-0c37-4f6d-9f18-7549956238ea",
+      "ticket_id": "da62e0ca-0c37-4f6d-9f18-7549956238ea:que_168afb7ca001PUwk7tMI4GcfVO",
+      "reply_ok": true,
+      "relayed": true,
+      "b_task_slot_count": 0
+    }
+  ],
+  "database_name": "handoff_b469_p0_74db30e9",
+  "schema_name": "b469_route_r14r_7954a460",
+  "schema_owned": true,
+  "retained_for_evidence": true,
+  "schema_cleanup": "retained owned test schema for evidence; no production rows changed",
+  "schema_current_schema_verified": true,
+  "source_commit": "381911e18cb3ec04e384129a229baa645a0252fa",
+  "source_manifest": "r14-source-manifest.json",
+  "binary_sha256": {
+    "native": "b75c5d694233ab97356ead050c90d87ee16df2c796773541c44507897ec45988",
+    "linux": "122c6afd493f172d1cf76d2418c3d3b13cd6ef68a1d4cc74297c09d7c2a57151"
+  },
+  "remote_binary_sha256_verified": true,
+  "cli_contract_checks": {
+    "card_bind": [
+      "--cli",
+      "--session",
+      "--mode"
+    ],
+    "card_wait": [
+      "--since",
+      "--timeout"
+    ],
+    "session_wait": [
+      "--since",
+      "--timeout"
+    ],
+    "session_wait_identity": "derived from current SessionResident; no identity flag in CLI"
+  },
+  "link_helper": {
+    "source": "/tmp/b469-r14-runtime/source-381911e18/cmd/b469-linktask/main.go",
+    "binary": "/tmp/b469-r14-runtime/b469-linktask-helper",
+    "api": "ledger.OpenShared + Store.MaxSeq/LinkTask"
+  },
+  "b469r14r-7954a460task_detect": {
+    "name": "b469r14r-7954a460task",
+    "status": "online"
+  },
+  "b469r14r-7954a460coord_detect": {
+    "name": "b469r14r-7954a460coord",
+    "status": "online"
+  },
+  "project_ids_created": {
+    "local": "2d478367dd3ac218",
+    "linux": "38edb4a120afc4c7"
+  },
+  "source_ticket_kind": "ask/question",
+  "remote_process_stopped": true,
+  "local_process_exit": null,
+  "ssh_tunnel_stopped": true,
+  "verdict_fixture_scope": "Real Handoff/OpenCode transport and task lifecycle with loopback model fixture; not approval-model policy evidence."
+}

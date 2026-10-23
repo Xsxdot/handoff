@@ -1,0 +1,27 @@
+{
+  "probe": "B469 r1.4 independent-connection PostgreSQL tests",
+  "command": [
+    "go",
+    "test",
+    "-mod=readonly",
+    "-json",
+    "-overlay=/var/folders/hx/bw838qps02ngtg8wdz5z9sxw0000gn/T/b469-r14-pg-mut-y4iokkjf/overlay.json",
+    "./internal/ledger",
+    "-run",
+    "^TestB469TicketNoticePGIdenticalReplaySkipsGlobalWriteLock$",
+    "-count=1"
+  ],
+  "isolated_home": true,
+  "database": "dedicated B469 P0 test database",
+  "fresh_owned_schemas": true,
+  "exit_code": 1,
+  "passed": [],
+  "failed": [
+    "TestB469TicketNoticePGIdenticalReplaySkipsGlobalWriteLock"
+  ],
+  "skipped": [],
+  "source_commit": "381911e18cb3ec04e384129a229baa645a0252fa",
+  "source_manifest": "r14-source-manifest.json",
+  "source_scope": "internal/ledger and direct proto dependencies; same frozen source as tested before commit",
+  "mutation": true
+}

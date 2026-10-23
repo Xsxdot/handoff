@@ -1,0 +1,98 @@
+{
+  "probe": "B469 persistent session wait cursor acceptance",
+  "loopback_model_fixture": true,
+  "production_credentials_used": false,
+  "kind": "question",
+  "run_id": "r14c-2a54a68f",
+  "remote_host": "linux-01",
+  "machine_names": [
+    "b469-r14c-2a54a68f-mac",
+    "b469-r14c-2a54a68f-linux"
+  ],
+  "completed_checks": [
+    "isolated A/B agentd launched with same test PG and one owned SSH tunnel",
+    "default session wait delivered one origin-addressed ticket notice and persisted the resident cursor",
+    "a new CLI process using the same HOME/config did not replay the delivered notice and did not lower the cursor"
+  ],
+  "phases": [],
+  "cases": [
+    {
+      "case": "A_resident_session_created",
+      "at_unix": 1792757830,
+      "session_id": "session:1",
+      "resident_identity": "agent:b469r14c-2a54a68fsquad",
+      "carrier_machine": "b469-r14c-2a54a68f-mac"
+    },
+    {
+      "case": "A_agentd_stopped",
+      "at_unix": 1792757830,
+      "process_exit": 0
+    },
+    {
+      "case": "persistent-session-cursor_source_created",
+      "at_unix": 1792757833,
+      "task_id": "7910db54-ab42-41ee-82ed-5c92ceb6109d",
+      "ticket_id": "7910db54-ab42-41ee-82ed-5c92ceb6109d:que_168b1a909001CUjktnvuAnsAv1",
+      "kind": "ask",
+      "origin_session": "session:1",
+      "initial_status": "pending",
+      "initial_ownership_version": 1
+    },
+    {
+      "case": "persistent_session_delivery_cursor",
+      "at_unix": 1792757836,
+      "task_id": "7910db54-ab42-41ee-82ed-5c92ceb6109d",
+      "ticket_id": "7910db54-ab42-41ee-82ed-5c92ceb6109d:que_168b1a909001CUjktnvuAnsAv1",
+      "session_id": "session:1",
+      "resident_identity": "agent:b469r14c-2a54a68fsquad",
+      "cursor_member": "resident:session:1/agent:b469r14c-2a54a68fsquad",
+      "first_default_wait_matching_notice_count": 1,
+      "first_notification_status": "delivered",
+      "source_ticket_still_waiting_after_first_wait": true,
+      "second_default_wait_exit_code": 124,
+      "second_default_wait_matching_notice_count": 0,
+      "cursor_last_seq_after_first_wait": 2,
+      "cursor_last_seq_after_second_wait": 2,
+      "persistent_cursor_no_decrease": true,
+      "explicit_since_used": false
+    },
+    {
+      "case": "persistent session cursor_answered",
+      "at_unix": 1792757837,
+      "task_id": "7910db54-ab42-41ee-82ed-5c92ceb6109d",
+      "ticket_id": "7910db54-ab42-41ee-82ed-5c92ceb6109d:que_168b1a909001CUjktnvuAnsAv1",
+      "reply_ok": true,
+      "relayed": true,
+      "b_task_slot_count": 0
+    }
+  ],
+  "database_name": "handoff_b469_p0_74db30e9",
+  "schema_name": "b469_route_r14c_2a54a68f",
+  "schema_owned": true,
+  "retained_for_evidence": true,
+  "schema_cleanup": "retained owned test schema for evidence; no production rows changed",
+  "schema_current_schema_verified": true,
+  "source_commit": "381911e18cb3ec04e384129a229baa645a0252fa",
+  "source_manifest": "r14-source-manifest.json",
+  "binary_sha256": {
+    "native": "b75c5d694233ab97356ead050c90d87ee16df2c796773541c44507897ec45988",
+    "linux": "122c6afd493f172d1cf76d2418c3d3b13cd6ef68a1d4cc74297c09d7c2a57151"
+  },
+  "remote_binary_sha256_verified": true,
+  "b469r14c-2a54a68ftask_detect": {
+    "name": "b469r14c-2a54a68ftask",
+    "status": "online"
+  },
+  "b469r14c-2a54a68fcoord_detect": {
+    "name": "b469r14c-2a54a68fcoord",
+    "status": "online"
+  },
+  "project_ids_created": {
+    "local": "a312533e9aa806e0",
+    "linux": "43b38e11bd714191"
+  },
+  "remote_process_stopped": true,
+  "local_process_exit": null,
+  "ssh_tunnel_stopped": true,
+  "verdict_fixture_scope": "Real Handoff/OpenCode transport and task lifecycle with loopback model fixture; not approval-model policy evidence."
+}

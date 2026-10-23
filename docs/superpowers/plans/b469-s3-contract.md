@@ -38,7 +38,7 @@ ownership_version由通知领域为该原工单分配单调整数，指向一次
 
 ## 消费者与目标机
 
-task_ticket_notice需生产→proto/JSON→账本候选查询→解码/匹配→持久游标→session wait、card wait、residentpush print、residentwake desktop逐环接线。cmd/session.go:565当前只接EvRoomMessage，须补独立候选DTO，不能强解RoomMessage。明确target才匹配；未寻址、别人的target、普通system/by_system/pointer零唤醒。pull只原待办/card wait，不起print；不把pull当丢件。
+task_ticket_notice需生产→proto/JSON→账本候选查询→解码/匹配→持久游标→session wait、card wait、residentpush print、residentwake desktop逐环接线。cmd/session.go 已接独立通知候选与解码/寻址链，不强解为 RoomMessage。明确target才匹配；未寻址、别人的target、普通system/by_system/pointer零唤醒。pull只原待办/card wait，不起print；不把pull当丢件。
 
 print/desktop仅由当前目标归属机消费，投递前核resident/席位和ownership_version；其他机不能调用本机铃后记成功。desktop铃只提示，内容通过session wait；失败保留待办/重试。外部回合/门铃不与账本事件假称原子提交。原工单回答CAS、同答案幂等、合法答权保持。
 
@@ -48,10 +48,10 @@ print/desktop仅由当前目标归属机消费，投递前核resident/席位和o
 
 契约核定后可实施项：origin传播、最小来源复用、通知单表CAS/事件、三态路由、无卡工单可见投影、寻址候选/游标接线。但开S3前仍须P0真实外部CLI从房间发任务产生permission/question，验证发起回合短时退出、LaunchAdmit/驻场准入归零、原任务仍待答、重启回答恢复；协调者补probe。双机同测试PG断连/补发/换责/目标机投递是后续真实验收硬门。不能以fixture、源码或30min耗尽结案。若需改Runner无ctx签名或hostapi承载，停段另呈契约，不实现自身权限桥。S2独立。
 
-存储归属不变：任务origin属执行机任务事实；会话/通知域解析已有卡/驻场公开面并拥有通知记录；ledger仅持久化；approval不反查内部。新增范围限上述真实接缝，不建通用总线或所有者管理系统。图覆盖债：checkout无codegraph目录，按源码定位；已有实现但独立审查尚未通过。
+存储归属不变：任务origin属执行机任务事实；会话/通知域解析已有卡/驻场公开面并拥有通知记录；ledger仅持久化；approval不反查内部。新增范围限上述真实接缝，不建通用总线或所有者管理系统。图覆盖债：checkout无codegraph目录，按源码定位；r1.4 已独立 Sol 技术复审通过，隔离 PG 与冻结新源双机证据见 [修复阶段复审](b469-r14-review.md)；原生桌面门铃仍按用户决定未验。
 
 ## 协调者核定与P0补证
 
 核定推荐A：origin_session单字段、现有当前resident作回退、一张通知表与task_ticket_notice独立事件；不增加所有者配置/CRUD。实施前补齐源码字段/枚举的跨语言roundtrip守卫；若现有任务列表/源游标不能满足未挂卡恢复，带证据回协调者，不静默落备选B。通知归属不改回答权，保持r1.3审批与路由边界。
 
-真实隔离agentd+独立PG+真实opencode1.18.32+loopback协议provider补证（不是fake executor，不调用生产模型/凭据）：session创建4.666秒完成，真实驻场bash工具发起任务b525424b-a86f-4341-b872-9aa83bb2a219；原任务waiting_answer有1张ask，carrier/p0coord与squad/p0coordinators/p0coord计数均0，任务载体计数1。隔离agentd重启后仍waiting_answer/同工单；reply返回ok=true,relayed=true，原任务running/待办0；随后stop原任务、agent退出0。原始脱敏报告/tmp/b469-p0-runtime/live/report.json。该证据解除单机短回合/准入/待答重启基本阻塞；permission分支、真实模型行为、双机断连/换责/补发仍属于后续验收硬门，不计已通过。
+真实隔离agentd+独立PG+真实opencode1.18.32+loopback协议provider补证（不是fake executor，不调用生产模型/凭据）：session创建4.666秒完成，真实驻场bash工具发起任务b525424b-a86f-4341-b872-9aa83bb2a219；原任务waiting_answer有1张ask，carrier/p0coord与squad/p0coordinators/p0coord计数均0，任务载体计数1。隔离agentd重启后仍waiting_answer/同工单；reply返回ok=true,relayed=true，原任务running/待办0；随后stop原任务、agent退出0。原始脱敏报告/tmp/b469-p0-runtime/live/report.json。该段仅保留最初单机P0基本承重读数；当前permission、真实模型及双机恢复的新增证据见r1.4复审，不能从本段旧证据推断新源码通过。

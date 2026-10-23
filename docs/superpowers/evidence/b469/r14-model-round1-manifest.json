@@ -1,0 +1,17 @@
+{
+  "source_base_commit": "9edb95f3ab8c33745d829476bc5bb4b9130e4a39",
+  "production_overrides": {
+    "internal/orchestration/approver.go": "451815c58056fdc787f0b6ed53d4828b13335d615624069ff1a876d731beb6dd",
+    "internal/orchestration/approver_context.go": "dcc8df8bb790715e28ce13a9d58fc71da62bccfe1d166209c091da33c73f76f0",
+    "internal/orchestration/b460_approver_context_test.go": "9932d3fd495d28b8ca39788dba9c1dcd91e693426b12876bcf615e70ba133c76",
+    "internal/permgate/b460_credential_test.go": "8053185554180e1ffca0c4a42d7352ff40da936015543ec24d8d52b9bc826d68",
+    "internal/permgate/blacklist.go": "137469b1199abbcf5096e95461b3eff092365479ee275b4f52691a79bd6f2572",
+    "internal/permgate/credential.go": "724aa9f02995c38827b926d874ae4437c810706b3fb2e1e631dda8f81a2bc0ed",
+    "internal/permgate/selfcmd.go": "075a43a0db76711ac70d72f7f34cb16c614ec013aa27b83f1af3be43aaba623e",
+    "internal/permgate/selfcmd_test.go": "8324e8b009767e977d6790d8798a98c5c20ec34a819c2434ac38eba75d645c52",
+    "internal/orchestration/approver_r14_test.go": "7753aad17bc86d1e9094bd69a9c4feaf7eb9427c9289ca16af6e5ce3a063a3ab"
+  },
+  "temporary_runner_sha256": "da9f22e8f69a9020e03be9b494e91df27e5be35d4580a87a2600503084cc057a",
+  "archive_commit": "cc9c04572f135a7a9b90e7900a1bd953d5ac682d",
+  "base_note": "Archive and source_base_commit differ only by the root runtime-ledger amend; production source is identical."
+}
