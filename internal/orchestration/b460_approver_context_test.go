@@ -189,6 +189,9 @@ func TestB460SharedChainCarriesTaskContext(t *testing.T) {
 // 规则层改判 Consult 的每一类位置，审批者的政策里都点名要升级，两边不会漂移。
 func TestB460PolicyCredentialListSingleSource(t *testing.T) {
 	got := approverPrompt(b460Summary, b460Perm, "N0NCE", ApproverTaskContext{Mode: proto.TaskModeReadonly, Workdir: "/wt"})
+	if strings.Contains(credentialListText(), "compgen -e") {
+		t.Fatal("name-only compgen policy must not be nested under the credential list's execute-any-item escalation")
+	}
 	for _, loc := range permgate.CredentialLocations() {
 		if !strings.Contains(got, loc.Path) {
 			t.Errorf("只读政策段缺凭据位置 %q", loc.Path)
@@ -197,9 +200,37 @@ func TestB460PolicyCredentialListSingleSource(t *testing.T) {
 			t.Errorf("只读政策段缺凭据位置说明 %q", loc.Note)
 		}
 	}
-	for _, s := range []string{permgate.SecretEnvCommandsText, ".env.*", "GROK_HOME"} {
+	for _, s := range []string{permgate.SecretEnvCommandsText, ".env.*", "GROK_HOME",
+		"compgen -e", "裸 env/printenv 或 printenv NAME 实际输出变量值",
+		"历史 `env | cut -d= -f1 | sort` 与 `env | cut -d= -f1 | wc -l` 仍须升级",
+		"已验证为只读的 CLI 子命令 --help 应批准", `"$TMPDIR/handoff-fc" dispatch --help`,
+		"deploy.sh --help 不因 --help 标志而视为只读，必须升级",
+		"compgen -e 只输出变量名，可按只读任务批准"} {
 		if !strings.Contains(got, s) {
 			t.Errorf("只读政策段缺 %q", s)
 		}
+	}
+	approved := strings.Index(got, "compgen -e 只输出变量名，可按只读任务批准")
+	credentialList := strings.Index(got, "凭据清单（读取或执行其中任何一项即升级）")
+	if approved < 0 || credentialList < 0 || approved > credentialList {
+		t.Fatalf("compgen names-only approval must appear outside and before credential-list escalation:\n%s", got)
+	}
+}
+
+func TestB469PromptDistinguishesMutationFromVerifiedReadOnlyHelp(t *testing.T) {
+	got := approverPrompt("summary", "Bash: help", "N0NCE", ApproverTaskContext{Mode: proto.TaskModeReadonly})
+	for _, phrase := range []string{
+		"涉及实际调用 handoff 自身 CLI 执行变更操作的请求（如 dispatch/continue/done/reply/run），一律升级给上级协调者",
+		"已验证的 Handoff CLI 本体纯 --help 只展示帮助，不会执行对应子命令，包括 upgrade --help（只查看升级帮助、不执行升级）",
+		"实际执行 upgrade、二进制替换或更新仍必须升级",
+		"未验证脚本（如 deploy.sh --help）仍按脚本执行审批，不因 --help 放行",
+		"权限请求含内联代码或脚本（python -c / heredoc、psql -c、rg --pre）或 git checkout/restore -- 时，读完正文再裁决：只在任务仓库内读写文件、跑测试时批准；写库、联网、改仓库外路径、读密钥的，一律升级。",
+	} {
+		if !strings.Contains(got, phrase) {
+			t.Errorf("assembled readonly prompt missing %q", phrase)
+		}
+	}
+	if strings.Contains(got, "涉及调用 handoff 自身 CLI 变更任务状态的操作") {
+		t.Fatal("the unconditional self-command sentence still overrides verified readonly help")
 	}
 }

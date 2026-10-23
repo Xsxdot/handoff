@@ -93,8 +93,8 @@ func CredentialLocations() []CredentialLocation {
 	return append([]CredentialLocation(nil), credentialLocations...)
 }
 
-// SecretEnvCommandsText 是「打印环境变量」类命令的文字说明，供审批提示词渲染（与规则层同源）。
-const SecretEnvCommandsText = "env、printenv、无参 set、export -p、declare -p/-x 等打印环境变量的命令"
+// SecretEnvCommandsText is the shared policy description for environment reads.
+const SecretEnvCommandsText = "裸 env/printenv 或 printenv NAME 实际输出变量值，必须升级；无参 set、export -p、declare -p/-x 也会输出变量值。只有 Bash `compgen -e` 只输出变量名，不读取变量值；历史 `env | cut -d= -f1 | sort` 与 `env | cut -d= -f1 | wc -l` 仍须升级，因为环境值中的换行会泄漏为额外行"
 
 // credPattern 是一项匹配用的组件序列；dir 为真表示其下任何路径都算。
 type credPattern struct {

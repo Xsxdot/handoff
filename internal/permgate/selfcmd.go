@@ -120,7 +120,7 @@ func IsSelfCommand(s string) (hit bool, sub string) {
 					return false
 				}
 			}
-			if isShellCommand(cmd) && i > 0 && (words[i] == "-c" || strings.Contains(words[i], "c")) {
+			if isShellCommand(cmd) && isShellCommandFlagC(words[i]) {
 				payload := strings.Join(words[i+1:], " ")
 				if i+1 < len(call.Args) {
 					// Word.Lit omits dynamic parts. Analyze the original source slice
@@ -140,12 +140,57 @@ func IsSelfCommand(s string) (hit bool, sub string) {
 	return hit, sub
 }
 
+// isShellCommandFlagC recognizes the command-string option without treating
+// an unrelated operand (for example, "noclobber") as shell code.
+func isShellCommandFlagC(word string) bool {
+	if len(word) < 2 || word[0] != '-' || word[1] == '-' {
+		return false
+	}
+	// POSIX short-option bundles are valid (for example bash -lc). Accept c
+	// only inside a token made entirely of known shell short options; an operand
+	// such as -o noclobber must not be interpreted as a command-string flag.
+	const shellOptions = "abcCefhimnptuvxBEHPT"
+	for _, r := range word[1:] {
+		if !strings.ContainsRune(shellOptions, r) {
+			return false
+		}
+	}
+	return strings.ContainsRune(word[1:], 'c')
+}
+
 func sourceRange(source string, first, last syntax.Node) string {
 	start, end := first.Pos().Offset(), last.End().Offset()
 	if start > end || end > uint(len(source)) {
 		return ""
 	}
 	return source[start:end]
+}
+
+// selfCommandInCommandSubstitution checks only executable command-substitution
+// bodies. Quoted prose and dynamic command words stay under the existing Gate
+// policy, while code embedded in $(...) remains visible after quote stripping.
+func selfCommandInCommandSubstitution(source string) (bool, string) {
+	file, err := syntax.NewParser().Parse(strings.NewReader(source), "")
+	if err != nil {
+		return false, ""
+	}
+	var hit bool
+	var sub string
+	syntax.Walk(file, func(node syntax.Node) bool {
+		if hit {
+			return false
+		}
+		cmd, ok := node.(*syntax.CmdSubst)
+		if !ok || len(cmd.Stmts) == 0 {
+			return true
+		}
+		body := sourceRange(source, cmd.Stmts[0], cmd.Stmts[len(cmd.Stmts)-1])
+		if body != "" {
+			hit, sub = IsSelfCommand(body)
+		}
+		return !hit
+	})
+	return hit, sub
 }
 
 func legacySelfCommand(s string) (bool, string) {

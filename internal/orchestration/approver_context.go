@@ -96,15 +96,17 @@ func modeExplanation(mode string) string {
 // 凭据清单不在这里手写：B460 S10 起与规则层同源，由 credentialListText 从
 // permgate.CredentialLocations 渲染——规则层改判 Consult 的每类位置，政策里都点名升级。
 var readonlyApproverPolicy = `只读任务的裁决政策：
-- 应批准：为调查而读工作树里的代码与文档；在工作树、产物目录、任务临时目录内运行脚本（含 python 与 heredoc）读取、统计、转换这些目录里的数据；把报告、清单写进产物目录或任务临时目录；在这两个目录里建目录。
+- 应批准：为调查而读工作树里的代码与文档；已验证为只读的 CLI 子命令 --help 应批准查看，例如 ` + "`\"$TMPDIR/handoff-fc\" dispatch --help`" + `；Bash compgen -e 只输出变量名，可按只读任务批准；在工作树、产物目录、任务临时目录内运行脚本（含 python 与 heredoc）读取、统计、转换这些目录里的数据；把报告、清单写进产物目录或任务临时目录；在这两个目录里建目录。
+- 必须升级：deploy.sh --help 不因 --help 标志而视为只读，必须升级；在未验证行为的脚本上，--help 可能仍会执行脚本本身。
 - 必须升级：读取凭据或密钥（见下方清单，以及任何文件名或环境变量名含 token、secret、credential、password、auth 的文件或变量）；写入上面三个目录之外的任何路径；git push 或任何改变远端仓库的操作；携带凭据、或把本机文件内容发往外部的网络请求。
+- 环境变量读取：` + permgate.SecretEnvCommandsText + `。
 - 凭据清单（读取或执行其中任何一项即升级）：` + credentialListText() + `
 - 拿不准时升级。`
 
 // credentialListText 把 permgate 的凭据位置清单渲染成政策段的一行（以句号结尾）。
 //
 // 目录项写「下任何文件」，带说明的项把说明括在后面；清单之后固定追加 .env 文件、打印环境
-// 变量的命令（同为 permgate 判据）与任务目录里的副本/软链（grok 任务级 GROK_HOME、agy 任务
+// 任务目录里的副本/软链（grok 任务级 GROK_HOME、agy 任务
 // HOME 的 .gemini）。
 func credentialListText() string {
 	var items []string
@@ -118,7 +120,7 @@ func credentialListText() string {
 		}
 		items = append(items, item)
 	}
-	items = append(items, "任何 .env 与 .env.* 文件", permgate.SecretEnvCommandsText,
+	items = append(items, "任何 .env 与 .env.* 文件",
 		"以及任务目录里指向上述文件的副本或软链（例如任务级 GROK_HOME 下的 auth.json、agy 任务 HOME 下的 .gemini 目录）")
 	return strings.Join(items, "；") + "。"
 }

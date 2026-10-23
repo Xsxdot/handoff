@@ -201,3 +201,58 @@ func TestB460CredentialLocationsDetected(t *testing.T) {
 		}
 	}
 }
+
+func TestB469NameOnlyEnvironmentProjectionClassification(t *testing.T) {
+	b460CredHome(t)
+	g := newTestGate(t)
+	sc := b460Scope(t)
+	for _, tc := range []struct {
+		cmd  string
+		hit  bool
+		name string
+	}{
+		{name: "env cut with sort can leak multiline values", cmd: "env | cut -d= -f1 | sort", hit: true},
+		{name: "env cut count remains gated", cmd: "env | cut -d= -f1 | wc -l", hit: true},
+		{name: "shell names builtin", cmd: "compgen -e"},
+		{name: "bare env outputs values", cmd: "env", hit: true},
+		{name: "printenv all values", cmd: "printenv", hit: true},
+		{name: "printenv selected value", cmd: "printenv API_TOKEN", hit: true},
+		{name: "cut values", cmd: "env | cut -d= -f2", hit: true},
+		{name: "tee side channel", cmd: "env | cut -d= -f1 | sort | tee names.txt", hit: true},
+		{name: "redirected projection", cmd: "env | cut -d= -f1 > names.txt", hit: true},
+		{name: "value command after projection", cmd: "env | cut -d= -f1 | sort; printenv API_TOKEN", hit: true},
+		{name: "unknown projection utility", cmd: "env | awk -F= '{print $1}'", hit: true},
+		{name: "dynamic wrapper remains model-gated", cmd: "sh -c 'env | cut -d= -f1 | sort'"},
+		{name: "secret variable expansion", cmd: "printf %s $API_TOKEN", hit: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, got := credentialExposure(tc.cmd, nil, "", sc)
+			if got != tc.hit {
+				t.Fatalf("credentialExposure(%q) hit=%v want %v", tc.cmd, got, tc.hit)
+			}
+			verdict := g.Judge(Request{Tool: executor.PermToolBash, Command: tc.cmd}, sc)
+			if verdict.Action != Consult {
+				t.Fatalf("%q verdict=%s (rule=%q reason=%q), want Consult with no static allowlist expansion", tc.cmd, verdict.Action, verdict.Rule, verdict.Reason)
+			}
+		})
+	}
+}
+
+func TestB469EnvCutProjectionSyntheticMultilineValueLeak(t *testing.T) {
+	// This synthetic env output models SECRET containing a newline. cut splits
+	// physical lines, so a value fragment appears in the projected output.
+	const syntheticEnv = "PATH=/bin\nSECRET=dummy\nLEAK_SENTINEL\n"
+	var projected strings.Builder
+	for _, line := range strings.Split(strings.TrimSuffix(syntheticEnv, "\n"), "\n") {
+		name, _, _ := strings.Cut(line, "=")
+		projected.WriteString(name)
+		projected.WriteByte('\n')
+	}
+	if !strings.Contains(projected.String(), "LEAK_SENTINEL") {
+		t.Fatalf("synthetic newline value should demonstrate a leaked line: %q", projected.String())
+	}
+	_, hit := credentialExposure("env | cut -d= -f1 | sort", nil, "", Scope{})
+	if !hit {
+		t.Fatal("env-cut pipeline must remain behind human approval because newline values can leak")
+	}
+}

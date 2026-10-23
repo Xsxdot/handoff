@@ -1208,7 +1208,7 @@ func TestDecidePromptInlineCodeLine(t *testing.T) {
 		t.Fatalf("prompt 缺内联代码一行: %s", p)
 	}
 	prod := strings.Index(p, "涉及生产环境")
-	self := strings.Index(p, "涉及调用 handoff 自身 CLI")
+	self := strings.Index(p, "涉及实际调用 handoff 自身 CLI")
 	if prod < 0 || self < 0 || prod >= at || at >= self {
 		t.Fatalf("内联代码行位置错（生产环境=%d 本行=%d 自指令=%d）: %s", prod, at, self, p)
 	}

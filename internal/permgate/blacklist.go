@@ -131,6 +131,11 @@ func StripQuoted(s string) string {
 // 未枚举到的引号绕过形态最坏也只落到廉价模型手上；而执行包装器与 eval 两条
 // 把「内容将被执行/不可见」的形态恢复硬拦，不给绕过留口子。
 func (g *Gate) judgeCommand(s string) Verdict {
+	// StripQuoted intentionally removes quoted text; command substitutions inside
+	// double quotes are executable shell syntax, so inspect those AST bodies first.
+	if hit, sub := selfCommandInCommandSubstitution(s); hit {
+		return g.selfCmdVerdict(sub, "命令替换中存在自指令调用")
+	}
 	// 自指令判据前置于黑名单：这是身份越权，与命令本身危不危险无关。
 	// 引号处理与下方黑名单逐条同构——剥完引号还在的是真调用，只在引号内
 	// 出现的（commit message）降级落回黑名单链

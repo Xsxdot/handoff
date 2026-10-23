@@ -398,12 +398,15 @@ func (a *Approver) decideLocalChain(ctx context.Context, permission, taskSummary
 	start := time.Now()
 	nonce := randNonce()
 	if nonce == "" {
-		a.log.Warn("生成裁决 nonce 失败，本次裁决不做防伪校验", "executor", a.executorName)
+		a.log.Warn("生成裁决 nonce 失败，本次裁决不做防伪校验", "request_id", approverRequestID(ctx),
+			"executor", a.executorName, "model", modelLabelOr(a.model), "error_kind", ApproverFailInternal,
+			"elapsed_ms", int64(0))
 	}
 	// 一个 nonce 服务整条请求：所有候选拿到同一个 prompt，防伪语义不变
 	prompt := approverPrompt(taskSummary, permission, nonce, tc)
-	a.log.Info("审批者开始裁决", "permission", turn.TruncateRunes(permission, 80),
-		"executors", strings.Join(a.names, ","), "model", a.model, "models", a.models, "nonce", nonce,
+	a.log.Info("审批者开始裁决", "request_id", approverRequestID(ctx),
+		"permission_class", permissionLogClass(permission),
+		"executors", strings.Join(a.names, ","), "model", modelLabelOr(a.model),
 		"task_mode", tc.Mode, "has_task_context", !tc.IsZero())
 
 	var attempts []ApproverAttempt
@@ -412,16 +415,21 @@ func (a *Approver) decideLocalChain(ctx context.Context, permission, taskSummary
 		model := modelLabelOr(a.modelFor(name))
 		a.log.Warn("审批者候选开始", "candidate_index", i+1, "candidate_count", len(a.names),
 			"request_id", approverRequestID(ctx), "executor", name, "model", model,
-			"permission_class", permissionLogClass(permission))
+			"permission_class", permissionLogClass(permission), "elapsed_ms", int64(0), "error_kind", "pending")
 		attempt := a.decideWithCandidate(ctx, name, prompt, nonce, permission, taskSummary)
 		attempts = append(attempts, attempt)
+		kind := attempt.ErrorKind
+		if kind == "" {
+			kind = "none"
+		}
 		a.log.Warn("审批者候选结果", "request_id", approverRequestID(ctx), "candidate_index", i+1, "executor", name,
 			"model", attempt.Model, "decision", attempt.Decision, "failed", attempt.Err != nil,
-			"elapsed_ms", attempt.ElapsedMS)
+			"elapsed_ms", attempt.ElapsedMS, "error_kind", kind)
 		if attempt.Err == nil {
 			for _, skipped := range a.names[i+1:] {
-				a.log.Warn("审批者候选跳过", "executor", skipped,
-					"request_id", approverRequestID(ctx), "reason", "前序候选已给出裁决", "prior_executor", name)
+				a.log.Warn("审批者候选跳过", "request_id", approverRequestID(ctx), "executor", skipped,
+					"model", modelLabelOr(a.modelFor(skipped)), "elapsed_ms", int64(0), "error_kind", "skipped",
+					"reason", "前序候选已给出裁决", "prior_executor", name)
 			}
 			// 干净裁决（approve 或 escalate）：停，不再试下一个
 			return ApproverDecision{
@@ -434,8 +442,9 @@ func (a *Approver) decideLocalChain(ctx context.Context, permission, taskSummary
 			}
 		}
 		lastErr = attempt.Err
-		a.log.Warn("审批者候选失败，尝试下一个", "executor", name,
-			"cause", attempt.Err, "tried", len(attempts))
+		a.log.Warn("审批者候选失败，尝试下一个", "request_id", approverRequestID(ctx), "executor", name,
+			"model", attempt.Model, "error_kind", safeApproverErrorKind(attempt.ErrorKind),
+			"elapsed_ms", attempt.ElapsedMS, "tried", len(attempts))
 	}
 	// 全部候选都失败：返回一个总 Err（请求级失败计 1，不按候选数累加）
 	if lastErr == nil {
@@ -451,8 +460,9 @@ func (a *Approver) decideLocalChain(ctx context.Context, permission, taskSummary
 		final.Executor = attempts[len(attempts)-1].Executor
 		final.Model = attempts[len(attempts)-1].Model
 	}
-	a.log.Error("审批者全部候选失败", "executors", strings.Join(a.names, ","),
-		"tried", len(attempts), "cause", final.Err)
+	a.log.Error("审批者全部候选失败", "request_id", approverRequestID(ctx),
+		"executors", strings.Join(a.names, ","), "tried", len(attempts),
+		"model", final.Model, "error_kind", finalFailureKind(attempts), "elapsed_ms", final.ElapsedMS)
 	return final
 }
 
@@ -526,7 +536,10 @@ func (a *Approver) decideSharedChain(ctx context.Context, chain ApproverChain, p
 func permissionLogClass(permission string) string {
 	trimmed := strings.TrimSpace(permission)
 	if i := strings.IndexByte(trimmed, ':'); i > 0 {
-		return strings.ToLower(strings.TrimSpace(trimmed[:i]))
+		switch strings.ToLower(strings.TrimSpace(trimmed[:i])) {
+		case "bash", "write", "edit", "webfetch":
+			return strings.ToLower(strings.TrimSpace(trimmed[:i]))
+		}
 	}
 	return "unknown"
 }
@@ -667,19 +680,23 @@ func (a *Approver) decideWithCandidate(ctx context.Context, name, prompt, nonce,
 	shot := a.shots[name]
 	if shot == nil {
 		err := fmt.Errorf("审批者候选 %q 未绑定 OneShot", name)
-		a.log.Error("审批者候选缺少 OneShot", "executor", name)
+		elapsed := time.Since(candStart).Milliseconds()
+		a.log.Warn("审批者候选缺少 OneShot", "request_id", approverRequestID(ctx), "executor", name,
+			"model", modelLabel, "error_kind", ApproverFailInternal, "elapsed_ms", elapsed)
 		return ApproverAttempt{Executor: name, Decision: "error", Reason: err.Error(),
-			Err: err, ElapsedMS: time.Since(candStart).Milliseconds(), Model: modelLabel}
+			Err: err, ErrorKind: ApproverFailInternal, ElapsedMS: elapsed, Model: modelLabel}
 	}
 	var env []string
 	if a.env != nil {
 		extra, err := a.env.For(name)
 		if err != nil {
-			a.log.Error("审批者 env 文件解析失败，该候选按失败处理",
-				"executor", name, "cause", err)
+			elapsed := time.Since(candStart).Milliseconds()
+			a.log.Warn("审批者 env 文件解析失败，该候选按失败处理",
+				"request_id", approverRequestID(ctx), "executor", name, "model", modelLabel,
+				"error_kind", ApproverFailInternal, "elapsed_ms", elapsed)
 			return ApproverAttempt{Executor: name, Decision: "error", Reason: err.Error(),
 				Err: fmt.Errorf("解析审批者 env 文件: %w", err), ElapsedMS: time.Since(candStart).Milliseconds(),
-				Model: modelLabel}
+				Model: modelLabel, ErrorKind: ApproverFailInternal}
 		}
 		if len(extra) > 0 {
 			env = append(os.Environ(), extra...)
@@ -691,32 +708,32 @@ func (a *Approver) decideWithCandidate(ctx context.Context, name, prompt, nonce,
 	}
 	cctx, cancel := context.WithTimeout(ctx, a.timeout)
 	defer cancel()
-	a.log.Info("审批者候选开始", "executor", name, "model", modelLabel)
 	reply, err := shot.Invoke(cctx, req)
 	elapsed := time.Since(candStart).Milliseconds()
 	if err != nil {
-		a.log.Error("审批者候选裁决失败", "executor", name,
-			"permission", turn.TruncateRunes(permission, 80),
-			"cause", err, "output", turn.TruncateRunes(reply.Text, 200), "elapsed_ms", elapsed)
+		kind := ApproverFailInternal
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(cctx.Err(), context.DeadlineExceeded) {
+			kind = ApproverFailTimeout
+		} else if errors.Is(err, context.Canceled) || errors.Is(cctx.Err(), context.Canceled) {
+			kind = ApproverFailInternal
+		}
+		a.log.Warn("审批者候选裁决失败", "request_id", approverRequestID(ctx), "executor", name,
+			"model", modelLabel, "error_kind", kind, "elapsed_ms", elapsed)
 		return ApproverAttempt{Executor: name, Decision: "error", Reason: err.Error(),
-			Err: err, ElapsedMS: elapsed, Model: modelLabel}
+			Err: err, ErrorKind: kind, ElapsedMS: elapsed, Model: modelLabel}
 	}
 	d := parseDecision(reply.Text, nonce, elapsed)
 	if d.Err != nil {
-		if strings.Contains(d.Err.Error(), "nonce 不匹配") {
-			a.log.Error("审批者裁决 nonce 校验失败，按候选失败处理", "executor", name,
-				"task_summary", turn.TruncateRunes(taskSummary, 60),
-				"permission", turn.TruncateRunes(permission, 80), "cause", d.Err)
-		}
+		kind := ApproverFailInvalidOutput
+		a.log.Warn("审批者裁决输出校验失败，按候选失败处理", "request_id", approverRequestID(ctx),
+			"executor", name, "model", modelLabel, "error_kind", kind, "elapsed_ms", elapsed)
 		return ApproverAttempt{Executor: name, Decision: "error", Reason: d.Err.Error(),
-			Err: d.Err, ElapsedMS: elapsed, Model: modelLabel}
+			Err: d.Err, ErrorKind: kind, ElapsedMS: elapsed, Model: modelLabel}
 	}
 	decision := "escalate"
 	if d.Approve {
 		decision = "approve"
 	}
-	a.log.Info("审批者候选裁决完成", "executor", name, "decision", decision,
-		"reason", turn.TruncateRunes(d.Reason, 80), "elapsed_ms", elapsed)
 	return ApproverAttempt{Executor: name, Decision: decision, Reason: d.Reason, ElapsedMS: elapsed, Model: modelLabel}
 }
 
@@ -799,5 +816,5 @@ const approverPromptTemplate = `你是代码任务的权限审批者。任务背
 任何不确定、可能破坏数据、影响范围超出任务仓库的操作，必须升级给上级协调者。
 涉及生产环境、部署动作、运维目标机（如 kubectl -n prod、ssh 到生产主机、terraform apply）的操作，一律升级给上级协调者。
 权限请求含内联代码或脚本（python -c / heredoc、psql -c、rg --pre）或 git checkout/restore -- 时，读完正文再裁决：只在任务仓库内读写文件、跑测试时批准；写库、联网、改仓库外路径、读密钥的，一律升级。
-涉及调用 handoff 自身 CLI 变更任务状态的操作（如 dispatch/continue/done/reply/run），一律升级给上级协调者。
+涉及实际调用 handoff 自身 CLI 执行变更操作的请求（如 dispatch/continue/done/reply/run），一律升级给上级协调者；已验证的 Handoff CLI 本体纯 --help 只展示帮助，不会执行对应子命令，包括 upgrade --help（只查看升级帮助、不执行升级）；实际执行 upgrade、二进制替换或更新仍必须升级；未验证脚本（如 deploy.sh --help）仍按脚本执行审批，不因 --help 放行。
 只输出一行 JSON，不要输出其他内容：{"decision":"approve","nonce":"%s"} 或 {"decision":"escalate","reason":"简要原因","nonce":"<同一 nonce>"}`

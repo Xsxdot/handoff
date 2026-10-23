@@ -230,3 +230,64 @@ func TestB463ShellSyntaxFalsePositives(t *testing.T) {
 		})
 	}
 }
+
+// TestB469SelfCommandShellSyntaxThroughJudge locks shell AST traversal at the
+// production Gate boundary. Dynamic forms stay conservative when their command
+// identity cannot be proven statically.
+func TestB469SelfCommandShellSyntaxThroughJudge(t *testing.T) {
+	g := newTestGate(t)
+	sc := newRmScope(t)
+	cases := []struct {
+		name string
+		cmd  string
+		want Action
+		rule string
+	}{
+		{"command substitution", `echo "$(handoff dispatch T1)"`, Escalate, RuleSelfCommand},
+		{"process substitution", `cat <(handoff dispatch T1)`, Escalate, RuleSelfCommand},
+		{"if body", `if true; then handoff dispatch T1; fi`, Escalate, RuleSelfCommand},
+		{"function body", `f() { handoff dispatch T1; }; f`, Escalate, RuleSelfCommand},
+		{"late readonly cannot erase command substitution hit", `echo "$(handoff dispatch T1)"; handoff tasks`, Escalate, RuleSelfCommand},
+		{"shell option exact token", `sh -x -c 'handoff dispatch T1'`, Escalate, RuleSelfCommand},
+		{"shell arg with c is not option", `sh -x -o noclobber handoff tasks`, Consult, ""},
+		{"double quoted dynamic payload stays conservative", `sh -c "handoff $action"`, Escalate, RuleSelfCommand},
+		{"quoted binary is not rewritten into a command", `"handoff" dispatch`, Consult, ""},
+		{"variable command remains conservative", `H=handoff; $H dispatch`, Consult, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			v := g.Judge(Request{Tool: "bash", Command: tc.cmd}, sc)
+			if v.Action != tc.want || v.Rule != tc.rule {
+				t.Fatalf("command %q verdict=%s (rule=%q reason=%q), want %s (rule=%q)", tc.cmd, v.Action, v.Rule, v.Reason, tc.want, tc.rule)
+			}
+		})
+	}
+}
+
+func TestB463HistoricalHelpCommandsRemainConsultNotSelfCommand(t *testing.T) {
+	g := newTestGate(t)
+	sc := newRmScope(t)
+	commands := []string{
+		`"$TMPDIR/handoff-fc" dispatch --help`,
+		`"$TMPDIR/handoff-fc" service --help`,
+		`"$TMPDIR/handoff-fc" run --help`,
+		`"$TMPDIR/handoff-fc" reply --help`,
+		`"$TMPDIR/handoff-fc" done --help`,
+		`"$TMPDIR/handoff-fc" continue --help`,
+		`"$TMPDIR/handoff-fc" status --help`,
+		`"$TMPDIR/handoff-fc" account --help`,
+		`"$TMPDIR/handoff-fc" account list --help`,
+		`"$TMPDIR/handoff-fc" account probe --help`,
+		`"$TMPDIR/handoff-fc" upgrade --help`,
+		`"$TMPDIR/handoff-fc" project rm --help`,
+		`"$TMPDIR/handoff-fc" project add --help`,
+	}
+	for _, command := range commands {
+		t.Run(command, func(t *testing.T) {
+			v := g.Judge(Request{Tool: "bash", Command: command}, sc)
+			if v.Action != Consult || v.Rule == RuleSelfCommand {
+				t.Fatalf("historical help command %q = %s (rule=%q reason=%q), want Consult without self-command hit", command, v.Action, v.Rule, v.Reason)
+			}
+		})
+	}
+}
