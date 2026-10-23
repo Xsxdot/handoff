@@ -1068,3 +1068,10 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 - `node --test`（仅文件参数）进静态白名单：与 `go test`/`npm run` 同风险类，今天无论有无 cd 都交审批链；是政策扩展，另起卡。
 - heredoc 闭集接受「安全后继」（`cat > f <<'EOF' … EOF\necho done` / `node --test …`）：今天闭集要求终止符后无命令，这类写入落 Consult；扩展须逐段证明后继可静默。
 - 无 cd 时的 glob 写落点仍按字面交 InScope、不展开匹配（cd 基准下已展开并逐个判软链）；收紧会改「无 cd 零变化」不变式，需单独裁决。
+
+## B467 残余（2026-10-23，账号忽略）
+
+- opencode-go API key 与 OAuth 登录同一订阅账号的归并：key 路径 `GET /zen/go/v1/usage` 的 200 响应只有 usage 三窗口、无账号/组织标识（2026-10-23 mac-pro 实测），待 opencode 接口带出身份再做。来源：`docs/superpowers/specs/b467.md` 问题 4、OOS。
+- CLI 忽略/恢复子命令（`handoff account ignore/restore`）：本期只给界面与 API。来源：spec OOS。
+- 坏忽略行的已忽略区文案为「时间未知忽略」，措辞别扭；以及审查 Minor 记账：ignore 成功日志在账号域与 handler 各打一次、`handleAccountProbe` 头注释缺 409 分支、CLI `--json` 未断言未忽略行键缺席、「已忽略且无可探登录 → state 不改写」无直接用例、已忽略区行样式与原型（边框卡片、› 标记）不同、恢复提示不自动清空、「去改载体」为整页跳转链接。来源：b467-ledger review 节。
+- 前端轮询晚到可让刚忽略/恢复的账号在 ≤30s 内闪回旧状态（所有就地合入共有的既有设计）。来源：段 B 审查 m7。
