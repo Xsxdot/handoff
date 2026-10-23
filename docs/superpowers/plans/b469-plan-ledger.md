@@ -38,3 +38,27 @@ P0先核CLI交互与可信管理来源；S1真实工单生命周期为首故事�
  create mode 100644 docs/superpowers/specs/b469-approval-batch-spec.md
 ```
 按台账纪律仅 amend 一次纳入本记录；最终提交号以 Git 为准。仅文档，未运行代码测试。
+
+## 2026-10-23 r1.1 重写记录
+
+本节取代前文r1.0拆解结论，不抹除历史。按B469 #33001/#33005与四卡最新裁决重写plan，故事基线改为spec r1.1；当前仅文档提案，未实现、未运行P0/服务/测试、未修改生产配置。
+
+- 三线改为先U2/S2，再U1/S1+任务S4，再U3原执行者工单收件；U2规范化为规则硬依赖。原hostapi自身权限桥移除。
+- 稿首六项集中技术推荐与拍板边界；解析器、可信确认、人工同任务复用、责任归属/准入均未冒充用户已批。
+- U1补完整分类/求值顺序、不可覆盖、不可变事务审计、FindReuse撤销/期限、四类原因/版本去重/历史命中与原nl样本。
+- U3承载原任务工单；push/pull契约分别保持，无归属needs_human；等人不占30min回合/准入，实际行为列P0真机。
+- P0/U4全部隔离账本与实例；两机也禁生产共享账本。Runner/RunTurn已有冻结显式引用，卡席位/驻场共用路径回归。
+- 全量C/I/M逐项响应与源码纠正集中在[spec台账](../specs/b469-approval-batch-ledger.md)的“#33001响应矩阵”，本计划对各项给实施/验证责任，避免两份结论漂移。
+
+本轮完成标准：四文档范围/故事/依赖/提案状态一致、diff检查；不是承重实验或实现验收通过。#32980与孤儿会话待协调者核状态，未宣称已关闭。
+
+## 协调者复核与提交（2026-10-23）
+
+协调者通读 r1.1；另由 gpt-6.1-sol 只读独立复核，对照 #33001/#33005 及其余三卡，未发现新的范围/行为缺陷。技术稿首仍待拍板；未实施或运行承重实验。
+`git diff --check` 退出0，无输出。
+`git commit -m 'docs(B469): revise approval spec and plan from review'` 原始输出：
+```
+[codex/approval-batch-b469 175cc1959] docs(B469): revise approval spec and plan from review
+ 5 files changed, 222 insertions(+), 137 deletions(-)
+```
+按台账纪律 amend 一次收进本记录；最终提交号以Git为准。
