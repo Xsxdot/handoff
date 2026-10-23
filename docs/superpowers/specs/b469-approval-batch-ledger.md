@@ -105,3 +105,22 @@
 | M5架构数据归属 | 未找到现役独立架构数据归属所有者，依spec skill以spec三问下第一版表为权威：审批/原工单/发布镜像/会话通知/账本/应用边界逐项归属与依赖；plan首次wire前须对齐，未新造孤立架构文档。 |
 
 源码核对补充：internal/orchestration/manager.go:2801-2818人工reuse直接调用FindReuse并记录permission_reuse；原人工审计失败处理也不借本卡改紧。cmd/reply.go与cmd/approver.go为现存审批控制面，例外集按功能而非只看规则管理命令。所有新增发布/通知与时钟语义都是本期设计承诺，非已实现运行事实。
+
+## 2026-10-23 r1.3 最终批准修订
+
+依据B469终审#33054、用户#33059原话「按推荐，批准」（2026-10-23）；本节覆盖前轮被纠正的结论，历史原记录保留。spec/plan r1.3落盘即分别已批准/已拍板；同步卡#33060/#33062/#33063。未运行实验/服务/实现。
+
+| 终审项 | 本轮响应 |
+|---|---|
+| C2 / 用户① | 部署规则覆盖首版为空并入roadmap，待用户点名真实工具目标；build-deploy.sh:7仅构建不部署。upgrade及任何替换handoff/agentd二进制归审批控制面不可覆盖，正文/plan/冻结一致。 |
+| I1 | 新增独立“寻址系统通知”kind，非普通EvRoomMessage系统行。B435现役contract头部已批准修订覆盖26/31、C-202与匹配表：只唤醒被寻址者，其余system/by_system/pointer仍不唤醒，session wait同口径。精确kind/wire及编译守卫待实施前冻结；源码未接线。 |
+| I2 | 收件完整保留resolveWakeCard自身push→自身、pull→card wait、空座沿父卡找push祖先（含既有保护）；该路由失败才驻场→人。 |
+| 日志 | logx/logx.go:47-60默认Warn；hostapi/driver.go:57-60 wakeRoundLogLevel亦Warn。本轮改为不设HANDOFF_LOG_LEVEL的新进程仍能看到每环结果/跳过，不将全局默认改Info。 |
+| 三条冻结 | 控制面逐项点名含upgrade/换二进制；祖先冒泡保留；寻址系统通知匹配与系统行负例，均为单独断言。 |
+| 独立交付 | P0→U2/S2与U3/S3并行→U1→U4。S2自行review/finish后可单独合入，不等其余；实际合并/推送/全队换版仍需用户授权。 |
+| 稿首2 | U2仅减少自指令误命中，不能扩安全白名单/缩黑名单；permgate全量回归加一次有效变异。 |
+| 稿首3 | P0管理认证不足阻塞S1写规则并回用户，不能自补权限绕过。 |
+| Minor边界 | plan责任表加ledgermirror、cmd/session、residentwake、执行机发布；新通知全消费链列入边界。 |
+| Minor样本 | B461原命令明确为改名二进制`"$TMPDIR/handoff-fc" <子命令> --help`，仍需从原task恢复缺失载荷，未声称13条已齐。 |
+
+稿首1/4/5/6按终审采纳，部署按用户①替换；r1.2默认Info与部署闭集示例作废。最终文档diff检查由协调者收口，未宣称实现验收。

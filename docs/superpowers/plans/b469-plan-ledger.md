@@ -83,3 +83,21 @@ Q1固定合法卡席位→任务发起会话驻场者→人本人；驻场print/
  4 files changed, 106 insertions(+), 44 deletions(-)
 ```
 本记录仅amend一次纳入，最终hash以Git为准。
+
+## 2026-10-23 r1.3 已拍板
+
+终审#33054与最终#33059用户「按推荐，批准」已落实，plan状态已拍板。部署覆盖为空并落roadmap，upgrade/换二进制不可覆盖；独立寻址系统通知与B435现役contract批准补丁一致；完整卡祖先路由保持。默认Warn可见、无HANDOFF_LOG_LEVEL实验、原改名help样本及边界文件补齐。
+
+顺序P0→U2/S2与U3/S3并行→U1→U4；S2自身review/finish后可单独合入但操作仍须用户授权。U2仅减少自指令误命中，permgate全量+变异；P0认证不足阻塞S1写入回用户。三条新增原子冻结见正文，准确kind/wire/守卫留实施前冻结，未改源码或跑实验。本节取代r1.2待复审状态，不覆写历史。
+
+### r1.3 协调者复核（2026-10-23）
+
+协调者通读本轮diff，并核logx默认Warn、hostapi wakeRoundLogLevel、build-deploy只构建、wakeconsumer结构行过滤与卡路由原义。独立sol已核源码，但r1.3文档复核回合因模型容量不足失败，未形成最终独立审查结论；不沿用上一轮“无阻塞”结论。协调者对照#33054/#33059完成本轮文档核对，技术批准来源为卡上已记录拍板。
+`git diff --check`退出0，无输出；本轮只改文档，未运行产品测试/实验。
+
+提交原始输出：
+```
+[codex/approval-batch-b469 a84462fdd] docs(B469): finalize approved r1.3 approval plan and contract
+ 6 files changed, 99 insertions(+), 37 deletions(-)
+```
+按纪律amend一次收进记录，最终提交号以Git为准。
