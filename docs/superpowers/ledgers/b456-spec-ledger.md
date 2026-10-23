@@ -89,3 +89,12 @@ $ git commit -m 'docs(B456): add role timelines and run-content prototype'
 ```
 
 随后仅 amend 一次收录本提交台账；未推送或合并。
+
+## r4 用户原型与范围批准（2026-10-23）
+
+- 当前用户明确按 `~/b456-proto-r4/README.md` 和今日卡 note 实施。已读 #33089、#33097、#33103 与 B471：S6/S7 拆出，B456 保留 S1-S5 和现有来源的最近动态。十条 r4 规则已回写 spec，状态改为已批准。
+- `git fetch origin` 后 HEAD...origin/main 为 3/0，main 最新 a79b42867，无落后无需基线合并；工作区启动时干净。
+- 保留用户本地/gpt-6-luna要求：独立 gpt-6-luna 起草 L3 plan、主会话拍板；另一既有 gpt-6-luna 先接收 r4 原型与快照，随后做正式实现。不启远端协调者，不改线上 agentd。
+- r4 fork 与 README 已接收。对照页改用独立 session-baseline.css 修复404；五文件patch重建逐字节一致。base比较页仅补EOF换行，未改形态。192.168.0.167:8456 的状态页/对照页/两份CSS均HTTP200。
+- 独立 plan r1 经主会话拍板，冻结 SessionDetail.role_status JSON；两位本地 gpt-6-luna 按后端/Web文件所有权协作，单卡不拆子卡。这是施工排序调整，不改变r4结果和B471边界。
+- 基线预检：Go collab TestSessionReadsHonorCanceledRequest通过；Node24下 SessionTab 18 tests通过。web依赖 npm ci 已安装（不改lockfile）；系统Node23不满足依赖engine，后续用bundled Node24。
