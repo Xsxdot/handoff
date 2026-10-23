@@ -62,3 +62,24 @@ P0先核CLI交互与可信管理来源；S1真实工单生命周期为首故事�
  5 files changed, 222 insertions(+), 137 deletions(-)
 ```
 按台账纪律 amend 一次收进本记录；最终提交号以Git为准。
+
+## 2026-10-23 r1.2 修订与待复审
+
+输入：B469 #33034复审、#33043用户「都按推荐，批准」及四卡#33044–33046。spec r1.2已批准；plan r1.2待Claude主会话复审拍板，不自批。完整逐项响应见spec台账r1.2矩阵。
+
+Q1固定合法卡席位→任务发起会话驻场者→人本人；驻场print/desktop独立于卡push/pull。执行机未挂卡工单发布/镜像、寻址房间通知及session wait候选/门铃接线为S3本期承诺；独立投递记录使S3不依赖规则线B。通知归属不收紧回答CAS。Q2部署工具闭集+机器环境；Q3审批控制面例外及人工reuse不收紧贯穿正文/验收/冻结。
+
+补help/env历史样本采集/缺失边界与危险反例；默认Info候选日志与隔离codex多环实验；权威UTC及跨机偏移反例；spec第一版数据归属/依赖表在首次wire前对齐。历史r1.1待审与顺序由当前正文覆盖，未宣称样本已齐或实验通过。
+
+本轮仅修改原四文档，未运行P0/服务/实现或提交。文档检查结果由协调者收口记录。
+
+### r1.2 协调者复核与提交
+
+协调者通读变更；独立gpt-6.1-sol按#33034/#33043做反例复核，无新增阻塞。澄清全部候选均不可达再needs_human、通知不限制回答、规则派生复用与人工来源分开。spec已批准，plan仍待Claude主会话复审；未运行实现实验。
+`git diff --check` 退出0，无输出。
+提交原始输出：
+```
+[codex/approval-batch-b469 e74c7e0a6] docs(B469): apply second review and approved r1.2 decisions
+ 4 files changed, 106 insertions(+), 44 deletions(-)
+```
+本记录仅amend一次纳入，最终hash以Git为准。
