@@ -12,7 +12,11 @@
 //   - 执行包装器识别复用同包的 HasExecWrapper，不另造一套解析（见 judgeSegment）
 package permgate
 
-import "strings"
+import (
+	"strings"
+
+	"mvdan.cc/sh/v3/syntax"
+)
 
 // RuleSelfCommand 是自指令命中时填进 Verdict.Rule 的固定值。
 //
@@ -63,12 +67,138 @@ var selfCmdMutating = map[string]bool{
 // 注意：本函数不处理引号——调用方（judgeCommand）负责按原文与 StripQuoted
 // 结果各跑一遍。执行包装器只参与「命令位置」判定（见 judgeSegment）。
 func IsSelfCommand(s string) (hit bool, sub string) {
+	file, err := syntax.NewParser().Parse(strings.NewReader(s), "")
+	if err != nil {
+		// 不认识的 shell 语法不能借解析器放宽既有门禁。
+		return legacySelfCommand(s)
+	}
+	syntax.Walk(file, func(node syntax.Node) bool {
+		if hit {
+			// Walk's false return skips only this node's children; the enclosing
+			// traversal continues. Preserve a hit monotonically across sibling commands.
+			return false
+		}
+		call, ok := node.(*syntax.CallExpr)
+		if !ok || len(call.Args) == 0 {
+			return true
+		}
+		words := make([]string, len(call.Args))
+		for i, arg := range call.Args {
+			words[i] = arg.Lit()
+		}
+		cmd := words[0]
+		if !isLiteralWord(call.Args[0]) {
+			// 动态命令名不可静态证明，保留原判据的 fail-closed 结果。
+			if h, name := legacySelfCommand(s); h {
+				hit, sub = h, name
+				return false
+			}
+			return true
+		}
+		if isHandoffBinary(cmd) {
+			hit, sub = judgeHandoffCall(words[1:])
+			return !hit
+		}
+		if tokenBase(cmd) == "grep" || tokenBase(cmd) == "rg" {
+			// 搜索工具的例外仍由既有严格判据决定；rg 未显式禁配置或
+			// 使用 --pre 时维持原升级语义。
+			text := strings.Join(words, " ")
+			if strings.Contains(text, "handoff") && !searchPatternException(text) {
+				hit, sub = judgeSegment(text)
+			}
+			return true
+		}
+		if !isCommandWrapper(cmd) && !HasExecWrapper(strings.Join(words, " ")) && !hasFindExec(words) {
+			return true
+		}
+		// 只分析 AST 已确认的执行包装器参数；grep 的 -c/-e 等普通参数
+		// 不再因文本形态被提升为命令位置。
+		for i := 1; i < len(words); i++ {
+			if isHandoffBinary(words[i]) {
+				hit, sub = judgeHandoffCall(words[i+1:])
+				if hit {
+					return false
+				}
+			}
+			if isShellCommand(cmd) && i > 0 && (words[i] == "-c" || strings.Contains(words[i], "c")) {
+				payload := strings.Join(words[i+1:], " ")
+				if i+1 < len(call.Args) {
+					// Word.Lit omits dynamic parts. Analyze the original source slice
+					// with only quote delimiters removed so variables stay visible to
+					// the conservative unknown-subcommand rule.
+					payload = selfCmdTokenText(sourceRange(s, call.Args[i+1], call.Args[len(call.Args)-1]))
+				}
+				if h, name := IsSelfCommand(payload); h {
+					hit, sub = h, name
+					return false
+				}
+				break
+			}
+		}
+		return true
+	})
+	return hit, sub
+}
+
+func sourceRange(source string, first, last syntax.Node) string {
+	start, end := first.Pos().Offset(), last.End().Offset()
+	if start > end || end > uint(len(source)) {
+		return ""
+	}
+	return source[start:end]
+}
+
+func legacySelfCommand(s string) (bool, string) {
 	for _, seg := range splitSegments(s) {
 		if h, name := judgeSegment(seg); h {
 			return true, name
 		}
 	}
 	return false, ""
+}
+
+func isLiteralWord(w *syntax.Word) bool {
+	for _, part := range w.Parts {
+		switch part.(type) {
+		case *syntax.Lit, *syntax.SglQuoted:
+		case *syntax.DblQuoted:
+			quoted := part.(*syntax.DblQuoted)
+			for _, nested := range quoted.Parts {
+				if _, ok := nested.(*syntax.Lit); !ok {
+					return false
+				}
+			}
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func isShellCommand(cmd string) bool {
+	switch tokenBase(cmd) {
+	case "sh", "bash", "zsh", "dash", "ksh":
+		return true
+	default:
+		return false
+	}
+}
+
+func isCommandWrapper(cmd string) bool {
+	base := tokenBase(cmd)
+	return selfCmdWrappers[base] || isShellCommand(base)
+}
+
+func hasFindExec(words []string) bool {
+	if len(words) == 0 || tokenBase(words[0]) != "find" {
+		return false
+	}
+	for _, word := range words[1:] {
+		if findExecFlags[word] {
+			return true
+		}
+	}
+	return false
 }
 
 // splitSegments 按 shell 的命令分隔符把文本切成独立命令段。

@@ -195,3 +195,38 @@ func TestSearchPatternExceptionThroughJudge(t *testing.T) {
 		})
 	}
 }
+
+// TestB463ShellSyntaxFalsePositives locks the permission path, rather than only
+// the private self-command helper: command substitutions are code, while grep
+// patterns and a similarly named binary are data.
+func TestB463ShellSyntaxFalsePositives(t *testing.T) {
+	g := newTestGate(t)
+	sc := newRmScope(t)
+	cases := []struct {
+		name string
+		cmd  string
+		want Action
+		rule string
+	}{
+		{"loop grep count command substitution", `for w in dispatch; do n=$(grep -c "handoff $w" README.md); done`, Consult, ""},
+		{"loop grep count as body command", `for w in dispatch; do grep -c "handoff $w" README.md; done`, Consult, ""},
+		{"mutation followed by readonly remains escalated", `handoff dispatch T1; handoff tasks`, Escalate, RuleSelfCommand},
+		{"loop mutation followed by readonly remains escalated", `for x in a; do handoff dispatch T1; handoff tasks; done`, Escalate, RuleSelfCommand},
+		{"dynamic shell command remains escalated", `sh -c "handoff $action"`, Escalate, RuleSelfCommand},
+		{"renamed executable help", `"$TMPDIR/handoff-fc" dispatch --help`, Consult, ""},
+		{"environment name only", `env | cut -d= -f1`, Consult, ""},
+		{"environment values remain gated", `env | cut -d= -f2`, Consult, ""},
+		{"real handoff mutation remains escalated", `handoff dispatch T1`, Escalate, RuleSelfCommand},
+		{"shell command wrapper remains escalated", `sh -c "handoff dispatch T1"`, Escalate, RuleSelfCommand},
+		{"generic command wrapper remains escalated", `python -c "handoff dispatch T1"`, Escalate, RuleSelfCommand},
+		{"eval remains escalated", `eval "$cmd"`, Escalate, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			v := g.Judge(Request{Tool: "bash", Command: tc.cmd}, sc)
+			if v.Action != tc.want || v.Rule != tc.rule {
+				t.Fatalf("command %q verdict = %s (rule=%q reason=%q), want %s (rule=%q)", tc.cmd, v.Action, v.Rule, v.Reason, tc.want, tc.rule)
+			}
+		})
+	}
+}

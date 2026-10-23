@@ -26,7 +26,6 @@ import (
 
 	"github.com/Xsxdot/handoff/internal/envfile"
 	"github.com/Xsxdot/handoff/internal/executor"
-	"github.com/Xsxdot/handoff/internal/executor/turn"
 	"gopkg.in/yaml.v3"
 )
 
@@ -343,23 +342,26 @@ func RunLocalRing(ctx context.Context, shot executor.OneShot, executorName, mode
 		modelLabel = ApproverModelDefaultLabel
 	}
 	if shot == nil {
-		err := fmt.Errorf("执行器 %q 未绑定 OneShot", executorName)
-		log.Error("单环裁决缺少 OneShot", "executor", executorName)
-		return RingOutcome{Decision: "error", Reason: err.Error(), Model: modelLabel,
-			ElapsedMS: time.Since(start).Milliseconds(), ErrorKind: ApproverFailNoExecutor}
+		elapsed := time.Since(start).Milliseconds()
+		log.Error("单环裁决失败", "request_id", approverRequestID(ctx), "executor", executorName,
+			"model", modelLabel, "error_kind", ApproverFailNoExecutor, "elapsed_ms", elapsed)
+		return RingOutcome{Decision: "error", Reason: fmt.Sprintf("执行器 %q 未绑定 OneShot", executorName), Model: modelLabel,
+			ElapsedMS: elapsed, ErrorKind: ApproverFailNoExecutor}
 	}
 	nonce := randNonce()
 	if nonce == "" {
-		log.Warn("生成裁决 nonce 失败，本次裁决不做防伪校验", "executor", executorName)
+		log.Warn("生成裁决 nonce 失败，本次裁决不做防伪校验", "request_id", approverRequestID(ctx), "executor", executorName, "model", modelLabel)
 	}
 	prompt := approverPrompt(taskSummary, permission, nonce, tc)
 	var envList []string
 	if env != nil {
 		extra, err := env.For(executorName)
 		if err != nil {
-			log.Error("单环裁决 env 文件解析失败", "executor", executorName, "cause", err)
-			return RingOutcome{Decision: "error", Reason: fmt.Sprintf("解析审批者 env 文件: %v", err),
-				Model: modelLabel, ElapsedMS: time.Since(start).Milliseconds(), ErrorKind: ApproverFailInternal}
+			elapsed := time.Since(start).Milliseconds()
+			log.Error("单环裁决失败", "request_id", approverRequestID(ctx), "executor", executorName,
+				"model", modelLabel, "error_kind", ApproverFailInternal, "elapsed_ms", elapsed)
+			return RingOutcome{Decision: "error", Reason: "解析审批者 env 文件失败",
+				Model: modelLabel, ElapsedMS: elapsed, ErrorKind: ApproverFailInternal}
 		}
 		if len(extra) > 0 {
 			envList = append(os.Environ(), extra...)
@@ -375,19 +377,24 @@ func RunLocalRing(ctx context.Context, shot executor.OneShot, executorName, mode
 		cctx, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
 	}
-	log.Info("单环裁决开始", "executor", executorName, "model", modelLabel,
+	log.Info("单环裁决开始", "request_id", approverRequestID(ctx), "executor", executorName, "model", modelLabel,
 		"task_mode", tc.Mode, "has_task_context", !tc.IsZero())
 	reply, err := shot.Invoke(cctx, req)
 	elapsed := time.Since(start).Milliseconds()
 	if err != nil {
-		log.Error("单环裁决失败", "executor", executorName,
-			"permission", turn.TruncateRunes(permission, 80), "cause", err, "elapsed_ms", elapsed)
+		errorKind := ApproverFailInternal
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(cctx.Err(), context.DeadlineExceeded) {
+			errorKind = ApproverFailTimeout
+		}
+		log.Error("单环裁决失败", "request_id", approverRequestID(ctx), "executor", executorName,
+			"model", modelLabel, "error_kind", errorKind, "elapsed_ms", elapsed)
 		return RingOutcome{Decision: "error", Reason: err.Error(), Model: modelLabel,
-			ElapsedMS: elapsed, ErrorKind: ApproverFailInternal}
+			ElapsedMS: elapsed, ErrorKind: errorKind}
 	}
 	d := parseDecision(reply.Text, nonce, elapsed)
 	if d.Err != nil {
-		log.Error("单环裁决解析失败，按无效裁决处理", "executor", executorName, "cause", d.Err)
+		log.Error("单环裁决失败", "request_id", approverRequestID(ctx), "executor", executorName,
+			"model", modelLabel, "error_kind", ApproverFailInvalidOutput, "elapsed_ms", elapsed)
 		return RingOutcome{Decision: "error", Reason: d.Err.Error(), Model: modelLabel,
 			ElapsedMS: elapsed, ErrorKind: ApproverFailInvalidOutput}
 	}
@@ -395,7 +402,7 @@ func RunLocalRing(ctx context.Context, shot executor.OneShot, executorName, mode
 	if d.Approve {
 		decision = "approve"
 	}
-	log.Info("单环裁决完成", "executor", executorName, "decision", decision,
-		"reason", turn.TruncateRunes(d.Reason, 80), "elapsed_ms", elapsed)
+	log.Info("单环裁决完成", "request_id", approverRequestID(ctx), "executor", executorName,
+		"model", modelLabel, "decision", decision, "elapsed_ms", elapsed)
 	return RingOutcome{Decision: decision, Reason: d.Reason, Model: modelLabel, ElapsedMS: elapsed}
 }

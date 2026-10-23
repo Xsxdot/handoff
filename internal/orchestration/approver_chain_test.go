@@ -233,6 +233,155 @@ func TestDecideSharedChainRemoteApprove(t *testing.T) {
 	}
 }
 
+func TestB463DefaultWarnLogsRingOutcomeAndSkippedCodex(t *testing.T) {
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	a := newSharedApproverWithLog(t, log)
+	a.SetSelfMachine(func(string) bool { return false })
+	a.SetRemoteDecider(&stubRemoteDecider{fn: func(ApproverRing) RemoteOutcome { return remoteApprove("m") }})
+	a.SetChainReader(&funcChainReader{fn: func(context.Context) (ApproverChain, error) {
+		return ApproverChain{Rings: []ApproverRing{
+			{Machine: "linux-01", Executor: "claude"},
+			{Machine: "mac-mini", Executor: "codex"},
+		}}, nil
+	}})
+	if d := a.Decide(context.Background(), "Bash: sensitive-command-value", "", ApproverTaskContext{}); !d.Approve {
+		t.Fatalf("首环应 approve: %+v", d)
+	}
+	got := buf.String()
+	for _, want := range []string{"审批者环开始", "审批者环结果", "审批者环跳过", "executor=codex", "前序环已给出裁决", "request_id=ap-", "ring_index=1", "model=默认", "elapsed_ms="} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("默认 Warn 日志缺少 %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "sensitive-command-value") {
+		t.Fatalf("日志不应记录权限原文:\n%s", got)
+	}
+}
+
+type b463ImmediateRemoteDecider struct{}
+
+func (b463ImmediateRemoteDecider) DecideRemote(context.Context, ApproverRing, string, string, ApproverTaskContext, time.Duration) RemoteOutcome {
+	return remoteApprove("m")
+}
+
+func TestB463LocalRingFailureLogsDoNotExposePermissionOrCause(t *testing.T) {
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	shot := &stubShot{err: errors.New("executor rejected sensitive-command-value")}
+	a := newSharedApproverWithLog(t, log)
+	a.SetSelfMachine(func(string) bool { return true })
+	a.SetLocalShot(func(string) (executor.OneShot, error) { return shot, nil })
+	a.SetChainReader(&funcChainReader{fn: func(context.Context) (ApproverChain, error) {
+		return ApproverChain{Rings: []ApproverRing{{Machine: "self", Executor: "codex", Model: "m"}}}, nil
+	}})
+	d := a.Decide(context.Background(), "Bash: sensitive-command-value", "", ApproverTaskContext{})
+	if d.Err == nil || len(d.Attempts) != 1 || d.Attempts[0].Decision != "error" {
+		t.Fatalf("真实本机环失败应保留失败分类: %+v", d)
+	}
+	got := buf.String()
+	if strings.Contains(got, "sensitive-command-value") {
+		t.Fatalf("默认 Warn 环日志泄露权限或执行错误正文:\n%s", got)
+	}
+	for _, want := range []string{"单环裁决失败", "审批者环结果", "request_id=ap-", "executor=codex", "model=m", "failed=true", "elapsed_ms="} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("环失败日志缺少安全诊断字段 %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestB463LocalRingDeadlineIsClassifiedWithoutCause(t *testing.T) {
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	ctx, cancel := context.WithTimeout(withApproverRequestID(context.Background()), 5*time.Millisecond)
+	defer cancel()
+	shot := &stubShot{fn: func(ctx context.Context, _ executor.OneShotReq) (executor.OneShotReply, error) {
+		<-ctx.Done()
+		return executor.OneShotReply{}, ctx.Err()
+	}}
+	out := RunLocalRing(ctx, shot, "codex", "m", "Bash: sensitive-command-value", "",
+		ApproverTaskContext{}, 0, nil, log)
+	if out.Decision != "error" || out.ErrorKind != ApproverFailTimeout {
+		t.Fatalf("真实 context deadline 应分类为 timeout，得 %+v", out)
+	}
+	got := buf.String()
+	if strings.Contains(got, "sensitive-command-value") || strings.Contains(got, "deadline exceeded") {
+		t.Fatalf("timeout 日志不能包含权限/错误正文:\n%s", got)
+	}
+	for _, want := range []string{"request_id=ap-", "error_kind=timeout", "elapsed_ms="} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("timeout 日志缺诊断字段 %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestB463LocalRingResolutionFailureLogsDoNotExposeCause(t *testing.T) {
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	a := newSharedApproverWithLog(t, log)
+	a.SetSelfMachine(func(string) bool { return true })
+	a.SetLocalShot(func(string) (executor.OneShot, error) {
+		return nil, errors.New("resolve failed: sensitive-command-value")
+	})
+	a.SetChainReader(&funcChainReader{fn: func(context.Context) (ApproverChain, error) {
+		return ApproverChain{Rings: []ApproverRing{{Machine: "self", Executor: "codex", Model: "m"}}}, nil
+	}})
+	d := a.Decide(context.Background(), "Bash: ls", "", ApproverTaskContext{})
+	if d.Err == nil || len(d.Attempts) != 1 || d.Attempts[0].ErrorKind != ApproverFailInternal {
+		t.Fatalf("本机 OneShot 解析失败应保留失败分类: %+v", d)
+	}
+	got := buf.String()
+	if strings.Contains(got, "sensitive-command-value") {
+		t.Fatalf("日志不应记录 OneShot 解析错误正文:\n%s", got)
+	}
+	for _, want := range []string{"request_id=ap-", "error_kind=internal", "elapsed_ms="} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("环解析失败日志缺少诊断字段 %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestB463ConcurrentRingLogsHaveRequestIDs(t *testing.T) {
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	a := newSharedApproverWithLog(t, log)
+	a.SetSelfMachine(func(string) bool { return false })
+	a.SetRemoteDecider(b463ImmediateRemoteDecider{})
+	a.SetChainReader(&funcChainReader{fn: func(context.Context) (ApproverChain, error) {
+		return ApproverChain{Rings: []ApproverRing{{Machine: "linux-01", Executor: "codex"}}}, nil
+	}})
+	var wg sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if d := a.Decide(context.Background(), "Bash: ls", "", ApproverTaskContext{}); !d.Approve {
+				t.Errorf("并发裁决应 approve: %+v", d)
+			}
+		}()
+	}
+	wg.Wait()
+	ids := map[string]bool{}
+	for _, line := range strings.Split(buf.String(), "\n") {
+		if !strings.Contains(line, "审批者环") {
+			continue
+		}
+		var id string
+		for _, field := range strings.Fields(line) {
+			if strings.HasPrefix(field, "request_id=") {
+				id = strings.TrimPrefix(field, "request_id=")
+			}
+		}
+		if id == "" {
+			t.Fatalf("环日志缺 request_id: %s", line)
+		}
+		ids[id] = true
+	}
+	if len(ids) != 2 {
+		t.Fatalf("两次并发请求应分别可关联，request ids=%v; logs:\n%s", ids, buf.String())
+	}
+}
+
 func TestDecideSharedChainFailoverToSecondRing(t *testing.T) {
 	rd := &stubRemoteDecider{fn: func(ring ApproverRing) RemoteOutcome {
 		if ring.Machine == "linux-01" {

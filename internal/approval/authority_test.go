@@ -10,6 +10,7 @@
 package approval_test
 
 import (
+	"fmt"
 	"io"
 	"log/slog"
 	"path/filepath"
@@ -126,6 +127,90 @@ func TestAuthorityJudgeVerdicts(t *testing.T) {
 	}
 }
 
+func TestAuthorityB463ShellSyntaxFalsePositiveConsults(t *testing.T) {
+	work := t.TempDir()
+	_, a, _ := newAuthorityFixture(t, "b463-shell-syntax", work)
+	command := `for w in dispatch; do n=$(grep -c "handoff $w" README.md); done`
+	v := a.Judge("b463-shell-syntax", executor.AdapterEvent{
+		Type: "permission", PermissionID: "p-shell-syntax", Text: "Bash: " + command,
+		Perm: &executor.PermRequest{Tool: executor.PermToolBash, Command: command},
+	})
+	if v.Action != permgate.Consult || v.Rule == permgate.RuleSelfCommand {
+		t.Fatalf("adapter → Authority → Gate 应把 grep 参数误报降为审批者裁决，得 %#v", v)
+	}
+}
+
+func TestAuthorityB463HistoricalHelpCommandsRemainConsult(t *testing.T) {
+	work := t.TempDir()
+	const taskID = "b463-historical-help"
+	_, a, _ := newAuthorityFixture(t, taskID, work)
+	commands := []string{
+		`"$TMPDIR/handoff-fc" dispatch --help`,
+		`"$TMPDIR/handoff-fc" service --help`,
+		`"$TMPDIR/handoff-fc" run --help`,
+		`"$TMPDIR/handoff-fc" reply --help`,
+		`"$TMPDIR/handoff-fc" done --help`,
+		`"$TMPDIR/handoff-fc" continue --help`,
+		`"$TMPDIR/handoff-fc" status --help`,
+		`"$TMPDIR/handoff-fc" account --help`,
+		`"$TMPDIR/handoff-fc" account list --help`,
+		`"$TMPDIR/handoff-fc" account probe --help`,
+		`"$TMPDIR/handoff-fc" upgrade --help`,
+		`"$TMPDIR/handoff-fc" project rm --help`,
+		`"$TMPDIR/handoff-fc" project add --help`,
+	}
+	for i, command := range commands {
+		t.Run(command, func(t *testing.T) {
+			verdict := a.Judge(taskID, executor.AdapterEvent{
+				Type: "permission", PermissionID: fmt.Sprintf("historical-help-%02d", i+1),
+				Text: "Bash: " + command,
+				Perm: &executor.PermRequest{Tool: executor.PermToolBash, Command: command},
+			})
+			if verdict.Action != permgate.Consult || verdict.Rule == permgate.RuleSelfCommand {
+				t.Fatalf("历史 help 读取应交回原审批路径 Consult，不得误判自指令：command=%q verdict=%#v", command, verdict)
+			}
+		})
+	}
+	for i, command := range []string{
+		`handoff dispatch --template finish-check`,
+		`handoff reply --approve ticket-1`,
+		`handoff upgrade --now`,
+	} {
+		verdict := a.Judge(taskID, executor.AdapterEvent{
+			Type: "permission", PermissionID: fmt.Sprintf("historical-mutation-%02d", i+1),
+			Text: "Bash: " + command,
+			Perm: &executor.PermRequest{Tool: executor.PermToolBash, Command: command},
+		})
+		if verdict.Action != permgate.Escalate || verdict.Rule != permgate.RuleSelfCommand {
+			t.Fatalf("真实变更命令仍须升级：command=%q verdict=%#v", command, verdict)
+		}
+	}
+}
+
+func TestAuthorityB453EnvNameCommandConsultsAndValuesRemainGated(t *testing.T) {
+	work := t.TempDir()
+	const taskID = "b453-env-name"
+	_, a, _ := newAuthorityFixture(t, taskID, work)
+	cases := []struct {
+		name    string
+		command string
+	}{
+		{"historical env-name ticket", `env | cut -d= -f1 | sort`},
+		{"environment values remain gated", `env | cut -d= -f2`},
+	}
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			verdict := a.Judge(taskID, executor.AdapterEvent{
+				Type: "permission", PermissionID: fmt.Sprintf("b453-env-%02d", i+1),
+				Text: "Bash: " + tc.command,
+				Perm: &executor.PermRequest{Tool: executor.PermToolBash, Command: tc.command},
+			})
+			if verdict.Action != permgate.Consult || verdict.Rule == permgate.RuleSelfCommand {
+				t.Fatalf("env 查询须走既有审批路径，不能 AutoAllow 或误判自指令：command=%q verdict=%#v", tc.command, verdict)
+			}
+		})
+	}
+}
 func TestEscalateLogLevel(t *testing.T) {
 	cases := []struct {
 		rule string

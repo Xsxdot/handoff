@@ -29,6 +29,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Xsxdot/handoff/internal/config"
@@ -36,6 +37,10 @@ import (
 	"github.com/Xsxdot/handoff/internal/executor"
 	"github.com/Xsxdot/handoff/internal/executor/turn"
 )
+
+type approverRequestIDKey struct{}
+
+var approverRequestSequence atomic.Uint64
 
 // ApproverAttempt 是一次候选尝试的审计记录（B376）。
 //
@@ -51,6 +56,7 @@ type ApproverAttempt struct {
 	Decision  string
 	Reason    string
 	Err       error
+	ErrorKind string
 	ElapsedMS int64
 	Model     string
 	Machine   string
@@ -271,10 +277,27 @@ func randNonce() string {
 // B437：先尝试读共享审批链；读到（或读到过 last-good）则按链逐环裁决，否则
 // 走构造期本地配置链（S5 路径逐字不变）。
 func (a *Approver) Decide(ctx context.Context, permission, taskSummary string, tc ApproverTaskContext) ApproverDecision {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx = withApproverRequestID(ctx)
 	if chain, ok := a.effectiveChain(ctx); ok {
 		return a.decideSharedChain(ctx, chain, permission, taskSummary, tc)
 	}
 	return a.decideLocalChain(ctx, permission, taskSummary, tc)
+}
+
+func withApproverRequestID(ctx context.Context) context.Context {
+	if id, _ := ctx.Value(approverRequestIDKey{}).(string); id != "" {
+		return ctx
+	}
+	id := fmt.Sprintf("ap-%d-%d", time.Now().UnixNano(), approverRequestSequence.Add(1))
+	return context.WithValue(ctx, approverRequestIDKey{}, id)
+}
+
+func approverRequestID(ctx context.Context) string {
+	id, _ := ctx.Value(approverRequestIDKey{}).(string)
+	return id
 }
 
 // Available 报告审批者此刻是否有可用的链（B437 §4.2 启用门判据）。
@@ -385,10 +408,21 @@ func (a *Approver) decideLocalChain(ctx context.Context, permission, taskSummary
 
 	var attempts []ApproverAttempt
 	var lastErr error
-	for _, name := range a.names {
+	for i, name := range a.names {
+		model := modelLabelOr(a.modelFor(name))
+		a.log.Warn("审批者候选开始", "candidate_index", i+1, "candidate_count", len(a.names),
+			"request_id", approverRequestID(ctx), "executor", name, "model", model,
+			"permission_class", permissionLogClass(permission))
 		attempt := a.decideWithCandidate(ctx, name, prompt, nonce, permission, taskSummary)
 		attempts = append(attempts, attempt)
+		a.log.Warn("审批者候选结果", "request_id", approverRequestID(ctx), "candidate_index", i+1, "executor", name,
+			"model", attempt.Model, "decision", attempt.Decision, "failed", attempt.Err != nil,
+			"elapsed_ms", attempt.ElapsedMS)
 		if attempt.Err == nil {
+			for _, skipped := range a.names[i+1:] {
+				a.log.Warn("审批者候选跳过", "executor", skipped,
+					"request_id", approverRequestID(ctx), "reason", "前序候选已给出裁决", "prior_executor", name)
+			}
 			// 干净裁决（approve 或 escalate）：停，不再试下一个
 			return ApproverDecision{
 				Approve:   attempt.Decision == "approve",
@@ -429,15 +463,30 @@ func (a *Approver) decideLocalChain(ctx context.Context, permission, taskSummary
 func (a *Approver) decideSharedChain(ctx context.Context, chain ApproverChain, permission, taskSummary string, tc ApproverTaskContext) ApproverDecision {
 	start := time.Now()
 	timeout := EffectiveApproverChainTimeout(chain)
-	a.log.Info("审批者开始裁决（共享链）", "permission", turn.TruncateRunes(permission, 80),
-		"rings", len(chain.Rings), "timeout", timeout)
+	a.log.Info("审批者开始裁决（共享链）", "request_id", approverRequestID(ctx),
+		"permission_class", permissionLogClass(permission), "rings", len(chain.Rings), "timeout", timeout)
 
 	var attempts []ApproverAttempt
 	var lastErr error
-	for _, ring := range chain.Rings {
+	for i, ring := range chain.Rings {
+		model := ring.Model
+		if model == "" {
+			model = modelLabelOr(a.modelFor(ring.Executor))
+		}
+		a.log.Warn("审批者环开始", "ring_index", i+1, "ring_count", len(chain.Rings),
+			"request_id", approverRequestID(ctx), "machine", ring.Machine, "executor", ring.Executor, "model", model,
+			"permission_class", permissionLogClass(permission))
 		attempt := a.decideRing(ctx, ring, timeout, permission, taskSummary, tc)
 		attempts = append(attempts, attempt)
+		a.log.Warn("审批者环结果", "request_id", approverRequestID(ctx), "ring_index", i+1, "machine", ring.Machine,
+			"executor", ring.Executor, "model", attempt.Model, "decision", attempt.Decision,
+			"failed", attempt.Err != nil, "elapsed_ms", attempt.ElapsedMS)
 		if attempt.Err == nil {
+			for _, skipped := range chain.Rings[i+1:] {
+				a.log.Warn("审批者环跳过", "machine", skipped.Machine, "executor", skipped.Executor,
+					"request_id", approverRequestID(ctx), "reason", "前序环已给出裁决", "prior_machine", ring.Machine,
+					"prior_executor", ring.Executor)
+			}
 			return ApproverDecision{
 				Approve:   attempt.Decision == "approve",
 				Reason:    attempt.Reason,
@@ -449,7 +498,9 @@ func (a *Approver) decideSharedChain(ctx context.Context, chain ApproverChain, p
 		}
 		lastErr = attempt.Err
 		a.log.Warn("审批者环失败，尝试下一环", "machine", ring.Machine,
-			"executor", ring.Executor, "cause", attempt.Err, "tried", len(attempts))
+			"request_id", approverRequestID(ctx), "executor", ring.Executor,
+			"model", attempt.Model, "error_kind", attempt.ErrorKind, "tried", len(attempts),
+			"elapsed_ms", attempt.ElapsedMS)
 	}
 	if lastErr == nil {
 		lastErr = errors.New("共享审批链无可用环")
@@ -464,9 +515,20 @@ func (a *Approver) decideSharedChain(ctx context.Context, chain ApproverChain, p
 		final.Executor = attempts[len(attempts)-1].Executor
 		final.Model = attempts[len(attempts)-1].Model
 	}
-	a.log.Error("审批者全部环失败", "rings", len(chain.Rings),
-		"tried", len(attempts), "cause", final.Err)
+	a.log.Error("审批者全部环失败", "request_id", approverRequestID(ctx), "rings", len(chain.Rings),
+		"tried", len(attempts), "error_kind", finalFailureKind(attempts),
+		"elapsed_ms", final.ElapsedMS)
 	return final
+}
+
+// permissionLogClass gives operators a useful correlation label without logging
+// command text, environment contents, credentials, or other request payload.
+func permissionLogClass(permission string) string {
+	trimmed := strings.TrimSpace(permission)
+	if i := strings.IndexByte(trimmed, ':'); i > 0 {
+		return strings.ToLower(strings.TrimSpace(trimmed[:i]))
+	}
+	return "unknown"
 }
 
 // decideRing 执行共享链上的一个环：本机环就地跑 OneShot，他机环经远程裁决口。
@@ -475,10 +537,12 @@ func (a *Approver) decideRing(ctx context.Context, ring ApproverRing, timeout ti
 	if a.isSelfRing(ring.Machine) {
 		shot, err := a.resolveLocalShot(ring.Executor)
 		if err != nil {
-			a.log.Error("审批者本机环缺少 OneShot", "machine", ring.Machine,
-				"executor", ring.Executor, "cause", err)
+			elapsed := time.Since(candStart).Milliseconds()
+			a.log.Error("审批者本机环缺少 OneShot", "request_id", approverRequestID(ctx),
+				"machine", ring.Machine, "executor", ring.Executor,
+				"model", modelLabelOr(ring.Model), "error_kind", ApproverFailInternal, "elapsed_ms", elapsed)
 			return ApproverAttempt{Executor: ring.Executor, Machine: ring.Machine, Decision: "error",
-				Reason: err.Error(), Err: err, ElapsedMS: time.Since(candStart).Milliseconds(),
+				Reason: err.Error(), Err: err, ErrorKind: ApproverFailInternal, ElapsedMS: elapsed,
 				Model: modelLabelOr(ring.Model)}
 		}
 		out := RunLocalRing(ctx, shot, ring.Executor, ring.Model, permission, taskSummary, tc, timeout, a.env, a.log)
@@ -489,9 +553,12 @@ func (a *Approver) decideRing(ctx context.Context, ring ApproverRing, timeout ti
 	a.chainMu.Unlock()
 	if rd == nil {
 		err := fmt.Errorf("远程裁决口未装配，环 %s 不可用", ring.Machine)
-		a.log.Error("审批者远程裁决口缺失", "machine", ring.Machine, "executor", ring.Executor)
+		elapsed := time.Since(candStart).Milliseconds()
+		a.log.Error("审批者远程裁决口缺失", "request_id", approverRequestID(ctx),
+			"machine", ring.Machine, "executor", ring.Executor,
+			"model", modelLabelOr(ring.Model), "error_kind", ApproverFailInternal, "elapsed_ms", elapsed)
 		return ApproverAttempt{Executor: ring.Executor, Machine: ring.Machine, Decision: "error",
-			Reason: err.Error(), Err: err, ElapsedMS: time.Since(candStart).Milliseconds(),
+			Reason: err.Error(), Err: err, ErrorKind: ApproverFailInternal, ElapsedMS: elapsed,
 			Model: modelLabelOr(ring.Model)}
 	}
 	out := rd.DecideRemote(ctx, ring, permission, taskSummary, tc, timeout)
@@ -525,7 +592,7 @@ func (a *Approver) resolveLocalShot(name string) (executor.OneShot, error) {
 // ringOutcomeAttempt 把单环本机裁决结果投影成审计 attempt。
 func ringOutcomeAttempt(ring ApproverRing, out RingOutcome) ApproverAttempt {
 	at := ApproverAttempt{Executor: ring.Executor, Machine: ring.Machine,
-		Decision: out.Decision, Reason: out.Reason, ElapsedMS: out.ElapsedMS, Model: out.Model}
+		Decision: out.Decision, Reason: out.Reason, ErrorKind: safeApproverErrorKind(out.ErrorKind), ElapsedMS: out.ElapsedMS, Model: out.Model}
 	if at.Model == "" {
 		at.Model = modelLabelOr(ring.Model)
 	}
@@ -533,6 +600,7 @@ func ringOutcomeAttempt(ring ApproverRing, out RingOutcome) ApproverAttempt {
 		if at.Reason == "" {
 			at.Reason = ApproverFailReason(out.ErrorKind)
 		}
+		at.ErrorKind = safeApproverErrorKind(at.ErrorKind)
 		at.Err = errors.New(at.Reason)
 	}
 	return at
@@ -541,15 +609,13 @@ func ringOutcomeAttempt(ring ApproverRing, out RingOutcome) ApproverAttempt {
 // remoteOutcomeAttempt 把远程环裁决结果投影成审计 attempt，并把失败类别翻成人读理由。
 func remoteOutcomeAttempt(ring ApproverRing, out RemoteOutcome) ApproverAttempt {
 	at := ApproverAttempt{Executor: ring.Executor, Machine: ring.Machine,
-		Decision: out.Decision, Reason: out.Reason, ElapsedMS: out.ElapsedMS, Model: out.Model}
+		Decision: out.Decision, Reason: out.Reason, ErrorKind: safeApproverErrorKind(out.ErrorKind), ElapsedMS: out.ElapsedMS, Model: out.Model}
 	if at.Model == "" {
 		at.Model = modelLabelOr(ring.Model)
 	}
 	if out.Decision == "error" {
-		kind := out.ErrorKind
-		if kind == "" {
-			kind = ApproverFailInternal
-		}
+		kind := safeApproverErrorKind(out.ErrorKind)
+		at.ErrorKind = kind
 		if kind == ApproverFailInternal && out.Reason != "" {
 			at.Reason = out.Reason
 		} else {
@@ -558,6 +624,23 @@ func remoteOutcomeAttempt(ring ApproverRing, out RemoteOutcome) ApproverAttempt 
 		at.Err = errors.New(at.Reason)
 	}
 	return at
+}
+
+func safeApproverErrorKind(kind string) string {
+	switch kind {
+	case ApproverFailUnreachable, ApproverFailUnsupported, ApproverFailNoExecutor,
+		ApproverFailTimeout, ApproverFailInvalidOutput, ApproverFailInternal:
+		return kind
+	default:
+		return ApproverFailInternal
+	}
+}
+
+func finalFailureKind(attempts []ApproverAttempt) string {
+	if len(attempts) == 0 || attempts[len(attempts)-1].ErrorKind == "" {
+		return ApproverFailInternal
+	}
+	return safeApproverErrorKind(attempts[len(attempts)-1].ErrorKind)
 }
 
 func modelLabelOr(model string) string {
