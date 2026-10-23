@@ -20,6 +20,7 @@
 
 ### 新增
 
+- **控制台：codex / grok 账号图标换成 OpenAI、Grok 官方标志（B468）。** 单色矢量，跟随文字灰阶（取自 `@lobehub/icons-static-svg@1.95.1`，内联，无外部请求）；其余 kind 图标不变。
 - **账号可「忽略」，取代控制台的「删除」（B467）。** 删除过的账号在凭据仍在时会被下一轮发现重建；改为忽略：不探测、不进底栏与使用量弹层、不进移动端列表与载体登录下拉，账号页底部收起的「已忽略（N）」区可恢复；发现照常更新其登录状态但不把它改回。仍被载体引用时拒绝忽略（点名载体）；给载体选已忽略账号的登录被拒（「账号 X 已忽略，先在账号页恢复」）；`handoff account probe` 对已忽略账号退出 1。API：`PUT/DELETE /api/accounts/{ref}/ignore`，`AccountView` 增可缺席键 `ignored {at, by}`；`handoff account list` 状态列显示「已忽略」。`DELETE /api/accounts/{ref}` 保留、界面无入口。另：底栏每段只显示图标与读数（账号名移进悬停提示），使用量弹层加宽使 5h/周/月同一行，去掉无实际功能的「使用详情」入口。
 - **账号产品化：各机自动发现已登录账号，载体选「登录」（B464）。** 各机 agentd 启动时与随探测节拍扫描主 HOME 与 `~/.handoff/home/*` 一层，认出 opencode-go（`auth.json` API key 与 `opencode.db` 登录两来源）、codex、grok、agy、claude 与第三方 API key 的身份，写进共享账本并按身份去重（同一身份跨机归并为一个账号，账号 id 由 kind + 身份短指纹确定性导出；邮箱 label 优先作自动名）。一个账号可有多机多登录（凭据各自独立）。载体不再选账号而选**登录**：HOME、凭据、代理都由登录决定，HOME 由服务端按登录镜像（凭据永不复制）。控制台账号页改为六组 + 登录子表 + 「＋ 新增登录」三步（选机器/agent → 建 0700 HOME 并给出登录命令 → 每 5s 轮询 + 立即检查），页头「上次发现 · 立即发现」。CLI 新增 `handoff account discover`，`account list` 账号行下逐条登录行，`squad list` 账号格为 `账号 · 机器 HOME`。统一准入新增「所选登录已失效（发现扫不到凭据）暂停派发」，已过期只标红。代理从账号改挂登录。需挂共享账本（`ledger.dsn`）。
 - **`handoff upgrade --from <目录>`：用本机构建换版（B462）。** 来源换成 `scripts/build-deploy.sh --pack <目录> <os/arch>...` 的产物（每平台一个 `handoff_<tag>_<os>_<arch>.{tar.gz|zip}` + `checksums.txt`，形态与 release 资产逐字一致；tag 为 HEAD 前 12 位，打包拒绝脏树）。巡检「最新」行显示 `<tag>（本机构建 <目录>）`；`--now` 远端一律推送，sha 校验、自检、`.prev`、重启、等新版上线与 release 来源同一路径；目录缺某平台的包时该机单独失败并点名资产。与 `--rollback` 互斥。
