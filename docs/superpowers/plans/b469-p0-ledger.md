@@ -48,3 +48,13 @@ P0尚未实测：external CLI实际版本/权限与问题产生、LaunchAdmit及
 当前原始报告：/tmp/b469-p0-runtime/live/report.json。真实opencode1.18.32驻场CLI经bash工具调用隔离API启动真实opencode任务，模型端仅loopback协议fixture，无生产账号或真实LLM。session创建4.666s；task=b525424b-a86f-4341-b872-9aa83bb2a219原ask待答，协调者两项准入均0、任务计数1。隔离agent重启后待答仍1；回答ok=true/relayed=true，任务running/待答0；stop清理、agent exit0。证明原工单待答与发起回合释放可以并存，失败原因是发起关联/发布路径缺失，非必须占30min等待。
 
 协调者核定S3契约v1，单机基本P0允许S3实施。permission分支、真实模型、多机/断连/换责任仍是验收缺口，不把fixture等价成最终验收。S1人类确认不足仍阻塞，按已批plan不进入S1写入。
+
+## 后续验收范围更新（协调者，2026-10-23 18:00）
+
+上述逐轮未验记录保留原时点。后续在冻结 S3 源码上，Mac 与用户指定 linux-01 已完成原生 permission/question、真实 origin 传播、短回合准入释放、重启原票回答、A 离线补投，以及 A 停机时换到 B 驻场后的实际通知 v1→v2 投递；详见 [`b469-s3-runtime-ledger.md`](b469-s3-runtime-ledger.md) 和其三份脱敏双机报告。实际 CLI 使用 loopback 协议 fixture，无真实模型判断或生产凭据；不能将其写成模型审批质量通过。
+
+S1 可信人类确认来源仍不足；未以 cookie/主令牌自证补洞，未实现规则写入。卡席位 push/pull 联合矩阵与桌面 OS 门铃仍待独立核销，30min 到期行为也未实等到期；已实际观察的是回合在秒级结束并释放准入、源任务独立等票。
+
+## 收件运行证据的当前范围（18:22）
+
+后续新 schema 双机矩阵已核销自身 push、独立 pull/card wait、空座 push 祖先、无归属 needs_human/retry、显式 session wait 与跨 CLI 进程默认持久游标不重收。完整结果与测试搭接缝边界见 S3 runtime 台账，未将公开 LinkTask 夹具声称为完整 card dispatch；模型均为本地协议 fixture，桌面按用户裁决暂留未验。S1 可信确认缺口不变。

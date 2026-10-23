@@ -1,0 +1,291 @@
+{
+  "probe": "B469 isolated card route / retry / session wait acceptance",
+  "run_id": "route-78355cfa",
+  "schema_name": "b469_route_route_78355cfa",
+  "schema_owned": true,
+  "schema_current_schema_verified": true,
+  "retained_for_evidence": true,
+  "schema_cleanup": "retained for root/Sol evidence review; no schema drop issued",
+  "cases": [
+    {
+      "case": "isolated_project_prefix_set",
+      "at_unix": 1792750532,
+      "project": "b469-dual-fixture",
+      "prefix": "BR",
+      "schema": "b469_route_route_78355cfa"
+    },
+    {
+      "case": "workflow_created",
+      "at_unix": 1792750538,
+      "name": "b469routeroute78355cf",
+      "version": 1,
+      "states": [
+        "待办",
+        "完成"
+      ]
+    },
+    {
+      "case": "A_resident_session_created",
+      "at_unix": 1792750541,
+      "session_id": "session:1",
+      "resident_identity": "agent:b469route-78355cfasquad",
+      "carrier_machine": "b469-route-78355cfa-mac"
+    },
+    {
+      "case": "parent_push_card_created",
+      "at_unix": 1792750544,
+      "card_id": "BR1",
+      "driver_session": "cli:opencode#ses_e97bda04cffenl03AJ19pIQNl8",
+      "driver_mode": "push",
+      "launch_session_id": "ses_e97bda04cffenl03AJ19pIQNl8"
+    },
+    {
+      "case": "parent-own-push_source_created",
+      "at_unix": 1792750552,
+      "task_id": "80cfc2e4-d696-47ee-ac04-689b2576b476",
+      "ticket_id": "80cfc2e4-d696-47ee-ac04-689b2576b476:que_168427dcd001IkKBmLF6tMwvsm",
+      "kind": "ask",
+      "origin_session": null,
+      "initial_status": "needs_human",
+      "initial_ownership_version": 1
+    },
+    {
+      "case": "P_own_push",
+      "at_unix": 1792750569,
+      "task_id": "80cfc2e4-d696-47ee-ac04-689b2576b476",
+      "ticket_id": "80cfc2e4-d696-47ee-ac04-689b2576b476:que_168427dcd001IkKBmLF6tMwvsm",
+      "target": {
+        "card": "BR1",
+        "kind": "seat",
+        "session": "",
+        "identity": "cli:opencode#ses_e97bda04cffenl03AJ19pIQNl8"
+      },
+      "ownership_version": 2,
+      "link_seq_before": 4,
+      "coordinator_main_request_delta": 1,
+      "source_ticket_still_pending": true
+    },
+    {
+      "case": "P own push_answered",
+      "at_unix": 1792750570,
+      "task_id": "80cfc2e4-d696-47ee-ac04-689b2576b476",
+      "ticket_id": "80cfc2e4-d696-47ee-ac04-689b2576b476:que_168427dcd001IkKBmLF6tMwvsm",
+      "reply_ok": true,
+      "relayed": true,
+      "b_task_slot_count": 0
+    },
+    {
+      "case": "standalone-pull_source_created",
+      "at_unix": 1792750582,
+      "task_id": "04b771d7-3e84-4f85-bbd4-5e8104737bd7",
+      "ticket_id": "04b771d7-3e84-4f85-bbd4-5e8104737bd7:que_16842e4900010gTj8Ldwsdt027",
+      "kind": "ask",
+      "origin_session": null,
+      "initial_status": "needs_human",
+      "initial_ownership_version": 1
+    },
+    {
+      "case": "L_standalone_pull",
+      "at_unix": 1792750592,
+      "task_id": "04b771d7-3e84-4f85-bbd4-5e8104737bd7",
+      "ticket_id": "04b771d7-3e84-4f85-bbd4-5e8104737bd7:que_16842e4900010gTj8Ldwsdt027",
+      "target": {
+        "card": "BR2",
+        "kind": "seat",
+        "session": "",
+        "identity": "cli:opencode#b469pullroute78355"
+      },
+      "ownership_version": 2,
+      "link_seq_before": 15,
+      "card_wait_emitted": {
+        "seq": 17,
+        "card_id": "BR2",
+        "type": "task_ticket_notice",
+        "actor": "agentd",
+        "payload": {
+          "target": {
+            "card": "BR2",
+            "kind": "seat",
+            "session": "",
+            "identity": "cli:opencode#b469pullroute78355"
+          },
+          "task_id": "04b771d7-3e84-4f85-bbd4-5e8104737bd7",
+          "ticket_id": "04b771d7-3e84-4f85-bbd4-5e8104737bd7:que_16842e4900010gTj8Ldwsdt027",
+          "source_seq": 7,
+          "ticket_kind": "ask",
+          "source_machine": "b469-route-78355cfa-linux",
+          "ownership_version": 2
+        },
+        "created_at": "2026-10-23T18:16:35.199183+08:00"
+      },
+      "coordinator_main_request_delta": 0,
+      "cursor_claim": "--since explicit replay only; persistent cursor not tested"
+    },
+    {
+      "case": "L standalone pull_answered",
+      "at_unix": 1792750593,
+      "task_id": "04b771d7-3e84-4f85-bbd4-5e8104737bd7",
+      "ticket_id": "04b771d7-3e84-4f85-bbd4-5e8104737bd7:que_16842e4900010gTj8Ldwsdt027",
+      "reply_ok": true,
+      "relayed": true,
+      "b_task_slot_count": 0
+    },
+    {
+      "case": "empty-child-parent-push_source_created",
+      "at_unix": 1792750603,
+      "task_id": "3445d835-efa1-41ef-bdbc-5bf10a5e12d2",
+      "ticket_id": "3445d835-efa1-41ef-bdbc-5bf10a5e12d2:que_1684337bc001RspHUeEuh3g1sM",
+      "kind": "ask",
+      "origin_session": null,
+      "initial_status": "needs_human",
+      "initial_ownership_version": 1
+    },
+    {
+      "case": "C_empty_child_escalates_to_parent_push",
+      "at_unix": 1792750619,
+      "child_card": "BR1.1",
+      "parent_card": "BR1",
+      "task_id": "3445d835-efa1-41ef-bdbc-5bf10a5e12d2",
+      "ticket_id": "3445d835-efa1-41ef-bdbc-5bf10a5e12d2:que_1684337bc001RspHUeEuh3g1sM",
+      "target": {
+        "card": "BR1",
+        "kind": "seat",
+        "session": "",
+        "identity": "cli:opencode#ses_e97bda04cffenl03AJ19pIQNl8"
+      },
+      "ownership_version": 2,
+      "link_seq_before": 22,
+      "coordinator_main_request_delta": 1
+    },
+    {
+      "case": "C empty child_answered",
+      "at_unix": 1792750619,
+      "task_id": "3445d835-efa1-41ef-bdbc-5bf10a5e12d2",
+      "ticket_id": "3445d835-efa1-41ef-bdbc-5bf10a5e12d2:que_1684337bc001RspHUeEuh3g1sM",
+      "reply_ok": true,
+      "relayed": true,
+      "b_task_slot_count": 0
+    },
+    {
+      "case": "unrouted-retry_source_created",
+      "at_unix": 1792750632,
+      "task_id": "0712e45e-6553-410a-8e50-8d5cb0645469",
+      "ticket_id": "0712e45e-6553-410a-8e50-8d5cb0645469:que_16843a23d001SzdM504yAr74jS",
+      "kind": "ask",
+      "origin_session": null,
+      "initial_status": "needs_human",
+      "initial_ownership_version": 1
+    },
+    {
+      "case": "unrouted_retry_has_no_answer_authority",
+      "at_unix": 1792750632,
+      "task_id": "0712e45e-6553-410a-8e50-8d5cb0645469",
+      "ticket_id": "0712e45e-6553-410a-8e50-8d5cb0645469:que_16843a23d001SzdM504yAr74jS",
+      "initial_target": null,
+      "initial_status": "needs_human",
+      "empty_retry_http": 200,
+      "after_retry_status": "needs_human",
+      "ownership_version_before": 1,
+      "ownership_version_after": 1,
+      "forged_target_http": 400,
+      "source_still_waiting_before_reply": true,
+      "answered_retry_http": 409,
+      "final_notice_status": "answered",
+      "original_reply_relayed": true
+    },
+    {
+      "case": "A_agentd_stopped",
+      "at_unix": 1792750633,
+      "process_exit": 0
+    },
+    {
+      "case": "session-resident_source_created",
+      "at_unix": 1792750642,
+      "task_id": "1ee8d67c-d433-4ea6-b2dd-fe160b06dd04",
+      "ticket_id": "1ee8d67c-d433-4ea6-b2dd-fe160b06dd04:que_16843d6b20014ZWOOQ01YiRavY",
+      "kind": "ask",
+      "origin_session": "session:1",
+      "initial_status": "pending",
+      "initial_ownership_version": 1
+    },
+    {
+      "case": "session_wait_explicit_replay",
+      "at_unix": 1792750643,
+      "task_id": "1ee8d67c-d433-4ea6-b2dd-fe160b06dd04",
+      "ticket_id": "1ee8d67c-d433-4ea6-b2dd-fe160b06dd04:que_16843d6b20014ZWOOQ01YiRavY",
+      "origin_session": "session:1",
+      "target_address": {
+        "kind": "resident",
+        "session": "session:1",
+        "identity": "agent:b469route-78355cfasquad"
+      },
+      "target_machine": "b469-route-78355cfa-mac",
+      "session_wait_emitted": {
+        "type": "task_ticket_notice",
+        "notice": {
+          "source_machine": "b469-route-78355cfa-linux",
+          "task_id": "1ee8d67c-d433-4ea6-b2dd-fe160b06dd04",
+          "ticket_id": "1ee8d67c-d433-4ea6-b2dd-fe160b06dd04:que_16843d6b20014ZWOOQ01YiRavY",
+          "source_seq": 21,
+          "ownership_version": 1,
+          "target": {
+            "kind": "resident",
+            "session": "session:1",
+            "identity": "agent:b469route-78355cfasquad"
+          },
+          "ticket_kind": "ask"
+        },
+        "status": "delivered"
+      },
+      "status": "delivered",
+      "ownership_version": 1,
+      "since_floor": 33,
+      "cursor_claim": "explicit --since replay only; persistent cursor not tested",
+      "a_agentd_running": false,
+      "current_resident_identity": "agent:b469route-78355cfasquad"
+    },
+    {
+      "case": "session resident_answered",
+      "at_unix": 1792750643,
+      "task_id": "1ee8d67c-d433-4ea6-b2dd-fe160b06dd04",
+      "ticket_id": "1ee8d67c-d433-4ea6-b2dd-fe160b06dd04:que_16843d6b20014ZWOOQ01YiRavY",
+      "reply_ok": true,
+      "relayed": true,
+      "b_task_slot_count": 0
+    }
+  ],
+  "completed_checks": [
+    "isolated A/B agentd launched with same test PG and one owned SSH tunnel",
+    "P own push ticket notice resolved to P current push seat and was delivered without answering the source ticket",
+    "standalone L pull notice stayed pending until the real card wait CLI emitted it",
+    "empty C escalated to parent P push and delivered once",
+    "no-card/no-origin retry stayed needs_human, rejected caller target, and could not answer the ticket",
+    "A-offline session wait explicitly replayed the origin-addressed notice and acknowledged it while the source ask remained pending"
+  ],
+  "cli_contract_checks": {
+    "card_bind": [
+      "--cli",
+      "--session",
+      "--mode"
+    ],
+    "card_wait": [
+      "--since",
+      "--timeout"
+    ],
+    "session_wait": [
+      "--since",
+      "--timeout"
+    ],
+    "session_wait_identity": "derived from current SessionResident; no identity flag in CLI"
+  },
+  "remote_process_stopped": true,
+  "local_process_exit": null,
+  "ssh_tunnel_stopped": true,
+  "remote_host": "linux-01",
+  "loopback_model_fixture": true,
+  "card_association_setup": "A temporary Go helper called public ledger.OpenShared + Store.LinkTask after a real B-native ask ticket; complete card dispatch was not exercised.",
+  "cleanup_note": "A was explicitly stopped (exit0) before session wait; final cleanup therefore had no live A process to reap.",
+  "linux_binary_sha256": "106c687af57216083d0c88d9dfac4fc37fa9b1a967c36224eb7d8308e7454b06",
+  "mac_binary_sha256": "05a11809176215ec2f7cf2afd5193f446ef6bd9d256a4179f00dfe751a554603",
+  "source_manifest_sha256": "280b862cc8a3e1ec14d4115b43fe868f63116767a4f7d66787cbb9ba59b933d4"
+}

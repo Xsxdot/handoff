@@ -1,0 +1,74 @@
+{
+  "probe": "B469 persistent session wait cursor acceptance",
+  "run_id": "cursor-ce88fa5d",
+  "schema_name": "b469_route_cursor_ce88fa5d",
+  "schema_owned": true,
+  "schema_current_schema_verified": true,
+  "retained_for_evidence": true,
+  "schema_cleanup": "retained for root/Sol evidence review; no schema drop issued",
+  "cases": [
+    {
+      "case": "A_resident_session_created",
+      "at_unix": 1792750869,
+      "session_id": "session:1",
+      "resident_identity": "agent:b469cursor-ce88fa5dsquad",
+      "carrier_machine": "b469-cursor-ce88fa5d-mac"
+    },
+    {
+      "case": "A_agentd_stopped",
+      "at_unix": 1792750869,
+      "process_exit": 0
+    },
+    {
+      "case": "persistent-session-cursor_source_created",
+      "at_unix": 1792750872,
+      "task_id": "1e3a2403-e588-432b-9217-b928a288adcc",
+      "ticket_id": "1e3a2403-e588-432b-9217-b928a288adcc:que_1684770bb001gx3eGxOlhd68xl",
+      "kind": "ask",
+      "origin_session": "session:1",
+      "initial_status": "pending",
+      "initial_ownership_version": 1
+    },
+    {
+      "case": "persistent_session_delivery_cursor",
+      "at_unix": 1792750875,
+      "task_id": "1e3a2403-e588-432b-9217-b928a288adcc",
+      "ticket_id": "1e3a2403-e588-432b-9217-b928a288adcc:que_1684770bb001gx3eGxOlhd68xl",
+      "session_id": "session:1",
+      "resident_identity": "agent:b469cursor-ce88fa5dsquad",
+      "cursor_member": "resident:session:1/agent:b469cursor-ce88fa5dsquad",
+      "first_default_wait_matching_notice_count": 1,
+      "first_notification_status": "delivered",
+      "source_ticket_still_waiting_after_first_wait": true,
+      "second_default_wait_exit_code": 124,
+      "second_default_wait_matching_notice_count": 0,
+      "cursor_last_seq_after_first_wait": 2,
+      "cursor_last_seq_after_second_wait": 2,
+      "persistent_cursor_no_decrease": true,
+      "explicit_since_used": false
+    },
+    {
+      "case": "persistent session cursor_answered",
+      "at_unix": 1792750876,
+      "task_id": "1e3a2403-e588-432b-9217-b928a288adcc",
+      "ticket_id": "1e3a2403-e588-432b-9217-b928a288adcc:que_1684770bb001gx3eGxOlhd68xl",
+      "reply_ok": true,
+      "relayed": true,
+      "b_task_slot_count": 0
+    }
+  ],
+  "completed_checks": [
+    "isolated A/B agentd launched with same test PG and one owned SSH tunnel",
+    "default session wait delivered one origin-addressed ticket notice and persisted the resident cursor",
+    "a new CLI process using the same HOME/config did not replay the delivered notice and did not lower the cursor"
+  ],
+  "remote_process_stopped": true,
+  "local_process_exit": null,
+  "ssh_tunnel_stopped": true,
+  "remote_host": "linux-01",
+  "loopback_model_fixture": true,
+  "cleanup_note": "A was intentionally stopped (exit0) before CLI wait; final cleanup had no live A process to reap.",
+  "linux_binary_sha256": "106c687af57216083d0c88d9dfac4fc37fa9b1a967c36224eb7d8308e7454b06",
+  "mac_binary_sha256": "05a11809176215ec2f7cf2afd5193f446ef6bd9d256a4179f00dfe751a554603",
+  "source_manifest_sha256": "280b862cc8a3e1ec14d4115b43fe868f63116767a4f7d66787cbb9ba59b933d4"
+}

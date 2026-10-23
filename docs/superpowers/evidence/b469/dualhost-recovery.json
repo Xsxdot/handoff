@@ -1,0 +1,338 @@
+{
+  "probe": "B469 dual-host notification recovery and resident ownership transfer",
+  "run_id": "dual-6690594252",
+  "remote_host": "linux-01",
+  "completed_checks": [
+    "isolated A/B agentd launched with same test PG and one owned SSH tunnel",
+    "real A OpenCode resident dispatched a B-host task with its actual HANDOFF_ORIGIN_SESSION",
+    "B-host real OpenCode task reached a pending permission/question ticket",
+    "A/B task and notification projections observed over the cross-host tunnel",
+    "A coordinator slot was released, B task occupied its own slot, and the original ticket answer relayed",
+    "A was stopped while B held a real pending source question; no B-local delivery was accepted",
+    "restarting A on the same isolated config/Home delivered the persisted notice and answered the original B ticket",
+    "with A stopped, B stood the exact old resident identity and launched a B-local resident through existing APIs",
+    "the pending ticket notice was re-resolved to B with a higher ownership version and answered through the original source CAS"
+  ],
+  "session": {
+    "id": "session:12",
+    "resident": {
+      "identity": "agent:b469dual-6690594252squad",
+      "carrier": "b469dual-6690594252coord",
+      "carrier_machine": "b469-dual-6690594252-mac"
+    },
+    "member_count": 1
+  },
+  "session_create_seconds": 5.966,
+  "task_id": "00cb0fe3-740d-4b34-b39b-d8aa300103f0",
+  "origin_session_matches_A_resident": true,
+  "linux_ticket_count": 1,
+  "linux_ticket_kind": "gate",
+  "A_coordinator_running_at_ticket": 0,
+  "B_task_carrier_running_at_ticket": 1,
+  "original_ticket_reply": {
+    "ok": true,
+    "relayed": true
+  },
+  "base_permission_report": {
+    "task_id": "00cb0fe3-740d-4b34-b39b-d8aa300103f0",
+    "session_id": "session:12",
+    "notice": {
+      "status": "delivered",
+      "ownership_version": 1
+    },
+    "original_ticket_reply": {
+      "ok": true,
+      "relayed": true
+    },
+    "a_running": [
+      {
+        "key": "carrier/b463task",
+        "count": 0
+      },
+      {
+        "key": "carrier/b469dual-6690594252coord",
+        "count": 0
+      },
+      {
+        "key": "carrier/b469dual-6690594252task",
+        "count": 1
+      },
+      {
+        "key": "carrier/b469dual-86367ad6e9coord",
+        "count": 0
+      },
+      {
+        "key": "carrier/b469dual-86367ad6e9task",
+        "count": 0
+      },
+      {
+        "key": "carrier/b469dual-b4f4a7f00ccoord",
+        "count": 0
+      },
+      {
+        "key": "carrier/b469dual-b4f4a7f00ctask",
+        "count": 0
+      },
+      {
+        "key": "carrier/p0coord",
+        "count": 0
+      },
+      {
+        "key": "carrier/p0task",
+        "count": 0
+      },
+      {
+        "key": "squad/b469dual-6690594252squad/b469dual-6690594252coord",
+        "count": 0
+      },
+      {
+        "key": "squad/b469dual-86367ad6e9squad/b469dual-86367ad6e9coord",
+        "count": 0
+      },
+      {
+        "key": "squad/b469dual-b4f4a7f00csquad/b469dual-b4f4a7f00ccoord",
+        "count": 0
+      },
+      {
+        "key": "squad/p0coordinators/p0coord",
+        "count": 0
+      }
+    ],
+    "b_running": [
+      {
+        "key": "carrier/b463task",
+        "count": 0
+      },
+      {
+        "key": "carrier/b469dual-6690594252coord",
+        "count": 0
+      },
+      {
+        "key": "carrier/b469dual-6690594252task",
+        "count": 1
+      },
+      {
+        "key": "carrier/b469dual-86367ad6e9coord",
+        "count": 0
+      },
+      {
+        "key": "carrier/b469dual-86367ad6e9task",
+        "count": 0
+      },
+      {
+        "key": "carrier/b469dual-b4f4a7f00ccoord",
+        "count": 0
+      },
+      {
+        "key": "carrier/b469dual-b4f4a7f00ctask",
+        "count": 0
+      },
+      {
+        "key": "carrier/p0coord",
+        "count": 0
+      },
+      {
+        "key": "carrier/p0task",
+        "count": 0
+      },
+      {
+        "key": "squad/b469dual-6690594252squad/b469dual-6690594252coord",
+        "count": 0
+      },
+      {
+        "key": "squad/b469dual-86367ad6e9squad/b469dual-86367ad6e9coord",
+        "count": 0
+      },
+      {
+        "key": "squad/b469dual-b4f4a7f00csquad/b469dual-b4f4a7f00ccoord",
+        "count": 0
+      },
+      {
+        "key": "squad/p0coordinators/p0coord",
+        "count": 0
+      }
+    ]
+  },
+  "phases": [
+    {
+      "phase": "base_permission_scenario_completed",
+      "at_unix": 1792749466,
+      "task_id": "00cb0fe3-740d-4b34-b39b-d8aa300103f0",
+      "session_id": "session:12",
+      "reply": {
+        "ok": true,
+        "relayed": true
+      }
+    },
+    {
+      "phase": "source_task_stopped",
+      "at_unix": 1792749466,
+      "task_id": "00cb0fe3-740d-4b34-b39b-d8aa300103f0",
+      "b_task_carrier_count": 0,
+      "stop_requested": true
+    },
+    {
+      "phase": "A_agentd_stopped",
+      "at_unix": 1792749466,
+      "local_process_exit": 0
+    },
+    {
+      "phase": "A_offline_question_source_ticket",
+      "at_unix": 1792749469,
+      "task_id": "2b9be25b-d80a-42bf-a13d-26927738fd1b",
+      "ticket_id": "2b9be25b-d80a-42bf-a13d-26927738fd1b:que_168320e830013FWO0Xk8WttxVV",
+      "ticket_kind": "ask",
+      "source_state": "waiting_answer",
+      "origin_session": "session:12"
+    },
+    {
+      "phase": "A_offline_pending_notice_observed",
+      "at_unix": 1792749475,
+      "task_id": "2b9be25b-d80a-42bf-a13d-26927738fd1b",
+      "ticket_id": "2b9be25b-d80a-42bf-a13d-26927738fd1b:que_168320e830013FWO0Xk8WttxVV",
+      "status": "pending",
+      "ownership_version": 1,
+      "target_address": {
+        "kind": "resident",
+        "session": "session:12",
+        "identity": "agent:b469dual-6690594252squad"
+      },
+      "target_machine": "b469-dual-6690594252-mac"
+    },
+    {
+      "phase": "A_agentd_restarted",
+      "at_unix": 1792749476,
+      "process_alive": true,
+      "same_config": true,
+      "same_home": true
+    },
+    {
+      "phase": "A_recovered_delivery",
+      "at_unix": 1792749483,
+      "task_id": "2b9be25b-d80a-42bf-a13d-26927738fd1b",
+      "ticket_id": "2b9be25b-d80a-42bf-a13d-26927738fd1b:que_168320e830013FWO0Xk8WttxVV",
+      "status": "delivered",
+      "ownership_version": 1,
+      "target_address": {
+        "kind": "resident",
+        "session": "session:12",
+        "identity": "agent:b469dual-6690594252squad"
+      },
+      "target_machine": "b469-dual-6690594252-mac",
+      "coordinator_main_request_delta": 1,
+      "a_coordinator_count": 0
+    },
+    {
+      "phase": "A_recovered_ticket_answered",
+      "at_unix": 1792749483,
+      "task_id": "2b9be25b-d80a-42bf-a13d-26927738fd1b",
+      "ticket_id": "2b9be25b-d80a-42bf-a13d-26927738fd1b:que_168320e830013FWO0Xk8WttxVV",
+      "ok": true,
+      "relayed": true
+    },
+    {
+      "phase": "source_task_stopped",
+      "at_unix": 1792749483,
+      "task_id": "2b9be25b-d80a-42bf-a13d-26927738fd1b",
+      "b_task_carrier_count": 0,
+      "stop_requested": true
+    },
+    {
+      "phase": "A_agentd_stopped",
+      "at_unix": 1792749483,
+      "local_process_exit": 0
+    },
+    {
+      "phase": "resident_transfer_question_source_ticket",
+      "at_unix": 1792749486,
+      "task_id": "a3667052-bfb9-43a7-8a51-cb0d2cbc1772",
+      "ticket_id": "a3667052-bfb9-43a7-8a51-cb0d2cbc1772:que_1683250c80010MQT0UyDTpGmOb",
+      "ticket_kind": "ask",
+      "source_state": "waiting_answer",
+      "origin_session": "session:12"
+    },
+    {
+      "phase": "third_ticket_pending_old_owner",
+      "at_unix": 1792749486,
+      "task_id": "a3667052-bfb9-43a7-8a51-cb0d2cbc1772",
+      "ticket_id": "a3667052-bfb9-43a7-8a51-cb0d2cbc1772:que_1683250c80010MQT0UyDTpGmOb",
+      "status": "pending",
+      "ownership_version": 1,
+      "target_address": {
+        "kind": "resident",
+        "session": "session:12",
+        "identity": "agent:b469dual-6690594252squad"
+      },
+      "target_machine": "b469-dual-6690594252-mac",
+      "old_identity": "agent:b469dual-6690594252squad"
+    },
+    {
+      "phase": "B_resident_carrier_ready",
+      "at_unix": 1792749488,
+      "carrier": "b469dual-66905rc",
+      "squad": "b469dual-66905rs",
+      "machine": "b469-dual-6690594252-linux",
+      "model": "b469local/coord"
+    },
+    {
+      "phase": "old_resident_stood",
+      "at_unix": 1792749488,
+      "session_id": "session:12",
+      "identity": "agent:b469dual-6690594252squad",
+      "current_resident_absent": true
+    },
+    {
+      "phase": "new_resident_seated",
+      "at_unix": 1792749490,
+      "identity": "agent:b469dual-66905rs",
+      "carrier_machine": "b469-dual-6690594252-linux",
+      "carrier": "b469dual-66905rc",
+      "session_id": "session:12"
+    },
+    {
+      "phase": "resident_transfer_notice_delivered",
+      "at_unix": 1792749502,
+      "task_id": "a3667052-bfb9-43a7-8a51-cb0d2cbc1772",
+      "ticket_id": "a3667052-bfb9-43a7-8a51-cb0d2cbc1772:que_1683250c80010MQT0UyDTpGmOb",
+      "status": "delivered",
+      "ownership_version": 2,
+      "previous_ownership_version": 1,
+      "target_address": {
+        "kind": "resident",
+        "session": "session:12",
+        "identity": "agent:b469dual-66905rs"
+      },
+      "target_machine": "b469-dual-6690594252-linux",
+      "current_resident_identity": "agent:b469dual-66905rs",
+      "current_resident_machine": "b469-dual-6690594252-linux",
+      "a_agentd_running": false
+    },
+    {
+      "phase": "transferred_ticket_answered",
+      "at_unix": 1792749502,
+      "task_id": "a3667052-bfb9-43a7-8a51-cb0d2cbc1772",
+      "ticket_id": "a3667052-bfb9-43a7-8a51-cb0d2cbc1772:que_1683250c80010MQT0UyDTpGmOb",
+      "ok": true,
+      "relayed": true
+    },
+    {
+      "phase": "source_task_stopped",
+      "at_unix": 1792749502,
+      "task_id": "a3667052-bfb9-43a7-8a51-cb0d2cbc1772",
+      "b_task_carrier_count": 0,
+      "stop_requested": true
+    }
+  ],
+  "remote_process_stopped": true,
+  "local_process_exit": null,
+  "ssh_tunnel_stopped": true,
+  "loopback_model_fixture": true,
+  "cli_versions": {
+    "mac_opencode": "1.18.32",
+    "linux_opencode": "1.19.3"
+  },
+  "linux_binary_sha256": "106c687af57216083d0c88d9dfac4fc37fa9b1a967c36224eb7d8308e7454b06",
+  "mac_binary_sha256": "05a11809176215ec2f7cf2afd5193f446ef6bd9d256a4179f00dfe751a554603",
+  "source_manifest_sha256": "280b862cc8a3e1ec14d4115b43fe868f63116767a4f7d66787cbb9ba59b933d4",
+  "cleanup_note": "A was intentionally stopped before transfer; both recorded A stops exited 0. Final base cleanup therefore has no live A process to reap."
+}
