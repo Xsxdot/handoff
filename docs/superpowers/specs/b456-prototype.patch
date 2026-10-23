@@ -20,16 +20,17 @@
        <button class="tab">终端 1</button>
 --- a/pages/session-status.html
 +++ b/pages/session-status.html
-@@ -1 +1,63 @@
+@@ -1 +1,136 @@
 -<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>当前会话 · Handoff 原型基准</title><link rel="stylesheet" href="../shared/session-current.css"></head><body><div class="app"><div class="workspace"><aside class="tree"><div class="search">⌕　搜索项目、机器或任务</div><div class="tree-scroll"><div class="tree-head"><span>项目 14</span><span>＋　☷</span></div><section class="project"><div class="project-title">⌄　▣　erp <span class="project-actions">▣　▱　＋</span></div><div class="tree-row tree-session" data-session="erp">▢　项目房间 erp</div><div class="tree-row tree-session" data-session="resident">▢　驻场会话</div><div class="tree-row">▢　E38 快递对账</div><div class="tree-row active">›_　bash · cards/E38-charter-2 <span class="dot"></span></div><div class="tree-row muted">⑂　cards/E42.1-charter-3</div><div class="tree-row muted">⑂　cards/E42.1-charter-2</div><div class="tree-row muted">▣　已结束　128　›</div></section><section class="project"><div class="project-title">⌄　▣　handoff <span class="project-actions">▣　▱　＋</span></div><div class="tree-row">▢　审批闭环与看板：B469 / B463 / B458</div><div class="tree-row">▢　项目房间 handoff</div><div class="tree-row">▢　B456 会话角色状态与阻塞可见性</div><div class="tree-row">›_　bash · main <span class="machine">本机</span><span class="dot"></span></div><div class="tree-row muted">▣　已结束　939　›</div></section><section class="project"><div class="project-title">⌄　▣　xianyu-bridge <span class="project-actions">▣　▱　＋</span></div><div class="tree-row active">›_　bash · codex/x29 <span class="dot"></span></div></section><section class="project"><div class="project-title">›　▣　tk</div><div class="project-title">›　▣　ai-hub</div><div class="project-title">›　▣　cloth</div><div class="project-title">›　▣　charter</div><div class="project-title">›　▣　super-dev</div><div class="project-title">›　▣　handoff-server</div></section></div><footer class="tree-footer"><div class="archive-row">▣　归档会话</div><div class="dock"><span>▢</span><span>▦</span><span>◷</span><span>⚙</span></div></footer></aside><main class="main"><div class="tabs"><span class="tab">›_　bash · main (10)　×</span><span class="tab">▢　会话 · 新会话　×</span><span class="tab active">▢　会话 · 项目房间 erp　×</span><span class="tab">›_　bash · codex/bridge-p2 (11)　×</span></div><div class="pane-head">会话 · 项目房间 erp <span class="pane-actions">⋯　×</span></div><section class="chat"><div class="messages"><article class="message"><div class="meta">cli:opencode/ses_ea28229feffe... · #29275</div>E24 已完成实现并通过独立审查：日期列宽 90→110＋不含略规则，销售「面单打印」页显示名统一为「打单发货」。commit 5b3d275（分支 cards/E24-charter），admin npm test 166+4、npm run build 通过。卡已在 finish，待合入 main。</article><article class="message"><div class="meta">cli:opencode/ses_ea28229feffe... · #29276</div>E24 已在 finish 等合入 main：commit 5b3d275（分支 cards/E24-charter）。销售数据报表日期列 90→110 并对日期单元格取消省略，页面名统一「打单发货」。协作者独立审查全绿；等待人工合并。</article></div></section><div class="composer-wrap"><div class="composer"><span class="tool">☷</span><textarea placeholder="发消息…" aria-label="发消息"></textarea><button class="send" type="button">发送</button></div></div></main></div><div class="quota">已用　◒ ━━━　68%　额度　◔ 0% 4h57m · 16% 6d 18h</div></div></body></html>
 \ No newline at end of file
-+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>会话角色状态 · B456 静态原型</title><link rel="stylesheet" href="../shared/session-current.css"></head><body><div class="app"><div class="workspace"><aside class="tree"><div class="search">⌕　搜索项目、机器或任务</div><div class="tree-scroll"><div class="tree-head"><span>项目 14</span><span>＋　☷</span></div><section class="project"><div class="project-title">⌄　▣　erp <span class="project-actions">▣　▱　＋</span></div><div class="tree-row tree-session" data-session="erp" role="button" tabindex="0">▢　项目房间 erp</div><div class="tree-row tree-session" data-session="resident" role="button" tabindex="0">▢　驻场会话</div><div class="tree-row tree-session" data-session="e38" role="button" tabindex="0" role="button" tabindex="0">▢　E38 快递对账</div><div class="tree-row">›_　bash · cards/E38-charter-2 <span class="machine">linux-01</span><span class="dot"></span></div><div class="tree-row muted">⑂　cards/E42.1-charter-3</div><div class="tree-row muted">⑂　cards/E42.1-charter-2</div><div class="tree-row muted">▣　已结束　128　›</div></section><section class="project"><div class="project-title">⌄　▣　handoff <span class="project-actions">▣　▱　＋</span></div><div class="tree-row">▢　审批闭环与看板：B469 / B463 / B458</div><div class="tree-row">▢　项目房间 handoff</div><div class="tree-row tree-session active" data-session="b456" role="button" tabindex="0">▢　B456 会话角色状态与阻塞可见性</div><div class="tree-row">›_　bash · main <span class="machine">本机</span><span class="dot"></span></div><div class="tree-row muted">▣　已结束　939　›</div></section><section class="project"><div class="project-title">⌄　▣　xianyu-bridge <span class="project-actions">▣　▱　＋</span></div><div class="tree-row">›_　bash · codex/x29 <span class="machine">本机</span><span class="dot"></span></div></section><section class="project"><div class="project-title">›　▣　tk</div><div class="project-title">›　▣　ai-hub</div><div class="project-title">›　▣　cloth</div><div class="project-title">›　▣　charter</div><div class="project-title">›　▣　super-dev</div><div class="project-title">›　▣　handoff-server</div></section></div><footer class="tree-footer"><div class="archive-row">▣　归档会话</div><div class="dock"><span>▢</span><span>▦</span><span>◷</span><span>⚙</span></div></footer></aside><main class="main"><div class="tabs"><span class="tab">›_　bash · main (10)　×</span><span class="tab">▢　会话 · 新会话　×</span><span class="tab">▢　会话 · 项目房间 erp　×</span><span class="tab active" id="activeSessionTab">▢　会话 · B456 会话角色状态与阻塞可见性　×</span><span class="tab">›_　bash · codex/bridge-p2 (11)　×</span></div><div class="casebar"><label for="statusCase">演示情境</label><select id="statusCase"><option value="handoff" selected>E38 待协调者接续</option><option value="working">最近有进展</option><option value="progressed">复审已接续 / 工单已答</option><option value="approval">等待人工决定</option><option value="stale">来源读取失败</option><option value="unknown">没有可用席位</option></select><button id="toggleStatus" type="button" aria-pressed="true">隐藏状态</button><span class="mock-note">历史案例编排 · 全部为 mock，非实时 E38</span></div><div class="pane-head"><span id="paneTitle">会话 · B456 会话角色状态与阻塞可见性</span> <span class="pane-actions">⋯　×</span></div><section class="chat"><div class="messages" id="messages"><article class="message"><div class="meta">B456 演示讨论 · 历史案例 · mock</div>E38 修复执行回合于 14:49 结束并归档。案例记录显示卡仍待复审；截至 15:15，未观察到后续复审派发。</article><article class="message"><div class="meta">B456 演示讨论 · mock</div>状态条将执行任务与卡协调者分开呈现。此案例用于说明待接续状态，不代表当前 E38 实时状态。</article></div></section><div class="status-area" id="statusArea"><div class="role-strip"><span class="status-summary" id="statusSummary"></span><div id="roleStatus" style="display:flex;align-items:center;gap:3px"></div></div></div><div class="composer-wrap"><div class="composer"><span class="tool">☷</span><textarea placeholder="发消息…" aria-label="发消息"></textarea><button class="send" id="sendMessage" type="button">发送</button></div></div></main></div><div class="quota">已用　◒ ━━━　68%　额度　◔ 0% 4h57m · 16% 6d 18h</div></div><dialog id="roleDialog" class="role-dialog"><div class="dialog-head"><h2 id="dialogTitle">角色详情</h2><button id="dialogClose" aria-label="关闭">×</button></div><div class="dialog-body" id="dialogBody"></div></dialog><script>
++<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>会话角色状态 · B456 静态原型</title><link rel="stylesheet" href="../shared/session-current.css"></head><body><div class="app"><div class="workspace"><aside class="tree"><div class="search">⌕　搜索项目、机器或任务</div><div class="tree-scroll"><div class="tree-head"><span>项目 14</span><span>＋　☷</span></div><section class="project"><div class="project-title">⌄　▣　erp <span class="project-actions">▣　▱　＋</span></div><div class="tree-row tree-session" data-session="erp" role="button" tabindex="0">▢　项目房间 erp</div><div class="tree-row tree-session" data-session="resident" role="button" tabindex="0">▢　驻场会话</div><div class="tree-row tree-session" data-session="e38" role="button" tabindex="0">▢　E38 快递对账</div><div class="tree-row">›_　bash · cards/E38-charter-2 <span class="machine">linux-01</span><span class="dot"></span></div><div class="tree-row muted">⑂　cards/E42.1-charter-3</div><div class="tree-row muted">⑂　cards/E42.1-charter-2</div><div class="tree-row muted">▣　已结束　128　›</div></section><section class="project"><div class="project-title">⌄　▣　handoff <span class="project-actions">▣　▱　＋</span></div><div class="tree-row">▢　审批闭环与看板：B469 / B463 / B458</div><div class="tree-row">▢　项目房间 handoff</div><div class="tree-row tree-session active" data-session="b456" role="button" tabindex="0">▢　B456 会话角色状态与阻塞可见性</div><div class="tree-row">›_　bash · main <span class="machine">本机</span><span class="dot"></span></div><div class="tree-row muted">▣　已结束　939　›</div></section><section class="project"><div class="project-title">⌄　▣　xianyu-bridge <span class="project-actions">▣　▱　＋</span></div><div class="tree-row">›_　bash · codex/x29 <span class="machine">本机</span><span class="dot"></span></div></section><section class="project"><div class="project-title">›　▣　tk</div><div class="project-title">›　▣　ai-hub</div><div class="project-title">›　▣　cloth</div><div class="project-title">›　▣　charter</div><div class="project-title">›　▣　super-dev</div><div class="project-title">›　▣　handoff-server</div></section></div><footer class="tree-footer"><div class="archive-row">▣　归档会话</div><div class="dock"><span>▢</span><span>▦</span><span>◷</span><span>⚙</span></div></footer></aside><main class="main"><div class="tabs"><span class="tab">›_　bash · main (10)　×</span><span class="tab">▢　会话 · 新会话　×</span><span class="tab">▢　会话 · 项目房间 erp　×</span><span class="tab active" id="activeSessionTab">▢　会话 · B456 会话角色状态与阻塞可见性　×</span><span class="tab">›_　bash · codex/bridge-p2 (11)　×</span></div><div class="casebar"><label for="statusCase">演示情境</label><select id="statusCase"><option value="handoff" selected>E38 待协调者接续</option><option value="working">最近有进展</option><option value="progressed">复审已接续 / 工单已答</option><option value="approval">等待人工决定</option><option value="stale">来源读取失败</option><option value="unknown">没有可用席位</option><option value="handoffFailed">E38 接续失败</option></select><button id="toggleStatus" type="button" aria-pressed="true">隐藏状态</button><span class="mock-note">历史案例编排 · 全部为 mock，非实时 E38</span></div><div class="pane-head"><span id="paneTitle">会话 · B456 会话角色状态与阻塞可见性</span> <span class="pane-actions">⋯　×</span></div><section class="chat"><div class="messages" id="messages"><article class="message"><div class="meta">B456 演示讨论 · 历史案例 · mock</div>E38 修复执行回合于 14:49 结束并归档。案例记录显示卡仍待复审；截至 15:15，未观察到后续复审派发。</article><article class="message"><div class="meta">B456 演示讨论 · mock</div>状态条将执行任务与卡协调者分开呈现。此案例用于说明待接续状态，不代表当前 E38 实时状态。</article></div></section><div class="status-area" id="statusArea"><div class="role-strip"><span class="status-summary" id="statusSummary"></span><div id="roleStatus" style="display:flex;align-items:center;gap:3px"></div></div></div><div class="composer-wrap"><div class="composer"><span class="tool">☷</span><textarea placeholder="发消息…" aria-label="发消息"></textarea><button class="send" id="sendMessage" type="button">发送</button></div></div></main></div><div class="quota">已用　◒ ━━━　68%　额度　◔ 0% 4h57m · 16% 6d 18h</div></div><dialog id="roleDialog" class="role-dialog"><div class="dialog-head"><h2 id="dialogTitle">角色详情</h2><button id="dialogClose" aria-label="关闭">×</button></div><div class="dialog-body" id="dialogBody"></div></dialog><script>
 +const roleCases = {
 +  working: {
 +    summary: '最近有进展；仅展示最近记录',
 +    roles: [
 +      { id:'self', avatar:'我', name:'我', role:'会话成员', status:'可回复', tone:'calm', elapsed:'', card:'B456', phase:'原型走查', doing:'会话保持可输入；这个状态不表示有人正在替你操作。', waiting:'没有等待对象。', why:'这是当前会话参与者视角。', evidence:'最近一次会话消息：15:14（mock）', updated:'15:14 · mock' },
-+      { id:'coordinator', avatar:'主', name:'主 agent', role:'主 agent', status:'最近有进展', tone:'running', elapsed:'8 分钟前', card:'B456', phase:'协调与核对', doing:'最近记录显示协调者整理了走查意见；没有证据确认当前仍在执行。', waiting:'等待执行任务返回阶段证据。', why:'协调者仍有活动进展。', evidence:'阶段记录：已读取原型需求（mock）', updated:'15:15 · mock' },
++      { id:'resident', avatar:'驻', name:'驻场者', role:'会话参与者', status:'最近有进展', tone:'calm', elapsed:'12 分钟前', card:'B456', phase:'需求整理', doing:'收到用户消息后整理需求，并发给卡协调者；送达尚未确认。', waiting:'等待卡协调者接续。', why:'发送成功只证明已发出，不代表对方已收到或开始运行。', evidence:'消息投递记录：15:03 发出，未见接收确认（mock）。', updated:'15:03 · mock' },
++      { id:'coordinator', avatar:'协', name:'卡协调者', role:'卡协调者', status:'最近有进展', tone:'running', elapsed:'8 分钟前', card:'B456', phase:'协调与核对', doing:'最近记录显示协调者整理了走查意见；没有证据确认当前仍在执行。', waiting:'等待执行任务返回阶段证据。', why:'协调者仍有活动进展。', evidence:'阶段记录：已读取原型需求（mock）', updated:'15:15 · mock' },
 +      { id:'executor', avatar:'执', name:'执行任务', role:'执行者 · 非会话成员', status:'最近有进展', tone:'running', elapsed:'6 分钟前', card:'B456', phase:'生成状态原型', doing:'最近进度记录为调整会话底部状态条；没有证据确认当前仍在执行。', waiting:'等待当前任务阶段完成。', why:'执行任务独立于群聊成员列表，状态通过任务记录展示。', evidence:'最近进度：状态条结构已写入（mock）', updated:'15:14 · mock' },
 +    ]
 +  },
@@ -37,6 +38,7 @@
 +    summary: '执行回合已完成；等待协调者接续 26 分钟',
 +    roles: [
 +      { id:'self', avatar:'我', name:'我', role:'会话成员', status:'可回复', tone:'calm', elapsed:'', card:'E38', phase:'等待复审', doing:'可在会话里补充信息；当前没有需要你处理的工单。', waiting:'没有等待你答复。', why:'执行回合已完成，后续由卡协调者接续；这不是等待用户审核 spec。', evidence:'执行回合 14:49 结束；15:15 尚无后续阶段证据。', updated:'15:15 · mock' },
++      { id:'resident', avatar:'驻', name:'驻场者', role:'会话参与者', status:'已发出接续请求', tone:'waiting', elapsed:'26 分钟', card:'E38', phase:'需求转交', doing:'修复任务于 14:49 归档后，驻场者于 14:49:20 发出接续信息；尚未确认送达。', waiting:'等待 E38 协调者确认接续。', why:'没有接续记录，原因未知；不能由发出消息推断已送达或协调者正在运行。', evidence:'驻场者发出接续消息：14:49:20（mock），截至 15:15 无后续接续记录。', updated:'最后观测于 15:15 · mock' },
 +      { id:'coordinator', avatar:'协', name:'E38 协调者', role:'卡协调者', status:'待接续', tone:'waiting', elapsed:'26 分钟', card:'E38', phase:'修复任务已归档 · 卡在待复审', doing:'修复任务于 14:49 归档；卡仍待复审，截至 15:15 尚未观察到后续派发。', waiting:'等待 E38 协调者接续并安排复审或补充处理。', why:'这是历史案例：修复任务已归档，卡仍待复审；没有观察到后续派发。不是当前 E38 状态，也不是等待用户批准 spec。', evidence:'最后有效证据：执行回合于 14:49 完成；更新时间 14:49。', updated:'状态核对于 15:15 · mock' },
 +      { id:'executor', avatar:'执', name:'执行任务', role:'执行者 · 非会话成员', status:'执行回合已完成', tone:'done', elapsed:'14:49 完成', card:'E38', phase:'实现回合完成', doing:'修复执行回合于 14:49 结束并归档；卡仍待复审，尚未观察到复审派发。', waiting:'执行者不在等待；下一步由卡协调者接续。', why:'执行者是卡上的任务角色，不属于会话成员。执行回合完成不等于卡复审完成。', evidence:'执行回合完成记录：14:49（mock）；15:15 尚无复审开始证据。', updated:'14:49 · mock' },
 +    ]
@@ -45,6 +47,7 @@
 +    summary: '协调者已接续复审；已答工单不再显示等待',
 +    roles: [
 +      { id:'self', avatar:'我', name:'我', role:'会话成员', status:'可回复', tone:'calm', elapsed:'', card:'E38', phase:'工单已处理', doing:'此前的人工权限工单已获答复，当前没有待你处理的请求。', waiting:'不再等待你回复。', why:'收到明确答复后，等待态已结束。', evidence:'权限工单于 15:18 已答复（mock）。', updated:'15:20 · mock' },
++      { id:'resident', avatar:'驻', name:'驻场者', role:'会话参与者', status:'已确认接续', tone:'calm', elapsed:'2 分钟', card:'E38', phase:'接收复审派发结果', doing:'已收到 E38 协调者回复，确认复审任务已派发。', waiting:'当前不再等待接续确认。', why:'协调者回复于 15:20 到达，旧的待接续状态已结束。', evidence:'收到协调者回复：15:20（mock），复审任务 review-2 已派发。', updated:'15:20 · mock' },
 +      { id:'coordinator', avatar:'协', name:'E38 协调者', role:'卡协调者', status:'已安排复审', tone:'calm', elapsed:'2 分钟前', card:'E38', phase:'修复任务已归档 · 卡在待复审', doing:'已接续 E38 并安排新的复审任务；协调者负责接续与安排，不承担复审执行。', waiting:'等待复审任务返回结果。', why:'新复审任务于 15:18 开始，旧的 26 分钟待接续状态已被取代。', evidence:'协调者接续并派发复审任务：15:18（mock）。', updated:'15:18 · mock' },
 +      { id:'executor', avatar:'执', name:'执行任务', role:'执行者 · 非会话成员', status:'执行回合已完成', tone:'done', elapsed:'14:49 完成', card:'E38', phase:'等待复审结果', doing:'执行回合保持已完成；复审由后续独立任务处理。', waiting:'执行者没有待接续动作。', why:'复审是卡上的后续阶段，不会把已完成的执行回合重新标成运行中。', evidence:'执行回合 14:49 完成（mock）。', updated:'14:49 · mock' },
 +      { id:'reviewer', avatar:'审', name:'复审任务', role:'审查者 · 非会话成员', status:'运行中', tone:'running', elapsed:'2 分钟', card:'E38', phase:'复审执行', doing:'独立的复审任务正在检查执行回合提交的修复。', waiting:'正在运行，尚无复审结果。', why:'这条新任务承担审查执行；不把该职责归给卡协调者。', evidence:'复审任务开始记录：15:18（mock）。', updated:'15:20 · mock' },
@@ -54,7 +57,7 @@
 +    summary: '执行任务暂停，等待你决定删除请求',
 +    roles: [
 +      { id:'self', avatar:'我', name:'我', role:'会话成员', status:'需要你', tone:'waiting', elapsed:'', card:'B456', phase:'用户权限工单', doing:'执行任务请求删除已有文件，当前等待人工决定；状态条不提供批准操作。', waiting:'等待你允许或拒绝这个权限请求。', why:'请求尚未处理；不代表执行任务已经异常。', evidence:'权限请求：删除已有文件（mock，待人工决定）', updated:'15:12 · mock' },
-+      { id:'coordinator', avatar:'主', name:'主 agent', role:'主 agent', status:'等待用户授权', tone:'waiting', elapsed:'3 分钟', card:'B456', phase:'权限工单待答', doing:'主 agent 已转交删除请求，等待用户决定。', waiting:'等待你对权限工单作出选择。', why:'主 agent 负责转交与后续处理，不是请求的批准者。', evidence:'权限工单于 15:12 创建（mock）', updated:'15:12 · mock' },
++      { id:'coordinator', avatar:'主', name:'卡协调者', role:'卡协调者', status:'等待用户授权', tone:'waiting', elapsed:'3 分钟', card:'B456', phase:'权限工单待答', doing:'主 agent 已转交删除请求，等待用户决定。', waiting:'等待你对权限工单作出选择。', why:'主 agent 负责转交与后续处理，不是请求的批准者。', evidence:'权限工单于 15:12 创建（mock）', updated:'15:12 · mock' },
 +      { id:'executor', avatar:'执', name:'执行任务', role:'执行者 · 非会话成员', status:'等待回复', tone:'waiting', elapsed:'3 分钟', card:'B456', phase:'等待授权', doing:'当前执行被权限门暂停。', waiting:'等待主 agent 获得审批结果后继续。', why:'执行任务是卡上的任务席位，不是群聊成员。', evidence:'任务记录：需要人工授权（mock）', updated:'15:12 · mock' },
 +    ]
 +  },
@@ -62,8 +65,16 @@
 +    summary: '来源读取失败；保留最后观测信息',
 +    roles: [
 +      { id:'self', avatar:'我', name:'我', role:'会话成员', status:'可回复', tone:'calm', elapsed:'', card:'B456', phase:'连接状态未知', doing:'是否有待处理事项暂无法确认。', waiting:'待办状态来源读取失败，暂无法确认。', why:'本地状态展示不受宿主连接结果影响。', evidence:'最后已知会话活动：15:01（mock）', updated:'15:01 · mock' },
-+      { id:'coordinator', avatar:'主', name:'主 agent', role:'主 agent', status:'信息未更新', tone:'stale', elapsed:'最后观测 15:01', card:'B456', phase:'宿主不可达', doing:'明确的读取失败导致暂时无法取得新的协调者状态。', waiting:'等待宿主重新可达后刷新状态。', why:'连接失败只能说明当前取不到新状态，不能据此诊断进程故障。', evidence:'最后有效状态：15:01；之后无新证据。', updated:'15:01 · mock' },
++      { id:'coordinator', avatar:'主', name:'卡协调者', role:'卡协调者', status:'信息未更新', tone:'stale', elapsed:'最后观测 15:01', card:'B456', phase:'宿主不可达', doing:'明确的读取失败导致暂时无法取得新的协调者状态。', waiting:'等待宿主重新可达后刷新状态。', why:'连接失败只能说明当前取不到新状态，不能据此诊断进程故障。', evidence:'最后有效状态：15:01；之后无新证据。', updated:'15:01 · mock' },
 +      { id:'executor', avatar:'执', name:'执行任务', role:'执行者 · 非会话成员', status:'状态未知', tone:'stale', elapsed:'最后观测 15:01', card:'B456', phase:'无法确认', doing:'没有新事件可确认任务是否仍在运行。', waiting:'等待宿主恢复并提供新状态。', why:'沉默或不可达不等于任务异常。', evidence:'最后有效证据：15:01 任务进度（mock）。', updated:'15:01 · mock' },
++    ]
++  },
++  handoffFailed: {
++    summary: '接续失败：复审没有启动',
++    roles: [
++      { id:'resident', avatar:'驻', name:'驻场者', role:'会话参与者', status:'已发出接续信息', tone:'waiting', elapsed:'16:12', card:'E38', phase:'请求接续', doing:'驻场者整理修复结束信息并发给 E38 协调者。', waiting:'等待系统接续结果及协调者回复。', why:'消息发出本身不能证明已送达。', evidence:'请求记录 H-2048 已发出（mock）。', updated:'16:12 · mock' },
++      { id:'coordinator', avatar:'协', name:'E38 协调者', role:'卡协调者', status:'异常', tone:'error', elapsed:'16:12', card:'E38', phase:'唤醒协调者失败', doing:'系统尝试连接协调者所在机器后失败；复审任务没有启动。', waiting:'等待本地操作人员查看连接并决定后续处理。', why:'失败发生在唤醒/连接步骤，不能推断协调者已收到消息。', evidence:'connection reset by peer（mock）', updated:'16:12 · mock' },
++      { id:'executor', avatar:'执', name:'修复任务', role:'执行任务 · 非会话成员', status:'执行回合已完成', tone:'done', elapsed:'14:49 完成', card:'E38', phase:'修复任务已归档', doing:'修复执行回合结束并归档。', waiting:'后续复审未启动。', why:'执行任务和卡协调者是不同角色。', evidence:'修复任务归档事件：14:49（mock）。', updated:'14:49 · mock' },
 +    ]
 +  },
 +  unknown: {
@@ -76,10 +87,72 @@
 +  }
 +};
 +const byId=id=>document.getElementById(id);
-+function render(){const c=roleCases[byId('statusCase').value];byId('statusSummary').textContent=c.summary;byId('roleStatus').innerHTML=c.roles.map(r=>`<button class="role-chip" data-role="${r.id}" aria-label="查看${r.name}状态"><span class="avatar">${r.avatar}</span><span><b>${r.name}</b> <small><i class="state-dot ${r.tone}"></i> ${r.status}${r.elapsed?' · '+r.elapsed:''}</small></span></button>`).join('')}
++function render(){const c=roleCases[byId('statusCase').value];byId('statusSummary').textContent=c.summary;byId('roleStatus').innerHTML=c.roles.map(r=>`<button class="role-chip ${r.tone}" data-role="${r.id}" aria-label="查看${r.name}状态"><span class="avatar">${r.avatar}</span><span><b>${r.name}</b> <small><i class="state-dot ${r.tone}"></i> ${r.status}${r.elapsed?' · '+r.elapsed:''}</small></span></button>`).join('')}
 +byId('statusCase').addEventListener('change',render);render();
 +byId('toggleStatus').addEventListener('click',e=>{const hidden=byId('statusArea').classList.toggle('hidden');e.currentTarget.textContent=hidden?'显示状态':'隐藏状态';e.currentTarget.setAttribute('aria-pressed',String(!hidden))});
-+byId('roleStatus').addEventListener('click',e=>{const b=e.target.closest('[data-role]');if(!b)return;const r=roleCases[byId('statusCase').value].roles.find(x=>x.id===b.dataset.role);byId('dialogTitle').textContent=`${r.name} · ${r.status}`;byId('dialogBody').innerHTML=`<dl><dt>角色 · 经过</dt><dd>${r.role} · ${r.elapsed||'—'}</dd><dt>当前卡与阶段</dt><dd><a href="#mock-card">${r.card} · ${r.phase}</a></dd><dt>正在做什么</dt><dd>${r.doing}</dd><dt>在等谁 / 等什么</dt><dd>${r.waiting}</dd><dt>原因</dt><dd>${r.why}</dd><dt>最后有效证据</dt><dd>${r.evidence}</dd><dt>更新时间</dt><dd>${r.updated}</dd></dl><div class="dialog-links"><a href="#mock-timeline">查看时间线证据（模拟链接）</a> · 不会执行真实操作</div>`;byId('roleDialog').showModal()});
++const timelineData = {
++  handoff: {
++    resident: [{ round: '驻场者 · 第 1 轮', start: '14:49:00', end: '14:49:30', duration: '30 秒', result: '已发出，未确认送达', events: [
++      ['14:49:10', '收到用户消息', '用户消息 · B456/E38 · mock', '“请确认修复结束后由谁安排复审。”', '接收事件 M-118'],
++      ['14:49:20', '整理需求并发给卡协调者', '驻场者 → E38 协调者 · mock', '“修复执行回合已结束，请接续并安排复审。”', '发送事件 M-119；未见接收确认'],
++      ['14:49:30', '等待接续', '未观察到对方接收/回复', '没有接续记录，原因未知。', '不把发出消息视作已送达']
++    ] }],
++    coordinator: [{ round: 'E38 协调者 · 无后续轮次', start: '—', end: '—', duration: '—', result: '没有接续记录，原因未知', events: [
++      ['14:49 后', '接续记录', 'E38 卡事件 · mock', '目前只知修复回合已结束；没有协调者接续事件。', '卡 E38 · task repair-1 · 事件 L-902']
++    ] }],
++    executor: [{ round: 'E38 修复执行任务 · 第 1 轮', start: '14:20', end: '14:49', duration: '29 分钟', result: '执行回合结束，修复任务归档', events: [
++      ['14:20', '收到任务提示', 'task repair-1 · E38 · mock', '修复 E38 快递对账问题。', '提示记录 P-41'],
++      ['14:46', '主要动作摘要', '执行任务 · mock', '完成修复并整理交付结果；这里只展示可见动作摘要。', '关联任务 repair-1'],
++      ['14:48', '输出回复', '执行任务 → 会话 · mock', '“修复已完成，结果已交回，请协调者安排复审。”', '输出 M-117'],
++      ['14:49', '执行回合结束并归档', 'task repair-1 · E38 · mock', '任务已归档；卡仍待复审。', '事件 T-774']
++    ] }]
++  },
++  handoffFailed: {
++    resident: [{ round: '驻场者 · 第 1 轮', start: '16:10', end: '16:12', duration: '2 分钟', result: '接续请求已发出', events: [
++      ['16:10', '收到会话消息', '消息 M-2046 · B456/E38 · mock', '“修复已交回，请安排复审。”', '角色：驻场者'],
++      ['16:11', '整理并发送接续请求', '请求 H-2048 · 发往 E38 协调者', '“修复执行回合结束，请接续并启动复审。”', '发送成功不表示接收'],
++      ['16:12', '收到接续失败结果', 'H-2048 · 关联卡 E38', '系统连接协调者所在机器失败，复审没有启动。', '失败步骤：连接/唤醒协调者']
++    ] }],
++    coordinator: [{ round: 'E38 协调者 · 唤醒尝试 1', start: '16:12', end: '16:12', duration: '<1 秒', result: '失败：未启动复审', events: [
++      ['16:12:01', '卡事件到达协调入口', '卡 E38 · task repair-1 · mock', '修复任务已归档，待协调者接续。', '事件 L-903'],
++      ['16:12:02', '尝试连接协调者所在机器', '唤醒目标：linux-01 · mock', '调用摘要：连接协调者运行环境并投递接续事件。', '步骤 H-2048/2'],
++      ['16:12:02', '连接失败', '错误原文', 'connection reset by peer', '最后成功步骤：协调入口收到卡事件 L-903。影响：复审任务没有启动；下一步由本地操作人员查看连接并决定后续处理。']
++    ] }],
++    executor: [{ round: '修复执行任务 · 第 1 轮', start: '14:20', end: '14:49', duration: '29 分钟', result: '修复回合完成并归档', events: [
++      ['14:20', '收到任务', 'task repair-1 · E38 · mock', '修复 E38 快递对账中的展示问题。', '执行任务提示记录 P-41'],
++      ['14:48', '输出结果', '执行任务 · mock', '修复完成，变更已提交，等待协调者接续安排复审。', '仅展示可见输出'],
++      ['14:49', '执行回合结束并归档', 'task repair-1 · mock', '任务已归档；卡仍待复审。', '事件 T-774']
++    ] }]
++  },
++  progressed: {
++    resident: [{ round: '驻场者 · 第 2 轮', start: '15:18', end: '15:20', duration: '2 分钟', result: '收到协调者回复，已确认接续', events: [
++      ['15:18', '收到协调者接续确认', '卡 E38 · mock', '“我已接续并安排复审任务。”', '回复消息 M-209'],
++      ['15:20', '收到复审派发结果', '卡 E38 · task review-2 · mock', '“复审任务已启动。”', '协调者回复 M-210']
++    ] }],
++    coordinator: [
++      { round: 'E38 协调者 · 唤醒尝试第 1 轮（已恢复）', start: '15:16', end: '15:16', duration: '<1 秒', result: '旧错误：connection reset by peer；保留为历史', events: [
++        ['15:16:01', '连接协调者所在机器失败', 'E38 · mock', 'connection reset by peer', '复审当时未启动；错误保留在历史记录']
++      ] },
++      { round: 'E38 协调者 · 第 2 轮', start: '15:18', end: '15:20', duration: '2 分钟', result: '已接续并派发复审任务', events: [
++        ['15:18', '收到卡事件', 'E38 · task repair-1 · mock', '修复任务已归档，等待接续。', '事件 L-904'],
++        ['15:19', '查看修复结果', '协调者可见动作 · mock', '读取可见任务状态和提交摘要。', '工具摘要：查看修复任务状态和交付摘要（mock）'],
++        ['15:19', '派发独立复审任务', 'E38 · task review-2 · mock', '复审任务已启动。', '事件 L-905；先前错误仍保留在历史'],
++        ['15:20', '回复会话', '卡协调者 → 房间 · mock', '“已接续并安排复审，复审任务已开始。”', '消息 M-210']
++      ] }
++    ]
++  }
++};
++function eventMarkup(ev,round){return `<details class="timeline-event"><summary><time>${ev[0]}</time><b>${ev[1]}</b><small>${ev[4]}</small></summary><div class="event-content"><div class="event-source">${ev[2]} · ${round}</div><pre class="${ev[1]==='连接失败'?'error-evidence':''}">${ev[3]}</pre></div></details>`}
++function timelineMarkup(caseId,roleId){const groups=[...((timelineData[caseId]||{})[roleId]||[])].reverse();if(!groups.length)return '<p class="no-record">未提供该角色的运行内容；当前只知概况中列出的事件。</p>';return groups.map((g,i)=>`<details class="timeline-round" ${i===0?'open':''}><summary><span><b>${g.round}</b><small>${g.start}–${g.end} · ${g.duration}</small></span><em>${g.result}</em></summary><div class="round-events">${g.events.map(ev=>eventMarkup(ev,g.round)).join('')}</div></details>`).join('')}
++function openRoleDetail(r,caseId){
++ byId('dialogTitle').textContent=`${r.name} · ${r.status}`;
++ byId('dialogBody').innerHTML=`<div class="detail-tabs" role="tablist"><button type="button" role="tab" aria-selected="true" data-detail-tab="overview">当前概况</button><button type="button" role="tab" aria-selected="false" data-detail-tab="timeline">运行时间线</button></div><section class="detail-pane" data-detail-pane="overview"><dl><dt>角色 · 经过</dt><dd>${r.role} · ${r.elapsed||'—'}</dd><dt>当前卡与阶段</dt><dd>${r.card} · ${r.phase}</dd><dt>正在做什么</dt><dd>${r.doing}</dd><dt>在等谁 / 等什么</dt><dd>${r.waiting}</dd><dt>原因</dt><dd>${r.why}</dd><dt>最后有效证据</dt><dd>${r.evidence}</dd><dt>更新时间</dt><dd>${r.updated}</dd></dl><a class="timeline-jump" href="#roleTimeline">查看运行时间线 ↓</a></section><section class="detail-pane" data-detail-pane="timeline" hidden><p class="mock-caption">演示记录 · mock 非实时；只包含可见事件，不代表后端已持久化全部运行内容。</p><div id="roleTimeline">${timelineMarkup(caseId,r.id)}</div></section>`;
++ byId('dialogBody').querySelectorAll('[data-detail-tab]').forEach(tab=>tab.addEventListener('click',()=>showDetailPane(tab.dataset.detailTab)));
++ byId('dialogBody').querySelector('.timeline-jump').addEventListener('click',e=>{e.preventDefault();showDetailPane('timeline');byId('roleTimeline').scrollIntoView({block:'start'})});
++ byId('roleDialog').showModal();
++}
++function showDetailPane(name){byId('dialogBody').querySelectorAll('[data-detail-tab]').forEach(t=>{const active=t.dataset.detailTab===name;t.setAttribute('aria-selected',String(active))});byId('dialogBody').querySelectorAll('[data-detail-pane]').forEach(p=>p.hidden=p.dataset.detailPane!==name)}
++byId('roleStatus').addEventListener('click',e=>{const b=e.target.closest('[data-role]');if(!b)return;const caseId=byId('statusCase').value;const r=roleCases[caseId].roles.find(x=>x.id===b.dataset.role);if(r)openRoleDetail(r,caseId)});
 +byId('dialogClose').addEventListener('click',()=>byId('roleDialog').close());byId('roleDialog').addEventListener('click',e=>{if(e.target.matches('a'))e.preventDefault()});
 +byId('sendMessage').addEventListener('click',()=>{const t=document.querySelector('.composer textarea');if(!t.value.trim())return;const m=document.createElement('div');m.className='mock-added';m.textContent=t.value.trim();document.querySelector('.messages').append(m);t.value=''});
 +const sessions={b456:{title:'B456 会话角色状态与阻塞可见性',messages:[['B456 演示讨论 · 历史案例 · mock','E38 修复执行回合于 14:49 结束并归档。案例记录显示卡仍待复审；截至 15:15，未观察到后续复审派发。'],['B456 演示讨论 · mock','状态条将执行任务与卡协调者分开呈现。此案例用于说明待接续状态，不代表当前 E38 实时状态。']]},erp:{title:'项目房间 erp',messages:[['会话记录 · mock','本地演示会话内容。']],},resident:{title:'驻场会话',messages:[['会话记录 · mock','本地演示会话内容。']]},e38:{title:'E38 快递对账',messages:[['会话记录 · mock','这是本地演示会话，不读取真实会话数据。']]}};
@@ -89,7 +162,7 @@
 \ No newline at end of file
 --- a/shared/session-current.css
 +++ b/shared/session-current.css
-@@ -1,3 +1,7 @@
+@@ -1,3 +1,40 @@
  /* Current Handoff session shell mirror; fork reuses this stylesheet. */
  *{box-sizing:border-box}html,body{height:100%;margin:0;font:12px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#292d32;background:#fbfcfd}button,input,textarea,select{font:inherit;color:inherit}.app{height:100dvh;display:flex;flex-direction:column}.workspace{flex:1;min-height:0;display:flex}.tree{display:flex;flex-direction:column;min-height:0;width:clamp(260px,23vw,456px);min-width:260px;max-width:456px;resize:horizontal;overflow:hidden;border-right:1px solid #e6e8eb;background:#fff;padding:8px 8px 3px}.search{height:28px;border:1px solid #e2e5e8;border-radius:6px;padding:5px 9px;color:#777;margin-bottom:10px}.tree-head{display:flex;justify-content:space-between;color:#777;margin:0 1px 7px}.tree-scroll{flex:1;min-height:0;overflow:auto}.tree-footer{flex:none;border-top:1px solid #e6e8eb;padding-top:5px}.archive-row{height:25px;display:flex;align-items:center;gap:7px;color:#555}.dock{height:28px;border-top:1px solid #e6e8eb;display:flex;align-items:center;justify-content:space-between;color:#777}.dock span{padding:3px 5px}.project{border-top:1px solid #eceef0;padding-top:5px;margin-top:5px}.project-title,.tree-row{height:25px;display:flex;align-items:center;gap:7px;padding:0 5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.project-title{font-weight:600}.project-actions{margin-left:auto;color:#82878c;font-size:10px;letter-spacing:2px;font-weight:400}.machine{margin-left:auto;color:#898e93;font-size:10px}.machine+.dot{margin-left:4px}.tree-row{margin-left:16px;color:#50565d}.tree-row.active{background:#f2f3f4;border-radius:5px}.tree-row.muted{color:#888}.dot{width:6px;height:6px;background:#25ae75;border-radius:50%;margin-left:auto;flex:none}.main{flex:1;min-width:0;display:flex;flex-direction:column}.tabs{height:35px;flex:none;border-bottom:1px solid #e7e9eb;display:flex;align-items:center;padding:0 6px;gap:5px;overflow:hidden;background:#fff}.tab{padding:7px 10px;border-radius:7px;color:#656a70;white-space:nowrap}.tab.active{background:#f0f1f2;color:#282c30;font-weight:600}.pane-head{height:30px;border-bottom:1px solid #e6e8eb;display:flex;align-items:center;padding:0 9px;font-weight:600}.pane-actions{margin-left:auto;color:#777;letter-spacing:5px}.chat{flex:1;min-height:0;overflow:auto;background:#fafbfc;padding:14px 14px}.messages{max-width:950px;display:flex;flex-direction:column;gap:13px}.message{background:white;border:1px solid #e7e9eb;border-radius:12px;padding:10px 12px;box-shadow:0 1px 2px #0000000b;font-size:12.5px;line-height:1.5}.meta{font-size:10px;color:#8b9096;margin-bottom:3px}.composer-wrap{padding:7px 10px 5px;background:#fafbfc}.composer{border:1px solid #e4e7e9;background:#fff;border-radius:14px;min-height:48px;padding:7px 9px;display:flex;align-items:center;gap:9px}.composer textarea{border:0;outline:0;resize:none;flex:1;min-width:0;height:27px;padding:5px 2px}.tool{color:#777;font-size:16px}.send{border:0;border-radius:16px;background:#22272d;color:white;padding:7px 14px}.quota{height:14px;border-top:1px solid #e9ebed;background:#f7f8f9;color:#888;font-size:9px;padding-left:8px;flex:none}
  @media(max-width:650px){.tree{display:none}.workspace{min-width:0}.tabs{height:34px}.tab{padding:7px 6px}.chat{padding:10px 9px}.message{font-size:12px}.composer-wrap{padding-left:6px;padding-right:6px}}
@@ -97,3 +170,36 @@
 +
 +.hidden{display:none!important}.tree-session{cursor:pointer}.tree-session:hover{background:#f5f6f7}
 +@media(max-width:650px){.casebar{flex-wrap:wrap}.casebar .mock-note{display:none}.status-area{padding:0 6px 6px}.status-summary{display:none}.role-strip{max-width:100%}.global-nav{display:none}}
++/* B456 role detail: readable evidence and compact round-by-round timeline. */
++.role-dialog{width:min(720px,calc(100vw - 24px));max-width:720px;max-height:min(82dvh,820px);display:none;flex-direction:column;overflow:hidden}
++.role-dialog[open]{display:flex}
++.role-dialog .dialog-head{flex:none}
++.role-dialog .dialog-body{overflow:auto;min-height:0}
++.detail-tabs{display:flex;gap:5px;border-bottom:1px solid #e9ebed;margin:-2px 0 12px;padding-bottom:7px}
++.detail-tabs button{border:1px solid transparent;background:transparent;border-radius:6px;padding:5px 9px;color:#777;cursor:pointer}
++.detail-tabs button[aria-selected="true"]{background:#f0f1f2;color:#333;border-color:#e5e7e9;font-weight:600}
++.detail-pane[hidden]{display:none!important}
++.detail-pane dl{margin:0}
++.timeline-jump{display:inline-block;margin-top:14px;color:#50565d;text-decoration:underline;text-underline-offset:2px}
++.mock-caption{color:#777;font-size:11px;margin:0 0 10px}
++.timeline-round{border:1px solid #e7e9eb;border-radius:8px;margin:0 0 8px;background:#fff}
++.timeline-round>summary{display:flex;align-items:center;gap:12px;padding:9px 10px;cursor:pointer;list-style:none}
++.timeline-round>summary::-webkit-details-marker{display:none}
++.timeline-round>summary span{display:flex;flex-direction:column;gap:2px;min-width:0}
++.timeline-round>summary small,.timeline-event summary small{color:#858a90;font-size:10px}
++.timeline-round>summary em{font-style:normal;color:#666;margin-left:auto;text-align:right;font-size:11px}
++.round-events{padding:0 9px 8px 16px;border-top:1px solid #eff0f1}
++.timeline-event{border-left:1px solid #dfe2e5;margin:8px 0 0;padding-left:9px}
++.timeline-event>summary{display:flex;align-items:baseline;gap:8px;cursor:pointer;list-style:none;flex-wrap:wrap}
++.timeline-event>summary::-webkit-details-marker{display:none}
++.timeline-event time{font-size:10px;color:#858a90;min-width:48px}
++.timeline-event summary b{font-size:11px;font-weight:600}
++.timeline-event summary small{margin-left:auto}
++.event-content{margin:5px 0 8px 56px}
++.event-source{font-size:10px;color:#858a90;margin-bottom:4px}
++.event-content pre{white-space:pre-wrap;overflow:auto;max-height:160px;margin:0;padding:8px 9px;background:#f7f8f9;border:1px solid #eceef0;border-radius:6px;font:11px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}
++.no-record{padding:14px;border:1px dashed #dfe2e5;border-radius:7px;color:#73787e;background:#fafbfc}
++@media(max-width:650px){.role-dialog{max-height:84dvh}.timeline-round>summary{align-items:flex-start;flex-direction:column;gap:3px}.timeline-round>summary em{margin:0;text-align:left}.event-content{margin-left:0}.timeline-event summary small{margin-left:0}}
++.role-chip.error .state-dot{background:#c84646}
++.role-chip.error .avatar{color:#9e2e2e;background:#fae7e7}
++.error-evidence{background:#fff2f1!important;border-color:#e4aaaa!important;color:#8f2828}

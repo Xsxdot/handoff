@@ -67,3 +67,25 @@ $ git commit -m 'docs(B456): refresh prototype against current session workspace
 ```
 
 随后仅 amend 一次收录本提交台账；未推送或合并。
+
+## r3 角色时间线、错误与可见运行内容（2026-10-23）
+
+- 用户指出详情应该能看时间线、没接上的报错，以及驻场者和协调者的运行记录/内容。主会话读取当前副本确认：r2 只有概况与 `#mock-timeline` 占位链接，没有运行时间线；来源读取失败的示例不等于接续失败；没有分别展示驻场者/协调者的每轮内容。
+- 已沿用 gpt-6-luna 本地执行：`b456_prototype` 只修改 fork 页面与专用样式；`b456_state_sources` 只读核查真实来源。base 现状页不加新能力，正式代码不改，规格仍是待批准草案。
+- 来源核查：`internal/agentd/residentpush.go:88-117` 把房间消息截为 400 字摘要交给驻场者；`internal/keystone/resident.go:29-80` 的可见 Output 当前在内存结果，成功路径只留会话号/输出字节数，`residentpush.go:288-316` 失败写房间指针。房间 GET messages 可以读到原消息/实际发出的房间回复/失败指针，不能作为完整的每轮内容历史。
+- 协调者 `wake_round` 评论在 `internal/agentd/scheddrain.go:715-755`、`wakeconsumer.go:406-442`，包含 start/end/fail、分类、session、时长和错误摘要；没有完整输入、输出与工具内容。`internal/agentd/coordapi.go:98-233` 当次响应可返回 Output，非可查询历史；`internal/hostapi/driver.go:158-212,320-358` 收集可见文本到内存，错误含 stderr 尾部，没有发现 Handoff 公开的逐轮 transcript 读取入口。
+- 因此 spec r3 明确补观测记录与正式查询的需求：运行入口保存自身实际收到的内容/可见输出/失败；已有持久来源复用；来源不提供的工具细节与旧内容明示缺失。不能只做前端链接就宣称真实运行内容已接通，不新增调度状态源或重试/恢复操作。
+- 原型增加概况/时间线切换、按轮次与事件展开正文、明确接续失败与仅缺后继两种场景、恢复后保留历史错误。主会话源码复核要求修正：驻场者恢复后仍等待的冲突、默认展开旧失败而非新成功、消息转交早于修复结束的时间矛盾、示例假 CLI 命令、灰色未知与明确失败的色彩混用。
+- 最终修正已由 gpt-6-luna 完成：恢复情境的驻场者已收到 15:20 的接续回复；时间线最新轮优先展开，历史失败折叠；默认驻场者触发/发送示例移到 14:49 修复归档后；错误采用红点与错误块；不存在的示例命令改为人话动作摘要；清除重复 HTML 属性。
+- 主会话复跑原始输出：`PASS role detail: 13 unique IDs, no duplicate attributes, 1 local resource, 1 JS syntax check; no placeholder timeline link.`；从 base 应用新快照逐字节重建三文件：`PASS: base + r3 snapshot reconstructs all three authored fork files byte-for-byte.`；快照反向校验与 `git diff --check` 均退出 0。
+- 以上仅静态/源码与快照检查；没有浏览器视觉或点击验收，没有真实回合记录/工具内容接入。新能力保留在 fork，base 会话现状页没有新增时间线功能。
+
+r3 提交原文：
+
+```text
+$ git commit -m 'docs(B456): add role timelines and run-content prototype'
+[codex/b456-session-status 13e79e0fd] docs(B456): add role timelines and run-content prototype
+ 4 files changed, 147 insertions(+), 14 deletions(-)
+```
+
+随后仅 amend 一次收录本提交台账；未推送或合并。
