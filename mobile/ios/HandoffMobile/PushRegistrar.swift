@@ -85,7 +85,7 @@ final class PushRegistrar {
         do {
             try core.registerPushDevice(machine, deviceID: deviceID, pushHandle: handle)
             pendingHandle = nil
-            Log.shell.info("APNs device 已上报 machine=\(machine, privacy: .public) device=\(deviceID, privacy: .public)")
+            Log.shell.info("APNs device 已上报 machine=\(machine, privacy: .public) device=\(self.deviceID, privacy: .public)")
         } catch {
             pendingHandle = handle   // 失败保留，等下次进入/重试；绝不记成已上报
             Log.shell.error("APNs device 上报失败 machine=\(machine, privacy: .public)：\(String(describing: error), privacy: .public)")
