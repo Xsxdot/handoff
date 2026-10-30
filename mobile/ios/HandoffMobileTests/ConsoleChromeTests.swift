@@ -84,4 +84,95 @@ final class ConsoleChromeTests: XCTestCase {
         XCTAssertEqual(scroll.contentOffset, .zero, "聚焦输入框不准把整页平移")
         XCTAssertEqual(scroll.contentInset, .zero, "键盘避让不准再给网页滚动视图加内边距")
     }
+
+    func testOnlySuccessfulSameOriginMainDocumentCommitsTheSelectedMachine() {
+        let selection = FakeCurrentMachineStore("A")
+        let console = ConsoleWebViewController(webView: WKWebView(), machine: "B",
+                                               origin: "http://127.0.0.1:50000", selection: selection)
+        console.didFinishMainDocument(at: URL(string: "http://127.0.0.1:50000/console")!, responseStatus: 200)
+        XCTAssertEqual(selection.read(), "B")
+
+        selection.stored = "A"
+        console.didFinishMainDocument(at: URL(string: "http://127.0.0.1:50001/console")!, responseStatus: 200)
+        XCTAssertEqual(selection.read(), "A", "不同 origin 的完成事件不能提交选择")
+
+        console.didFinishMainDocument(at: URL(string: "http://127.0.0.1:50000/console")!, responseStatus: 500)
+        XCTAssertEqual(selection.read(), "A", "HTTP 500 错误文档完成不能提交机器选择")
+
+        console.didFinishMainDocument(at: URL(string: "http://127.0.0.1:50000/console")!, responseStatus: 403)
+        XCTAssertEqual(selection.read(), "A", "认证失败文档完成不能提交机器选择")
+    }
+
+    func testSharedWebViewReturnsToSavedConsoleAndReentersItsMachineAfterFailedSwitch() {
+        let webView = WKWebView()
+        let selection = FakeCurrentMachineStore("A")
+        var restoredA = 0
+        let consoleA = ConsoleWebViewController(webView: webView, machine: "A",
+            origin: "http://127.0.0.1:50000", selection: selection,
+            onRestore: { completion in restoredA += 1; completion(nil) })
+        consoleA.loadViewIfNeeded()
+
+        let consoleB = ConsoleWebViewController(webView: webView, machine: "B",
+            origin: "http://127.0.0.1:50001", selection: selection)
+        consoleB.loadViewIfNeeded() // B 将单槽 WKWebView 从 A 移走
+        XCTAssertTrue(webView.superview === consoleB.view)
+
+        consoleA.viewWillAppear(false) // B 失败后 pop，A 必须接回 view/delegate 并重新进入 A
+        XCTAssertTrue(webView.superview === consoleA.view)
+        XCTAssertTrue(webView.isHidden, "A 重新认证前不能露出 B 的文档")
+        XCTAssertTrue(webView.navigationDelegate === consoleA)
+        XCTAssertEqual(restoredA, 1)
+        XCTAssertEqual(selection.read(), "A", "切换失败恢复过程不能覆写旧选择")
+    }
+
+    func testCancelledProvisionalNavigationIsSilentButRealFailureUsesRecoveryAlert() {
+        let scene = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
+        XCTAssertNotNil(scene)
+        guard let scene else { return }
+        let console = ConsoleWebViewController(webView: WKWebView(), machine: "A")
+        let nav = UINavigationController(rootViewController: console)
+        let window = UIWindow(windowScene: scene)
+        previousKeyWindow = scene.windows.first { $0.isKeyWindow && $0 !== window }
+        window.rootViewController = nav
+        window.makeKeyAndVisible()
+        self.window = window
+        console.loadViewIfNeeded()
+        guard let webView = console.view.subviews.compactMap({ $0 as? WKWebView }).first else {
+            XCTFail("Console 应安装唯一 WKWebView")
+            return
+        }
+
+        console.webView(webView, didFailProvisionalNavigation: nil,
+                        withError: NSError(domain: NSURLErrorDomain, code: NSURLErrorCancelled))
+        XCTAssertNil(console.presentedViewController, "主动取消/策略中断不应误报连接失败")
+
+        console.webView(webView, didFailProvisionalNavigation: nil,
+                        withError: URLError(.notConnectedToInternet))
+        XCTAssertTrue(console.presentedViewController is UIAlertController,
+                      "真实连接失败仍需提供重试当前机器/更换入口")
+    }
+
+    func testRestoreFailureIsSurfacedByThePreviousConsole() {
+        let scene = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
+        XCTAssertNotNil(scene)
+        guard let scene else { return }
+        let webView = WKWebView()
+        let consoleA = ConsoleWebViewController(webView: webView, machine: "A", onRestore: { completion in
+            completion(.offline("A"))
+        })
+        let nav = UINavigationController(rootViewController: consoleA)
+        let window = UIWindow(windowScene: scene)
+        previousKeyWindow = scene.windows.first { $0.isKeyWindow && $0 !== window }
+        window.rootViewController = nav
+        window.makeKeyAndVisible()
+        self.window = window
+        consoleA.loadViewIfNeeded()
+
+        let consoleB = ConsoleWebViewController(webView: webView, machine: "B")
+        consoleB.loadViewIfNeeded()
+        consoleA.viewWillAppear(false)
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))
+        XCTAssertTrue(consoleA.presentedViewController is UIAlertController,
+                      "恢复 A 失败必须由 A 页面显示可恢复状态")
+    }
 }

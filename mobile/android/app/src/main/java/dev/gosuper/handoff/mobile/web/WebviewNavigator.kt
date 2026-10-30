@@ -5,6 +5,6 @@
 package dev.gosuper.handoff.mobile.web
 
 interface WebviewNavigator {
-    /** 加载给定的回环源 URL（逐字取自绑定面返回值）。 */
-    fun load(url: String)
+    /** Load the bound origin and complete only after its authenticated main document finishes. */
+    fun load(url: String, onResult: (Result<Unit>) -> Unit)
 }

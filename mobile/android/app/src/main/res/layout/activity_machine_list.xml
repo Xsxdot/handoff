@@ -2,19 +2,101 @@
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
+    android:background="#F7F8FC"
     android:orientation="vertical">
 
     <TextView
         android:id="@+id/listTitle"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:padding="16dp"
-        android:text="@string/machine_title"
-        android:textSize="20sp" />
+        android:paddingStart="24dp"
+        android:paddingTop="24dp"
+        android:paddingEnd="24dp"
+        android:text="@string/machine_choose_title"
+        android:textSize="24sp"
+        android:textStyle="bold" />
+
+    <TextView
+        android:id="@+id/listSubtitle"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:paddingStart="24dp"
+        android:paddingTop="6dp"
+        android:paddingEnd="24dp"
+        android:paddingBottom="16dp"
+        android:text="@string/machine_choose_detail"
+        android:textColor="#686D82" />
+
+    <LinearLayout
+        android:id="@+id/unavailablePanel"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center_horizontal"
+        android:orientation="vertical"
+        android:padding="24dp"
+        android:visibility="gone">
+
+        <TextView
+            android:id="@+id/unavailableTitle"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center"
+            android:textSize="20sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/unavailableDetail"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:gravity="center"
+            android:text="@string/machine_unavailable_detail" />
+
+        <Button
+            android:id="@+id/retryMachineButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="@string/retry" />
+
+        <Button
+            android:id="@+id/changeMachineButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/machine_change" />
+    </LinearLayout>
 
     <ListView
         android:id="@+id/machineListView"
         android:layout_width="match_parent"
         android:layout_height="0dp"
+        android:layout_marginStart="24dp"
+        android:layout_marginEnd="24dp"
+        android:background="@drawable/machine_list_card"
+        android:clipToOutline="true"
+        android:divider="#E3E5EE"
+        android:dividerHeight="1dp"
         android:layout_weight="1" />
+
+    <TextView
+        android:id="@+id/selectionFootnote"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:paddingStart="24dp"
+        android:paddingTop="10dp"
+        android:paddingEnd="24dp"
+        android:text="@string/machine_remember_choice"
+        android:textColor="#686D82" />
+
+    <Button
+        android:id="@+id/enterMachineButton"
+        android:layout_width="match_parent"
+        android:layout_height="56dp"
+        android:layout_marginStart="24dp"
+        android:layout_marginTop="10dp"
+        android:layout_marginEnd="24dp"
+        android:layout_marginBottom="20dp"
+        android:backgroundTint="#5148EE"
+        android:text="@string/machine_enter"
+        android:textColor="@android:color/white" />
 </LinearLayout>

@@ -8,6 +8,7 @@ final class AppComposition {
     let core: ConnectCore
     let store: SecureStore
     let pairingService: PairingService
+    let currentMachine: CurrentMachineStore
     let cookieBridge: CookieBridge
     let machineList: MachineListModel
 
@@ -18,14 +19,23 @@ final class AppComposition {
         return c
     }
 
-    private init() {
+    private convenience init() {
         let core = LiveConnectCore()
+        let store = KeychainSecureStore()
+        let currentMachine = UserDefaultsCurrentMachineStore()
+        self.init(core: core, store: store, currentMachine: currentMachine,
+                  cookieBridge: CookieBridge(core: core))
+    }
+
+    init(core: ConnectCore, store: SecureStore, currentMachine: CurrentMachineStore,
+         cookieBridge: CookieBridge) {
         self.core = core
-        self.store = KeychainSecureStore()
-        self.pairingService = PairingService(core: core, store: store)
-        self.cookieBridge = CookieBridge(core: core)
-        self.machineList = MachineListModel(core: core, bridge: cookieBridge)
-        Log.shell.info("App 级装配完成（Go 核单例已建立）")
+        self.store = store
+        self.currentMachine = currentMachine
+        self.pairingService = PairingService(core: core, store: store, selection: currentMachine)
+        self.cookieBridge = cookieBridge
+        self.machineList = MachineListModel(core: core, bridge: cookieBridge, selection: currentMachine)
+        Log.shell.info("App 级装配完成")
     }
 
     // App 终止：关核（幂等）。I7 条 39。

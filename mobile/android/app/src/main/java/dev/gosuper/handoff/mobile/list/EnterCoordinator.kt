@@ -7,6 +7,7 @@ package dev.gosuper.handoff.mobile.list
 import android.util.Log
 import dev.gosuper.handoff.mobile.pair.ErrorClassifier
 import dev.gosuper.handoff.mobile.pair.ShellError
+import dev.gosuper.handoff.mobile.core.CurrentMachineStore
 import dev.gosuper.handoff.mobile.web.WebviewSessionBinder
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
@@ -15,6 +16,7 @@ private const val TAG = "EnterCoordinator"
 
 class EnterCoordinator(
     private val binder: WebviewSessionBinder,
+    private val currentMachine: CurrentMachineStore,
     private val scope: CoroutineScope,
     private val onResult: (Result<Unit>, ShellError?) -> Unit,
 ) {
@@ -27,7 +29,18 @@ class EnterCoordinator(
         }
         scope.launch {
             val r = binder.enterMachine(machine)
-            onResult(r, if (r.isSuccess) null else ErrorClassifier.fromEnterFailure(online = true))
+            if (r.isSuccess) {
+                try {
+                    currentMachine.write(machine)
+                    Log.i(TAG, "认证主文档完成，当前机器已提交 machine=$machine")
+                    onResult(r, null)
+                } catch (e: Exception) {
+                    Log.e(TAG, "当前机器持久化失败 machine=$machine")
+                    onResult(Result.failure(e), ShellError.EXCHANGE)
+                }
+            } else {
+                onResult(r, ErrorClassifier.fromEnterFailure(online = true))
+            }
         }
     }
 }

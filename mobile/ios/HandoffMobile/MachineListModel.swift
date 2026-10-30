@@ -6,10 +6,40 @@ import Foundation
 final class MachineListModel {
     private let core: ConnectCore
     private let bridge: CookieBridge
+    private let selection: CurrentMachineStore?
 
-    init(core: ConnectCore, bridge: CookieBridge) {
+    init(core: ConnectCore, bridge: CookieBridge, selection: CurrentMachineStore? = nil) {
         self.core = core
         self.bridge = bridge
+        self.selection = selection
+    }
+
+    var currentMachine: String? { selection?.read() }
+    var activeOrigin: String? { bridge.activeOrigin }
+
+    /// Manual offline retry refreshes the opaque saved pairing, then checks only saved A.
+    func refreshSavedMachine(revalidatePairing: () throws -> Bool) -> Result<MachineView, ShellError> {
+        guard let selected = selection?.read(), !selected.isEmpty else {
+            return .failure(.offline("no-saved-machine"))
+        }
+        do {
+            guard try revalidatePairing() else { return .failure(.pairing("no-stored-pairing")) }
+        } catch let error as ShellError {
+            return .failure(error)
+        } catch {
+            return .failure(.pairing("stored-pairing-validation"))
+        }
+        guard let machine = machines().first(where: { $0.name == selected && $0.online }) else {
+            Log.shell.warning("手动配对校验后原机器仍不可用 machine=\(selected, privacy: .public)")
+            return .failure(.offline(selected))
+        }
+        return .success(machine)
+    }
+
+    /// Return only the saved online machine for cold-start recovery; never select a fallback.
+    func resumeIndex() -> Int? {
+        guard let selected = selection?.read() else { return nil }
+        return machines().firstIndex(where: { $0.name == selected && $0.online })
     }
 
     func machines() -> [MachineView] {
@@ -27,7 +57,16 @@ final class MachineListModel {
             completion(.failure(.offline("invalid-index")))
             return
         }
-        let m = list[index]
+        enter(machine: list[index].name, completion: completion)
+    }
+
+    /// Resolve a retry/restore by the saved machine name against the live list, never a stale row index.
+    func enter(machine name: String, completion: @escaping (Result<Void, ShellError>) -> Void) {
+        guard let m = machines().first(where: { $0.name == name }) else {
+            Log.shell.error("当前机器已不在列表，拒绝回落 machine=\(name, privacy: .public)")
+            completion(.failure(.offline(name)))
+            return
+        }
         guard m.online else {
             Log.shell.error("点击离线机，拒绝进入 name=\(m.name, privacy: .public)")
             completion(.failure(.offline(m.name)))

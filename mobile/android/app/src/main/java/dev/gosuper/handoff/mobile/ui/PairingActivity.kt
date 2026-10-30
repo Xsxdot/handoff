@@ -11,6 +11,7 @@ import android.view.View
 import android.widget.Button
 import android.widget.EditText
 import android.widget.TextView
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
@@ -34,19 +35,26 @@ class PairingActivity : AppCompatActivity() {
         // B421：targetSdk 36 强制 edge-to-edge，内容避开系统条。
         applySystemBarsInsets()
 
-        val bundleInput = findViewById<EditText>(R.id.bundleInput)
-
         findViewById<Button>(R.id.scanButton).setOnClickListener {
             val opts = ScanOptions()
                 .setDesiredBarcodeFormats(ScanOptions.QR_CODE)
                 .setPrompt("扫描 handoff console --qr 的二维码")
             scanLauncher.launch(opts)
         }
-        findViewById<Button>(R.id.submitButton).setOnClickListener {
-            onBundle(bundleInput.text.toString(), source = "paste")
-        }
+        findViewById<Button>(R.id.pasteButton).setOnClickListener { showPasteDialog() }
 
         when (val s = (application as HandoffApp).graph.startup.state) {
+            is StartupState.ResumeMachine -> {
+                Log.i(TAG, "启动直达已认证工作台 machine=${s.machine}")
+                startActivity(Intent(this, WebviewActivity::class.java)
+                    .putExtra(WebviewActivity.EXTRA_MACHINE, s.machine)
+                    .putExtra(WebviewActivity.EXTRA_ONLINE, true))
+                finish()
+            }
+            is StartupState.SelectedUnavailable -> {
+                Log.w(TAG, "当前机器离线或未登记，保留选择 machine=${s.machine}")
+                goToMachineList(selectedUnavailable = s.machine)
+            }
             is StartupState.MachineList -> goToMachineList()
             is StartupState.Failed -> showError(s.error)
             else -> Unit
@@ -54,14 +62,31 @@ class PairingActivity : AppCompatActivity() {
     }
 
     /** 扫码与粘贴共享的唯一归一点。 */
+    private fun showPasteDialog() {
+        val input = EditText(this).apply {
+            hint = getString(R.string.pair_paste_hint)
+            minLines = 3
+            maxLines = 8
+            setSingleLine(false)
+            importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO
+        }
+        AlertDialog.Builder(this)
+            .setTitle(R.string.pair_paste_title)
+            .setView(input)
+            .setNegativeButton(android.R.string.cancel, null)
+            .setPositiveButton(R.string.pair_submit) { _, _ -> onBundle(input.text.toString(), source = "paste") }
+            .show()
+    }
+
     private fun onBundle(raw: String, source: String) {
         Log.i(TAG, "配对入口 source=$source")
         val r = (application as HandoffApp).graph.pairEntry.pair(raw)
         if (r.isSuccess) goToMachineList() else showError(ErrorClassifier.fromPairFailure())
     }
 
-    private fun goToMachineList() {
-        startActivity(Intent(this, MachineListActivity::class.java))
+    private fun goToMachineList(selectedUnavailable: String? = null) {
+        startActivity(Intent(this, MachineListActivity::class.java)
+            .putExtra(MachineListActivity.EXTRA_SELECTED_UNAVAILABLE, selectedUnavailable))
         finish()
     }
 

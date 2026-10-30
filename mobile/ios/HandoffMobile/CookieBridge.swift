@@ -73,6 +73,7 @@ final class CookieBridge {
     private let jar: CookieJar
     private let loader: OriginLoader
     private let onMain: MainQueueExecutor
+    private(set) var activeOrigin: String?
 
     // 生产装配：本类拥有 webView 与其 cookie store。
     convenience init(core: ConnectCore) {
@@ -113,6 +114,7 @@ final class CookieBridge {
             completion(.failure(ErrorClassifier.classify(.switchMachine, machine: machine, online: online)))
             return
         }
+        activeOrigin = origin
         clearJar { [weak self] in
             self?.inject(machine: machine, origin: origin, completion: completion)
         }

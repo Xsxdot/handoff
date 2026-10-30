@@ -8,24 +8,27 @@ import dev.gosuper.handoff.mobile.core.CoreGateway
 import dev.gosuper.handoff.mobile.core.MachineView
 import dev.gosuper.handoff.mobile.core.SecretStore
 import dev.gosuper.handoff.mobile.core.SessionCore
+import dev.gosuper.handoff.mobile.core.CurrentMachineStore
 import dev.gosuper.handoff.mobile.web.CookieStore
 import dev.gosuper.handoff.mobile.web.WebviewNavigator
 
 /** 记录全局调用序的假绑定面（同一 order 列表可跨设备共享）。 */
 class FakeCore(
-    private val machines: List<MachineView> = emptyList(),
+    var machines: List<MachineView> = emptyList(),
     private val order: MutableList<String> = mutableListOf(),
 ) : CoreGateway, SessionCore {
     var pairShouldThrow = false
     var switchShouldThrow = false
     var cookieShouldThrow = false
     var cookieValue = "VALUE123"
+    var onPair: (() -> Unit)? = null
     val paired = mutableListOf<String>()
 
     override fun pair(bundleJSON: String) {
         order.add("pair")
         if (pairShouldThrow) throw RuntimeException("pair failed")
         paired.add(bundleJSON)
+        onPair?.invoke()
     }
 
     override fun machineCount(): Int {
@@ -63,6 +66,13 @@ class FakeSecretStore(private var value: String? = null) : SecretStore {
     override fun clear() { value = null }
 }
 
+class FakeCurrentMachineStore(private var value: String? = null) : CurrentMachineStore {
+    val writes = mutableListOf<String>()
+    override fun read(): String? = value
+    override fun write(name: String) { value = name; writes.add(name) }
+    override fun clear() { value = null }
+}
+
 /** 可查询的假 cookie jar：clear 后查询为空，set 后仅一条。 */
 class FakeCookieStore(private val order: MutableList<String>) : CookieStore {
     val cookies = mutableListOf<String>()
@@ -86,8 +96,12 @@ class FakeCookieStore(private val order: MutableList<String>) : CookieStore {
 /** 记录 load 的假导航器。 */
 class FakeNavigator(private val order: MutableList<String>) : WebviewNavigator {
     val loaded = mutableListOf<String>()
-    override fun load(url: String) {
+    var autoComplete = true
+    private var pending: ((Result<Unit>) -> Unit)? = null
+    override fun load(url: String, onResult: (Result<Unit>) -> Unit) {
         order.add("load:$url")
         loaded.add(url)
+        if (autoComplete) onResult(Result.success(Unit)) else pending = onResult
     }
+    fun complete(result: Result<Unit>) { pending?.also { pending = null; it(result) } }
 }

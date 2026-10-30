@@ -1,12 +1,27 @@
 <resources>
     <string name="app_name">Handoff</string>
     <string name="pair_title">配对机器</string>
+    <string name="pair_welcome_title">把工作台带在身边</string>
+    <string name="pair_welcome_subtitle">连接电脑上的 Handoff，\n随时查看会话、推进任务。</string>
+    <string name="pair_start_title">开始配对</string>
+    <string name="pair_scan_instruction">在电脑端打开配对二维码，用手机扫描。</string>
+    <string name="pair_once_footnote">配对一次，下次直接进入</string>
+    <string name="pair_illustration_description">设备与工作台连接示意图</string>
     <string name="pair_scan">扫码</string>
+    <string name="pair_scan_primary">扫描配对二维码</string>
+    <string name="pair_paste_fallback">粘贴配对信息</string>
+    <string name="pair_paste_title">粘贴配对串</string>
     <string name="pair_paste_hint">粘贴配对串（handoff console --bundle）</string>
     <string name="pair_submit">配对</string>
     <string name="machine_title">机器</string>
+    <string name="machine_choose_title">选择一台机器</string>
+    <string name="machine_choose_detail">配对成功。选择一台机器进入工作台。</string>
+    <string name="machine_remember_choice">记住选择，下次打开直接进入；之后可在设置中更换。</string>
+    <string name="machine_enter">进入工作台</string>
     <string name="machine_online">在线</string>
     <string name="machine_offline">离线</string>
+    <string name="machine_unavailable_detail">当前机器选择已保留。恢复网络后重试，或前往设置更换机器。</string>
+    <string name="machine_change">前往设置更换机器</string>
     <string name="error_pairing">配对失败：配对串无法识别</string>
     <string name="error_offline">该机器当前离线</string>
     <string name="error_exchange">换取会话失败，请重试</string>

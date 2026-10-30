@@ -16,17 +16,36 @@ final class ConsoleWebViewController: UIViewController, WKNavigationDelegate, UI
     private var lockingScroll = false
     private var didLogLateralShift = false
     private var publishedHeight: CGFloat = -1
+    private var mainDocumentStatusCode: Int?
     private var offsetObservation: NSKeyValueObservation?
     private var insetObservation: NSKeyValueObservation?
     private var keyboardObservation: NSObjectProtocol?
     private weak var savedPopDelegate: UIGestureRecognizerDelegate?
     private var capturedPopDelegate = false
+    private let machine: String
+    private let origin: String
+    private let selection: CurrentMachineStore?
+    private let onRequestSwitch: () -> Void
+    private let onRestore: (@escaping (ShellError?) -> Void) -> Void
+    private let retryCurrentMachine: (@escaping (ShellError?) -> Void) -> Void
+    private let onAuthenticatedMainDocument: (ConsoleWebViewController) -> Void
 
     // 键盘盖住本页的高度。0 表示收起，网页铺到屏幕底。
     private(set) var keyboardOverlap: CGFloat = 0
 
-    init(webView: WKWebView) {
+    init(webView: WKWebView, machine: String = "", origin: String = "",
+         selection: CurrentMachineStore? = nil, onRequestSwitch: @escaping () -> Void = {},
+         onRestore: @escaping (@escaping (ShellError?) -> Void) -> Void = { $0(nil) },
+         retryCurrentMachine: @escaping (@escaping (ShellError?) -> Void) -> Void = { $0(.exchange("webview")) },
+         onAuthenticatedMainDocument: @escaping (ConsoleWebViewController) -> Void = { _ in }) {
         self.webView = webView
+        self.machine = machine
+        self.origin = origin
+        self.selection = selection
+        self.onRequestSwitch = onRequestSwitch
+        self.onRestore = onRestore
+        self.retryCurrentMachine = retryCurrentMachine
+        self.onAuthenticatedMainDocument = onAuthenticatedMainDocument
         super.init(nibName: nil, bundle: nil)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) 未实现") }
@@ -60,6 +79,19 @@ final class ConsoleWebViewController: UIViewController, WKNavigationDelegate, UI
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         navigationController?.setNavigationBarHidden(true, animated: animated)
+        if webView.superview !== view {
+            Log.shell.info("恢复控制台 webview machine=\(self.machine, privacy: .public)")
+            // Keep the previous machine's document out of sight until the saved machine A
+            // authenticates again. A failed restore is covered by this controller's recovery alert.
+            webView.isHidden = true
+            installWebView()
+            onRestore { [weak self] error in
+                guard error != nil else { return }
+                DispatchQueue.main.async { self?.presentLoadFailure() }
+            }
+        } else {
+            webView.navigationDelegate = self
+        }
     }
 
     override func viewDidAppear(_ animated: Bool) {
@@ -109,6 +141,7 @@ final class ConsoleWebViewController: UIViewController, WKNavigationDelegate, UI
         webView.backgroundColor = .white
         webView.scrollView.backgroundColor = .white
         webView.navigationDelegate = self
+        webView.removeFromSuperview()
         view.addSubview(webView)
         // 底边钉屏幕底，不用键盘布局引导：真机上那条引导没有把页面抬离键盘，
         // 发言框停在键盘下面。键盘高度改底边常量。收起时常量是 0，底栏铺到屏幕底。
@@ -180,27 +213,130 @@ final class ConsoleWebViewController: UIViewController, WKNavigationDelegate, UI
 
     func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse,
                  decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void) {
-        if let http = navigationResponse.response as? HTTPURLResponse,
-           ExpiryDetector.isExpired(httpStatusCode: http.statusCode) {
-            Log.shell.error("控制台收到 401：会话过期")
-            decisionHandler(.cancel)
-            presentExpired()
-            return
+        if navigationResponse.isForMainFrame {
+            let http = navigationResponse.response as? HTTPURLResponse
+            mainDocumentStatusCode = http?.statusCode
+            guard let status = http?.statusCode, (200..<300).contains(status) else {
+                Log.shell.error("控制台主文档 HTTP 响应失败 status=\(http?.statusCode ?? -1, privacy: .public)")
+                decisionHandler(.cancel)
+                if let status = http?.statusCode, ExpiryDetector.isExpired(httpStatusCode: status) {
+                    presentExpired()
+                } else {
+                    presentLoadFailure()
+                }
+                return
+            }
         }
         decisionHandler(.allow)
     }
 
+    func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
+                 decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+        guard let url = navigationAction.request.url,
+              NativeShellNavigation.isSwitchRequest(origin: origin, target: url,
+                                                     mainFrame: navigationAction.targetFrame?.isMainFrame == true) else {
+            decisionHandler(.allow)
+            return
+        }
+        Log.shell.info("同源设置导航命中原生更换入口")
+        decisionHandler(.cancel)
+        onRequestSwitch()
+    }
+
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        didFinishMainDocument(at: webView.url, responseStatus: mainDocumentStatusCode)
+    }
+
+    func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        mainDocumentStatusCode = nil
+    }
+
+    func didFinishMainDocument(at url: URL?, responseStatus: Int? = 200) {
+        guard let responseStatus, (200..<300).contains(responseStatus),
+              isSameOrigin(url, origin), !machine.isEmpty else { return }
         publishedHeight = -1
         publishViewportHeight()
+        do {
+            try selection?.write(machine)
+        } catch {
+            Log.shell.error("认证主文档完成但当前机器选择保存失败 machine=\(self.machine, privacy: .public)")
+            presentLoadFailure()
+            return
+        }
+        publishNativeContext(machine: machine)
+        webView.isHidden = false
+        Log.shell.info("认证主文档完成 machine=\(self.machine, privacy: .public)")
+        onAuthenticatedMainDocument(self)
+    }
+
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        guard !isNavigationCancellation(error) else {
+            Log.shell.info("WebKit取消导航，不显示连接失败")
+            return
+        }
+        Log.shell.error("主文档导航失败 machine=\(self.machine, privacy: .public)")
+        presentLoadFailure()
+    }
+
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        guard !isNavigationCancellation(error) else {
+            Log.shell.info("WebKit取消初始导航，不显示连接失败")
+            return
+        }
+        Log.shell.error("主文档连接失败 machine=\(self.machine, privacy: .public)")
+        presentLoadFailure()
+    }
+
+    private func isNavigationCancellation(_ error: Error) -> Bool {
+        let value = error as NSError
+        return value.domain == NSURLErrorDomain && value.code == NSURLErrorCancelled
+    }
+
+    private func isSameOrigin(_ url: URL?, _ expected: String) -> Bool {
+        guard let url, let a = URLComponents(string: expected),
+              let b = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return false }
+        return a.scheme == b.scheme && a.host == b.host && a.port == b.port
+    }
+
+    private func publishNativeContext(machine: String) {
+        guard let data = try? JSONSerialization.data(withJSONObject: machine, options: [.fragmentsAllowed]),
+              let quoted = String(data: data, encoding: .utf8) else {
+            Log.shell.error("当前机器上下文无法安全编码")
+            return
+        }
+        let script = "document.documentElement.dataset.handoffNativeShell='1';" +
+            "document.documentElement.dataset.handoffNativeMachine=\(quoted);" +
+            "window.dispatchEvent(new Event('handoff-native-context'));"
+        webView.evaluateJavaScript(script) { _, error in
+            if error != nil { Log.shell.error("Web 设置机器上下文注入失败 machine=\(self.machine, privacy: .public)") }
+        }
+    }
+
+    private func presentLoadFailure() {
+        guard presentedViewController == nil else { return }
+        let alert = UIAlertController(title: "无法打开工作台", message: "请重试，或在设置中更换机器。", preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "重试", style: .default) { [weak self] _ in
+            self?.retryCurrentMachine { [weak self] error in
+                if error != nil { self?.presentLoadFailure() }
+            }
+        })
+        alert.addAction(UIAlertAction(title: "更换机器", style: .default) { [weak self] _ in
+            self?.onRequestSwitch()
+        })
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+        present(alert, animated: true)
     }
 
     private func presentExpired() {
         let e = ShellError.expired("webview")
         let alert = UIAlertController(title: e.title, message: e.message, preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "重试", style: .default) { [weak self] _ in
-            // 重走 I3：回列表让用户重新进入（最简、无旧 cookie 复用）。
-            self?.navigationController?.popViewController(animated: true)
+            self?.retryCurrentMachine { [weak self] error in
+                if error != nil { self?.presentExpired() }
+            }
+        })
+        alert.addAction(UIAlertAction(title: "设置中更换机器", style: .default) { [weak self] _ in
+            self?.onRequestSwitch()
         })
         present(alert, animated: true)
     }

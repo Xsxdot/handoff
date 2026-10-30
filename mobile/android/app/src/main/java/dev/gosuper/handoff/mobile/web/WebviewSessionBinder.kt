@@ -7,6 +7,8 @@ package dev.gosuper.handoff.mobile.web
 
 import android.util.Log
 import dev.gosuper.handoff.mobile.core.SessionCore
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlin.coroutines.resume
 import java.net.URI
 
 private const val TAG = "WebviewSessionBinder"
@@ -65,8 +67,16 @@ class WebviewSessionBinder(
             return Result.failure(e)
         }
 
-        navigator.load(origin)
-        Log.i(TAG, "进入机器完成 machine=$machine")
+        val loaded = suspendCancellableCoroutine { continuation ->
+            navigator.load(origin) { result ->
+                if (continuation.isActive) continuation.resume(result)
+            }
+        }
+        if (loaded.isFailure) {
+            Log.e(TAG, "主文档认证加载失败 machine=$machine")
+            return loaded
+        }
+        Log.i(TAG, "认证主文档加载完成 machine=$machine")
         return Result.success(Unit)
     }
 

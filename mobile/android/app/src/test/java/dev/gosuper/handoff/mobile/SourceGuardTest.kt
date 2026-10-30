@@ -41,10 +41,16 @@ class SourceGuardTest {
 
     @Test
     fun 无bundle的JSON解析库() {
-        val text = readAllKotlin()
-        for (lib in listOf("com.google.gson", "kotlinx.serialization", "org.json.JSONObject", "org.json.JSONTokener")) {
+        val sources = kotlinSources()
+        // Permit only the exact scalar quote call in the WebView native-context consumer.
+        val text = sources.joinToString("\n") { file ->
+            val source = file.readText()
+            if (file.name == "WebviewActivity.kt") source.replace("org.json.JSONObject.quote(machine)", "") else source
+        }
+        for (lib in listOf("com.google.gson", "kotlinx.serialization", "org.json.JSONTokener", "JSONObject(")) {
             assertFalse("壳不得对 bundle 使用 JSON 解析库: $lib", text.contains(lib))
         }
+        assertFalse("壳不得解析 bundle", text.contains("org.json.JSONObject"))
     }
 
     @Test
