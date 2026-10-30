@@ -6,10 +6,12 @@ import Foundation
 final class PairingService {
     private let core: ConnectCore
     private let store: SecureStore
+    private let selection: CurrentMachineStore?
 
-    init(core: ConnectCore, store: SecureStore) {
+    init(core: ConnectCore, store: SecureStore, selection: CurrentMachineStore? = nil) {
         self.core = core
         self.store = store
+        self.selection = selection
     }
 
     // 唯一配对入口。仅去首尾空白，其余逐字透传给 Go 核（条 10），
@@ -30,6 +32,10 @@ final class PairingService {
             Log.shell.error("配对串写入安全存储失败")
             throw ShellError.pairing(String(describing: error))
         }
+        if let selection {
+            do { try selection.clear() }
+            catch { Log.shell.error("新配对已保存但无法清除旧机器选择") }
+        }
         Log.shell.info("配对成功且已持久化")
     }
 
@@ -40,7 +46,15 @@ final class PairingService {
             Log.shell.info("无已存配对串：走配对屏")
             return false
         }
-        try pair(bundleJSON: stored)
+        do {
+            try core.pair(stored)
+        } catch {
+            Log.shell.error("已存配对串校验失败：走配对屏")
+            throw ShellError.pairing(String(describing: error))
+        }
+        // Startup validation re-registers the existing pairing; it is not a replacement.
+        // Preserve the one-time machine choice so a normal restart resumes that machine.
+        Log.shell.info("已存配对串校验成功")
         return true
     }
 }

@@ -20,6 +20,7 @@
   --popover: oklch(1 0 0);
   --popover-foreground: oklch(0.145 0 0);
   --primary: oklch(0.205 0 0);
+  --mobile-action: #4f46ed;
   --primary-foreground: oklch(0.985 0 0);
   --secondary: oklch(0.97 0 0);
   --secondary-foreground: oklch(0.205 0 0);
@@ -74,6 +75,7 @@
   --popover: oklch(0.205 0 0);
   --popover-foreground: oklch(0.985 0 0);
   --primary: oklch(0.922 0 0);
+  --mobile-action: #8b84ff;
   --primary-foreground: oklch(0.205 0 0);
   --secondary: oklch(0.269 0 0);
   --secondary-foreground: oklch(0.985 0 0);
@@ -121,6 +123,7 @@
   --color-popover: var(--popover);
   --color-popover-foreground: var(--popover-foreground);
   --color-primary: var(--primary);
+  --color-mobile-action: var(--mobile-action);
   --color-primary-foreground: var(--primary-foreground);
   --color-secondary: var(--secondary);
   --color-secondary-foreground: var(--secondary-foreground);
@@ -161,6 +164,22 @@
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
   --radius-xl: calc(var(--radius) + 4px);
+}
+
+@layer components {
+  /* A touch floor must not replace a component's explicit, larger target size. */
+  .touch-baseline :where(button, input, select) {
+    min-height: 1.5rem;
+  }
+  .touch-baseline :where(button) {
+    min-width: 1.5rem;
+  }
+  /* Mobile entry and settings share the approved indigo action color. */
+  .mobile-settings {
+    --primary: var(--mobile-action);
+    --ring: var(--mobile-action);
+    accent-color: var(--primary);
+  }
 }
 
 @layer base {

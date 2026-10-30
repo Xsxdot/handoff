@@ -52,3 +52,12 @@ describe('ResizableSidebar', () => {
     expect(handle).toHaveAttribute('aria-valuenow', String(DEFAULT_SIDEBAR_WIDTH))
   })
 })
+
+it('starts at the approved dense desktop width while retaining an explicit stored user width', () => {
+  const view = render(<ResizableSidebar><div>tree</div></ResizableSidebar>)
+  expect(screen.getByRole('complementary')).toHaveStyle({ width: '250px' })
+  view.unmount()
+  localStorage.setItem(SIDEBAR_WIDTH_KEY, '360')
+  render(<ResizableSidebar><div>tree</div></ResizableSidebar>)
+  expect(screen.getByRole('complementary')).toHaveStyle({ width: '360px' })
+})

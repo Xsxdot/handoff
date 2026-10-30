@@ -45,10 +45,10 @@ beforeEach(() => {
 
 describe('useMobileNav 派生规则（compact 读 URL）', () => {
   it.each([
-    ['/', 'sessions'],
+    ['/', 'projects'],
     ['/?tab=projects', 'projects'],
     ['/?tab=settings', 'settings'],
-    ['/?tab=bogus', 'sessions'],
+    ['/?tab=bogus', 'projects'],
     ['/cards', 'cards'],
     ['/cards?card=B1&from=session-s1', 'cards'],
   ])('初值 %s → tab=%s', (entry, expected) => {
@@ -136,7 +136,7 @@ describe('useMobileNav 写入 URL 形状（compact）', () => {
 
   it('enterDetail：/ ?tab=<tab>&detail=1[&from=…]；显式 ctx 覆盖派生 tab', () => {
     const { result } = mountNav('/')
-    expect(drive(result.current, (n) => n.enterDetail()).url).toBe('/?tab=sessions&detail=1')
+    expect(drive(result.current, (n) => n.enterDetail()).url).toBe('/?tab=projects&detail=1')
     expect(drive(result.current, (n) => n.enterDetail({ from: 'card-B1', tab: 'cards' })).url)
       .toBe('/?tab=cards&detail=1&from=card-B1')
   })
@@ -225,7 +225,7 @@ describe('useMobileNav push/replace 纪律（compact）', () => {
     const onJump = mountNav('/tasks/T1')
     expect(drive(onJump.result.current, (n) => n.enterDetail()).action).toBe('REPLACE')
     cleanup()
-    const gate = mountNav('/')
+    const gate = mountNav('/?tab=sessions')
     expect(drive(gate.result.current, (n) => n.normalize({ ledgerEnabled: false, ledgerLoading: false })).action).toBe('REPLACE')
   })
 })

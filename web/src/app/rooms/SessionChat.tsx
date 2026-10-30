@@ -54,15 +54,17 @@ function MessageRow({ event, referenced, highlight, archived, selfMember, onJump
   const replyTo = typeof payload.reply_to === 'number' && payload.reply_to > 0 ? payload.reply_to : null
   return (
     <div data-msg-seq={event.seq} data-testid={`msg-${event.seq}`}
-      className={`group flex flex-col rounded-lg p-1 ${self ? 'items-end' : 'items-start'} ${highlight ? 'highlight bg-amber-50' : ''}`}>
+      className={`group flex flex-col rounded-lg p-1 ${compact ? 'mobile-session-message' : ''} ${self ? 'items-end' : 'items-start'} ${highlight ? 'highlight bg-amber-50' : ''}`}>
       {replyTo !== null && (
         <button type="button" data-testid={`quote-${event.seq}`} onClick={() => onJump(replyTo)}
-          className="mb-1 max-w-[74%] rounded border-l-2 border-border bg-black/[.02] px-2 py-0.5 text-left text-[11px] text-muted-foreground">
+          className={`mb-1 ${compact ? 'max-w-full' : 'max-w-[74%]'} rounded border-l-2 border-border bg-black/[.02] px-2 py-0.5 text-left text-[11px] text-muted-foreground`}>
           ↩ {referenced ? `${referenced.actor}：${(referenced.payload as { body?: string }).body ?? ''}` : `#${replyTo}`}
         </button>
       )}
-      <div className={`flex max-w-[74%] items-center gap-1 ${self ? 'flex-row-reverse' : ''}`}>
-        <div className={`rounded-2xl px-3 py-2 text-sm shadow-sm ${self ? 'bg-slate-900 text-white' : 'border bg-white/65 backdrop-blur-[12px]'}`}>
+      <div className={`flex ${compact ? (self ? 'w-fit max-w-full' : 'w-full max-w-full') : 'max-w-[74%]'} items-center gap-1 ${self ? 'flex-row-reverse' : ''}`}>
+        <div className={compact
+          ? `mobile-session-message-body min-w-0 px-2 py-1.5 text-sm ${self ? 'rounded-lg bg-muted text-foreground' : 'w-full bg-transparent text-foreground'}`
+          : `rounded-2xl px-3 py-2 text-sm shadow-sm ${self ? 'bg-slate-900 text-white' : 'border bg-white/65 backdrop-blur-[12px]'}`}>
           <div className={`mb-0.5 break-all text-[10px] ${self ? 'text-white/60' : 'text-muted-foreground'}`}>{signatureText(event.actor, payload.device)} · #{event.seq}</div>
           <p className="whitespace-pre-wrap break-words">
             {segmentBody(body, payload.mentions).map((segment, index) => (

@@ -1,14 +1,12 @@
-// useWorkbenchSync.ts —— 全局 Workbench 与服务端状态行的水合/写回管道。
-//
-// 职责：并行读取布局与所有 PTY，恢复一次；之后对 global payload、selected、dock 去抖写回。
-// 边界：不解释布局、不选树节点；纯编解码/合成分别由 persist.ts/restore.ts 负责。
-import { useEffect, useRef, useState, type MutableRefObject } from 'react'
-import { fetchPtySessions, fetchWorkbenchState, putWorkbenchBase, putWorkbenchDock, putWorkbenchSelected } from '../../api/client'
-import { encodeDock, type DockSnapshot } from '../homedock/dockPersist'
+// Device-local layout restore/save pipeline. Shared PTY inventory only validates
+// references; legacy server layout is imported once and never written/deleted.
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { fetchPtySessions, fetchWorkbenchState } from '../../api/client'
+import type { DockSnapshot } from '../homedock/dockPersist'
 import type { HomeTab } from '../homedock/useHomeDock'
 import { topInset } from '../lib/desktopShell'
 import { errorMessage } from '../lib/format'
-import { diffPayloads, encodeWorkbench, isEmptyWorkbench } from './persist'
+import { DEVICE_WORKBENCH_KEY, encodeDeviceWorkbench, loadDeviceWorkbench } from './deviceState'
 import { buildRestore } from './restore'
 import type { Workbench } from './tabs'
 
@@ -19,115 +17,108 @@ export interface WorkbenchSyncDeps {
   selectedKey: string
   dockSnapshot: DockSnapshot
   hydrateWorkbench: (workbench: Workbench) => void
+  lockWorkbench: () => void
+  enableWorkbench: () => void
   hydrateDock: (snapshot: DockSnapshot) => void
   adoptDockTab: (tab: HomeTab) => void
 }
 
-/** 恢复全局布局并持续写回；拉取失败会关闭本次会话的写回闸门。 */
-export function useWorkbenchSync(deps: WorkbenchSyncDeps): { error: string; restoredSelected: string } {
+/** Restore this browser's layout; preserve legacy records on migration or any
+ * storage failure. Unavailable local persistence never falls back to server PUT. */
+export function useWorkbenchSync(deps: WorkbenchSyncDeps): { error: string; restoredSelected: string; restoring: boolean } {
   const [error, setError] = useState('')
   const [restoredSelected, setRestoredSelected] = useState('')
-  const ranRef = useRef(false)
-  const cancelledRef = useRef(false)
+  const [restoring, setRestoring] = useState(true)
   const readyRef = useRef(false)
+  const storageRef = useRef<Storage | null>(null)
   const depsRef = useRef(deps)
   depsRef.current = deps
-  const sentRef = useRef<Record<string, string>>({})
-  const dockSentRef = useRef('')
-  const selectedSentRef = useRef('')
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const sentRef = useRef('')
+  const selectedRef = useRef('')
+
+  useLayoutEffect(() => { depsRef.current.lockWorkbench() }, [])
 
   useEffect(() => {
-    cancelledRef.current = false
-    if (!ranRef.current) {
-      ranRef.current = true
-      Promise.all([fetchWorkbenchState(), fetchPtySessions('all')])
-        .then(([state, sessions]) => {
-          if (cancelledRef.current) return
-          const vw = window.innerWidth || document.documentElement.clientWidth || 1280
-          const vh = window.innerHeight || document.documentElement.clientHeight || 800
-          const restored = buildRestore({ state, sessions: sessions.sessions, machines: sessions.machines, vw, vh, inset: topInset() })
-          sentRef.current = Object.fromEntries(state.bases.map((row) => [row.base_key, row.payload]))
-          dockSentRef.current = state.dock
-          selectedSentRef.current = state.selected
-          const current = depsRef.current
-          current.hydrateWorkbench(restored.workbench)
-          if (restored.dock !== null) current.hydrateDock(restored.dock)
-          for (const tab of restored.dockOrphans) current.adoptDockTab(tab)
-          setRestoredSelected(restored.selected)
+    let cancelled = false
+    async function restore() {
+      try {
+        // Capture once: different devices/browser stores must never exchange
+        // handles during asynchronous restore or debounced writes.
+        const storage = window.localStorage
+        storageRef.current = storage
+        console.debug('workbench.device.restore.start', { key: DEVICE_WORKBENCH_KEY })
+        const local = loadDeviceWorkbench(storage)
+        if (local === null) console.debug('workbench.device.legacy_import.start', { source: 'server', preserve: true })
+        const [state, sessions] = await Promise.all([local ?? fetchWorkbenchState(), fetchPtySessions('all').catch((err: unknown) => {
+          if (!cancelled) {
+            console.warn('workbench.device.inventory.error', { error: err, preserveReferences: true })
+            setError(`终端列表暂不可用，已保留本设备布局：${errorMessage(err)}`)
+          }
+          return null
+        })])
+        if (cancelled) return
+        const vw = window.innerWidth || document.documentElement.clientWidth || 1280
+        const vh = window.innerHeight || document.documentElement.clientHeight || 800
+        const restored = buildRestore({ state, sessions: sessions?.sessions ?? [], machines: sessions?.machines,
+          inventoryAvailable: sessions !== null, adoptHomeOrphans: false, vw, vh, inset: topInset() })
+        const current = depsRef.current
+        selectedRef.current = restored.selected
+        // Save the first copy before rendering. Keep an explicit empty record,
+        // so later launches cannot re-import another device's old open files.
+        const raw = encodeDeviceWorkbench(restored.workbench, restored.selected, restored.dock ?? current.dockSnapshot)
+        try {
+          storage.setItem(DEVICE_WORKBENCH_KEY, raw)
+          sentRef.current = raw
           readyRef.current = true
-          console.debug('workbench.restore.success', {
-            global_key: '__global_workbench__', legacy: restored.legacy, dropped: restored.dropped,
-            pruned: restored.pruned, '清除的外来悬浮窗 tab': restored.purged, adopted: restored.adopted,
-          })
-        })
-        .catch((err: unknown) => {
-          if (cancelledRef.current) return
-          console.warn('workbench.restore.error', { error: err })
-          setError(errorMessage(err))
-        })
-    }
-    return () => { cancelledRef.current = true }
-  }, [])
-
-  useEffect(() => {
-    if (!readyRef.current) return
-    if (timerRef.current !== null) clearTimeout(timerRef.current)
-    timerRef.current = setTimeout(() => {
-      timerRef.current = null
-      flush(depsRef.current, sentRef, dockSentRef, selectedSentRef)
-    }, WRITE_DEBOUNCE_MS)
-    return () => {
-      if (timerRef.current !== null) {
-        clearTimeout(timerRef.current)
-        timerRef.current = null
+          console.debug('workbench.device.restore.saved', { imported: local === null, bytes: raw.length })
+        } catch (err) {
+          console.warn('workbench.device.write.error', { phase: 'restore', error: err })
+          setError(`本设备布局保存失败，改动仅在当前页面生效：${errorMessage(err)}`)
+        }
+        current.hydrateWorkbench(restored.workbench)
+        if (restored.dock !== null) current.hydrateDock(restored.dock)
+        for (const tab of restored.dockOrphans) current.adoptDockTab(tab)
+        current.enableWorkbench()
+        setRestoredSelected(restored.selected)
+        setRestoring(false)
+        console.debug('workbench.device.restore.success', { imported: local === null, dropped: restored.dropped, pruned: restored.pruned, adopted: restored.adopted })
+      } catch (err) {
+        if (cancelled) return
+        console.warn('workbench.device.restore.error', { error: err })
+        setError(`本设备布局恢复失败，本次不会保存布局：${errorMessage(err)}`)
+        depsRef.current.enableWorkbench()
+        setRestoring(false)
       }
     }
-  }, [deps.workbench, deps.selectedKey, deps.dockSnapshot])
+    void restore()
+    return () => { cancelled = true }
+  }, [])
 
-  return { error, restoredSelected }
-}
+  // LocalStorage is synchronous/atomic: no out-of-order HTTP responses can
+  // replace newer layout. Pagehide flushes a final change before debounce fires.
+  useEffect(() => {
+    const flush = () => {
+      if (!readyRef.current || storageRef.current === null) return
+      const current = depsRef.current
+      // Tree loading may postpone selecting the restored directory. Until an
+      // actual selection occurs, retain it rather than saving startup's null.
+      if (current.selectedKey !== '') selectedRef.current = current.selectedKey
+      const raw = encodeDeviceWorkbench(current.workbench, selectedRef.current, current.dockSnapshot)
+      if (raw === sentRef.current) return
+      try {
+        storageRef.current.setItem(DEVICE_WORKBENCH_KEY, raw)
+        sentRef.current = raw
+        console.debug('workbench.device.write.success', { bytes: raw.length })
+      } catch (err) {
+        readyRef.current = false
+        console.warn('workbench.device.write.error', { phase: 'update', error: err })
+        setError(`本设备布局保存失败，改动仅在当前页面生效：${errorMessage(err)}`)
+      }
+    }
+    const timer = setTimeout(flush, WRITE_DEBOUNCE_MS)
+    window.addEventListener('pagehide', flush)
+    return () => { clearTimeout(timer); window.removeEventListener('pagehide', flush) }
+  }, [deps.workbench, deps.selectedKey, deps.dockSnapshot, restoring])
 
-function flush(
-  deps: WorkbenchSyncDeps,
-  sentRef: MutableRefObject<Record<string, string>>,
-  dockSentRef: MutableRefObject<string>,
-  selectedSentRef: MutableRefObject<string>,
-): void {
-  const next: Record<string, string> = {}
-  if (!isEmptyWorkbench(deps.workbench)) next.__global_workbench__ = encodeWorkbench(deps.workbench)
-  const { changed, removed } = diffPayloads(sentRef.current, next)
-  for (const key of changed) {
-    const payload = next[key]
-    console.debug('workbench.write.start', { key, bytes: payload.length })
-    putWorkbenchBase(key, payload)
-      .then(() => {
-        sentRef.current[key] = payload
-        console.debug('workbench.write.success', { key, bytes: payload.length })
-      })
-      .catch((error: unknown) => console.warn('workbench.write.error', { key, bytes: payload.length, error }))
-  }
-  for (const key of removed) {
-    console.debug('workbench.delete.start', { key })
-    putWorkbenchBase(key, null)
-      .then(() => {
-        delete sentRef.current[key]
-        console.debug('workbench.delete.success', { key })
-      })
-      .catch((error: unknown) => console.warn('workbench.delete.error', { key, error }))
-  }
-  const dockRaw = encodeDock(deps.dockSnapshot)
-  if (dockRaw !== dockSentRef.current) {
-    console.debug('workbench.dock.write.start', { bytes: dockRaw.length })
-    putWorkbenchDock(dockRaw)
-      .then(() => { dockSentRef.current = dockRaw; console.debug('workbench.dock.write.success', { bytes: dockRaw.length }) })
-      .catch((error: unknown) => console.warn('workbench.dock.write.error', { error }))
-  }
-  if (deps.selectedKey !== selectedSentRef.current) {
-    const key = deps.selectedKey
-    console.debug('workbench.selected.write.start', { key })
-    putWorkbenchSelected(key)
-      .then(() => { selectedSentRef.current = key; console.debug('workbench.selected.write.success', { key }) })
-      .catch((error: unknown) => console.warn('workbench.selected.write.error', { key, error }))
-  }
+  return { error, restoredSelected, restoring }
 }

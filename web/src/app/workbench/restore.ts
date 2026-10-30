@@ -23,6 +23,11 @@ import { HOME_BASE } from './useWorkbench'
 export interface RestoreInput {
   state: WorkbenchStateResp
   sessions: PtySession[]
+  // Local layouts remain readable when inventory is unavailable. Missing
+  // inventory is not proof that a referenced shared terminal has exited.
+  inventoryAvailable?: boolean
+  // Resource discovery and visible tabs differ for device-local layouts.
+  adoptHomeOrphans?: boolean
   // scope=all 扇出的 machines 行（PtySessionsResp.machines，types.ts:198）。B283 方案3 的
   // 门控数据：某台机器的行缺席或 ok=false 时，它名下的会话引用不剥——扇出缺席 ≠ 会话
   // 死亡。整个字段缺席（undefined）按空表处理。本机（machine===''）恒 ok：本机行由
@@ -126,7 +131,7 @@ export function buildRestore(input: RestoreInput): RestoreResult {
   // base 是唯一可靠来源）；真死了走挂载时的连接错误 / 1008 出口，两条路都有
   // 「重开」终态，不会静默自建新 shell。
   workbench = markIncompatibleSessions(
-    pruneDeadSessions(workbench, live, (tab) => !machineOk.has(tab.base.machine)),
+    pruneDeadSessions(workbench, live, (tab) => input.inventoryAvailable === false || !machineOk.has(tab.base.machine)),
     incompatibleIds(input.sessions),
   )
   const pruned = before - countSessions(workbench)
@@ -146,7 +151,7 @@ export function buildRestore(input: RestoreInput): RestoreResult {
       // 语义，也让 pruned 统计不被清除误计成剥引用。
       const effectiveLive = new Set(live)
       for (const tab of decoded.tabs) {
-        if (tab.sessionId !== undefined && !machineOk.has(tab.machine)) effectiveLive.add(tab.sessionId)
+        if (tab.sessionId !== undefined && (input.inventoryAvailable === false || !machineOk.has(tab.machine))) effectiveLive.add(tab.sessionId)
       }
       const beforeDock = decoded.tabs.filter((tab) => tab.sessionId !== undefined).length
       const gated = pruneDeadDockSessions(decoded.tabs, effectiveLive)
@@ -177,6 +182,7 @@ export function buildRestore(input: RestoreInput): RestoreResult {
   let adopted = 0
   let dockSeq = Math.max(0, ...(dock?.tabs ?? []).map((tab) => tab.seq))
   for (const session of input.sessions) {
+    if (input.adoptHomeOrphans === false) break
     if (!live.has(session.id) || used.has(session.id)) continue
     // B322：只收本机 home。workspace 活孤儿收成新组是「打开一次多一组」的泵
     // ——剥 id 后 TerminalTab 再建会话，下一轮这些会话又被收编。B283 已经挡住

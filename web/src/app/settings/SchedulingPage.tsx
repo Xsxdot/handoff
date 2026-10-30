@@ -3,6 +3,7 @@
 // 边界：只触发目标机探测/检测 API，不在浏览器发现机器、写 flow 或决定协调者选择规则。
 import { useEffect, useRef, useState } from 'react'
 import type { ReactElement } from 'react'
+import { ChevronRight } from 'lucide-react'
 import type { CarrierInput, CarrierStatus, CarrierView, HomeProbeResp, SquadInput, SquadMember, SquadView, SquadsResp } from '../../api/scheduling'
 import { fetchMachines } from '../../api/client'
 import { CARRIER_STATUS_LABEL, deleteCarrier, detectCarrier, getCarrierRunCommand, getSquads, probeHome, putCarrier, putSquad } from '../../api/scheduling'
@@ -108,11 +109,10 @@ function carrierStatus(row: CarrierView): CarrierStatus {
 }
 
 /** Props 为空；返回设置页的自动化编制区；保存失败时保留草稿和弹窗供处理。 */
-export type SchedulingPageProps = Record<string, never>
+export interface SchedulingPageProps { compact?: boolean }
 
 /** 渲染载体、小队快照和 CAS 编辑弹窗；保存不检测，保存后的检测是第二次请求。 */
-export function SchedulingPage(props: SchedulingPageProps = {}): ReactElement {
-  void props
+export function SchedulingPage({ compact = false }: SchedulingPageProps = {}): ReactElement {
   // 空快照先占位，保证操作入口在首个网络响应前也可见；响应到达后替换为服务端真值。
   const [snapshot, setSnapshot] = useState<SquadsResp>({ carriers: [], squads: [], running: [] })
   const [loadError, setLoadError] = useState('')
@@ -130,6 +130,9 @@ export function SchedulingPage(props: SchedulingPageProps = {}): ReactElement {
   const [deleteError, setDeleteError] = useState<Record<string, string>>({})
   const [runState, setRunState] = useState({ name: '', message: '', error: '' })
   const [machineOptions, setMachineOptions] = useState<string[]>(['本机'])
+  const [expandedCarriers, setExpandedCarriers] = useState<Set<string>>(() => new Set())
+  const [expandedSquads, setExpandedSquads] = useState<Set<string>>(() => new Set())
+  const [compactSection, setCompactSection] = useState<'carriers' | 'squads'>('carriers')
   const probeSequence = useRef(0)
 
   const load = async (): Promise<void> => {
@@ -369,37 +372,70 @@ export function SchedulingPage(props: SchedulingPageProps = {}): ReactElement {
     setDraft((current) => current === null || !('home_dir' in current) ? current : { ...current, name })
   }
 
+  const toggleExpanded = (setter: typeof setExpandedCarriers, name: string): void => {
+    setter((previous) => {
+      const next = new Set(previous)
+      if (next.has(name)) next.delete(name)
+      else next.add(name)
+      return next
+    })
+  }
+
   return (
-    <div className="flex min-h-full flex-col gap-4 p-4" aria-busy={loading}>
+    <div data-testid="automation-page" className={`flex min-h-full flex-col ${compact ? 'gap-3 p-4 mobile-automation' : 'gap-4 p-4'}`} aria-busy={loading}>
       <div>
-        <h2 className="text-sm font-semibold">自动化</h2>
-        <p className="mt-1 max-w-3xl text-xs leading-5 text-muted-foreground">编制 = 自动化层的「谁来跑、能同时跑几个」。载体是物理承载：一台机器上一个可领活的 CLI 档案（HOME × 模型 × 凭据 × 并发上限）；小队是角色与并发政策：工作流节点绑小队，点火时由小队解析出具体载体。准入 = 小队有位 且 载体有位；抢并发时协调者优先（只在准入排序生效，不抢占在跑任务）。保存走 CAS：编辑前读到哪个版本，保存就钉哪个版本，期间被别人改过会拒收并要求刷新。</p>
+        {!compact && <h2 className="text-sm font-semibold">自动化</h2>}
+        {compact ? <details className="mobile-automation-help"><summary>自动化说明</summary><p className="mt-2 max-w-3xl text-xs leading-5 text-muted-foreground">编制 = 自动化层的「谁来跑、能同时跑几个」。载体是物理承载：一台机器上一个可领活的 CLI 档案（HOME × 模型 × 凭据 × 并发上限）；小队是角色与并发政策：工作流节点绑小队，点火时由小队解析出具体载体。准入 = 小队有位 且 载体有位；抢并发时协调者优先（只在准入排序生效，不抢占在跑任务）。保存走 CAS：编辑前读到哪个版本，保存就钉哪个版本，期间被别人改过会拒收并要求刷新。</p></details> : <p className="mt-1 max-w-3xl text-xs leading-5 text-muted-foreground">编制 = 自动化层的「谁来跑、能同时跑几个」。载体是物理承载：一台机器上一个可领活的 CLI 档案（HOME × 模型 × 凭据 × 并发上限）；小队是角色与并发政策：工作流节点绑小队，点火时由小队解析出具体载体。准入 = 小队有位 且 载体有位；抢并发时协调者优先（只在准入排序生效，不抢占在跑任务）。保存走 CAS：编辑前读到哪个版本，保存就钉哪个版本，期间被别人改过会拒收并要求刷新。</p>}
         {loadError && <p role="alert" className="mt-2 text-xs text-destructive">读取失败：{loadError} <button type="button" className="underline" onClick={() => void load()}>重试</button></p>}
       </div>
 
-      <section className="space-y-2">
-        <div className="flex items-center gap-2"><h3 className="text-xs font-semibold">载体</h3><span className="text-[11px] text-muted-foreground">并发上限是物理位：跨小队全局计数</span><span className="flex-1" /><button type="button" className="rounded-md border px-2.5 py-1 text-xs" onClick={() => openCarrier(null)}>登记载体</button></div>
-        {snapshot.carriers.map((row) => { const status = carrierStatus(row); return <article key={row.name} className="rounded-lg border p-3">
+      {compact && <div role="tablist" aria-label="自动化类别" className="mobile-automation-tabs">
+        <button type="button" role="tab" aria-selected={compactSection === 'carriers'} onClick={() => setCompactSection('carriers')}>载体</button>
+        <button type="button" role="tab" aria-selected={compactSection === 'squads'} onClick={() => setCompactSection('squads')}>小队</button>
+      </div>}
+      {(!compact || compactSection === 'carriers') && <section className={compact ? 'mobile-automation-section' : 'space-y-2'}>
+        <div className="flex items-center gap-2"><h3 className="text-sm font-semibold">载体</h3>{!compact && <span className="text-[11px] text-muted-foreground">并发上限是物理位：跨小队全局计数</span>}<span className="flex-1" /><button type="button" className="min-h-11 rounded-md border px-3 text-sm" onClick={() => openCarrier(null)}>登记载体</button></div>
+        {snapshot.carriers.map((row) => { const status = carrierStatus(row); return <article key={row.name} className={compact ? 'mobile-automation-row' : 'rounded-lg border p-3'}>
+          {compact ? <>
+            <button type="button" data-testid={`automation-carrier-row-${row.name}`} aria-label={`查看载体 ${row.name}`} aria-expanded={expandedCarriers.has(row.name)} onClick={() => toggleExpanded(setExpandedCarriers, row.name)} className="mobile-automation-summary">
+              <span className="mobile-automation-primary"><strong className="block truncate font-mono text-sm">{row.name}</strong><span className="block truncate text-xs text-muted-foreground">{row.machine} · {row.cli}</span></span>
+              <span className="mobile-automation-trailing"><span className="text-xs" data-status={status}>{CARRIER_STATUS_LABEL[status]}</span><span className="text-[11px] text-muted-foreground">v{row.version}</span><ChevronRight aria-hidden="true" className="size-4" /></span>
+            </button>
+            {expandedCarriers.has(row.name) && <div className="mobile-automation-detail">
+              <dl className="grid grid-cols-[max-content_minmax(0,1fr)] gap-x-3 gap-y-2 text-xs"><dt className="text-muted-foreground">HOME 档案</dt><dd className="break-all font-mono">{row.home_dir || '主 HOME'}</dd><dt className="text-muted-foreground">模型</dt><dd>{row.model || 'CLI 默认'}</dd><dt className="text-muted-foreground">凭据来源</dt><dd>{row.credential}</dd><dt className="text-muted-foreground">并发上限</dt><dd>{row.max_concurrency ?? '不限'}</dd></dl>
+              {row.last_error && <p className="mt-2 text-xs text-destructive">最近检测：{row.last_error}</p>}
+              {detectError[row.name] && <p role="alert" className="mt-2 text-xs text-destructive">检测失败：{detectError[row.name]}；请修正 HOME/登录后重试。</p>}
+              {deleteError[row.name] && <p role="alert" className="mt-2 text-xs text-destructive">删除失败：{deleteError[row.name]}</p>}
+              {runState.name === row.name && (runState.message || runState.error) && <p role={runState.error ? 'alert' : undefined} className="mt-2 text-xs">{runState.message || `复制运行命令失败：${runState.error}`}</p>}
+              <details className="mobile-automation-actions"><summary aria-label={`操作 ${row.name}`}>操作</summary><div><button type="button" onClick={() => openCarrier(row)}>编辑 {row.name}</button><button type="button" disabled={detecting === row.name} onClick={() => void detect(row.name)}>{detecting === row.name ? '检测中…' : `检测 ${row.name}`}</button><button type="button" onClick={() => void runCarrier(row.name)}>运行</button><button type="button" disabled={deleting === row.name} onClick={() => void removeCarrier(row)}>{deleting === row.name ? '删除中…' : `删除 ${row.name}`}</button></div></details>
+            </div>}
+          </> : <>
           <div className="flex flex-wrap items-center gap-2 text-xs"><strong className="font-mono">{row.name}</strong><span className="rounded-full bg-muted px-2 py-0.5" data-status={status}>{CARRIER_STATUS_LABEL[status]}</span><span>{row.machine} · {row.cli}</span><span className="flex-1" /><span>在跑 — / {row.max_concurrency ?? '不限'} · v{row.version}</span><button type="button" className="rounded border px-2 py-1" onClick={() => openCarrier(row)}>编辑 {row.name}</button><button type="button" className="rounded border px-2 py-1" disabled={detecting === row.name} onClick={() => void detect(row.name)}>{detecting === row.name ? '检测中…' : '检测'}</button><button type="button" className="rounded border px-2 py-1" onClick={() => void runCarrier(row.name)}>运行</button><button type="button" aria-label={`删除 ${row.name}`} className="rounded border px-2 py-1 text-destructive" disabled={deleting === row.name} onClick={() => void removeCarrier(row)}>{deleting === row.name ? '删除中…' : '删除'}</button></div>
           <dl className="mt-3 grid grid-cols-[max-content_minmax(0,1fr)] gap-x-4 gap-y-1 text-xs"><dt className="text-muted-foreground">HOME 档案</dt><dd className="font-mono">{row.home_dir || <span className="text-muted-foreground">主 HOME</span>}</dd><dt className="text-muted-foreground">模型</dt><dd>{row.model || <span className="text-muted-foreground">CLI 默认</span>}</dd><dt className="text-muted-foreground">凭据来源</dt><dd>{row.credential}</dd><dt className="text-muted-foreground">并发上限</dt><dd>{row.max_concurrency ?? '不限'}</dd></dl>
           {row.last_error && <p className="mt-2 text-xs text-destructive">最近检测：{row.last_error}</p>}
           {detectError[row.name] && <p role="alert" className="mt-2 text-xs text-destructive">检测失败：{detectError[row.name]}；请修正 HOME/登录后重试。</p>}
           {deleteError[row.name] && <p role="alert" className="mt-2 text-xs text-destructive">删除失败：{deleteError[row.name]}</p>}
           {runState.name === row.name && (runState.message || runState.error) && <p role={runState.error ? 'alert' : undefined} className="mt-2 text-xs">{runState.message || `复制运行命令失败：${runState.error}`}</p>}
+          </>}
         </article> })}
         {snapshot.carriers.length === 0 && <p className="rounded-lg border border-dashed p-4 text-xs text-muted-foreground">尚未登记载体，请先登记一个可用 CLI 档案。</p>}
-      </section>
+      </section>}
 
-      <section className="space-y-2">
-        <div className="flex items-center gap-2"><h3 className="text-xs font-semibold">小队</h3><span className="text-[11px] text-muted-foreground">并发政策位按成员载体计数</span><span className="flex-1" /><button type="button" className="rounded-md border px-2.5 py-1 text-xs" onClick={() => openSquad(null)}>建小队</button></div>
-        {snapshot.squads.map((row) => <article key={row.name} className="rounded-lg border p-3">
+      {(!compact || compactSection === 'squads') && <section className={compact ? 'mobile-automation-section' : 'space-y-2'}>
+        <div className="flex items-center gap-2"><h3 className="text-sm font-semibold">小队</h3>{!compact && <span className="text-[11px] text-muted-foreground">并发政策位按成员载体计数</span>}<span className="flex-1" /><button type="button" className="min-h-11 rounded-md border px-3 text-sm" onClick={() => openSquad(null)}>建小队</button></div>
+        {snapshot.squads.map((row) => <article key={row.name} className={compact ? 'mobile-automation-row' : 'rounded-lg border p-3'}>
+          {compact ? <>
+            <button type="button" data-testid={`automation-squad-row-${row.name}`} aria-label={`查看小队 ${row.name}`} aria-expanded={expandedSquads.has(row.name)} onClick={() => toggleExpanded(setExpandedSquads, row.name)} className="mobile-automation-summary"><span className="mobile-automation-primary"><strong className="block truncate font-mono text-sm">{row.name}</strong><span className="block truncate text-xs text-muted-foreground">{row.role === 'coordinator' ? '协调者队' : '执行者队'} · {row.members.length} 个成员</span></span><span className="mobile-automation-trailing"><span className="text-[11px] text-muted-foreground">v{row.version}</span><ChevronRight aria-hidden="true" className="size-4" /></span></button>
+            {expandedSquads.has(row.name) && <div className="mobile-automation-detail"><div className="flex flex-wrap gap-2">{row.members.length > 0 ? row.members.map((member) => <span key={member.carrier} className="rounded border px-2 py-1 text-xs">{member.carrier}{member.max_concurrency ? `/${member.max_concurrency}` : ''}</span>) : <span className="text-xs text-muted-foreground">空队合法：先建队再补成员</span>}</div><dl className="mt-3 grid grid-cols-[max-content_minmax(0,1fr)] gap-x-3 gap-y-2 text-xs"><dt className="text-muted-foreground">并发政策</dt><dd>每个成员载体独立设置；空缺或 0 = 不限</dd><dt className="text-muted-foreground">绑定对象</dt><dd>{row.role === 'coordinator' ? '拉起通道（坐下 / 叫机器人）' : '工作流派发节点（flows 页配置）'}</dd></dl><button type="button" className="mt-3 min-h-11 rounded border px-3 text-sm" onClick={() => openSquad(row)}>编辑小队</button></div>}
+          </> : <>
           <div className="flex flex-wrap items-center gap-2 text-xs"><strong className="font-mono">{row.name}</strong><span className="rounded-full bg-muted px-2 py-0.5">{row.role === 'coordinator' ? '协调者队' : '执行者队'}</span><span className="flex-1" /><span>成员政策 · v{row.version}</span><button type="button" className="rounded border px-2 py-1" onClick={() => openSquad(row)}>编辑</button></div>
           <div className="mt-2 flex flex-wrap gap-1.5">{row.members.length > 0 ? row.members.map((member) => <span key={member.carrier} className="rounded border px-2 py-1 text-xs" title={member.carrier}>成员：{member.carrier}{member.max_concurrency ? `/${member.max_concurrency}` : ''}</span>) : <span className="text-xs text-muted-foreground">空队合法：先建队再补成员</span>}</div>
           <dl className="mt-3 grid grid-cols-[max-content_minmax(0,1fr)] gap-x-4 gap-y-1 text-xs"><dt className="text-muted-foreground">并发政策</dt><dd>每个成员载体独立设置；空缺或 0 = 不限</dd><dt className="text-muted-foreground">绑定对象</dt><dd>{row.role === 'coordinator' ? '拉起通道（坐下 / 叫机器人）' : '工作流派发节点（flows 页配置）'}</dd></dl>
+          </>}
         </article>)}
         {snapshot.squads.length === 0 && <p className="rounded-lg border border-dashed p-4 text-xs text-muted-foreground">尚未登记小队，请创建 executor 或 coordinator 小队。</p>}
         <p className="text-[11px] text-muted-foreground">协调者队成员必须落在协调机；执行者队成员可以是任何执行机。</p>
-      </section>
+      </section>}
 
       {dialog !== null && draft !== null && <div className="fixed inset-0 z-20 flex items-center justify-center bg-black/30 p-4" role="dialog" aria-modal="true" aria-labelledby="scheduling-dialog-title">
         <form className={`w-full space-y-4 rounded-lg border bg-background p-5 shadow-lg ${dialog.kind === 'carrier' ? 'max-w-[480px]' : 'max-w-[440px]'}`} onSubmit={(event) => { event.preventDefault(); void save() }}>

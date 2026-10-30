@@ -1,3 +1,4 @@
+import { ChevronLeft } from 'lucide-react'
 // Shell —— 控制台的三栏外框：左栏导航树 / 中央 tab 工作台 / 右栏文件树。
 //
 // 职责：
@@ -39,7 +40,8 @@ import { AddProjectWizard } from '../projects/AddProjectWizard'
 import { ProjectEditDialog } from '../projects/ProjectEditDialog'
 import { findBaseByKey, findBaseOfTask, ProjectTree, workspaceBase, type OpenItem } from '../tree/ProjectTree'
 import { MobileProjectDetail } from '../tree/MobileProjectDetail'
-import { MobileProjectList } from '../tree/MobileProjectList'
+import { MobileWorkspace } from '../tree/MobileWorkspace'
+import './mobile-ui.css'
 import { FileTree } from '../files/FileTree'
 import { WorkbenchPage } from '../workbench/WorkbenchPage'
 import { TerminalTab } from '../workbench/TerminalTab'
@@ -104,6 +106,18 @@ export function coordinatorBase(tree: ProjectTreeResp | null, info: CoordinatorA
   }
 }
 
+// Directory switching follows the drawer's stable machine/path identity. Human-readable
+// project/location names can collide; when identity cannot resolve to exactly one project,
+// keep the current directory as the only safe choice.
+export function directoryChoicesFor(base: BaseDir, tree: ProjectTreeResp | null): BaseDir[] {
+  if (!tree) return [base]
+  const owners = tree.projects.filter(project => project.locations.some(location =>
+    location.machine === base.machine && location.workspaces.some(workspace => workspace.path === base.path)))
+  if (owners.length !== 1) return [base]
+  const project = owners[0]
+  return project.locations.flatMap(location => location.workspaces.map(workspace => workspaceBase(project, location.machine, workspace)))
+}
+
 // Only a complete, timestamped current observation is safe to use as a filter
 // source. Unknown status or fields fail closed to the unfiltered task list.
 export function unlinkedTaskIdsForSummary(summary?: UnlinkedSummary | null, now = Date.now()): Set<string> | null {
@@ -130,6 +144,9 @@ function focusedTabOf(workbench: Workbench): Tab | null {
 }
 
 export function Shell() {
+  const workbenchRestoringRef = useRef(true)
+  const mobileHomeRef = useRef<HTMLDivElement>(null)
+  const mobileDirBackRef = useRef<HTMLButtonElement>(null)
   const tasksState = useTasks()
   const treeState = useProjectTree()
   const tasks = useMemo(() => tasksState.data ?? [], [tasksState.data])
@@ -165,6 +182,7 @@ export function Shell() {
   }, [viewport, compact])
   const location = useLocation()
   const openCoordinatorTerminal = useCallback((info: CoordinatorAttachInfo) => {
+    if (workbenchRestoringRef.current) return
     console.info('coordinator.terminal.open', { machine: info.machine, dir: info.dir, opened: true, cause: 'attach' })
     if (compact) {
       // B369.7：紧凑下抽屉选中已 URL 化，来源卡从当前 location 的 card 参数读，
@@ -245,7 +263,7 @@ export function Shell() {
   // 只在紧凑视口开表（fetchPtySessions('all') 是会话恢复的唯一真相源，桌面详情
   // 面不存在，没有理由持续打扰它）；30s 节奏对齐树流——会话列表不是强实时面。
   const ptySessionsState = usePoll(() => fetchPtySessions('all'), 30_000, { enabled: compact })
-  const [sidebarTab, setSidebarTab] = useState<'sessions' | 'tasks'>('sessions')
+  const [sidebarTab, setSidebarTab] = useState<'sessions' | 'tasks'>('tasks')
   const [createOpen, setCreateOpen] = useState(false)
   const [createBusy, setCreateBusy] = useState(false)
   const [createError, setCreateError] = useState('')
@@ -264,6 +282,12 @@ export function Shell() {
   }, [])
   // needsOnly 左栏「需要你」筛选态：与筛选钮同层，传给 SessionSidebar 渲染。
   const [needsOnly, setNeedsOnly] = useState(false)
+  const mobileArchived = new URLSearchParams(location.search).get('archive') === '1'
+  const [desktopArchived, setDesktopArchived] = useState(false)
+  const openSessionList = (archived: boolean) => {
+    if (compact) navigate('/?tab=sessions' + (archived ? '&archive=1' : ''))
+    else { setDesktopArchived(archived); setSidebarTab('sessions') }
+  }
   // 项目筛选（B358.8 #6）：state 与 needsOnly 同层；选项与卡→项目映射都从既有
   // cardsState（2.5s 轮询）投影，零新增数据供给。
   const [projectFilter, setProjectFilter] = useState('')
@@ -306,7 +330,7 @@ export function Shell() {
     [dock.tabs, dock.activeId, dock.windowOpen, dock.geom, dock.maximized],
   )
 
-  // 工作台状态的水合与写回（2026-08-20 状态同步 spec §5.3）。
+  // 工作台布局各设备本地恢复/保存；共享服务只提供PTY资源和一次旧布局迁移。
   // 它取代了旧的会话恢复入口：布局恢复与会话恢复是同一件事的两半。
   //
   // adoptDockTab 仍用 dock.adopt 而不是别的入口：adopt 不打开浮窗、不抢焦点——
@@ -318,19 +342,23 @@ export function Shell() {
     hydrateWorkbench: wb.hydrate,
     hydrateDock: dock.hydrate,
     adoptDockTab: dock.adopt,
+    lockWorkbench: wb.lockLayout,
+    enableWorkbench: wb.enableLayout,
   })
+  workbenchRestoringRef.current = sync.restoring
 
   // 恢复「上次选中的目录」：要等项目树到位才能校验它还在不在（spec §6 规则三）。
   //
   // 三个条件缺一不可：
   //   - 树已加载（没树就无从校验）
-  //   - 服务端确实存了一个（空串 = 上次就没选中）
+  //   - 本设备确实存了一个（空串 = 上次就没选中）
   //   - 用户还没自己选过（wb.base 非空说明他已经点过左栏了，别抢方向盘）
   // selectedRestoredRef 保证只做一次：树刷新会让这个 effect 重跑，
   // 而用户此时可能已经切到别的目录了
   const selectedRestoredRef = useRef(false)
   useEffect(() => {
     if (selectedRestoredRef.current) return
+    if (sync.restoring) return
     if (!treeState.data || sync.restoredSelected === '' || wb.base !== null) return
     selectedRestoredRef.current = true
     const found = findBaseByKey(treeState.data, sync.restoredSelected)
@@ -343,7 +371,7 @@ export function Shell() {
     // 用树上重新构造的那份，而不是 payload 里的快照：树上的 label 会跟着
     // 分支改名一起变，用快照会让面包屑显示一个已经改掉的旧分支名
     wb.select(found)
-  }, [treeState.data, sync.restoredSelected, wb.base, wb.select])
+  }, [treeState.data, sync.restoredSelected, sync.restoring, wb.base, wb.select])
   // closingPty 记「哪个终端 tab 正在等确认」。会话 id 与 tab id 都要留着：
   // 确认之后要先删会话、再关那个 tab
   //
@@ -553,6 +581,7 @@ export function Shell() {
   // 解析），scene 档随后尽力解析该会话在跑任务并跳进任务现场；解析不到静默
   // 回落群聊（最坏情况 = 现状）。桌面不读偏好。
   const openSession = (session: SessionSummary) => {
+    if (sync.restoring) return
     backToWorkbench()
     openMobileDetail()
     wb.openOrFocus({ kind: 'session', sessionId: session.id, title: session.title }, sessionBase(session.id))
@@ -615,6 +644,7 @@ export function Shell() {
   // 抽屉自己的文件点击只开 tab，不清掉 drawer，直到用户明确点 X。
   // B369.7：紧凑下抽屉开关 = 写 URL（/?tab=projects&dir=<key>），桌面沿用 state。
   const openDirectory = (base: BaseDir) => {
+    if (sync.restoring) return
     backToWorkbench()
     wb.select(base)
     if (compact) nav.setDir(base.key)
@@ -625,6 +655,7 @@ export function Shell() {
   // openWorkbenchItem 是左栏「已打开行」的聚焦入口（onFocusOpenItem）。
   // focusTab 而不是 open：无会话终端等内容没有去重键，open 会开出第二个 tab。
   const openWorkbenchItem = (item: OpenItem) => {
+    if (sync.restoring) return
     backToWorkbench()
     openMobileDetail()
     wb.focusTab(item.base, item.group, item.tabId)
@@ -637,6 +668,7 @@ export function Shell() {
   // 放行后 closeById 自己反查坐标收格收组，不依赖 OpenItem 里的 group 快照
   // （悬停期间布局可能已变）。
   const closeOpenItem = (item: OpenItem) => {
+    if (sync.restoring) return
     const live = wb.openedItems.find((t) => t.tabId === item.tabId)
     if (!live) return
     if (!beforeCloseTab(live.content, live.tabId, live.base)) return
@@ -647,6 +679,7 @@ export function Shell() {
   // openTerminalAt 是左栏机器行/工作树子行终端钮的入口（基线语义）：
   // 选中该基准并 openOrFocus 终端——终端无去重键，落进独立新组，不打散当前组。
   const openTerminalAt = (base: BaseDir) => {
+    if (sync.restoring) return
     backToWorkbench()
     openMobileDetail()
     wb.select(base)
@@ -663,6 +696,7 @@ export function Shell() {
   // opts（B369.7）：/tasks 跳板期间把来源与 tab 透传给 nav.enterDetail，修正
   // 瞬态路径上 tab 派生错误；看板弹层/ProjectTree 等既有调用方不传，零感知。
   const openTaskTui = (base: BaseDir | null, taskId: string, opts?: { from?: string | null; tab?: string | null }) => {
+    if (sync.restoring) return
     setOverlay('none')
     backToWorkbench()
     if (compact) nav.enterDetail(opts)
@@ -709,15 +743,18 @@ export function Shell() {
   // 紧凑视口：目录覆盖层里点文件/开终端都切进工作台（下钻态）。
   // 桌面沿用既有右栏内联行为，这两个回调用不上。
   const openMobileFile = (base: BaseDir, rel: string) => {
+    if (sync.restoring) return
     wb.open({ kind: 'file', rel }, base)
     openMobileDetail()
   }
   const openMobileTerminal = (base: BaseDir, rel: string) => {
+    if (sync.restoring) return
     wb.openTerminal(base, undefined, rel)
     openMobileDetail()
   }
 
   const selectProject = (project: ProjectNode) => {
+    if (sync.restoring) return
     const location = project.locations.find((loc) => {
       const machineDown = treeState.data?.machines?.some((machine) => machine.name === loc.machine && !machine.ok) ?? false
       return loc.probe_error === '' && !machineDown && loc.workspaces.some((ws) => ws.is_main)
@@ -869,6 +906,9 @@ export function Shell() {
     ? focusedTab.content.sessionId
     : null
   const sessionRoom = compact && nav.detail && focusedSessionId !== null
+  // Phone file chrome lives in one header; changing focus never closes a resource.
+  const filePreview = viewport === 'phone' && nav.detail && focusedTab?.content.kind === 'file'
+  const previewFiles = filePreview ? wb.openedItems.filter((item) => item.content.kind === 'file') : []
   // 房间详情态（paneDetail 真值源，上提至此）：⋯（注册表）/详情头部返回/Esc 三条
   // 通道都汇到这里。房间头部按它隐显——群聊态 = 房间头部（返回+标题+⋯），详情
   // 态 = SessionTab 自渲染头部（返回+标题，无 ⋯），房间任一时刻只渲染一条 header。
@@ -928,8 +968,8 @@ export function Shell() {
   // 做。ProjectTree 机器行与移动项目详情面（B369.10）两个入口共用，不得分叉。
   const handleWorktreeCreated = useCallback((project: ProjectNode, machine: string, ws: Workspace) => {
     treeState.refresh()
-    wb.select(workspaceBase(project, machine, ws))
-  }, [treeState, wb])
+    if (!sync.restoring) wb.select(workspaceBase(project, machine, ws))
+  }, [treeState, wb, sync.restoring])
 
   // projectTree 是桌面左栏的项目树实例（S2/B426 后 compact「项目」tab 不再复用
   // 它——改挂原型卡流 MobileProjectList）。`!compact` 门在下方消费点保证桌面
@@ -938,6 +978,14 @@ export function Shell() {
     <ProjectTree
       tree={treeState.data}
       tasks={tasks}
+      sessions={sessions.map(session => {
+        const names=[...new Set((session.cards ?? []).map(card=>projectOfCard(card.card_id)).filter(Boolean))]
+        const projectIds=[...new Set(names.flatMap(name=>treeState.data!.projects.filter(p=>p.name===name || p.locations.some(l=>l.name===name)).map(p=>p.project_id)))]
+        return { id:session.id,title:session.title,projectIds,archived:session.archived,needsHuman:session.needs_human,unresolved:!(session.cards?.length) || session.cards!.some(c=>!projectOfCard(c.card_id)) || names.some(name=>!treeState.data!.projects.some(p=>p.name===name || p.locations.some(l=>l.name===name))) }
+      })}
+      onOpenSession={(id) => { const found=sessions.find(s=>s.id===id);if(found)openSession(found) }}
+      onOpenArchive={() => openSessionList(true)}
+      currentBrowseBase={fileDrawer}
       selectedKey={fileDrawer?.key ?? wb.base?.key ?? null}
       ticketCount={tickets.count}
       ticketsByDir={tickets.byWorkDir}
@@ -983,9 +1031,48 @@ export function Shell() {
   const detailProject = compact && nav.projectId !== null
     ? treeState.data?.projects.find((p) => p.project_id === nav.projectId) ?? null
     : null
+  useEffect(() => {
+    if (!compact) return
+    if (fileDrawer !== null && !nav.detail) {
+      mobileDirBackRef.current?.focus()
+      return
+    }
+    if (detailProject !== null) mobileHomeRef.current?.querySelector<HTMLButtonElement>('[data-testid="project-detail-back"]')?.focus()
+  }, [compact, detailProject, fileDrawer, nav.detail])
+
+  const verdictBanner = bannerTask !== null && (
+                <div
+                  data-testid="task-verdict-banner"
+                  // B369.10 review 建议修：新面根节点挂触点基线（spec §3.2「compact 新
+                  // 面根节点挂 TOUCH_BASELINE」），把「去查证」抬到 24×24 底线。
+                  // 不给它 min-h-11：原型 .banner .acts button（mobile-task.html:43）
+                  // 是 ~30px 的窄条主动作，44px 会与原型形态相左——两档分工里这是
+                  // 次级档，形态权威仍是原型。padding 对齐原型（py-1.5≈28px）。
+                  className={cn(
+                    'flex items-center gap-2 border-b border-amber-200 bg-amber-50 px-2 py-1.5 text-xs text-amber-900',
+                    TOUCH_BASELINE,
+                  )}
+                >
+                  <span className="min-w-0 flex-1 truncate">
+                    {bannerTask.inReview
+                      ? '等你裁决 · 交付与作答在对话段'
+                      : `${bannerTask.ticketCount} 张工单等你答复`}
+                  </span>
+                  {/* 去查证 = 激活该 tui 窗格（焦点切回对话段）；waiting_review 的
+                      审阅面由 TuiTab 既有 effect 自动展开。横幅不承载作答。 */}
+                  <button
+                    type="button"
+                    data-testid="task-verdict-activate"
+                    onClick={() => wb.activate(wb.wb.activeGroupId, bannerTask.tabId)}
+                    className="shrink-0 rounded border border-amber-300 px-2 py-1.5 font-medium text-amber-900 hover:bg-amber-100"
+                  >
+                    去查证
+                  </button>
+                </div>
+              )
 
   return (
-    <div data-testid="app-shell" className="handoff-viewport flex min-h-0 flex-col overflow-hidden bg-background">
+    <div data-testid="app-shell" className={cn("handoff-viewport flex min-h-0 flex-col overflow-hidden bg-background", compact && "mobile-ui")}>
       {desktop && <DesktopTitleBar base={focusedBase} />}
       <div className="flex min-h-0 flex-1">
       {/* 左栏自身不滚：滚动交给 ProjectTree 内部的树区，好让底部入口钉在底部。
@@ -997,12 +1084,12 @@ export function Shell() {
           <DisconnectedBanner message={treeState.errorText} compact />
         )}
         {sync.error !== '' && (
-          <DisconnectedBanner message={`工作台状态恢复失败，本次不会保存布局：${sync.error}`} compact />
+          <DisconnectedBanner message={sync.error} compact />
         )}
         {/* 左栏两 tab（B361）：会话 | 任务。双挂载、以 hidden class 切换——
             不用 hidden 属性：attribute 会让 jsdom 的可达性查询排除整个面板，
             既有树交互测试全部失效；class 切换在真机同为 display:none（台账 Task 4）。 */}
-        <div className="flex shrink-0 border-b" role="tablist" aria-label="左栏视图">
+        <div className="hidden" role="tablist" aria-label="左栏视图">
           {ledgerEnabled && (
             <button type="button" role="tab" aria-selected={sidebarTab === 'sessions'} data-testid="sidebar-tab-sessions"
               onClick={() => setSidebarTab('sessions')}
@@ -1022,7 +1109,7 @@ export function Shell() {
         {ledgerEnabled && (
           <div className={`flex min-h-0 flex-1 flex-col ${sidebarTab !== 'sessions' ? 'hidden' : ''}`}>
             {/* B406：401 终止态不算 loading（否则永转圈），过期面交由 expired 渲染 */}
-            <SessionSidebar sessions={sessions}
+            <button className="px-3 py-2 text-left text-xs" onClick={()=>setSidebarTab('tasks')}>‹ 返回项目</button><SessionSidebar sessions={sessions.filter(s=>s.archived===desktopArchived)} archivedOnly={desktopArchived}
               loading={sessionsState.data === null && !sessionsState.disconnected && !sessionsState.sessionExpired}
               errorText={sessionsState.disconnected ? sessionsState.errorText : ''}
               expired={sessionsState.sessionExpired}
@@ -1072,8 +1159,39 @@ export function Shell() {
           >
             <WorkbenchPage
               api={wb}
+              restoring={sync.restoring}
               singleFocus={viewport === 'phone'}
               sessionRoom={sessionRoom}
+              filePreviewHeader={filePreview ? (
+                <>
+                {verdictBanner}
+                <div data-testid="mobile-detail-bar" className="flex shrink-0 items-center gap-2 border-b bg-background px-2 py-1.5">
+                  <button type="button" data-testid="mobile-detail-back" onClick={detailBack}
+                    className="rounded px-2 py-1 text-sm text-muted-foreground">‹ 返回</button>
+                  <span className="min-w-0 flex-1 truncate text-sm">{crumbTail}</span>
+              {filePreview && focusedTab && (
+                <>
+                  {previewFiles.length > 1 && (
+                    <select aria-label="切换已打开文件" value={focusedTab.id}
+                      className="mobile-file-switch min-w-0 max-w-24 rounded border bg-background px-2 text-xs"
+                      onChange={(event) => {
+                        const item = previewFiles.find((file) => file.tabId === event.target.value)
+                        if (item) wb.focusTab(item.base, item.groupId, item.tabId)
+                      }}>
+                      {previewFiles.map((item) => <option key={item.tabId} value={item.tabId}>{item.label} · {item.base.machine || '本机'} · {item.base.label}</option>)}
+                    </select>
+                  )}
+                  <button type="button" aria-label="关闭文件预览" className="min-h-11 min-w-11"
+                    onClick={() => {
+                      if (!beforeCloseTab(focusedTab.content, focusedTab.id, focusedTab.base)) return
+                      wb.closeById(focusedTab.id)
+                      detailBack()
+                    }}>×</button>
+                </>
+              )}
+                </div>
+                </>
+              ) : null}
               onAddProject={() => setWizardOpen(true)}
               tree={treeState.data}
               tasks={tasks}
@@ -1204,12 +1322,14 @@ export function Shell() {
               与既有 FullPageCover 同一手法，只是带底栏且由 tab 状态驱动。
               mobileDetail 为真时整层让开，露出下面的常驻工作台（下钻态）。 */}
           {compact && !nav.detail && (
-            <div data-testid="mobile-home" className="absolute inset-0 z-30 flex min-h-0 flex-col bg-background">
+            <div ref={mobileHomeRef} data-testid="mobile-home" className="absolute inset-0 z-30 flex min-h-0 flex-col bg-background" aria-hidden={compact && fileDrawer !== null} {...(fileDrawer !== null ? { inert: true } : {})}>
               <div className="min-h-0 flex-1 overflow-auto">
                 {nav.tab === 'sessions' && (
-                  ledgerEnabled ? (
-                    <SessionSidebar
-                      sessions={sessions}
+                  ledgerLoading ? (
+                    <p role="status" className="p-4 text-sm text-muted-foreground">正在读取会话功能…</p>
+                  ) : ledgerEnabled ? (
+                    <div className="flex h-full min-h-0 flex-col"><header className="mobile-sub-header"><button aria-label="返回工作台" onClick={() => nav.setTab('projects')}><ChevronLeft className="size-5" /></button><h1>{mobileArchived ? '归档会话' : '协作会话'}</h1><button onClick={() => openSessionList(!mobileArchived)}>{mobileArchived ? '进行中' : '归档'}</button></header><SessionSidebar
+                      sessions={sessions.filter((s) => s.archived === mobileArchived)}
                       loading={sessionsState.data === null && !sessionsState.disconnected && !sessionsState.sessionExpired}
                       errorText={sessionsState.disconnected ? sessionsState.errorText : ''}
                       expired={sessionsState.sessionExpired}
@@ -1222,7 +1342,8 @@ export function Shell() {
                       onOpen={openSession}
                       onCreate={() => { setCreateError(''); setCreateOpen(true) }}
                       compact={compact}
-                    />
+                      archivedOnly={mobileArchived}
+                    /></div>
                   ) : (
                     <p className="p-4 text-sm text-muted-foreground">账本未启用，会话不可用。</p>
                   )
@@ -1235,6 +1356,8 @@ export function Shell() {
                     compact={compact}
                     onOpenSessionForCard={onOpenSessionForCard}
                     driverSessionReady={driverSessionReady}
+                    onOpenTaskBoard={() => setOverlay('board')}
+                    onOpenTickets={() => setOverlay('tickets')}
                     sharedData={{ cards: cardsState, decisions: decisionsState, tasks: tasksState }}
                   />
                 )}
@@ -1247,17 +1370,31 @@ export function Shell() {
                   // 挂载手法不动）：点卡 nav.setProject 下钻、＋添加项目走既有
                   // 向导通道（setWizardOpen）。
                   <div className="relative flex h-full min-h-0 flex-col">
-                    {treeState.data === null ? (
-                      <p className="p-4 text-sm text-muted-foreground">正在读取项目…</p>
-                    ) : (
-                      <MobileProjectList
-                        projects={treeState.data.projects}
-                        machines={treeState.data.machines}
-                        tasks={tasks}
-                        onOpenProject={(projectId) => nav.setProject(projectId)}
-                        onAddProject={() => setWizardOpen(true)}
-                      />
-                    )}
+                    <div data-testid="mobile-projects-underlay" aria-hidden={detailProject !== null} {...(detailProject !== null ? { inert: true } : {})}>
+                    <MobileWorkspace
+                      projects={treeState.data?.projects ?? []}
+                      machines={treeState.data?.machines}
+                      tasks={tasks}
+                      sessions={sessions}
+                      projectOfCard={projectOfCard}
+                      openedItems={wb.openedItems}
+                      ptySessions={ptySessionsState.data?.sessions ?? null}
+                      needsCount={cardsState.data !== null && decisionsState.data !== null ? cardNeedsCount : null}
+                      ready={treeState.data !== null && !treeState.disconnected && !treeState.sessionExpired}
+                      errorText={treeState.disconnected ? treeState.errorText : ''}
+                      expired={treeState.sessionExpired}
+                      onOpenSession={openSession}
+                      onOpenItem={(item) => { if (sync.restoring) return; wb.focusTab(item.base, item.groupId, item.tabId); openMobileDetail() }}
+                      onRestoreTerminal={(id, base) => { if (sync.restoring) return; wb.restoreTerminal(base, id); openMobileDetail() }}
+                      onOpenTerminal={openTerminalAt}
+                      onOpenDirectory={openDirectory}
+                      onOpenProject={(id) => nav.setProject(id)}
+                      onEditProject={setEditProject}
+                      onAddProject={() => setWizardOpen(true)}
+                      onOpenSessions={openSessionList}
+                      onOpenCards={openCardsSurface}
+                    />
+                    </div>
                     {detailProject !== null && (
                       <MobileProjectDetail
                         project={detailProject}
@@ -1270,6 +1407,7 @@ export function Shell() {
                         onOpenTask={(base, taskId) => openTaskTui(base, taskId)}
                         onWorktreeCreated={handleWorktreeCreated}
                         onReopenPtySession={(sessionId, base) => {
+                          if (sync.restoring) return
                           // restoreTerminal 按 pty id 去重并切到那一格：已开则只聚焦，
                           // 未开则放进独立组再激活。不新建第二条承载（B280）。
                           // 下钻只揭开常驻工作台，眼前就是刚聚焦的这一格。
@@ -1284,27 +1422,27 @@ export function Shell() {
                   // B369.8：compact 两级设置 IA——sub 从 nav（URL）读、写经 nav.setSub
                   // 收口 URL；组件自身不碰 router（SettingsPage 文件头「组件边界」）。
                   <SettingsPage
-                    onClose={() => nav.setTab('sessions')}
+                    onClose={() => nav.setTab('projects')}
                     compact
                     sub={nav.sub}
                     onSubChange={nav.setSub}
                   />
                 )}
               </div>
-              <MobileTabBar
+              {nav.sub === null && nav.projectId === null && nav.tab !== 'sessions' && !new URLSearchParams(location.search).has('card') && <MobileTabBar
                 active={nav.tab}
                 onSelect={nav.setTab}
                 // B369.8：badges=false 时 needsCount/unread 双双归 0（设置中心「提醒」
                 // 门控）；只门控底栏，SessionSidebar 行内未读点不受影响。
                 needsCount={webPrefs.badges && ledgerEnabled ? cardNeedsCount : 0}
                 unread={webPrefs.badges ? totalUnread(sessions) : 0}
-              />
+              />}
             </div>
           )}
           {/* 下钻态的返回条：没有它，手机用户进了会话/任务现场就回不到底栏首页
               （桌面靠左栏与面包屑，手机两者都不挂）。固定在顶部，含当前焦点内容名。
               紧凑视口下 fullPageRoute 恒假（S2d-1），故不与整页路由互压。 */}
-          {compact && nav.detail && (
+          {compact && nav.detail && !filePreview && (
             sessionRoom && roomDetailOpen ? null : sessionRoom ? (
               // S5（B426）：会话房间的唯一 header（群聊态）——‹返回（出房间回
               // 会话列表，分派复用 detailBack）+ 房间标题 + ⋯更多（右侧，经
@@ -1339,36 +1477,7 @@ export function Shell() {
             // 横幅判据与落点理由见 bannerTask memo（Shell 层、不进窗格树）。
             // S5：焦点 tab 为会话时走上面的房间头部分支，此分支只剩终端/任务下钻。
             <div className="absolute inset-x-0 top-0 z-30 flex min-h-0 flex-col">
-              {bannerTask !== null && (
-                <div
-                  data-testid="task-verdict-banner"
-                  // B369.10 review 建议修：新面根节点挂触点基线（spec §3.2「compact 新
-                  // 面根节点挂 TOUCH_BASELINE」），把「去查证」抬到 24×24 底线。
-                  // 不给它 min-h-11：原型 .banner .acts button（mobile-task.html:43）
-                  // 是 ~30px 的窄条主动作，44px 会与原型形态相左——两档分工里这是
-                  // 次级档，形态权威仍是原型。padding 对齐原型（py-1.5≈28px）。
-                  className={cn(
-                    'flex items-center gap-2 border-b border-amber-200 bg-amber-50 px-2 py-1.5 text-xs text-amber-900',
-                    TOUCH_BASELINE,
-                  )}
-                >
-                  <span className="min-w-0 flex-1 truncate">
-                    {bannerTask.inReview
-                      ? '等你裁决 · 交付与作答在对话段'
-                      : `${bannerTask.ticketCount} 张工单等你答复`}
-                  </span>
-                  {/* 去查证 = 激活该 tui 窗格（焦点切回对话段）；waiting_review 的
-                      审阅面由 TuiTab 既有 effect 自动展开。横幅不承载作答。 */}
-                  <button
-                    type="button"
-                    data-testid="task-verdict-activate"
-                    onClick={() => wb.activate(wb.wb.activeGroupId, bannerTask.tabId)}
-                    className="shrink-0 rounded border border-amber-300 px-2 py-1.5 font-medium text-amber-900 hover:bg-amber-100"
-                  >
-                    去查证
-                  </button>
-                </div>
-              )}
+              {verdictBanner}
               <div
                 data-testid="mobile-detail-bar"
                 className="flex items-center gap-2 border-b bg-background px-2 py-1.5"
@@ -1396,12 +1505,13 @@ export function Shell() {
                 <button
                   type="button"
                   data-testid="mobile-dir-back"
+                  ref={mobileDirBackRef}
                   onClick={() => nav.setDir(null)}
                   className="rounded px-2 py-1 text-sm text-muted-foreground hover:bg-accent hover:text-foreground"
                 >
                   ‹ 返回
                 </button>
-                <span className="min-w-0 flex-1 truncate text-sm">{fileDrawer.label}</span>
+                <label className="min-w-0 flex-1"><span className="sr-only">目录位置</span><select aria-label="目录位置" className="w-full min-w-0 border-0 bg-background text-sm" value={fileDrawer.key} onChange={event => { const chosen = treeState.data ? findBaseByKey(treeState.data, event.target.value) : null; if(chosen) openDirectory(chosen) }}>{directoryChoicesFor(fileDrawer,treeState.data).map(base=><option key={base.key} value={base.key}>{base.machine || '本机'} · {base.label} · {base.path}</option>)}</select></label>
               </div>
               <div className="min-h-0 flex-1 overflow-hidden">
                 <FileTree
@@ -1427,7 +1537,11 @@ export function Shell() {
             base={fileDrawer}
             refreshKey={fileTreeNonce}
             taskId={currentTaskId}
-            onOpenFile={(rel) => wb.open({ kind: 'file', rel }, fileDrawer)}
+            onOpenFile={(rel) => wb.openInNewGroup({ kind: 'file', rel }, fileDrawer)}
+            onOpenFileInNewTab={(rel) => wb.openInNewGroup({ kind: 'file', rel }, fileDrawer)}
+            onOpenFileInSplit={(rel) => wb.openInRightSplit({ kind: 'file', rel }, fileDrawer)}
+            directoryChoices={directoryChoicesFor(fileDrawer,treeState.data)}
+            onSelectDirectory={openDirectory}
             onOpenTerminal={(rel) => wb.openTerminal(fileDrawer, undefined, rel)}
             revealSupported={caps.reveal('')}
             onClose={() => {
@@ -1482,6 +1596,7 @@ export function Shell() {
 
       {overlay === 'board' && (
         <BoardOverlay
+          compact={compact}
           tasksState={tasksState}
           tree={treeState.data}
           unlinkedTaskIds={unlinkedTaskIds}
@@ -1493,6 +1608,7 @@ export function Shell() {
       {overlay === 'tickets' && (
         <TicketsOverlay
           tickets={tickets}
+          disabled={compact && (tasksState.disconnected || tasksState.sessionExpired || tasksState.data === null)}
           onOpenTask={openTaskTui}
           onClose={() => setOverlay('none')}
         />

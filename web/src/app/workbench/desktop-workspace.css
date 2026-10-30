@@ -1,0 +1,50 @@
+/* Dense desktop workbench surfaces. Root classes isolate shared compact components. */
+.desktop-project-tree {padding:8px 10px; font-size:12px;}
+.desktop-project-tree label {min-height:30px;border-radius:5px;gap:7px;}
+.desktop-project-tree input {font-size:12px;}
+.desktop-project-tree [data-testid="project-overview"] {font-size:12px;min-height:27px;}
+.desktop-project-tree [data-testid="tree-scroll"] > div {padding-left:0;margin-top:3px;}
+.desktop-project-tree [data-testid="tree-scroll"] > div > span[aria-hidden] {display:none;}
+.desktop-project-header > button {font-size:13px;font-weight:500;min-height:28px;padding:0 70px 0 2px;gap:4px;}
+.desktop-project-header > button > span:first-child {gap:7px;}
+.desktop-project-header [data-testid="project-running-count"] {display:none;}
+.desktop-project-actions {position:absolute;right:0;top:2px;display:flex;align-items:center;gap:0;background:var(--background);}
+.desktop-project-actions button {display:flex;width:23px;height:24px;align-items:center;justify-content:center;border-radius:4px;color:var(--muted-foreground);}
+.desktop-project-actions button:hover {background:var(--accent);color:var(--foreground);}
+.desktop-project-actions button:disabled {opacity:.4;}
+.desktop-project-tree [data-testid^="project-node-"] {margin-bottom:5px;padding-bottom:5px;}
+.desktop-project-tree [data-testid^="project-node-"] button:not(.desktop-project-actions button) {font-size:12px;min-height:25px;}
+.desktop-project-tree [data-testid="directory-group"] {margin-top:3px;}
+.desktop-project-tree [data-testid="directory-group"] > div {font-size:11px;}
+.desktop-project-tree [data-testid="directory-group"] > div:last-child {margin-top:2px;background:transparent;padding:0;border-radius:0;}
+.desktop-project-tree [data-testid="task-row"], .desktop-project-tree [data-testid="open-item-row"] {margin:0;padding-top:0;padding-bottom:0;}
+.desktop-project-tree img {filter:grayscale(1);}
+.desktop-project-tree [class*="bg-state-intervention"]:not([aria-hidden]) {background:#e5e5e5;color:#404040;}
+.desktop-project-tree > div:last-of-type {min-height:37px;}
+.desktop-file-tree {font-size:12px;}
+.desktop-directory-context {padding:6px 10px;border-bottom:1px solid var(--border);display:grid;gap:4px;}
+.desktop-directory-context select {width:100%;height:27px;border:1px solid var(--border);border-radius:4px;padding:0 4px;background:var(--background);font-size:12px;}
+.desktop-directory-context p {margin:0;font-size:11px;}
+.desktop-file-tree [class*="text-state-"], .desktop-file-tree [class*="text-destructive"] {color:var(--foreground);}
+.desktop-session-row {display:flex;align-items:center;gap:7px;height:25px;width:100%;padding:0 8px 0 24px;text-align:left;font-size:12px;}
+.desktop-session-row:hover {background:var(--accent);}
+.desktop-session-group {border-top:1px solid var(--border);padding-top:5px;margin-top:5px;}
+.desktop-session-group h3 {font-size:11px;color:var(--muted-foreground);padding:4px 7px;}
+.desktop-archive-entry {display:flex;align-items:center;gap:8px;height:30px;flex-shrink:0;border-top:1px solid var(--border);padding:0 7px;font-size:12px;}
+.desktop-archive-entry:hover {background:var(--accent);}
+.desktop-workspace-pane [role="tablist"] {height:35px;font-size:12px;background:var(--background);}
+.desktop-workspace-pane [data-testid="pane-content"] {font-size:13px;}
+.desktop-workspace-pane [data-testid^="drop-"] {background:rgb(115 115 115 / .23);box-shadow:inset 0 0 0 2px #737373;outline-color:#737373;}
+.desktop-project-tree [data-testid="task-row"], .desktop-project-tree [data-testid^="preview-row-"] {font-size:12px;min-height:25px;}
+.desktop-project-tree button:focus-visible, .desktop-file-tree button:focus-visible {outline:2px solid #737373;outline-offset:1px;}
+.desktop-project-tree [data-testid="project-overview"] button {min-width:24px;min-height:24px;}
+
+/* Joined terminal action + machine chooser; resource names stay lighter than projects. */
+.desktop-terminal-control {display:flex;align-items:center;border:1px solid var(--border);border-radius:4px;}
+.desktop-project-actions {gap:4px;}
+.desktop-project-actions .desktop-terminal-control button {width:23px;height:22px;border-radius:0;color:var(--foreground);}
+.desktop-project-actions .desktop-terminal-control button:last-child {width:16px;border-left:1px solid var(--border);}
+.desktop-new-terminal-icon {position:relative;display:flex;}
+.desktop-new-terminal-icon > svg:last-child {position:absolute;right:-2px;top:-2px;background:var(--background);}
+.desktop-project-tree [data-testid="dir-group-head"] {font-weight:400;}
+.desktop-project-tree [data-testid="machine-row"] {font-weight:400;}

@@ -58,7 +58,7 @@ function KeyList({ keys }: { keys: EnvKey[] }) {
 }
 
 // EnvPage 提供按机器查看 env 文件变量清单与显式编辑正文的设置分区。
-export function EnvPage() {
+export function EnvPage({ compact = false }: { compact?: boolean }) {
   const machinesState = useMachines(true)
   const machines = useMemo(() => machinesState.data?.machines ?? [], [machinesState.data])
   const [machine, setMachine] = useState('')
@@ -250,25 +250,25 @@ export function EnvPage() {
       onClick={() => setMachine(item.name)}
       aria-pressed={item.name === machine}
       className={cn(
-        'rounded-md border px-2.5 py-1 text-xs hover:bg-accent',
+        compact ? 'min-h-11 shrink-0 rounded-md border px-3 text-sm hover:bg-accent' : 'rounded-md border px-2.5 py-1 text-xs hover:bg-accent',
         item.name === machine && 'border-primary bg-primary/10 font-medium',
         !item.reachable && 'text-muted-foreground',
       )}
     >
       {machineLabel(item.name)}{!item.reachable && '（已断开）'}
     </button>
-  )), [machines, machine])
+  )), [machines, machine, compact])
 
   if (machinesState.data === null) {
-    return <div className="p-6"><LoadFailed message={machinesState.errorText || '正在连接 agentd…'} onRetry={() => window.location.reload()} /></div>
+    return <div className={compact ? 'mobile-env-page p-4' : 'p-6'}><LoadFailed message={machinesState.errorText || '正在连接 agentd…'} onRetry={() => window.location.reload()} /></div>
   }
 
   return (
-    <div className="flex min-h-full flex-col gap-3 p-4">
+    <div className={`flex min-h-full flex-col gap-3 p-4${compact ? ' mobile-env-page' : ''}`}>
       {machinesState.sessionExpired && <SessionExpiredBanner />}
-      <div className="flex flex-wrap items-center gap-2 border-b pb-3">
-        <h2 className="mr-2 text-sm font-semibold">Env 文件</h2>
-        <span className="text-xs text-muted-foreground">选择机器：</span>
+      <div data-testid="env-machine-bar" className={compact ? 'mobile-env-machine-bar' : 'flex flex-wrap items-center gap-2 border-b pb-3'}>
+        {!compact && <h2 data-testid="env-page-title" className="mr-2 text-sm font-semibold">Env 文件</h2>}
+        <span className={compact ? 'shrink-0 text-xs text-muted-foreground' : 'text-xs text-muted-foreground'}>选择机器：</span>
         {machineButtons}
       </div>
 

@@ -17,13 +17,14 @@ function setRect(element: Element, width = 400, height = 400) {
   element.getBoundingClientRect = () => ({ left: 0, top: 0, right: width, bottom: height, width, height, x: 0, y: 0, toJSON: () => ({}) }) as DOMRect
 }
 
-function page(api: ReturnType<typeof useWorkbench>, singleFocus = false) {
+function page(api: ReturnType<typeof useWorkbench>, singleFocus = false, restoring = false) {
   return <WorkbenchPage
     api={api}
     tree={null}
     tasks={[]}
     onAddProject={vi.fn()}
     singleFocus={singleFocus}
+    restoring={restoring}
     renderContent={(content, base) => <div>{content.kind === 'file' ? content.rel : `${content.kind}:${base.projectName}`}</div>}
   />
 }
@@ -38,6 +39,18 @@ const sessionDropPayload = (sessionId = 'session:1', title = '架构物理化') 
 })
 
 describe('WorkbenchPage', () => {
+  it('restoring期间保留窗格但让工作台不可交互并显示状态', () => {
+    const hook = renderHook(() => useWorkbench())
+    act(() => hook.result.current.open({ kind: 'file', rel: 'README.md' }, local))
+    const view = render(page(hook.result.current, false, true))
+    expect(view.getByRole('status')).toHaveTextContent('正在恢复工作台')
+    expect(view.container.firstElementChild).toHaveAttribute('aria-busy', 'true')
+    const underlay = view.container.firstElementChild!.children[1] as HTMLElement
+    expect(underlay).toHaveAttribute('inert')
+    expect(underlay).toHaveAttribute('aria-hidden', 'true')
+    expect(view.container.querySelector('[data-testid="workbench-pane"]')).not.toBeNull()
+  })
+
   it('最外容器裁掉横向溢出：列压进窗口，不允许横滑', () => {
     const hook = renderHook(() => useWorkbench())
     const view = render(page(hook.result.current))

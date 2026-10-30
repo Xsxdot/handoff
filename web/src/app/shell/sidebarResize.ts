@@ -8,9 +8,9 @@
 //   - 不读取浏览器状态，不渲染组件，也不处理拖拽事件
 //   - 不参与中央工作区窗格的宽度计算
 
-// 原型的左栏基准是 456px；改用版本化 key，避免此前保存的窄宽度覆盖新的视觉基准。
-export const DEFAULT_SIDEBAR_WIDTH = 456
-export const MIN_SIDEBAR_WIDTH = 240
+// Dense approved desktop defaults to 250px; retain the v2 key so explicit user resizing survives.
+export const DEFAULT_SIDEBAR_WIDTH = 250
+export const MIN_SIDEBAR_WIDTH = 220
 export const MAX_SIDEBAR_WIDTH = 560
 export const SIDEBAR_WIDTH_KEY = 'handoff.shell.sidebarWidth.v2'
 export const SIDEBAR_KEYBOARD_STEP = 16

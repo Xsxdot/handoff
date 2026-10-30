@@ -44,7 +44,7 @@ export type MobileFrom = `session-${string}` | `card-${string}`
 // SectionKey 并型**——桌面词表含 general 无 pairing，compact 相反，强并一个
 // 类型会让桌面深链词表吞进 pairing。
 export const SETTINGS_SUB_KEYS = [
-  'machines', 'pairing', 'discipline', 'automation', 'env', 'update',
+  'work', 'display', 'projects', 'machines', 'pairing', 'discipline', 'automation', 'env', 'update', 'about',
 ] as const
 export type SettingsSub = (typeof SETTINGS_SUB_KEYS)[number]
 
@@ -61,7 +61,7 @@ const MOBILE_TABS: readonly string[] = ['sessions', 'cards', 'projects', 'settin
 
 function tabOfParams(params: URLSearchParams): MobileTab {
   const raw = params.get('tab')
-  return raw !== null && MOBILE_TABS.includes(raw) ? (raw as MobileTab) : 'sessions'
+  return raw !== null && MOBILE_TABS.includes(raw) ? (raw as MobileTab) : 'projects'
 }
 
 function isMobileFrom(raw: string | null): raw is MobileFrom {
@@ -295,7 +295,10 @@ export function useMobileNav({ compact }: { compact: boolean }): MobileNav {
     // ① 账本未启用：会话/卡两个 tab 无内容面（含 /cards 直达与缺省首屏），
     //    退回项目。replace 语义防历史堆积。必须等探测结束（!ledgerLoading）：
     //    enabled 在探到之前恒 false，若不等，移动首屏会在加载期被误判。
-    if (!gate.ledgerLoading && !gate.ledgerEnabled && (derivedTab === 'sessions' || derivedTab === 'cards')) {
+    if (!gate.ledgerLoading && !gate.ledgerEnabled && (
+      derivedTab === 'sessions' || derivedTab === 'cards' ||
+      (location.pathname === '/' && !p.has('tab'))
+    )) {
       if (here !== '/?tab=projects') {
         console.debug('shell.mobile_nav.normalize', { rule: 'ledger_gate', from: here })
         navigate('/?tab=projects', { replace: true })

@@ -1,0 +1,6 @@
+<resources>
+    <style name="Theme.HandoffMobile" parent="Theme.AppCompat.Light.NoActionBar">
+        <item name="android:windowSplashScreenBackground">#F7F8FC</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@drawable/handoff_logo</item>
+    </style>
+</resources>

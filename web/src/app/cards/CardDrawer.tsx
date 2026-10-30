@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
-import { X } from 'lucide-react'
+import { ChevronLeft, X } from 'lucide-react'
 import { ApiError, fetchTaskDetail, replyTicket } from '../../api/client'
 import type { Task, TaskDetail, Ticket } from '../../api/types'
 import { acceptCard, answerDecision, attachFile, clearCardNeeds, detachFile, fetchCardDetail, moveCard, noteCard, patchCard } from '../../api/ledger'
@@ -31,13 +31,14 @@ type Relation = { From: string; To: string; Type: string }
 // 这里，两条路都能答复。
 //
 // 答复成功后调 onAnswered 让抽屉重取详情：答案要立刻落到这一处，不能等轮询。
-function CardAttention({ cardId, needs, decisions, onAnswered }: { cardId: string; needs: string; decisions: Decision[]; onAnswered: () => void }) {
+function CardAttention({ cardId, needs, decisions, onAnswered, compact = false, disabled = false }: { cardId: string; needs: string; decisions: Decision[]; onAnswered: () => void; compact?: boolean; disabled?: boolean }) {
   const [drafts, setDrafts] = useState<Record<number, string>>({})
   const [busy, setBusy] = useState<number | null>(null)
   const [error, setError] = useState('')
   const [clearing, setClearing] = useState(false)
   // 撤回等人标记。撤完立刻重取详情，让红旗当场消失——等轮询的话用户会以为没点上。
   const clearNeeds = async () => {
+    if (disabled) return
     setClearing(true)
     setError('')
     try {
@@ -51,7 +52,7 @@ function CardAttention({ cardId, needs, decisions, onAnswered }: { cardId: strin
   }
   const submit = async (decision: Decision) => {
     const text = (drafts[decision.id] ?? '').trim()
-    if (!text) return
+    if (!text || disabled) return
     setBusy(decision.id)
     setError('')
     try {
@@ -65,14 +66,14 @@ function CardAttention({ cardId, needs, decisions, onAnswered }: { cardId: strin
     }
   }
   return (
-    <section className="mb-5">
+    <section data-testid="card-attention" className="mb-5">
       <h3 className="mb-1.5 text-xs font-semibold text-muted-foreground">⚑ 需要你</h3>
       {needs !== '' && (
-        <div className="mb-1.5 flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 px-2.5 py-2 text-xs text-amber-900">
+        <div className={cn('mb-1.5 flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 px-2.5 py-2 text-xs text-amber-900', compact && 'flex-col')}>
           <span className="shrink-0 font-semibold">等人</span>
           <span className="min-w-0 flex-1 break-words">{needs}</span>
-          <button type="button" disabled={clearing} onClick={() => void clearNeeds()}
-            className="shrink-0 rounded border border-amber-300 px-2 py-0.5 text-[11px] disabled:opacity-50">已处理</button>
+          <button type="button" disabled={disabled || clearing} onClick={() => void clearNeeds()}
+            className={cn('shrink-0 rounded border border-amber-300 px-2 py-0.5 text-[11px] disabled:opacity-50', compact && 'min-h-11 self-start px-3')}>已处理</button>
         </div>
       )}
       {decisions.map((decision) => {
@@ -83,17 +84,18 @@ function CardAttention({ cardId, needs, decisions, onAnswered }: { cardId: strin
             {(decision.options ?? []).length > 0 && (
               <div className="mt-1.5 flex flex-wrap gap-1">
                 {(decision.options ?? []).map((option) => (
-                  <button key={option} type="button" disabled={!open} onClick={() => setDrafts((current) => ({ ...current, [decision.id]: option }))}
-                    className="rounded-full border px-2 py-0.5 text-[11px] disabled:opacity-60">{option}</button>
+                  <button key={option} type="button" disabled={disabled || !open} onClick={() => setDrafts((current) => ({ ...current, [decision.id]: option }))}
+                    className={cn('rounded-full border px-2 py-0.5 text-[11px] disabled:opacity-60', compact && 'min-h-11 px-3')}>{option}</button>
                 ))}
               </div>
             )}
             {open ? (
-              <div className="mt-1.5 flex items-center gap-2">
-                <input value={drafts[decision.id] ?? ''} onChange={(event) => setDrafts((current) => ({ ...current, [decision.id]: event.target.value }))}
-                  placeholder="答复这条请示…" className="min-w-0 flex-1 rounded border bg-background px-2 py-1 text-xs" />
-                <button type="button" disabled={busy === decision.id || !(drafts[decision.id] ?? '').trim()} onClick={() => void submit(decision)}
-                  className="rounded border px-2 py-1 text-xs disabled:opacity-50">答复</button>
+              <div className="mt-1.5 flex flex-col gap-2">
+                {compact ? <textarea rows={3} value={drafts[decision.id] ?? ''} onChange={(event) => setDrafts((current) => ({ ...current, [decision.id]: event.target.value }))}
+                  placeholder="答复这条请示…" className="min-h-20 w-full resize-y rounded border bg-background px-3 py-2 text-sm leading-5" /> : <input value={drafts[decision.id] ?? ''} onChange={(event) => setDrafts((current) => ({ ...current, [decision.id]: event.target.value }))}
+                  placeholder="答复这条请示…" className="min-w-0 flex-1 rounded border bg-background px-2 py-1 text-xs" />}
+                <button type="button" disabled={disabled || busy === decision.id || !(drafts[decision.id] ?? '').trim()} onClick={() => void submit(decision)}
+                  className={cn('self-start rounded border px-3 py-2 text-sm disabled:opacity-50', compact && 'min-h-11')}>答复</button>
               </div>
             ) : (
               <p className="mt-1.5 text-muted-foreground">已答复：{decision.answer}</p>
@@ -287,6 +289,9 @@ export interface CardDrawerProps {
   // 由 CardsPage 注入 JSX——筛选 state 住调用方，抽屉关闭后筛选保留）。桌面不传
   // 不渲染，aside 结构与块序逐字节不动。
   compactFilters?: ReactNode
+  readOnly?: boolean
+  // B429 cut-2：compact 列表去⋯后，迁移进详情「更多工作项操作」。
+  onMigrate?: () => void
 }
 
 export function CardDrawer({
@@ -305,6 +310,8 @@ export function CardDrawer({
   onOpenDriverSession,
   driverSessionReady = true,
   compactFilters,
+  readOnly = false,
+  onMigrate,
 }: CardDrawerProps) {
   const [detail, setDetail] = useState<CardDetail | null>(null)
   const [error, setError] = useState('')
@@ -385,6 +392,7 @@ export function CardDrawer({
     if (detail && initialSection === 'merge') mergeRef.current?.scrollIntoView({ block: 'start' })
   }, [detail, initialSection])
 
+  const writesBlocked = compact && (readOnly || error !== '' || detail === null)
   const card = detail ? detail.card : null
   // 显式给 string：value<T> 会把字面量实参 '' 推成字面量类型 ""，
   // 那样 status === '已完成' 在类型上恒假，tsc -b 直接报 TS2367
@@ -439,6 +447,14 @@ export function CardDrawer({
     })
   }, [detail, tasks])
   const runningCount = tasks === undefined ? null : taskRows.filter((row) => isRunningRow(row, tasks)).length
+  const terminalTaskRows = compact && tasks !== undefined
+    ? taskRows.filter((row) => {
+      const linked = linkedTaskOf(row, tasks)
+      // Keep unlinked rows visible as unknown; only the shared running classifier can establish history.
+      return linked !== undefined && !isRunningRow(row, tasks)
+    })
+    : []
+  const terminalTaskIds = new Set(terminalTaskRows.map((row) => row.TaskID))
 
   // B369.10 T8 双跳行 hot 判据（与 renderAttention 同源：等人 ∪ 挂卡裁决）且
   // 关联执行存在在跑行——落点取第一个在跑行的 TaskID（taskRows 已按在跑优先
@@ -455,6 +471,7 @@ export function CardDrawer({
   }
 
   const submitTitle = async () => {
+    if (writesBlocked) return
     const title = titleDraft.trim()
     if (!title) return
     setTitleBusy(true)
@@ -477,6 +494,7 @@ export function CardDrawer({
   }
 
   const submitPriority = async () => {
+    if (writesBlocked) return
     setPriorityBusy(true)
     setPriorityError('')
     try {
@@ -497,6 +515,7 @@ export function CardDrawer({
   }
 
   const submitAcceptance = async () => {
+    if (writesBlocked) return
     setAcceptanceBusy(true)
     setAcceptanceError('')
     try {
@@ -517,6 +536,7 @@ export function CardDrawer({
   }
 
   const submitBase = async () => {
+    if (writesBlocked) return
     setBaseBusy(true)
     setBaseError('')
     try {
@@ -531,6 +551,7 @@ export function CardDrawer({
   }
 
   const submitAttachment = async () => {
+    if (writesBlocked) return
     const path = attachmentPath.trim()
     if (!path) return
     setAttachmentBusy(true)
@@ -589,6 +610,7 @@ export function CardDrawer({
   }
 
   const submitNote = async () => {
+    if (writesBlocked) return
     if (!note.trim()) return
     setNoteBusy(true)
     setNoteError('')
@@ -604,6 +626,7 @@ export function CardDrawer({
   }
 
   const submitAccept = async () => {
+    if (writesBlocked) return
     const evidence = acceptEvidence.trim()
     if (!evidence) return
     setAcceptBusy(true)
@@ -622,6 +645,7 @@ export function CardDrawer({
   }
 
   const submitMove = async () => {
+    if (writesBlocked) return
     if (!moveTarget) return
     setMoveBusy(true)
     setMoveError('')
@@ -674,8 +698,8 @@ export function CardDrawer({
               <select aria-label="优先级" value={priorityDraft} onChange={(event) => setPriorityDraft(event.target.value)} className="rounded border bg-background px-1.5 py-0.5 text-xs">
                 {['高', '中', '低'].map((level) => <option key={level} value={level}>{level}</option>)}
               </select>
-              <button type="button" disabled={priorityBusy} onClick={() => void submitPriority()} className="rounded border px-1.5 py-0.5 text-[11px] disabled:opacity-50">保存优先级</button>
-              <button type="button" disabled={priorityBusy} onClick={() => setPriorityEditing(false)} className="rounded border px-1.5 py-0.5 text-[11px]">取消</button>
+              <button type="button" disabled={writesBlocked || priorityBusy} onClick={() => void submitPriority()} className="rounded border px-1.5 py-0.5 text-[11px] disabled:opacity-50">保存优先级</button>
+              <button type="button" disabled={writesBlocked || priorityBusy} onClick={() => setPriorityEditing(false)} className="rounded border px-1.5 py-0.5 text-[11px]">取消</button>
             </span>
           ) : (
             <span className="flex items-center gap-1.5"><span>{value(card, 'priority', '—')}</span><button type="button" onClick={beginPriorityEdit} className="rounded border px-1.5 py-0.5 text-[11px]">改优先级</button></span>
@@ -689,9 +713,9 @@ export function CardDrawer({
             <span className="flex flex-wrap items-center gap-1.5 font-sans">
               <input aria-label="基线分支" value={baseDraft} onChange={(event) => setBaseDraft(event.target.value)}
                 className="min-w-0 flex-1 rounded border bg-background px-2 py-1 font-mono text-xs" />
-              <button type="button" disabled={baseBusy} onClick={() => void submitBase()}
+              <button type="button" disabled={writesBlocked || baseBusy} onClick={() => void submitBase()}
                 className="rounded border px-2 py-1 text-[11px] disabled:opacity-50">保存基线</button>
-              <button type="button" disabled={baseBusy} onClick={() => setBaseEditing(false)}
+              <button type="button" disabled={writesBlocked || baseBusy} onClick={() => setBaseEditing(false)}
                 className="rounded border px-2 py-1 text-[11px]">取消</button>
             </span>
           ) : (
@@ -726,9 +750,9 @@ export function CardDrawer({
                 className="w-full rounded border bg-background px-2 py-1.5 text-xs"
               />
               <div className="flex gap-2">
-                <button type="button" disabled={acceptanceBusy} onClick={() => void submitAcceptance()}
+                <button type="button" disabled={writesBlocked || acceptanceBusy} onClick={() => void submitAcceptance()}
                   className="min-h-11 rounded-md bg-primary px-2.5 py-1 text-xs text-primary-foreground disabled:opacity-50">保存判据</button>
-                <button type="button" disabled={acceptanceBusy} onClick={() => setAcceptanceEditing(false)}
+                <button type="button" disabled={writesBlocked || acceptanceBusy} onClick={() => setAcceptanceEditing(false)}
                   className="min-h-11 rounded-md border px-2.5 py-1 text-xs">取消</button>
               </div>
               {acceptanceError && <p role="alert" className="break-words text-xs text-destructive">{acceptanceError}</p>}
@@ -760,7 +784,7 @@ export function CardDrawer({
                       rows={3} placeholder="证据：怎么验的、在哪台机器、日志在哪"
                       className="w-full rounded border bg-background px-2 py-1 text-xs" />
                     <div className="flex gap-2">
-                      <button type="button" disabled={acceptBusy || !acceptEvidence.trim()} onClick={() => void submitAccept()}
+                      <button type="button" disabled={writesBlocked || acceptBusy || !acceptEvidence.trim()} onClick={() => void submitAccept()}
                         className="min-h-11 rounded-md bg-primary px-2.5 py-1 text-xs text-primary-foreground disabled:opacity-50">确认</button>
                       <button type="button" onClick={() => { setAcceptOpen(false); setAcceptError('') }}
                         className="min-h-11 rounded-md border px-2.5 py-1 text-xs">取消</button>
@@ -785,9 +809,9 @@ export function CardDrawer({
                 className="w-full rounded border bg-background px-2 py-1.5 text-xs"
               />
               <div className="flex gap-2">
-                <button type="button" disabled={acceptanceBusy} onClick={() => void submitAcceptance()}
+                <button type="button" disabled={writesBlocked || acceptanceBusy} onClick={() => void submitAcceptance()}
                   className={cn('rounded-md bg-primary px-2.5 py-1 text-xs text-primary-foreground disabled:opacity-50', compact && 'min-h-11')}>保存判据</button>
-                <button type="button" disabled={acceptanceBusy} onClick={() => setAcceptanceEditing(false)}
+                <button type="button" disabled={writesBlocked || acceptanceBusy} onClick={() => setAcceptanceEditing(false)}
                   className="rounded-md border px-2.5 py-1 text-xs">取消</button>
               </div>
               {acceptanceError && <p role="alert" className="break-words text-xs text-destructive">{acceptanceError}</p>}
@@ -809,7 +833,7 @@ export function CardDrawer({
                   rows={3} placeholder="证据：怎么验的、在哪台机器、日志在哪"
                   className="w-full rounded border bg-background px-2 py-1 text-xs" />
                 <div className="flex gap-2">
-                  <button type="button" disabled={acceptBusy || !acceptEvidence.trim()} onClick={() => void submitAccept()}
+                  <button type="button" disabled={writesBlocked || acceptBusy || !acceptEvidence.trim()} onClick={() => void submitAccept()}
                     className={cn('rounded-md bg-primary px-2.5 py-1 text-xs text-primary-foreground disabled:opacity-50', compact && 'min-h-11')}>确认</button>
                   <button type="button" onClick={() => { setAcceptOpen(false); setAcceptError('') }}
                     className="rounded-md border px-2.5 py-1 text-xs">取消</button>
@@ -836,7 +860,7 @@ export function CardDrawer({
                 <button
                   type="button"
                   aria-label={`摘掉 ${attachment.path}`}
-                  disabled={attachmentBusy}
+                  disabled={writesBlocked || attachmentBusy}
                   onClick={() => void removeAttachment(attachment.path)}
                   className="shrink-0 rounded border px-1.5 py-0.5 text-[11px] disabled:opacity-50"
                 >摘掉</button>
@@ -854,7 +878,7 @@ export function CardDrawer({
             placeholder="docs/superpowers/plans/…"
             className="min-w-0 flex-1 rounded border bg-background px-2 py-1 text-xs"
           />
-          <button type="button" disabled={attachmentBusy || !attachmentPath.trim()} onClick={() => void submitAttachment()}
+          <button type="button" disabled={writesBlocked || attachmentBusy || !attachmentPath.trim()} onClick={() => void submitAttachment()}
             className="rounded border px-2 py-1 text-xs disabled:opacity-50">挂上</button>
         </div>
         {attachmentError && <p role="alert" className="break-words text-xs text-destructive">{attachmentError}</p>}
@@ -898,96 +922,60 @@ export function CardDrawer({
     </section>
   ) : null
 
+  const renderTaskRow = (row: NonNullable<CardDetail['task_states']>[number]) => {
+    const open = expandedTask === row.TaskID
+    const taskDetail = taskDetails[row.TaskID]
+    const linked = linkedTaskOf(row, tasks)
+    const label = linked?.name.trim() || row.TaskID.slice(0, 8)
+    return (
+      <div key={`${row.Target}/${row.TaskID}`} className="mb-1 rounded-md border text-xs">
+        <div role="button" tabIndex={0} aria-expanded={open} title={row.TaskID}
+          onClick={() => toggleTask(row.TaskID)} onKeyDown={(event) => {
+            if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); toggleTask(row.TaskID) }
+          }} className={cn('flex w-full cursor-pointer items-center gap-2 px-2 py-1.5 text-left', compact && 'mobile-card-task-row')}>
+          <span className={cn('font-mono', compact && 'mobile-card-task-label')} title={compact ? row.TaskID : undefined}>{compact ? label : row.TaskID}</span>
+          {!compact && <span>{row.Purpose}</span>}
+          {linked ? <span className={cn('ml-auto', compact && 'mobile-card-task-state')}><TaskState state={linked.state} /></span>
+            : <span className={cn('ml-auto text-muted-foreground', compact && 'mobile-card-task-state')}>实况未知{row.LastType !== '' && ` · 最后事件 ${row.LastType}`}</span>}
+          <span className={cn('text-muted-foreground', compact && 'mobile-card-task-target')}>{row.Target}</span>
+          {onJumpToTask && <button type="button" aria-label={`跳到 ${row.TaskID}`} title="去该任务所在的目录并打开它的 TUI 标签页；目录解析不到时会开在当前目录下"
+            onClick={(event) => { event.stopPropagation(); onJumpToTask(row.TaskID) }} className="shrink-0 rounded border px-1.5 py-0.5 text-[11px] hover:bg-accent">↗</button>}
+        </div>
+        {open && <div className="border-t px-2 py-2">
+          {compact && <p className="mb-2 break-all font-mono text-[11px] text-muted-foreground">完整任务 ID：{row.TaskID}</p>}
+          {taskLoading === row.TaskID && <p className="text-xs text-muted-foreground">正在读取工单…</p>}
+          {taskErrors[row.TaskID] && <p role="alert" className="break-words text-xs text-destructive">{taskErrors[row.TaskID]}</p>}
+          {taskDetail && <TicketsPanel bare tickets={pendingTickets(taskDetail)} disabled={writesBlocked} onReply={(ticket, answer) => replyTaskTicket(row.TaskID, ticket, answer)} />}
+        </div>}
+      </div>
+    )
+  }
+
   const renderTaskRows = () => taskRows.length > 0 ? (
     <section className="mb-5">
       <h3 className="mb-1.5 text-xs font-semibold text-muted-foreground">
         {/* 计数与行渲染同源（同一个 taskRows/isRunningRow 派生），不会各说各话 */}
         {runningCount === null ? '关联执行（task）' : `关联执行 · ${runningCount} 个在跑 / 共 ${taskRows.length} 个`}
       </h3>
-      {taskRows.map((row) => {
-        const open = expandedTask === row.TaskID
-        const taskDetail = taskDetails[row.TaskID]
-        const linked = linkedTaskOf(row, tasks)
-        return (
-          <div key={`${row.Target}/${row.TaskID}`} className="mb-1 rounded-md border text-xs">
-            {/* 整行点击=展开工单（现状职责，spec §3.3 不动它）。外层从
-                <button> 换成 div[role=button] 是为了容纳行内的 ↗ 真
-                按钮（button 不能嵌 button）；role/tabIndex/键盘处理
-                照抄 CardItem.tsx:35-44 的行内可点先例，cursor-pointer
-                补回原生 button 自带的指针。 */}
-            <div
-              role="button"
-              tabIndex={0}
-              aria-expanded={open}
-              onClick={() => toggleTask(row.TaskID)}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter' || event.key === ' ') {
-                  event.preventDefault()
-                  toggleTask(row.TaskID)
-                }
-              }}
-              className="flex w-full cursor-pointer items-center gap-2 px-2 py-1.5 text-left"
-            >
-              {/* 实况来自页面级 2.5s 任务流的真 state，渲染与看板同一套
-                  圆点+文案。LastType 只是镜像事件的类型不是状态：
-                  turn_failed 可 continue、completed 事件早于落态，拿它判
-                  「跑没跑完」会和看板得出相反结论（spec §3.1）。关联不上
-                  就写「实况未知」并把 LastType 当线索列出。 */}
-              <span className="font-mono">{row.TaskID}</span><span>{row.Purpose}</span>
-              {linked ? (
-                <span className="ml-auto"><TaskState state={linked.state} /></span>
-              ) : (
-                <span className="ml-auto text-muted-foreground">实况未知{row.LastType !== '' && ` · 最后事件 ${row.LastType}`}</span>
-              )}
-              <span className="text-muted-foreground">{row.Target}</span>
-              {onJumpToTask && (
-                <button
-                  type="button"
-                  aria-label={`跳到 ${row.TaskID}`}
-                  title="去该任务所在的目录并打开它的 TUI 标签页；目录解析不到时会开在当前目录下"
-                  onClick={(event) => {
-                    // 跳转必须掐掉冒泡：整行的点击语义是展开工单，
-                    // 一次点击不能又跳走又把面板拉出来（spec §3.3；
-                    // 验收含「去掉 stopPropagation 必须红」的变异复验）
-                    event.stopPropagation()
-                    onJumpToTask(row.TaskID)
-                  }}
-                  className="shrink-0 rounded border px-1.5 py-0.5 text-[11px] hover:bg-accent"
-                >↗</button>
-              )}
-            </div>
-            {open && (
-              <div className="border-t px-2 py-2">
-                {/* 远程 task 的工单在这里也答得了：agentd 的 byTask 中间件会把
-                    /api/tasks/{id}/* 透明代理到该 task 的属主机器。所以这一段
-                    是纯前端复用，不需要任何新后端。 */}
-                {taskLoading === row.TaskID && <p className="text-xs text-muted-foreground">正在读取工单…</p>}
-                {taskErrors[row.TaskID] && <p role="alert" className="break-words text-xs text-destructive">{taskErrors[row.TaskID]}</p>}
-                {taskDetail && (
-                  <TicketsPanel
-                    bare
-                    tickets={pendingTickets(taskDetail)}
-                    disabled={false}
-                    onReply={(ticket, answer) => replyTaskTicket(row.TaskID, ticket, answer)}
-                  />
-                )}
-              </div>
-            )}
-          </div>
-        )
-      })}
+      {taskRows.filter((row) => !terminalTaskIds.has(row.TaskID)).map(renderTaskRow)}
+      {terminalTaskRows.length > 0 && (
+        <details data-testid="card-task-history" className="mt-2 rounded-md border px-3">
+          <summary className="flex min-h-11 cursor-pointer items-center justify-between text-xs font-medium">历史执行 {terminalTaskRows.length}<span aria-hidden="true">⌄</span></summary>
+          <div className="pb-2">{terminalTaskRows.map(renderTaskRow)}</div>
+        </details>
+      )}
     </section>
   ) : null
 
   const renderAttention = () => ((detail?.decisions ?? []).length > 0 || (detail?.needs ?? '') !== '') ? (
-    <CardAttention cardId={id} needs={detail?.needs ?? ''} decisions={detail?.decisions ?? []} onAnswered={load} />
+    <CardAttention disabled={writesBlocked} compact={compact} cardId={id} needs={detail?.needs ?? ''} decisions={detail?.decisions ?? []} onAnswered={load} />
   ) : null
 
   const renderMove = () => (
     <section className="mb-5">
       <h3 className="mb-1.5 text-xs font-semibold text-muted-foreground">环节动作</h3>
       <p className="mb-2 text-xs text-muted-foreground">节点执行由协调者生命周期统一接管；此处只保留状态转移。</p>
-      {!moveConfirm ? <button type="button" onClick={() => setMoveConfirm(true)} className={cn('rounded-md border px-2.5 py-1 text-xs hover:bg-accent', compact && 'min-h-11')}>转移状态…</button> : <div className="flex flex-wrap items-center gap-2"><select value={moveTarget} onChange={(event) => setMoveTarget(event.target.value)} className="rounded-md border bg-background px-2 py-1 text-xs"><option value="">选择目标态</option>{states.filter((state) => state !== status).map((state) => <option key={state} value={state}>{state}</option>)}</select><button type="button" disabled={!moveTarget || moveBusy} onClick={() => void submitMove()} className={cn('rounded-md bg-primary px-2.5 py-1 text-xs text-primary-foreground disabled:opacity-50', compact && 'min-h-11')}>确认转移</button><button type="button" onClick={() => setMoveConfirm(false)} className="rounded-md border px-2.5 py-1 text-xs">取消</button></div>}
+      {!moveConfirm ? <button type="button" onClick={() => setMoveConfirm(true)} className={cn('rounded-md border px-2.5 py-1 text-xs hover:bg-accent', compact && 'min-h-11')}>转移状态…</button> : <div className="flex flex-wrap items-center gap-2"><select value={moveTarget} onChange={(event) => setMoveTarget(event.target.value)} className="rounded-md border bg-background px-2 py-1 text-xs"><option value="">选择目标态</option>{states.filter((state) => state !== status).map((state) => <option key={state} value={state}>{state}</option>)}</select><button type="button" disabled={writesBlocked || !moveTarget || moveBusy} onClick={() => void submitMove()} className={cn('rounded-md bg-primary px-2.5 py-1 text-xs text-primary-foreground disabled:opacity-50', compact && 'min-h-11')}>确认转移</button><button type="button" onClick={() => setMoveConfirm(false)} className="rounded-md border px-2.5 py-1 text-xs">取消</button></div>}
       {moveError && <p role="alert" className="mt-1 break-words text-xs text-destructive">{moveError}</p>}
     </section>
   )
@@ -1000,7 +988,7 @@ export function CardDrawer({
         {groups.map((group, index) => group.kind === 'mirror' ? <details key={`mirror-${index}`} className="text-xs text-muted-foreground"><summary className="cursor-pointer">镜像执行事件（{group.events.length}）</summary><div className="ml-2 border-l pl-2">{group.events.map((event) => <div key={event.seq} className="py-0.5">#{event.seq} {eventSummary(event)}</div>)}</div></details> : group.events.map((event) => event.type === 'review_verdict' ? <VerdictCard key={event.seq} event={event} /> : event.type === 'comment' ? <div key={event.seq} className="rounded-lg bg-muted px-3 py-2 text-xs leading-5"><div className="mb-0.5 text-[11px] text-muted-foreground">{event.actor}</div>{eventSummary(event)}</div> : <div key={event.seq} className="flex gap-2 text-xs text-muted-foreground"><span className="font-mono">#{event.seq}</span><span>{eventSummary(event)}</span></div>))}
         {groups.length === 0 && <p className="text-xs text-muted-foreground">还没有事件。</p>}
       </div>
-      <div className="mt-3 flex gap-1.5"><input value={note} onChange={(event) => setNote(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void submitNote() } }} placeholder="写评论… 用 #B142 引用其他工作项" className="min-w-0 flex-1 rounded-md border bg-background px-2 py-1.5 text-xs" /><button type="button" disabled={noteBusy || !note.trim()} onClick={() => void submitNote()} className="rounded-md border px-2.5 py-1 text-xs disabled:opacity-50">发布</button></div>
+      <div className="mt-3 flex gap-1.5"><input value={note} onChange={(event) => setNote(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void submitNote() } }} placeholder="写评论… 用 #B142 引用其他工作项" className="min-w-0 flex-1 rounded-md border bg-background px-2 py-1.5 text-xs" /><button type="button" disabled={writesBlocked || noteBusy || !note.trim()} onClick={() => void submitNote()} className="rounded-md border px-2.5 py-1 text-xs disabled:opacity-50">发布</button></div>
       {noteError && <p role="alert" className="mt-1 text-xs text-destructive">{noteError}</p>}
       <p className="mt-1 text-[11px] text-muted-foreground">#B 号引用会自动建立关联边。</p>
     </section>
@@ -1061,20 +1049,22 @@ export function CardDrawer({
       {renderJumpRows()}
       <h2 data-testid="card-tier-work" className={tierHeadingClass}>工作项</h2>
       {renderStatusChips()}
-      {renderAcceptance()}
       <h2 data-testid="card-tier-action" className={tierHeadingClass}>当前动作</h2>
       {renderAttention()}
-      {renderMove()}
       {renderTaskRows()}
-      {renderCoordinatorPanel()}
-      <h2 data-testid="card-tier-evidence" className={tierHeadingClass}>证据</h2>
-      {renderTimeline()}
-      {renderAttachments()}
-      {renderMergedMembers()}
-      {renderRelations()}
-      {renderChildren()}
-      {renderMeta()}
-      {renderCoordinatorSeat()}
+      <details data-testid="card-secondary-actions" className="mb-3 border-t pt-3">
+        <summary className="min-h-11 cursor-pointer text-sm font-medium">更多工作项操作</summary>
+        <div className="pt-3">
+          {detail && <button type="button" disabled={writesBlocked} onClick={beginTitleEdit} className="mb-3 min-h-11 rounded border px-3 text-sm">改标题</button>}
+          {onMigrate && <button type="button" disabled={writesBlocked} onClick={onMigrate} className="mb-3 min-h-11 rounded border px-3 text-sm">迁移工作项</button>}
+          {renderMove()}{renderMeta()}{renderCoordinatorPanel()}{renderCoordinatorSeat()}
+        </div>
+      </details>
+      <h2 data-testid="card-tier-evidence" className={tierHeadingClass}>证据与验收</h2>
+      <details data-testid="card-evidence-details" className="rounded-lg border px-3">
+        <summary className="min-h-11 cursor-pointer text-sm font-medium">验收、活动历史与相关资料</summary>
+        <div className="pt-3">{renderAcceptance()}{renderTimeline()}{renderAttachments()}{renderMergedMembers()}{renderRelations()}{renderChildren()}</div>
+      </details>
     </>
   )
 
@@ -1095,12 +1085,15 @@ export function CardDrawer({
       aria-modal={compact ? 'true' : undefined}
     >
       <header className="border-b px-4 py-3">
-        <div className="flex items-center gap-2" data-testid="card-drawer-header">
+        <div className={cn('flex items-center gap-2', compact && 'mobile-card-drawer-header')} data-testid="card-drawer-header">
+          {compact && <button type="button" aria-label="返回工作项" onClick={onClose} className="size-11 shrink-0 rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground">
+            <ChevronLeft className="size-5" />
+          </button>}
           <span className="font-mono text-xs text-muted-foreground">{value(card, 'id', id)}</span>
           {/* B287：头部状态只渲染一次——单枚深色 chip，节点标签优先、状态回落。 */}
           <span className="rounded-full bg-slate-900 px-2 py-0.5 text-xs text-white">{nodeLabel ?? (status || '加载中')}</span>
           {acceptanceInfo.verified && <span className="rounded-full border border-green-300 bg-green-50 px-2 py-0.5 text-[10px] text-green-700">已验</span>}
-          <button type="button" aria-label="关闭" onClick={onClose} className={cn('ml-auto rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground', compact && 'min-h-11')}><X className="size-4" /></button>
+          {!compact && <button type="button" aria-label="关闭" onClick={onClose} className="ml-auto rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground"><X className="size-4" /></button>}
         </div>
         {titleEditing ? (
           <div className="mt-2 flex items-center gap-2">
@@ -1110,15 +1103,15 @@ export function CardDrawer({
               onChange={(event) => setTitleDraft(event.target.value)}
               className="min-w-0 flex-1 rounded border bg-background px-2 py-1 text-sm"
             />
-            <button type="button" disabled={titleBusy || !titleDraft.trim()} onClick={() => void submitTitle()}
+            <button type="button" disabled={writesBlocked || titleBusy || !titleDraft.trim()} onClick={() => void submitTitle()}
               className="rounded border px-2 py-1 text-xs disabled:opacity-50">保存标题</button>
-            <button type="button" disabled={titleBusy} onClick={() => setTitleEditing(false)}
+            <button type="button" disabled={writesBlocked || titleBusy} onClick={() => setTitleEditing(false)}
               className="rounded border px-2 py-1 text-xs">取消</button>
           </div>
         ) : (
           <div className="mt-1 flex items-center gap-2">
-            <h2 className="min-w-0 flex-1 truncate text-sm font-semibold">{detail ? cardTitle(detail) : '工作项详情'}</h2>
-            {detail && <button type="button" onClick={beginTitleEdit} className="rounded border px-2 py-1 text-xs">改标题</button>}
+            <h2 className={cn("min-w-0 flex-1 text-sm font-semibold", !compact && "truncate")}>{detail ? cardTitle(detail) : '工作项详情'}</h2>
+            {detail && !compact && <button type="button" disabled={writesBlocked} onClick={beginTitleEdit} className="rounded border px-2 py-1 text-xs">改标题</button>}
           </div>
         )}
         {titleError && <p role="alert" className="mt-1 text-xs text-destructive">{titleError}</p>}
@@ -1127,6 +1120,7 @@ export function CardDrawer({
           是 flex-col），作用于背后列表；桌面不渲染。 */}
       {compact && compactFilters}
       <div className="min-h-0 flex-1 overflow-y-auto p-4">
+        {writesBlocked && detail && <p className="mb-3 text-sm text-muted-foreground">当前数据不可用于提交，恢复连接后再处理。</p>}
         {error && <p role="alert" className="mb-3 break-words rounded border border-destructive/40 bg-destructive/5 p-2 text-sm text-destructive">{error}</p>}
         {!detail && !error && <p className="text-sm text-muted-foreground">正在读取账本…</p>}
         {detail && (compact ? renderBlocksCompact() : renderBlocksDesktop())}

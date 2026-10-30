@@ -6,16 +6,40 @@ import type { SessionDetail as SessionDetailDTO } from '../../api/rooms'
 import { formatRelative } from '../lib/format'
 import { memberStatusText, timelineKindLabel } from './sessionModel'
 
-export function SessionDetail({ detail, onOpenCard, onArchive, archiveBusy, archiveError }: {
+export function SessionDetail({ detail, onOpenCard, onArchive, archiveBusy, archiveError, compact = false }: {
   detail: SessionDetailDTO
   onOpenCard?: (cardId: string) => void
   onArchive?: () => void
   archiveBusy?: boolean
   archiveError?: string
+  compact?: boolean
 }) {
   const { summary, nodes = [], timeline = [] } = detail
   const members = summary.members ?? []
   const cards = summary.cards ?? []
+  // SessionDetail.nodes is the server's task-mirror history projection. These rows
+  // describe recorded dispatches, not proof of currently running work.
+  const executionRecords = nodes
+  const structureEvents = timeline
+  const renderTimelineRow = (row: typeof timeline[number], index: number, prefix = 'timeline') => (
+    <div key={row.seq} data-testid={`${prefix}-row-${index}`} className="flex items-baseline gap-2 py-1 text-xs">
+      <span className="shrink-0 font-mono text-[10px] text-muted-foreground">{formatRelative(row.created_at)}</span>
+      <span className="shrink-0 font-medium">{timelineKindLabel(row.kind)}</span>
+      {row.card_id && <b className="shrink-0 font-mono">{row.card_id}</b>}
+      {row.detail && <span className="min-w-0 flex-1 truncate text-muted-foreground" title={row.detail}>{row.detail}</span>}
+      {row.actor && <span className="shrink-0 text-muted-foreground">· 由 {row.actor}</span>}
+    </div>
+  )
+  const renderExecutionRow = (node: typeof nodes[number], index: number) => (
+    <div key={`${node.card_id}:${node.node}:${index}`} data-testid={`execution-row-${index}`} className="flex flex-wrap items-baseline gap-x-2 gap-y-1 border-b py-2 text-xs last:border-b-0">
+      <b className="shrink-0 font-mono">{node.card_id}</b>
+      {node.title && <span className="min-w-0 flex-1">{node.title}</span>}
+      <span>{node.node}</span>
+      {node.round !== undefined && <span className="shrink-0 text-muted-foreground">第 {node.round} 轮</span>}
+      <span className="shrink-0 font-medium">{node.state}</span>
+      {node.target && <span className="basis-full text-muted-foreground">目标：{node.target}</span>}
+    </div>
+  )
   return (
     <div className="min-h-0 flex-1 overflow-y-auto p-3" aria-label="会话详情">
       <section aria-label="成员" className="mb-4 rounded-xl border bg-white/65 p-3 shadow-sm">
@@ -45,7 +69,7 @@ export function SessionDetail({ detail, onOpenCard, onArchive, archiveBusy, arch
           </button>
         ))}
       </section>
-      <section aria-label="任务节点" className="mb-4 rounded-xl border bg-white/65 p-3 shadow-sm">
+      {!compact && <section aria-label="任务节点" className="mb-4 rounded-xl border bg-white/65 p-3 shadow-sm">
         <h3 className="mb-2 text-xs font-semibold text-muted-foreground">协调者派发的任务节点</h3>
         {nodes.length === 0 ? <p className="text-xs text-muted-foreground">（暂无派发节点）</p> : nodes.map((node, index) => (
           <div key={`${node.card_id}:${node.node}:${index}`} data-testid={`session-node-${index}`} className="flex items-center gap-2 border-b py-1.5 text-xs last:border-b-0">
@@ -54,19 +78,27 @@ export function SessionDetail({ detail, onOpenCard, onArchive, archiveBusy, arch
             <span className="ml-auto text-muted-foreground">{node.state}{node.target ? ` · ${node.target}` : ''}</span>
           </div>
         ))}
-      </section>
+      </section>}
+      {compact ? (
+        <section aria-label="历史记录" className="mb-4 border-t">
+          <h3 className="py-2 text-xs font-semibold text-muted-foreground">历史记录</h3>
+          <details data-testid="session-execution-history" className="border-b py-1">
+            <summary aria-label={`执行记录 ${executionRecords.length}`} className="cursor-pointer py-2 text-sm">执行记录 <span className="text-muted-foreground">{executionRecords.length} 条记录</span></summary>
+            {executionRecords.length === 0 ? <p className="pb-2 text-xs text-muted-foreground">（暂无执行记录）</p> : executionRecords.map(renderExecutionRow)}
+          </details>
+          <details data-testid="session-structure-history" className="border-b py-1">
+            <summary aria-label={`结构事件 ${structureEvents.length}`} className="cursor-pointer py-2 text-sm">结构事件 <span className="text-muted-foreground">{structureEvents.length} 条记录</span></summary>
+            {structureEvents.length === 0 ? <p className="pb-2 text-xs text-muted-foreground">（暂无结构事件）</p> : structureEvents.map((row, index) => renderTimelineRow(row, index, 'structure'))}
+          </details>
+        </section>
+      ) : (
       <section aria-label="会话 timeline" className="mb-4 rounded-xl border bg-white/65 p-3 shadow-sm">
         <h3 className="mb-2 text-xs font-semibold text-muted-foreground">会话 timeline（结构事件）</h3>
         {timeline.length === 0 ? <p className="text-xs text-muted-foreground">（暂无结构事件）</p> : timeline.map((row, index) => (
-          <div key={row.seq} data-testid={`timeline-row-${index}`} className="flex items-baseline gap-2 py-1 text-xs">
-            <span className="shrink-0 font-mono text-[10px] text-muted-foreground">{formatRelative(row.created_at)}</span>
-            <span className="shrink-0 font-medium">{timelineKindLabel(row.kind)}</span>
-            {row.card_id && <b className="shrink-0 font-mono">{row.card_id}</b>}
-            {row.detail && <span className="min-w-0 flex-1 truncate text-muted-foreground" title={row.detail}>{row.detail}</span>}
-            {row.actor && <span className="shrink-0 text-muted-foreground">· 由 {row.actor}</span>}
-          </div>
+          renderTimelineRow(row, index, 'timeline')
         ))}
       </section>
+      )}
       <section aria-label="会话管理" className="rounded-xl border bg-white/65 p-3 shadow-sm">
         <h3 className="mb-2 text-xs font-semibold text-muted-foreground">会话管理</h3>
         {summary.archived ? (

@@ -32,6 +32,13 @@ beforeEach(() => {
 })
 
 describe('EnvPage', () => {
+  it('compact 环境页只用返回头标题，机器选择保持单行横向区域', async () => {
+    render(<EnvPage compact />)
+    await screen.findByRole('button', { name: /proxy\.env/ })
+    expect(screen.getByTestId('env-machine-bar')).toHaveClass('mobile-env-machine-bar')
+    expect(screen.queryByTestId('env-page-title')).not.toBeInTheDocument()
+  })
+
   it('默认显示变量清单，不显示值，也不拉全文', async () => {
     const full = vi.spyOn(client, 'fetchEnvFile')
     render(<EnvPage />)

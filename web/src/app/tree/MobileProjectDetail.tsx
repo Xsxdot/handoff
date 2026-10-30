@@ -4,7 +4,7 @@
 //       locbar 位置切换条（同项目跨机位置平级，离线灰显可看不可点）、选中位置的
 //       工作树卡（分支/主目录徽标/全路径/在跑任务行 + 「打开终端/浏览文件」双动作）、
 //       「从分支建工作树」（直接挂既有 NewWorktreeDialog，弹层零翻案换入口）、
-//       「这台机器上的终端会话」区（fetchPtySessions('all') 口径，服务端托管、
+//       「这个项目的终端会话」区（fetchPtySessions('all') 口径，服务端托管、
 //       关 App 不死的承诺靠「活着即列出」兑现——不用本浏览器 openedItems 投影）。
 // 边界：
 //   - 只做编排与呈现，不自发轮询（ptySessions 由 Shell usePoll 供给——SettingsHub
@@ -114,7 +114,7 @@ export function MobileProjectDetail({
       }))
     : []
   const ptyHere = (ptySessions ?? []).filter(
-    (s) => s.machine === activeLoc?.machine && s.exit_code === undefined,
+    (s) => s.machine === activeLoc?.machine && s.exit_code === undefined && s.base_kind === 'workspace' && activeLoc.workspaces.some(ws => ws.path === s.base_path),
   )
 
   return (
@@ -242,10 +242,10 @@ export function MobileProjectDetail({
 
             {/* 终端会话区：这台机器上活着的会话（exit_code 缺席 = 活着）。
                 数据口径 fetchPtySessions('all')——服务端托管的恢复真相源 */}
-            <div className="mt-4 text-xs text-muted-foreground">这台机器上的终端会话</div>
+            <div className="mt-4 text-xs text-muted-foreground">这个项目的终端会话</div>
             <div data-testid="project-pty-list" className="mt-2">
-              {ptyHere.length === 0 ? (
-                <p className="text-sm text-muted-foreground">这台机器上没有活着的终端会话。</p>
+              {ptySessions === null ? (<p className="text-sm text-muted-foreground">正在读取终端…</p>) : ptyHere.length === 0 ? (
+                <p className="text-sm text-muted-foreground">这个项目目前没有运行中的终端。</p>
               ) : (
                 ptyHere.map((session) => (
                   <div key={session.id} data-testid="project-pty-row" className="mb-2.5 rounded-[14px] border bg-background p-3">

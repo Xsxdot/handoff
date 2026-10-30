@@ -2,6 +2,8 @@ package dev.gosuper.handoff.mobile.pair
 
 import dev.gosuper.handoff.mobile.FakeCore
 import dev.gosuper.handoff.mobile.FakeSecretStore
+import dev.gosuper.handoff.mobile.FakeCurrentMachineStore
+import dev.gosuper.handoff.mobile.core.MachineView
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -49,5 +51,41 @@ class PairEntryTest {
         assertTrue(PairEntry(core, store).pair(raw).isSuccess)
         assertEquals(listOf(expected), core.paired)
         assertEquals(expected, store.readBundle())
+    }
+
+    @Test
+    fun retrySavedMachine_重新校验后只进入原A() {
+        val core = FakeCore(listOf(
+            MachineView("A", "http://127.0.0.1:41001", false),
+            MachineView("B", "http://127.0.0.1:41002", true),
+        ))
+        core.onPair = { core.machines = listOf(
+            MachineView("A", "http://127.0.0.1:41001", true),
+            MachineView("B", "http://127.0.0.1:41002", true),
+        ) }
+        val secret = FakeSecretStore("opaque-bundle")
+        val selected = FakeCurrentMachineStore("A")
+        val result = PairEntry(core, secret, selected).retrySelectedMachine()
+        assertTrue(result.isSuccess)
+        assertEquals("A", result.getOrThrow().name)
+        assertEquals(listOf("opaque-bundle"), core.paired)
+        assertEquals(emptyList<String>(), secret.writes)
+        assertEquals("A", selected.read())
+    }
+
+    @Test
+    fun retrySavedMachine_仍离线时失败并保留A不切B() {
+        val core = FakeCore(listOf(
+            MachineView("A", "", false),
+            MachineView("B", "http://127.0.0.1:41002", true),
+        ))
+        val secret = FakeSecretStore("opaque-bundle")
+        val selected = FakeCurrentMachineStore("A")
+        val result = PairEntry(core, secret, selected).retrySelectedMachine()
+        assertTrue(result.isFailure)
+        assertEquals(listOf("opaque-bundle"), core.paired)
+        assertEquals("A", selected.read())
+        assertTrue(secret.writes.isEmpty())
+        assertTrue(core.machines.first { it.name == "B" }.online)
     }
 }

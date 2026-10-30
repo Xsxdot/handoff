@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react'
+import { StrictMode } from 'react'
 import { FileTab } from './FileTab'
 import type { BaseDir } from './useWorkbench'
 import { ApiError } from '../../api/client'
 import { draftKey, loadDraft, saveDraft } from './fileDraft'
+import { useWorkbench } from './useWorkbench'
 
 const base: BaseDir = {
   key: '/w/b2-b3',
@@ -31,6 +33,31 @@ afterEach(() => {
 const TEXT = { content: 'module handoff\n', size: 15, sha256: 'basehash' }
 
 describe('FileTab', () => {
+  it('StrictMode cleanup draft callback must preserve an explicitly split duplicate file pane', async () => {
+    vi.mocked(fetchWorkspaceFile).mockResolvedValue({ content: 'README', size: 6, sha256: 's1' })
+    const hook = renderHook(() => useWorkbench())
+    act(() => hook.result.current.openInNewGroup({ kind: 'file', rel: 'README.md' }, base))
+    act(() => hook.result.current.openInNewGroup({ kind: 'file', rel: 'README.zh-CN.md' }, base))
+    act(() => hook.result.current.openInRightSplit({ kind: 'file', rel: 'README.md' }, base))
+    const activeId = hook.result.current.wb.activeGroupId
+    const active = hook.result.current.wb.groups.find((group) => group.id === activeId)!
+    const tab = active.columns[1].panes[0]!
+    const onDraftChange = (draft: { draft: string; baseSha: string } | null) => {
+      hook.result.current.setContent(activeId, tab.id, {
+        kind: 'file', rel: 'README.md', draft: draft?.draft, baseSha: draft?.baseSha,
+      })
+    }
+
+    render(<StrictMode><FileTab base={base} rel="README.md" onDraftChange={onDraftChange} /></StrictMode>)
+    await waitFor(() => expect(fetchWorkspaceFile).toHaveBeenCalled())
+
+    expect(hook.result.current.wb.activeGroupId).toBe(activeId)
+    const after = hook.result.current.wb.groups.find((group) => group.id === activeId)!
+    expect(after.columns).toHaveLength(2)
+    expect(after.columns[0].panes[0]?.content).toMatchObject({ kind: 'file', rel: 'README.zh-CN.md' })
+    expect(after.columns[1].panes[0]?.content).toMatchObject({ kind: 'file', rel: 'README.md' })
+  })
+
   it('按基准目录 + 相对路径 + 机器名取文件并显示内容', async () => {
     vi.mocked(fetchWorkspaceFile).mockResolvedValue({ content: 'module handoff\n', size: 15, sha256: 's1' })
     render(<FileTab base={base} rel="go.mod" />)
@@ -341,6 +368,8 @@ describe('B369.10 FileTab compact 只读', () => {
     render(<FileTab base={base} rel="go.mod" compact />)
     await screen.findByTestId('file-readonly-pre')
     expect(screen.getByTestId('file-readonly-badge')).toHaveTextContent('只读')
+    expect(screen.getByTestId('file-preview-location')).toHaveTextContent('devbox · b2-b3')
+    expect(screen.getByTestId('file-preview-location')).toHaveTextContent('/w/b2-b3/go.mod')
     expect(screen.queryByRole('textbox')).toBeNull()
     expect(screen.queryByRole('button', { name: '保存' })).toBeNull()
     expect(screen.getByTestId('file-readonly-pre').textContent).toContain('module handoff')

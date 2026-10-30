@@ -5,14 +5,6 @@
 // 下拉抬到 24×24 底线（WCAG 2.2 AA 2.5.8 次级目标）；主动作 ≥44 仍逐枚点名
 // min-h-11（plan §3.3 的两档分工）。
 //
-// 为什么带 :not(.min-h-11) 排除：基线是后代选择器（特异度 0,1,1），会压过元素
-// 自身上的 .min-h-11（0,1,0）；且 Tailwind v4 把任意变体规则排在 utilities 层
-// 末尾，改用 :where 降特异度后仍因源序更晚而赢（v4.3.3 编译产物实测）。
-// 排除法让 44px 主动作完全退出基线的 min-height 竞争：带 min-h-11 的控件拿 44，
-// 其余拿 24 底线，两档各得其所、不依赖源序。
-export const TOUCH_BASELINE = [
-  '[&_button:not(.min-h-11)]:min-h-6',
-  '[&_button]:min-w-6',
-  '[&_input:not(.min-h-11)]:min-h-6',
-  '[&_select:not(.min-h-11)]:min-h-6',
-].join(' ')
+// 规则放在 index.css 的 components 层；明确的尺寸 utilities 始终优先。
+// 同层后代规则会压过任意 min-h-[…]，仅排除 min-h-11 会把更高的设置行压回24px。
+export const TOUCH_BASELINE = 'touch-baseline'

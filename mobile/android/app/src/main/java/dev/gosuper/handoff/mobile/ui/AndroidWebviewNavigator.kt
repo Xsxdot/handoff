@@ -7,6 +7,7 @@ package dev.gosuper.handoff.mobile.ui
 
 import android.util.Log
 import android.webkit.WebView
+import java.net.URI
 import dev.gosuper.handoff.mobile.web.WebviewNavigator
 
 private const val TAG = "WebviewNavigator"
@@ -15,6 +16,9 @@ class AndroidWebviewNavigator(private val webView: WebView) : WebviewNavigator {
 
     @Volatile
     private var destroyed = false
+    private var expectedOrigin: String? = null
+    private var pending: ((Result<Unit>) -> Unit)? = null
+    val activeOrigin: String? get() = expectedOrigin
 
     /**
      * Activity.onDestroy 时同步调用（先于 webView.destroy()）：声明该 WebView 已不可用，
@@ -25,13 +29,16 @@ class AndroidWebviewNavigator(private val webView: WebView) : WebviewNavigator {
         destroyed = true
     }
 
-    override fun load(url: String) {
+    override fun load(url: String, onResult: (Result<Unit>) -> Unit) {
         // 纵深防御：loadUrl 不受 WebViewClient 导航白名单约束，这里再拒一次非回环源。
         if (LoopbackNavigation.shouldIntercept(url)) {
             Log.w(TAG, "拒绝加载非回环源")
+            onResult(Result.failure(IllegalArgumentException("non-loopback origin")))
             return
         }
         Log.i(TAG, "webview 加载回环源")
+        expectedOrigin = url
+        pending = onResult
         webView.post {
             if (destroyed) {
                 Log.w(TAG, "webview 已销毁，跳过 load")
@@ -41,5 +48,29 @@ class AndroidWebviewNavigator(private val webView: WebView) : WebviewNavigator {
             webView.settings.javaScriptEnabled = true
             webView.loadUrl(url)
         }
+    }
+
+    /** Resolve only the main document matching the origin supplied by the binding. */
+    fun onMainDocumentFinished(url: String?) {
+        val target = url ?: return finish(Result.failure(IllegalStateException("missing document URL")))
+        if (sameOrigin(expectedOrigin, target)) finish(Result.success(Unit))
+    }
+
+    /** Fail the in-flight main-document load; subresource errors never call this. */
+    fun onMainDocumentFailed() = finish(Result.failure(IllegalStateException("main document failed")))
+
+    private fun finish(result: Result<Unit>) {
+        val callback = pending ?: return
+        pending = null
+        if (result.isFailure) Log.e(TAG, "主文档加载失败")
+        callback(result)
+    }
+
+    private fun sameOrigin(expected: String?, actual: String): Boolean {
+        return try {
+            val a = expected?.let(::URI) ?: return false
+            val b = URI(actual)
+            a.scheme == b.scheme && a.host == b.host && a.port == b.port
+        } catch (_: Exception) { false }
     }
 }

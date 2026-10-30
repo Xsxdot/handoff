@@ -42,6 +42,24 @@ beforeEach(() => {
 })
 
 describe('SessionChat', () => {
+  it('compact 协调者消息铺满阅读列，自身短回复保持右侧浅灰，引用和提及仍保留', () => {
+    const coordinator = event(1, '这是一段需要完整阅读的协调者说明 @agent:opencode', {
+      actor: 'agent:opencode', payload: { room: 'session:1', kind: 'user', body: '这是一段需要完整阅读的协调者说明 @agent:opencode', mentions: ['agent:opencode'] },
+    })
+    const own = event(2, '收到。', {
+      actor: 'user:sycm', payload: { room: 'session:1', kind: 'user', body: '收到。', reply_to: 1 },
+    })
+    render(<SessionChat sessionId="session:1" summary={summary()} events={[coordinator, own]} historyExpired={false} historyError="" onSent={() => {}} compact />)
+    const longRow = screen.getByTestId('msg-1')
+    expect(longRow.className).toContain('mobile-session-message')
+    expect(longRow.querySelector('.mobile-session-message-body')?.parentElement?.className).toContain('w-full')
+    const ownRow = screen.getByTestId('msg-2')
+    expect(ownRow.className).toContain('items-end')
+    expect(ownRow.querySelector('.mobile-session-message-body')?.className).toContain('bg-muted')
+    expect(screen.getByTestId('mention-1-1')).toHaveTextContent('@agent:opencode')
+    expect(screen.getByTestId('quote-2')).toHaveTextContent('这是一段需要完整阅读的协调者说明')
+  })
+
   it('compact 发言框 16px，长身份在气泡内折行，消息区不横滑', () => {
     // iOS 聚焦字号 <16px 会放大整页，放大后页面比屏宽就能左右滑出屏幕。
     // 长身份串（cli:opencode#ses_…）默认不折行，会把消息区的最小宽度撑过屏幕。

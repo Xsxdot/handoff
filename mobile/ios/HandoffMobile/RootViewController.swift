@@ -37,7 +37,7 @@ final class RootViewController: UIViewController {
     }
 
     private func showMachineList() {
-        setRootContent(MachineListViewController(composition: composition))
+        setRootContent(MachineListViewController(composition: composition, autoResume: true))
     }
 
     private func setRootContent(_ vc: UIViewController) {

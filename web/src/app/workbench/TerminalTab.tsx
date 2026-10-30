@@ -303,6 +303,7 @@ export function TerminalTab({
     // 在 start() 之前建连，这一次尺寸就又悄悄丢了。真正保证尺寸对齐的是下面
     // onAttached 里的那次重申。
     term.onResize(({ cols, rows }) => {
+      if (disposed) return
       logTermResize(label, cols, rows, 'observer')
       handle?.resize(cols, rows)
     })
@@ -330,6 +331,7 @@ export function TerminalTab({
     const snap = () => xtermDebugSnap(term, host)
 
     term.onData((d) => {
+      if (disposed) return
       let rest = d
       // 1004 的 [I]/[O] 一律不上送。切 tab 时 blur 发生在 React 把 active
       // 改成 false 之前，按「仅隐藏时丢 [O]」会漏出去；漏出去再补 [I]，
@@ -884,7 +886,15 @@ export function TerminalTab({
       termRef.current = null
       revealRef.current = () => {}
       nudgeMouseRef.current = () => {}
-      term.dispose()
+      // xterm 5.5.0's Viewport schedules an untracked setTimeout from its constructor
+      // (`setTimeout(() => this.syncScrollArea())`). StrictMode immediately replays this
+      // effect; disposing in cleanup first clears the render dimensions that callback reads.
+      // Let already-queued xterm initialization timers run before releasing its internals.
+      // The PTY and component-owned listeners are still closed synchronously above.
+      window.setTimeout(() => {
+        logTermKeepalive(label, 'dispose')
+        term.dispose()
+      }, 0)
     }
     // 依赖故意只有会话身份与基准：base.label 之类的展示字段变化不该重建终端。
     // rel 参与身份：改 rel 就该在新的子目录里重建会话。

@@ -58,9 +58,10 @@ function branchOptionsOf(data: ProjectBranchesResp): string[] {
 }
 
 export function NewCardDialog({
-  open, project, cardProjects, workflows, parent, onClose, onCreated,
+  open, project, cardProjects, workflows, parent, onClose, onCreated, disabled = false,
 }: {
   open: boolean
+  disabled?: boolean
   // 顶部筛选当前值：「全部项目」= 空串。只是第一档预选建议，提交值以下拉为准；
   // 约定它来自 CardsPage 的筛选器（候选恒含卡上历史值 ⊆ 本组件并集），
   // 因此预选值总能落在某个 option 上、显示得出来。
@@ -165,6 +166,7 @@ export function NewCardDialog({
   const titles = parseTitles(title)
 
   const submit = async () => {
+    if (disabled) return
     if (titles.length === 0 || projectValue === '') return
     setBusy(true)
     setResult(null)
@@ -281,7 +283,7 @@ export function NewCardDialog({
           <button type="button" className="rounded border px-3 py-1.5 text-sm" onClick={onClose}>取消</button>
           <button
             type="button" className="rounded bg-primary px-3 py-1.5 text-sm text-primary-foreground disabled:opacity-50"
-            disabled={busy || titles.length === 0 || projectValue === ''}
+            disabled={disabled || busy || titles.length === 0 || projectValue === ''}
             onClick={() => void submit()}
           >建卡</button>
         </div>

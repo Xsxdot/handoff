@@ -7,6 +7,8 @@ package dev.gosuper.handoff.mobile
 import android.content.Context
 import dev.gosuper.handoff.mobile.core.BindCoreGateway
 import dev.gosuper.handoff.mobile.core.EncryptedSecretStore
+import dev.gosuper.handoff.mobile.core.CurrentMachineStore
+import dev.gosuper.handoff.mobile.core.SharedPreferencesCurrentMachineStore
 import dev.gosuper.handoff.mobile.core.SecretStore
 import dev.gosuper.handoff.mobile.pair.PairEntry
 import dev.gosuper.handoff.mobile.pair.StartupController
@@ -14,7 +16,8 @@ import dev.gosuper.handoff.mobile.pair.StartupController
 class AppGraph(context: Context) {
     val core = BindCoreGateway()
     private val store: SecretStore = EncryptedSecretStore(context.applicationContext)
+    val currentMachine: CurrentMachineStore = SharedPreferencesCurrentMachineStore(context.applicationContext)
 
-    val pairEntry = PairEntry(core, store)
-    val startup = StartupController(store, core)
+    val pairEntry = PairEntry(core, store, currentMachine)
+    val startup = StartupController(store, core, currentMachine)
 }

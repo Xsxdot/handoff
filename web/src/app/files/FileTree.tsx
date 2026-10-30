@@ -21,6 +21,7 @@
 // 已提交的改动。tooltip 写「相对基线已改动」，不写「工作区已修改」——后者是
 // git status 的语义，这里给不出来。
 import { useEffect, useRef, useState } from 'react'
+import '../workbench/desktop-workspace.css'
 import {
   ChevronDown, ChevronRight, CircleSlash, FileText, FolderClosed, FolderOpen, RefreshCw, Search, X,
 } from 'lucide-react'
@@ -97,6 +98,10 @@ export interface FileTreeProps {
   // taskId 是这个目录上挂着的任务；为 null 表示没有任务，此时不显示角标
   taskId: string | null
   onOpenFile: (rel: string) => void
+  onOpenFileInNewTab?: (rel: string) => void
+  onOpenFileInSplit?: (rel: string) => void
+  directoryChoices?: BaseDir[]
+  onSelectDirectory?: (base: BaseDir) => void
   // onOpenTerminal 让「在终端中打开」走既有的建终端能力，传的是子目录 rel
   //（空串 = 工作树根）。
   onOpenTerminal: (rel: string) => void
@@ -186,11 +191,32 @@ function logOperationError(operation: string, base: BaseDir, rel: string | undef
   return message
 }
 
-export function FileTree({ base, taskId, onOpenFile, onOpenTerminal, revealSupported, refreshKey, onClose, compact = false }: FileTreeProps) {
+function expandedStorageKey(base: BaseDir): string {
+  // Machine + full path is the directory identity; aliases/project labels can
+  // coincide and must not share the user's browsing position.
+  return `handoff.files.expanded:${JSON.stringify([base.machine, base.path])}`
+}
+
+function loadExpanded(base: BaseDir): Set<string> {
+  try {
+    const parsed: unknown = JSON.parse(window.localStorage.getItem(expandedStorageKey(base)) ?? '[]')
+    if (!Array.isArray(parsed) || !parsed.every((rel) => typeof rel === 'string')) throw new Error('invalid directory view')
+    return new Set(parsed)
+  } catch (error) {
+    console.warn('file_tree.device.read.error', { baseKey: base.key, error })
+    return new Set()
+  }
+}
+
+export function FileTree({ base, taskId, onOpenFile, onOpenFileInNewTab, onOpenFileInSplit, directoryChoices, onSelectDirectory, onOpenTerminal, revealSupported, refreshKey, onClose, compact = false }: FileTreeProps) {
+  // A refreshed inventory may omit an offline location. Keep the explicit browsing
+  // context visible instead of silently selecting another machine or worktree.
+  const directoryOptions = directoryChoices?.some((item) => item.key === base.key)
+    ? directoryChoices : [base, ...(directoryChoices ?? [])]
   const dirs = useDirEntries(base)
   const changed = useChangedFiles(taskId)
   const firstRef = useRef(true)
-  const [expanded, setExpanded] = useState<Set<string>>(() => new Set())
+  const [expanded, setExpanded] = useState<Set<string>>(() => loadExpanded(base))
   const [query, setQuery] = useState('')
   // menu：右键菜单当前打开的坐标与被右键条目
   const [menu, setMenu] = useState<{ x: number; y: number; entry: MenuEntry } | null>(null)
@@ -207,7 +233,7 @@ export function FileTree({ base, taskId, onOpenFile, onOpenTerminal, revealSuppo
   // 挂载与换目录时取根层，并清掉所有弹层与右键态——旧目录的数据不该残留。
   // 子层在展开时由 Row 显式 ensure，不在渲染期取数。
   useEffect(() => {
-    setExpanded(new Set())
+    setExpanded(loadExpanded(base))
     setMenu(null)
     setNameDlg(null)
     setDeleteTarget(null)
@@ -227,12 +253,22 @@ export function FileTree({ base, taskId, onOpenFile, onOpenTerminal, revealSuppo
 
   const toggle = (rel: string) => {
     dirs.ensure(rel)
-    setExpanded((prev) => {
-      const next = new Set(prev)
-      if (next.has(rel)) next.delete(rel)
-      else next.add(rel)
-      return next
-    })
+    const next = new Set(expanded)
+    if (next.has(rel)) next.delete(rel)
+    else next.add(rel)
+    rememberExpanded(next)
+  }
+
+  const rememberExpanded = (next: Set<string>) => {
+    setExpanded(next)
+    // Only explicit browsing changes write; a malformed stored value isn't
+    // silently replaced during mount or refresh.
+    try {
+      window.localStorage.setItem(expandedStorageKey(base), JSON.stringify([...next]))
+      console.debug('file_tree.device.write.success', { baseKey: base.key, expanded: next.size })
+    } catch (error) {
+      console.warn('file_tree.device.write.error', { baseKey: base.key, error })
+    }
   }
 
   const onRowContextMenu = (e: React.MouseEvent, entry: DirEntry, rel: string) => {
@@ -353,6 +389,11 @@ export function FileTree({ base, taskId, onOpenFile, onOpenTerminal, revealSuppo
     // 同步 execCommand 路径（见 lib/clipboard.ts 头注释）
     const clipboard = (text: string) => () => copyToClipboard(text)
     return [
+      ...(!compact && !entry.isDir ? [
+        ...(onOpenFileInNewTab ? [{ label: '在新标签页打开', onSelect: () => onOpenFileInNewTab(entry.rel) }] : []),
+        ...(onOpenFileInSplit ? [{ label: '在右侧分栏打开', onSelect: () => onOpenFileInSplit(entry.rel) }] : []),
+        ...(onOpenFileInNewTab || onOpenFileInSplit ? [{ separator: true } as ContextMenuEntry] : []),
+      ] : []),
       { label: '新文件', onSelect: () => setNameDlg({ mode: 'create-file', dirOf: dOf, target: dOf, name: '' }) },
       { label: '新建文件夹', onSelect: () => setNameDlg({ mode: 'create-dir', dirOf: dOf, target: dOf, name: '' }) },
       { label: '在终端中打开', onSelect: () => onOpenTerminal(dOf) },
@@ -384,12 +425,11 @@ export function FileTree({ base, taskId, onOpenFile, onOpenTerminal, revealSuppo
         ? [
             {
               label: '折叠文件夹',
-              onSelect: () =>
-                setExpanded((prev) => {
-                  const next = new Set(prev)
-                  next.delete(entry.rel)
-                  return next
-                }),
+              onSelect: () => {
+                const next = new Set(expanded)
+                next.delete(entry.rel)
+                rememberExpanded(next)
+              },
             } satisfies ContextMenuEntry,
           ]
         : []),
@@ -403,7 +443,7 @@ export function FileTree({ base, taskId, onOpenFile, onOpenTerminal, revealSuppo
   }
 
   return (
-    <aside className={cn('flex h-full min-h-0 flex-col border-l bg-background', compact && TOUCH_BASELINE)}>
+    <aside className={cn('flex h-full min-h-0 flex-col border-l bg-background', compact ? TOUCH_BASELINE : 'desktop-file-tree')}>
       <div className="flex items-center gap-1 border-b px-3 py-2">
         <span className="text-sm font-medium">文件</span>
         <button
@@ -426,6 +466,20 @@ export function FileTree({ base, taskId, onOpenFile, onOpenTerminal, revealSuppo
           </button>
         )}
       </div>
+
+      {!compact && (
+        <div className="desktop-directory-context">
+          {directoryChoices && onSelectDirectory ? (
+            <select aria-label="浏览目录位置" value={base.key} onChange={(event) => {
+              const next = directoryOptions.find((item) => item.key === event.target.value)
+              if (next) onSelectDirectory(next)
+            }}>
+              {directoryOptions.map((item) => <option key={item.key} value={item.key}>{item.projectName} · {item.machine || '本机'} · {item.label} · {item.path}</option>)}
+            </select>
+          ) : <p>{base.projectName} · {base.machine || '本机'} · {base.label}</p>}
+          <p title={base.path} className="truncate font-mono text-muted-foreground">{base.path}</p>
+        </div>
+      )}
 
       {opError !== '' && (
         <div className="flex items-center gap-2 border-b px-3 py-1.5 text-xs text-destructive">
@@ -609,6 +663,9 @@ const INDENT_STEP = 16
 // DirLevel 渲染一层目录：加载中 / 该层失败 / 条目列表三种形态。
 function DirLevel(props: LevelProps) {
   const { dirs, rel, depth, query } = props
+  // Restored expansion mounts this level without a click. Fetch only visible
+  // child levels; the root remains owned by FileTree's mount/refresh effect.
+  useEffect(() => { if (rel !== '') dirs.ensure(rel) }, [dirs, rel])
   const entries = dirs.entriesOf(rel)
   const error = dirs.errorOf(rel)
   const pad = { paddingLeft: `${12 + depth * INDENT_STEP}px` }

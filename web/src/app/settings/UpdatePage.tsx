@@ -14,6 +14,7 @@ import { hasNewer, isComparableVersion } from '../lib/version'
 export interface UpdatePageProps {
   desktopState: DesktopState | null
   latest: LatestResp | null
+  compact?: boolean
 }
 
 // machineLabel 把空机器名翻成页面里的本机文案。
@@ -34,7 +35,7 @@ interface MachineUpgradeViewState {
 }
 
 // UpdatePage 渲染更新页的桌面应用、同步状态、执行机三块内容。
-export function UpdatePage({ desktopState, latest }: UpdatePageProps) {
+export function UpdatePage({ desktopState, latest, compact = false }: UpdatePageProps) {
   const machinesState = useMachines(true)
   const [latestOverride, setLatestOverride] = useState<LatestResp | null>(null)
   const [checking, setChecking] = useState(false)
@@ -126,8 +127,8 @@ export function UpdatePage({ desktopState, latest }: UpdatePageProps) {
   }
 
   return (
-    <div className="flex flex-col gap-5 p-4">
-      {desktopState !== null && (
+    <div className={`flex flex-col gap-5 p-4${compact ? ' mobile-update-page' : ''}`}>
+      {desktopState !== null && !compact && (
         <>
           <section>
             <div className="flex items-start justify-between gap-3">
@@ -217,7 +218,8 @@ export function UpdatePage({ desktopState, latest }: UpdatePageProps) {
       )}
 
       <section>
-        <h2 className="text-sm font-semibold">执行机</h2>
+        <h2 className="text-sm font-semibold">{compact ? '执行机与服务版本' : '执行机'}</h2>
+        {compact && <p className="mt-1 text-xs text-muted-foreground">服务版本来自所连接的 agentd；手机应用版本：暂不可读取。</p>}
         {machinesState.sessionExpired ? (
           <p className="mt-3 text-xs text-destructive">会话已失效，请重新打开控制台。</p>
         ) : machines.length === 0 ? (
@@ -231,6 +233,7 @@ export function UpdatePage({ desktopState, latest }: UpdatePageProps) {
                 latestTag={latestView?.tag ?? ''}
                 state={machineUpgradeStates[machine.name]}
                 onUpgrade={(force) => void startMachineUpgrade(machine.name, force)}
+                compact={compact}
               />
             ))}
           </div>
@@ -239,6 +242,15 @@ export function UpdatePage({ desktopState, latest }: UpdatePageProps) {
           <p className="mt-2 text-xs text-destructive">读取执行机失败：{machinesState.errorText}</p>
         )}
       </section>
+
+      {compact && desktopState !== null && <details className="rounded-lg border bg-background p-3">
+        <summary className="min-h-11 cursor-pointer text-sm font-medium">所连接电脑的桌面应用</summary>
+        <p className="mt-1 text-xs text-muted-foreground">此状态与安装包属于当前连接的电脑，不代表手机应用升级。</p>
+        <dl className="mt-3 grid grid-cols-[max-content_minmax(0,1fr)] gap-x-4 gap-y-2 text-xs"><dt className="text-muted-foreground">电脑应用版本</dt><dd>{desktopState.app_version || '—'}</dd><dt className="text-muted-foreground">最新版本</dt><dd>{latestView?.tag || '—'}</dd><dt className="text-muted-foreground">最近检查</dt><dd>{latestView?.checked_at || '从未检查'}</dd><dt className="text-muted-foreground">同步状态</dt><dd>{desktopState.sync_plan === 'done' ? '已完成' : desktopState.sync_plan || '未判定'}</dd></dl>
+        <div className="mt-3 flex flex-wrap gap-2"><button type="button" onClick={() => void refreshLatest()} disabled={checking} className="min-h-11 rounded-md border px-3 text-sm">{checking ? '检查中…' : '重新检查'}</button><button type="button" onClick={() => void downloadPackage()} className="min-h-11 rounded-md border px-3 text-sm">下载安装包（电脑）</button></div>
+        {downloadError !== '' && <p role="alert" className="mt-2 text-xs text-destructive">{downloadError}</p>}
+        {download.data?.stage === 'done' && download.data.path && <p className="mt-2 break-all text-xs text-muted-foreground">已下载到 {download.data.path}，请在所连接电脑上完成安装。</p>}
+      </details>}
 
       {checkError !== '' && <p role="alert" className="text-xs text-destructive">重新检查失败：{checkError}</p>}
     </div>
@@ -250,11 +262,12 @@ function isMachineUpgradeBody(value: unknown): value is MachineUpgradeResp {
 }
 
 // MachineUpdateRow 渲染一台执行机的更新状态；本机只显示随桌面应用更新，不接升级动作。
-function MachineUpdateRow({ machine, latestTag, state, onUpgrade }: {
+function MachineUpdateRow({ machine, latestTag, state, onUpgrade, compact = false }: {
   machine: Machine
   latestTag: string
   state?: MachineUpgradeViewState
   onUpgrade: (force: boolean) => void
+  compact?: boolean
 }) {
   const local = machine.name === ''
   // 版本比不出来（开发构建的版本戳是提交号）不等于「已是最新」。此前两者都落到
@@ -273,7 +286,7 @@ function MachineUpdateRow({ machine, latestTag, state, onUpgrade }: {
   const reason = state?.reason || (serverFailed ? (machine.upgrade?.reason ?? '') : '')
   const remedy = state?.remedy || (serverFailed ? (machine.upgrade?.remedy ?? '') : '')
   const statusText = local
-    ? '随桌面应用一起更新'
+    ? compact ? '本机 agentd' : '随桌面应用一起更新'
     : running
       ? '升级中…'
       : !comparable
@@ -282,7 +295,7 @@ function MachineUpdateRow({ machine, latestTag, state, onUpgrade }: {
           ? '可升级'
           : '已是最新'
   return (
-    <div className="flex items-center gap-3 px-3 py-2.5 text-xs">
+    <div className={`flex items-center gap-3 px-3 py-2.5 text-xs${compact ? ' mobile-update-row' : ''}`}>
       <span className="w-28 shrink-0 font-medium">{machineLabel(machine)}</span>
       <span className="font-mono text-muted-foreground">{machine.version || '—'}</span>
       <span className={machine.reachable ? 'text-emerald-700' : 'text-amber-700'}>{machine.reachable ? '已连接' : '已断开'}</span>

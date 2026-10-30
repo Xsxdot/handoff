@@ -11,6 +11,37 @@ import { SessionDetail } from './SessionDetail'
 const cases = fixture as { case: string; detail?: SessionDetailDTO; summary?: SessionSummary }[]
 
 describe('SessionDetail', () => {
+  it('compact 把真实 nodes 执行记录与 timeline 结构事件分别折叠，不改变成员/卡片结构', async () => {
+    const user = userEvent.setup()
+    const summaryCase = { ...cases.find((c) => c.case === 'session-summary-golden')!.summary!, cards: [{ card_id: 'B402', title: '确认本轮验收范围', status: '等待裁决', seat: '空座' }] }
+    const detail = {
+      summary: summaryCase,
+      nodes: Array.from({ length: 38 }, (_, index) => ({ card_id: 'B402', title: '确认本轮验收范围', node: `step-${index + 1}`, round: 1, state: 'completed', target: 'agent:coordinator' })),
+      timeline: [
+        { seq: 2, kind: 'card_joined' as const, card_id: 'B402', detail: '会话关联工作项', created_at: '2026-10-09T00:01:00Z' },
+        { seq: 3, kind: 'unknown_future_kind' as never, detail: '未知事件原文保留', created_at: '2026-10-09T00:02:00Z' },
+      ],
+    }
+    render(<SessionDetail detail={detail} compact />)
+    expect(screen.getByLabelText('成员')).toBeInTheDocument()
+    expect(screen.getByTestId('session-card-row')).toHaveTextContent('B402')
+    const executions = screen.getByTestId('session-execution-history')
+    const structures = screen.getByTestId('session-structure-history')
+    expect(executions).not.toHaveAttribute('open')
+    expect(structures).not.toHaveAttribute('open')
+    expect(screen.queryByTestId('session-node-0')).toBeNull()
+    expect(screen.getByLabelText('执行记录 38')).toHaveTextContent('38 条记录')
+    expect(screen.getByLabelText('结构事件 2')).toHaveTextContent('2 条记录')
+    expect(executions.querySelectorAll('[data-testid^="execution-row-"]')).toHaveLength(38)
+    expect(executions.querySelector('[data-testid="execution-row-0"]')).toHaveTextContent('step-1')
+    await user.click(screen.getByLabelText('执行记录 38'))
+    expect(executions).toHaveAttribute('open')
+    expect(screen.getByTestId('execution-row-0')).toHaveTextContent('agent:coordinator')
+    await user.click(screen.getByLabelText('结构事件 2'))
+    expect(screen.getByTestId('structure-row-0')).toHaveTextContent('会话关联工作项')
+    expect(screen.getByTestId('structure-row-1')).toHaveTextContent('未知事件原文保留')
+  })
+
   it('成员块渲染四值状态中文标签，DOM 不出现在线字样（反例断言）', () => {
     const summaryCase = cases.find((c) => c.case === 'session-summary-golden')!.summary!
     render(<SessionDetail detail={{ summary: summaryCase, nodes: [], timeline: [] }} />)

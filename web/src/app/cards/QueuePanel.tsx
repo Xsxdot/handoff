@@ -9,6 +9,7 @@ export interface QueuePanelProps {
   entries: readonly QueueEntry[]
   open: boolean
   loading: boolean
+  hasSnapshot: boolean
   disconnected: boolean
   sessionExpired: boolean
   errorText: string
@@ -45,21 +46,33 @@ export function QueuePanel({
   entries,
   open,
   loading,
+  hasSnapshot,
   disconnected,
   sessionExpired,
   errorText,
   onToggle,
   onOpenCard,
   compact = false,
-}: QueuePanelProps): ReactElement {
+}: QueuePanelProps): ReactElement | null {
   const [localOpen, setLocalOpen] = useState(false)
   const expanded = open || localOpen
   const orderedEntries = [...entries].sort((left, right) => left.position - right.position)
   const panelId = 'cards-queue-panel'
+  // The empty fallback array is only a rendering convenience; it does not prove an empty server queue.
+  const countLabel = compact
+    ? !hasSnapshot
+      ? loading ? '…' : '— · 未确认'
+      : disconnected || sessionExpired ? `${entries.length} · 未确认` : String(entries.length)
+    : String(entries.length)
 
   const toggle = () => {
     setLocalOpen(open ? false : (current) => !current)
     onToggle()
+  }
+
+  // B429 cut-2：compact 安静态（已确认空且不断连）不占扫描面；异常/非零仍露出。
+  if (compact && hasSnapshot && entries.length === 0 && !disconnected && !sessionExpired) {
+    return null
   }
 
   return (
@@ -74,13 +87,13 @@ export function QueuePanel({
         aria-controls={panelId}
         onClick={toggle}
       >
-        <span>⧗ 排队中 {entries.length}</span>
+        <span>⧗ 排队中 {countLabel}</span>
         <span aria-hidden="true">{expanded ? '⌃' : '⌄'}</span>
       </button>
       <div id={panelId} hidden={!expanded}>
         {sessionExpired && <SessionExpiredBanner />}
         {disconnected && !sessionExpired && <DisconnectedBanner compact message={errorText || '网络断开'} />}
-        {loading && entries.length === 0 && <p className="mt-2 text-xs text-muted-foreground">正在读取队列…</p>}
+        {loading && !hasSnapshot && <p className="mt-2 text-xs text-muted-foreground">正在读取队列…</p>}
         {!loading && entries.length === 0 && !disconnected && !sessionExpired && <p className="mt-2 text-xs text-muted-foreground">当前没有排队项。</p>}
         {orderedEntries.length > 0 && (
           <ol className="mt-2 space-y-1">

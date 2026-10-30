@@ -4,18 +4,20 @@
 // 边界：协议零重实现；只加载绑定面返回的 origin；JS 仅对回环源开启，绝不注入任何原生对象接口。
 package dev.gosuper.handoff.mobile.ui
 
+import android.content.Intent
 import android.os.Bundle
 import android.util.Log
 import android.view.View
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
-import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.webkit.WebResourceResponse
 import android.widget.Button
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
+import androidx.activity.result.contract.ActivityResultContracts
 import dev.gosuper.handoff.mobile.HandoffApp
 import dev.gosuper.handoff.mobile.R
 import dev.gosuper.handoff.mobile.list.EnterCoordinator
@@ -27,6 +29,20 @@ class WebviewActivity : AppCompatActivity() {
 
     private lateinit var webView: WebView
     private lateinit var navigator: AndroidWebviewNavigator
+    private lateinit var machine: String
+    private var mainDocumentFailed = false
+    private var switchPickerOpen = false
+    private lateinit var coordinator: EnterCoordinator
+    private val pickerLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        switchPickerOpen = false
+        if (result.resultCode == RESULT_OK) {
+            val selected = result.data?.getStringExtra(MachineListActivity.EXTRA_SELECTED_MACHINE) ?: return@registerForActivityResult
+            machine = selected
+            mainDocumentFailed = false
+            hideError()
+            coordinator.enter(selected, online = true)
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -34,7 +50,7 @@ class WebviewActivity : AppCompatActivity() {
         // B421：targetSdk 36 强制 edge-to-edge，内容避开系统条。
         applySystemBarsInsets()
 
-        val machine = intent.getStringExtra(EXTRA_MACHINE).orEmpty()
+        machine = intent.getStringExtra(EXTRA_MACHINE).orEmpty()
         val online = intent.getBooleanExtra(EXTRA_ONLINE, false)
 
         webView = findViewById(R.id.webview)
@@ -51,12 +67,43 @@ class WebviewActivity : AppCompatActivity() {
             override fun shouldOverrideUrlLoading(
                 view: WebView?,
                 request: WebResourceRequest?,
-            ): Boolean = interceptIfNonLoopback(view, request?.url?.toString())
+            ): Boolean {
+                val target = request?.url?.toString()
+                if (NativeShellNavigation.action(navigator.activeOrigin.orEmpty(), target.orEmpty(), request?.isForMainFrame == true) != null) {
+                    Log.i(TAG, "设置请求打开原生机器选择器")
+                    startMachinePicker()
+                    return true
+                }
+                return interceptIfNonLoopback(view, target)
+            }
 
             // API21–23 只有 String 重载；不覆写则这些版本上白名单形同虚设。
             @Suppress("OVERRIDE_DEPRECATION", "DEPRECATION")
             override fun shouldOverrideUrlLoading(view: WebView?, url: String?): Boolean =
                 interceptIfNonLoopback(view, url)
+
+            override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
+                // API 21–23's String callback does not identify the frame. This callback is
+                // main-frame-only, so defer the exact route action here instead of guessing.
+                if (url != null && !switchPickerOpen && NativeShellNavigation.action(
+                        navigator.activeOrigin.orEmpty(), url, mainFrame = true,
+                    ) != null) {
+                    switchPickerOpen = true
+                    view?.stopLoading()
+                    Log.i(TAG, "主框设置请求打开原生机器选择器")
+                    startMachinePicker()
+                    return
+                }
+                if (url != null && sameActiveOrigin(url)) mainDocumentFailed = false
+            }
+
+            override fun onPageFinished(view: WebView?, url: String?) {
+                if (mainDocumentFailed || url == null || !sameActiveOrigin(url)) return
+                navigator.onMainDocumentFinished(url)
+                // Every later reload gets the same display-only native context; the selection
+                // store is committed by EnterCoordinator only for its pending authenticated load.
+                publishNativeContext()
+            }
 
             override fun onReceivedHttpError(
                 view: WebView?,
@@ -64,6 +111,10 @@ class WebviewActivity : AppCompatActivity() {
                 errorResponse: WebResourceResponse?,
             ) {
                 val code = errorResponse?.statusCode ?: return
+                if (request?.isForMainFrame == true && code in 400..599) {
+                    mainDocumentFailed = true
+                    navigator.onMainDocumentFailed()
+                }
                 ErrorClassifier.fromHttpStatus(code)?.let { showError(it) }
             }
 
@@ -74,6 +125,8 @@ class WebviewActivity : AppCompatActivity() {
                 error: WebResourceError?,
             ) {
                 if (request?.isForMainFrame != true) return
+                mainDocumentFailed = true
+                navigator.onMainDocumentFailed()
                 ErrorClassifier.fromWebResourceError(error?.errorCode ?: 0)?.let { showError(it) }
             }
 
@@ -85,6 +138,8 @@ class WebviewActivity : AppCompatActivity() {
                 description: String?,
                 failingUrl: String?,
             ) {
+                mainDocumentFailed = true
+                navigator.onMainDocumentFailed()
                 ErrorClassifier.fromWebResourceError(errorCode)?.let { showError(it) }
             }
         }
@@ -96,8 +151,10 @@ class WebviewActivity : AppCompatActivity() {
             cookies = AndroidCookieStore(),
             navigator = navigator,
         )
-        val coordinator = EnterCoordinator(binder, lifecycleScope) { result, error ->
-            if (result.isSuccess) hideError() else showError(error ?: ShellError.EXCHANGE)
+        coordinator = EnterCoordinator(binder, graph.currentMachine, lifecycleScope) { result, error ->
+            if (result.isSuccess) {
+                hideError()
+            } else showError(error ?: ShellError.EXCHANGE)
         }
         coordinator.enter(machine, online)
 
@@ -105,6 +162,7 @@ class WebviewActivity : AppCompatActivity() {
             hideError()
             coordinator.enter(machine, online)
         }
+        findViewById<Button>(R.id.webviewSettingsButton).setOnClickListener { startMachinePicker() }
     }
 
     override fun onDestroy() {
@@ -138,6 +196,30 @@ class WebviewActivity : AppCompatActivity() {
     private fun hideError() {
         findViewById<View>(R.id.errorPanel).visibility = View.GONE
         findViewById<View>(R.id.webview).visibility = View.VISIBLE
+    }
+
+    private fun startMachinePicker() {
+        switchPickerOpen = true
+        pickerLauncher.launch(Intent(this, MachineListActivity::class.java).putExtra(MachineListActivity.EXTRA_CHANGE_MACHINE, true))
+    }
+
+    private fun sameActiveOrigin(url: String): Boolean {
+        val active = navigator.activeOrigin ?: return false
+        return runCatching {
+            val a = java.net.URI(active); val b = java.net.URI(url)
+            a.scheme == b.scheme && a.host == b.host && a.port == b.port
+        }.getOrDefault(false)
+    }
+
+    private fun publishNativeContext() {
+        if (!sameActiveOrigin(webView.url.orEmpty())) return
+        val machineJSON = org.json.JSONObject.quote(machine)
+        webView.evaluateJavascript(
+            "document.documentElement.dataset.handoffNativeShell='1';" +
+                "document.documentElement.dataset.handoffNativeMachine=$machineJSON;" +
+                "window.dispatchEvent(new Event('handoff-native-context'));",
+            null,
+        )
     }
 
     companion object {

@@ -16,6 +16,7 @@ import {
   openedWorkbenchItems,
   placeSource,
   resizeColumns,
+  setTabContent,
   tabTitle,
   type BaseDir,
 } from './tabs'
@@ -302,5 +303,46 @@ describe('session tab (B358.6)', () => {
     const first = openOrFocus(EMPTY_WORKBENCH, base, content)
     const again = openOrFocus(first, base, { ...content, title: '架构物理化' })
     expect(again.groups).toHaveLength(first.groups.length)
+  })
+})
+
+describe('explicit file destinations', () => {
+  it('new tab creates a group while right split retains active group and every base', async () => {
+    const { openInNewGroup, openInRightSplit } = await import('./tabs')
+    const wb = openTab(EMPTY_WORKBENCH, handoff, { kind: 'terminal', seq: 1 })
+    const newTab = openInNewGroup(wb, aim, { kind: 'file', rel: 'go.mod' })
+    expect(newTab.groups).toHaveLength(2)
+    expect(newTab.groups[0].columns).toHaveLength(1)
+    expect(newTab.groups[1].columns[0].panes[0]?.base).toEqual(aim)
+    const split = openInRightSplit(wb, aim, { kind: 'file', rel: 'go.mod' })
+    expect(split.groups).toHaveLength(1)
+    expect(split.activeGroupId).toBe(wb.activeGroupId)
+    expect(split.groups[0].columns).toHaveLength(2)
+    expect(split.groups[0].columns[0].panes[0]?.base).toEqual(handoff)
+    expect(split.groups[0].columns[1].panes[0]?.base).toEqual(aim)
+    expect(wb.groups[0].columns).toHaveLength(1)
+  })
+
+  it('setTabContent metadata changes preserve split duplicates but a resource identity change still deduplicates', async () => {
+    const { openInNewGroup, openInRightSplit } = await import('./tabs')
+    let wb = openInNewGroup(EMPTY_WORKBENCH, handoff, { kind: 'file', rel: 'README.md' })
+    wb = openInNewGroup(wb, handoff, { kind: 'file', rel: 'README.zh-CN.md' })
+    const activeId = wb.activeGroupId
+    wb = openInRightSplit(wb, handoff, { kind: 'file', rel: 'README.md' })
+    const split = wb.groups.find((group) => group.id === activeId)!
+    const duplicate = split.columns[1].panes[0]!
+    const metadataUpdate = setTabContent(wb, activeId, duplicate.id, {
+      kind: 'file', rel: 'README.md', draft: 'dirty', baseSha: 'sha-1',
+    })
+    expect(metadataUpdate.activeGroupId).toBe(activeId)
+    expect(metadataUpdate.groups.find((group) => group.id === activeId)?.columns).toHaveLength(2)
+
+    let target = openInNewGroup(wb, handoff, { kind: 'blank' })
+    const targetGroup = target.groups.find((group) => group.id === target.activeGroupId)!
+    const originalGroup = wb.groups.find((group) => group.columns.some((column) => column.panes.some((tab) => tab?.content.kind === 'file' && tab.content.rel === 'README.md')) )!
+    const blank = targetGroup.columns[0].panes[0]!
+    target = setTabContent(target, targetGroup.id, blank.id, { kind: 'file', rel: 'README.md' })
+    expect(target.activeGroupId).toBe(originalGroup.id)
+    expect(target.groups.flatMap((group) => group.columns.flatMap((column) => column.panes)).filter((tab) => tab?.content.kind === 'file' && tab.content.rel === 'README.md')).toHaveLength(2)
   })
 })
